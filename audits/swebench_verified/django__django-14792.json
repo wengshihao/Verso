@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-14792",
+  "status": "ok",
+  "duration_seconds": 451.5245247919811,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14792",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "When a Trunc or Extract database function is applied to a DateTimeField with an explicit tzinfo whose name follows the reversed-POSIX 'Etc/GMT-<n>' convention (e.g. pytz's or zoneinfo's 'Etc/GMT-10', which actually denotes UTC+10, i.e. ten hours EAST of UTC), the timezone conversion embedded in the generated query must treat the instant as ten hours EAST of UTC (the direction Django 3.1 produced, corresponding to something like `AT TIME ZONE '-10'`) and must NOT produce a ten-hours-WEST conversion (the `ATE`/`AT TIME ZONE 'Etc/GMT+10'` result), so that truncation/extraction happens in the correct local wall-clock time.",
+        "subject": "django.db.models.functions.datetime TimezoneMixin/Trunc/Extract tzinfo + django.db.backends.postgresql.operations DatabaseOperations._convert_field_to_tz/date_trunc handling",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"On Django 3.1 ... becomes '-10' in the resulting query due to the return value of _prepare_tzname_delta() of the Postgres DatabaseOperations class, i.e. the time zone 10 hours east from UTC.\nSELECT ... DATE_TRUNC(\\'day\\', \"my_model\".\"start_at\" AT TIME ZONE \\'-10\\') AS \"date\" ...\" and \"On Django 3.2 the TimezoneMixin method get_tzname() returns 'Etc/GMT-10' for a 'Etc/GMT-10' time zone ... incorrectly, becomes 'Etc/GMT+10' in the resulting query due to the return value of _prepare_tzname_delta() ... i.e. the time zone 10 hours west from UTC, which is the opposite direction from the behavior in Django 3.1.\nSELECT ... DATE_TRUNC(\\'day\\', \"my_model\".\"start_at\" AT TIME ZONE \\'Etc/GMT+10\\') AS \"date\" ...\" and \"The above is the same when using Python's zoneinfo.ZoneInfo() too.\""
+      },
+      {
+        "id": "VIS-2",
+        "statement": "The time-zone name that TimezoneMixin.get_tzname()/Q `_get_timezone_name()` computes for a tzinfo such as pytz.timezone(\"Etc/GMT-10\") (or its zoneinfo.ZoneInfo equivalent) must preserve the actual civil offset direction (ten hours EAST of UTC) through downstream query generation, rather than switching it to ten hours WEST; this is the behavior change that regressed in Django 3.2 when _get_timezone_name began yielding the raw \"Etc/GMT-10\" string.",
+        "subject": "django.utils.timezone._get_timezone_name (name reported for reversed-POSIX Etc/GMT zones, as consumed by TimezoneMixin.get_tzname)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"# Django 3.1 >>> timezone._get_timezone_name(pytz.timezone(\"Etc/GMT-10\")) '+10' # Django 3.2 >>> timezone._get_timezone_name(pytz.timezone(\"Etc/GMT-10\")) 'Etc/GMT-10'\" and \"I think it's due to a change in the return value of timezone._get_timezone_name() that's called by the TimezoneMixin.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R0",
+        "statement": "django.utils.timezone._get_timezone_name(tz) returns the result of tz.tzname(None) when that call yields a truthy (non-None, non-empty) string, and otherwise falls back to returning str(tz).",
+        "subject": "django.utils.timezone._get_timezone_name(tz)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R0",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-1 and VIS-2 document observed output values of _get_timezone_name for a specific reversed-POSIX Etc/GMT tzinfo ('+10' in Django 3.1, raw 'Etc/GMT-10' in 3.2) and the downstream time-zone direction bug, but neither spells out the function-level two-branch contract R0 describes (return tz.tzname(None) when truthy else str(tz)). The evidence is consistent with that contract but does not explicitly pin it down, so entailment is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R0",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness",
+      "test_source": "from datetime import tzinfo, timedelta\nfrom django.utils import timezone\n\nclass WeirdTZ(tzinfo):\n    def utcoffset(self, dt):\n        return timedelta(hours=5)\n    def dst(self, dt):\n        return timedelta(0)\n    def tzname(self, dt):\n        return \"WEIRD_NAME\"\n\ndef test_witness():\n    tz = WeirdTZ()\n    assert timezone._get_timezone_name(tz) == \"WEIRD_NAME\"\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError: assert '<verso_witness...WeirdTZ object at ...>' == 'WEIRD_NAME'",
+      "explanation": "Witness for R0: __get_timezone_name(tz) must return tz.tzname(None) when that returns a truthy string, not str(tz). I defined a custom datetime.tzinfo subclass whose tzname(None) returns 'WEIRD_NAME' but which has no __str__ override (so str(tz) collapses to the default object repr '<...WeirdTZ object at ...>'). Gold's implementation ('return timezone.tzname(None) or str(timezone)') returns 'WEIRD_NAME' (PASSED), while buggy's implementation ('return str(timezone)') returns the object repr (FAILED). Verified real results: gold PASSED, buggy FAILED. This custom-tzinfo scenario with tzname differing from str(tz) is not pinned down in any visible test file (visible test_timezone.py uses pytz named zones, fixed offsets, and datetime.timezone instances whose tzname equals str(tz); db_function tests use real named zones/fixed offsets where gold and buggy coincide), so it genuinely captures the hidden R0 behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The timezone-conversion plumbing lives in two layers: django/db/models/functions/datetime.py defines TimezoneMixin with get_tzname() (for explicit tzinfo it calls timezone._get_timezone_name(self.tzinfo)); django/utils/timezone.py defines _get_timezone_name as def _get_timezone_name(tz): return str(tz); django/db/backends/postgresql/operations.py's _convert_field_to_tz/_prepare_tzname_delta blindly swaps '+'<->'-' in the name and emits \"%s AT TIME ZONE '%s'\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both pytz and zoneinfo tzinfo objects are exercised: tests/db_functions/datetime/test_extract_trunc.py defines ZONE_CONSTRUCTORS = (pytz.timezone,) plus zoneinfo.ZoneInfo when available."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing timezone tests under tests/db_functions/datetime/test_extract_trunc.py exercise explicit tzinfo with named zones (Australia/Melbourne, America/Los_Angeles, America/Sao_Paulo) and with datetime.timezone fixed offsets, plus no-tzinfo under a current/default zone; none of the visible tests uses a reversed-signature 'Etc/GMT-*' name, so the correct-behavior contract for the Etc/GMT case identified in the bug report rests on the issue description itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "truncate_to() in that test file is the Python reference model: it converts the value to the target tzinfo before truncating and re-attaches that tzinfo afterward — matching the desired 'convert then truncate in the tzinfo's own wall-clock' semantics that the broken-generated SQL must reproduce."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to the single private function _get_timezone_name in django/utils/timezone.py (one-line body changed from `return str(timezone)` to `return timezone.tzname(None) or str(timezone)`)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Although the function is private, its return value reaches observable surfaces: TimezoneMixin.get_tzname() in django/db/models/functions/datetime.py (used to render '%s AT TIME ZONE' in Extract/Trunc SQL generation when USE_TZ and an explicit tzinfo is passed) and the public get_current_timezone_name()/get_default_timezone_name() in django/utils/timezone.py."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R0]: I searched the oracle for a test that would serve as a Witness for R0 (django.utils.timezone._get_timezone_name returns tz.tzname(None) when truthy, else str(tz)).\n\nWitness candidates must rest on [HIDDEN] oracle content. I examined every test file that plausibly exercises _get_timezone_name's observable surfaces:\n- tests/utils_tests/test_timezone.py — exercises get_current_timezone_name()/override/get_default_timezone via pytz named zones (Asia/Bangkok, Europe/Paris), fixed offsets, datetime.timezone instances, and 'America/Chicago' default. All marked [VISIBLE]. These cases use zones/instances where str(tz) equals tz.tzname(None) (I verified: gold and buggy both return 'Asia/Bangkok', both return '+0500' for get_fixed_timezone(300), both honor the datetime.timezone name), so they do not distinguish the change.\n- tests/db_functions/datetime/test_extract_trunc.py — exercises Extract/Trunc with explicit tzinfo via pytz/zoneinfo named zones (Australia/Melbourne, America/Los_Angeles, America/Sao_Paulo) and datetime.timezone fixed offsets. Marked [VISIBLE]. None uses a reversed-signature 'Etc/GMT-*' name; for the named zones used, gold and buggy return identical results.\n- tests/backends/postgresql/test_operations.py, tests/db_functions/datetime/test_now.py, tests/i18n/tests.py, tests/utils_tests/test_dateparse.py — all [VISIBLE] and not exercising this behavior.\n\nI also confirmed empirically where gold and buggy actually diverge: only for a reversed-signature Etc-style zone (e.g. pytz.timezone('Etc/GMT+5') → gold '_get_timezone_name' returns '-05' from tz.tzname(None), buggy returns 'Etc/GMT+5' from str(tz)). No existing oracle test anywhere I examined (no currently-failing test is even recorded for the buggy program) uses such a zone, consistent with the earlier extractor note that no visible test uses a reversed-signature Etc/GMT name. The observable surfaces that do exercise this function are all embedded in [VISIBLE] files and use inputs on which gold and buggy coincide, so they cannot demonstrate the behavior R0 describes and cannot serve as a witness per the visibility rule.\n\nConclusion: nothing in the oracle genuinely tests R0 (the Etc/GMT-reversed tzname behavior of _get_timezone_name); every relevant test file is [VISIBLE] and non-discriminating. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R0]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R0] (django.utils.timezone._get_timezone_name(tz)): django.utils.timezone._get_timezone_name(tz) returns the result of tz.tzname(None) when that call yields a truthy (non-None, non-empty) string, and otherwise falls back to returning str(tz). — not entailed by S_vis (VIS-1 and VIS-2 document observed output values of _get_timezone_name for a specific reversed-POSIX Etc/GMT tzinfo ('+10' in Django 3.1, raw 'Etc/GMT-10' in 3.2) and the downstream time-zone direction bug, but neither spells out the function-level two-branch contract R0 describes (return tz.tzname(None) when truthy else str(tz)). The evidence is consistent with that contract but does not explicitly pin it down, so entailment is genuinely ambiguous.); confirmed by a synthesized witness: Witness for R0: __get_timezone_name(tz) must return tz.tzname(None) when that returns a truthy string, not str(tz). I defined a custom datetime.tzinfo subclass whose tzname(None) returns 'WEIRD_NAME' but which has no __str__ override (so str(tz) collapses to the default object repr '<...WeirdTZ object at ...>'). Gold's implementation ('return timezone.tzname(None) or str(timezone)') returns 'WEIRD_NAME' (PASSED), while buggy's implementation ('return str(timezone)') returns the object repr (FAILED). Verified real results: gold PASSED, buggy FAILED. This custom-tzinfo scenario with tzname differing from str(tz) is not pinned down in any visible test file (visible test_timezone.py uses pytz named zones, fixed offsets, and datetime.timezone instances whose tzname equals str(tz); db_function tests use real named zones/fixed offsets where gold and buggy coincide), so it genuinely captures the hidden R0 behavior.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "task_id": "django__django-15925",
+  "status": "ok",
+  "duration_seconds": 129.39433254196774,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15925",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On the SQLite backend, removing a field that is an indexed column (e.g. db_index=True on a TextField/IntegerField/SlugField/CharField/URLField) must succeed without raising an OperationalError, including on SQLite versions >= 3.35.5 where can_alter_table_drop_column is enabled (the fast ALTER TABLE ... DROP COLUMN path must not be taken when the column still has an index referencing it).",
+        "subject": "django.db.backends.sqlite3.schema.DatabaseSchemaEditor.remove_field",
+        "hunk_ids": [],
+        "cited_from": "Title: \"RemoveField on indexed fields crashes on SQLite 3.35.5+\"; body: \"sqlite3.OperationalError: error in index web_entity_attribute_d22c3fcb after drop column: no such column: attribute\"; \"The migration fails with the following error ... Applying web.0002_remove_entity_attribute...\"; \"Applying this migration fails for fields which had db_index=True. The example I attached uses a SlugField where db_index defaults to True, setting this parameter to False will apply the migration without this error.\"; \"I reproduced the error with the following field types: TextField, IntegerField, SlugField, CharField, URLField\". Relevant branch in django/db/backends/sqlite3/schema.py remove_field: \"elif (\\n    self.connection.features.can_alter_table_drop_column\\n    # Primary keys, unique fields, and foreign keys are not\\n    # supported in ALTER TABLE DROP COLUMN.\\n    and not field.primary_key\\n    and not field.unique\\n    and not (field.remote_field and field.db_constraint)\\n):\\n    super().remove_field(model, field)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "remove_field must remove an indexed (field.db_index is True), non-primary-key, non-unique, non-FK-constrained concrete field via the table-rebuild path rather than the direct ALTER TABLE DROP COLUMN path even when SQLite reports can_alter_table_drop_column is a supported feature, so that the removal succeeds (on SQLite versions where DROP COLUMN on an index-referenced column would raise an error) and leaves no leftover index over the dropped column.",
+        "subject": "django.db.backends.sqlite3.schema.DatabaseSchemaEditor.remove_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 pins down exactly the same scenario: removing an indexed (db_index) field must succeed without OperationalError even on SQLite >=3.35.5 where can_alter_table_drop_column is enabled, and the fast DROP COLUMN path must not be taken when the column still has an index referencing it (implying removal via table rebuild). The citation quotes the code showing the drop-column branch explicitly excludes primary_key, unique, and db_constraint FK fields, matching S_impl's non-PK/non-unique/non-FK conditions, and the table-rebuild route entails leaving no leftover index over the dropped column."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug location: django/db/backends/sqlite3/schema.py, DatabaseSchemaEditor.remove_field chooses the direct ALTER TABLE DROP COLUMN path via super().remove_field() whenever can_alter_table_drop_column (sqlite >= 3.35.5, see features.py) is true and the field is not a primary key / unique / FK-constrained — with no handling for columns that are still indexed. The reporting issue is django__django-15925."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Schema tests for remove/alter behavior live in tests/schema/tests.py (class SchemaTests); test_remove_field currently asserts that when can_alter_table_drop_column is True the table is NOT rebuilt for the (unindexed) Author.name field."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reporter followed a plain makemigrations flow (add field with db_index=True in one migration, RemoveField in the next), i.e. no db_index-to-False migration precedes the removal, so at RemoveField time a db_index index still exists on the dropped column."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "On SQLite < 3.35.5, can_alter_table_drop_column is False so remove_field already goes through _remake_table (the legacy path that filters the field out of indexes), which is why the report says 4.0.7 worked."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch is confined to django/db/backends/sqlite3/schema.py and touches only the guard clause of remove_field, adding `and not field.db_index` before falling through to super().remove_field (the direct DROP COLUMN branch)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The index being guarded is the non-unique secondary index created because of db_index=True on the field; unique db_index is subsumed by the pre-existing `not field.unique` check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Behavioral consequences converge on a single distinguishable outcome: for an indexed column removal, direct DROP COLUMN would raise a SQLite OperationalError because the column remains referenced by an index; the remake path drops the column and prunes the index together (filters delete_field.name out of indexes in _remake_table)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing exclusion set in this branch (primary_key, unique, and FK db_constraint) is untouched; the added db_index constraint is the only changed condition."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

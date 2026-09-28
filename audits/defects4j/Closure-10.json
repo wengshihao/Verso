@@ -1,0 +1,124 @@
+{
+  "task_id": "Closure-10",
+  "status": "ok",
+  "duration_seconds": 406.81614210099997,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Closure-10",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The peephole constant-folding of `+` chains must leave unchanged a left operand that is a conditional/conditional-or expression whose result is only a number in some, but not all, branches (so that reassociating or folding the trailing numeric `+ 3 + 4` could change string-concatenation vs numeric-add semantics). Concretely, the two foldSame assertions in testIssue821 must pass, so the pass must not modify `var a =(Math.random()>0.5? '1' : 2 ) + 3 + 4;` nor `var a = ((Math.random() ? 0 : 1) || (Math.random()>0.5? '1' : 2 )) + 3 + 4;`.",
+        "subject": "com.google.javascript.jscomp.PeepholeFoldConstants (addition-constant-folding) via com.google.javascript.jscomp.NodeUtil numeric/string-result helpers",
+        "hunk_ids": [],
+        "cited_from": "public void testIssue821() {\n    foldSame(\"var a =(Math.random()>0.5? '1' : 2 ) + 3 + 4;\");\n    foldSame(\"var a = ((Math.random() ? 0 : 1) ||\" +\n             \"(Math.random()>0.5? '1' : 2 )) + 3 + 4;\");\n  }"
+      },
+      {
+        "id": "R2",
+        "statement": "The auxiliary judgment consulted when deciding whether an addition can be folded (numeric-result detection) must treat a HOOK/conditional node whose branches include a string-producing value (e.g. the literal '1') as possibly-returning-a-string, and similarly a conditional-or expression whose right/left operand is such a possibly-string conditional, so that the enclosing `+ numericLiteral + numericLiteral` chain is not mistaken for a pure numeric expression.",
+        "subject": "com.google.javascript.jscomp.NodeUtil (mayBeString/isNumericResult for HOOK and OR/&& aggregate expressions)",
+        "hunk_ids": [],
+        "cited_from": "case Token.ADD:\n        return !mayBeString(n.getFirstChild())\n            && !mayBeString(n.getLastChild());   (NodeUtil.isNumericResultHelper, governing 'isNumericResult')"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "mayBeString(n, recurse=true) reports whether the result of evaluating n may possibly be a string by checking whether ANY (rather than ALL) of n's possible result Nodes may be a string: a HOOK, AND, or OR expression whose result can be a string through at least one of its possible-result branches (recursing its ASSIGN/COMMA last-children accordingly) is classified as possibly-a-string even if another branch yields a non-string result such as a number.",
+        "subject": "NodeUtil.mayBeString(Node, boolean)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The mayBeString(Node, boolean) non-recursive path (recurse=false), which delegates directly to mayBeStringHelper, is left unchanged by the fix.",
+        "subject": "NodeUtil.mayBeString(Node, boolean)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis (testIssue821 foldSame cases + the statement that the numeric-result judgment must treat a HOOK-with-string-branch and an OR containing such a HOOK as possibly-string) pins down the ANY-branch semantics for HOOK and OR that underpin the foldSame assertions. But S_vis never addresses AND-expressions, recursion through ASSIGN/COMMA last-children, or the specific recurse-parameter restructuring that R1 commits to, so the exact recursive method behavior is not fully pinned."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 asserts the mayBeString recurse=false non-recursive path is left unchanged and still delegates to mayBeStringHelper. Neither S_vis entry references a non-recursive path, mayBeStringHelper, or the fact that this code path is unmodified by the fix, so visible evidence provides no ground for this negative structural claim."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "r2NonRecursiveMayBeString",
+      "test_source": "@Test\npublic void r2NonRecursiveMayBeString() throws Exception {\n  com.google.javascript.rhino.Node cond = com.google.javascript.rhino.IR.trueNode();\n  com.google.javascript.rhino.Node strArm = com.google.javascript.rhino.IR.string(\"a\");\n  com.google.javascript.rhino.Node numArm = com.google.javascript.rhino.IR.number(2);\n  com.google.javascript.rhino.Node hook = new com.google.javascript.rhino.Node(\n      com.google.javascript.rhino.Token.HOOK, cond, strArm, numArm);\n  com.google.javascript.rhino.Node add = new com.google.javascript.rhino.Node(\n      com.google.javascript.rhino.Token.ADD, hook, com.google.javascript.rhino.IR.number(3));\n  java.lang.reflect.Method m = com.google.javascript.jscomp.NodeUtil.class\n      .getDeclaredMethod(\"mayBeString\",\n          com.google.javascript.rhino.Node.class, boolean.class);\n  m.setAccessible(true);\n  boolean result = (Boolean) m.invoke(null, add, false);\n  org.junit.Assert.assertTrue(\n      \"mayBeString((c?'a':2)+3, false) should be true but was \" + result,\n      result);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - AssertionError: mayBeString((c?'a':2)+3, false) should be true but was false",
+      "explanation": "The gold source of the fix at the recurse=true call site changed allResultsMatch to anyResultsMatch, leaving the recurse=false branch as `return mayBeStringHelper(n);`. This seemingly makes the recurse=false source line identical in buggy and gold, and the earlier Oracle Search concluded no test can separate them. But that reasoning is incomplete: mayBeString(n, false) -> mayBeStringHelper(n) -> isNumericResult(n) -> isNumericResultHelper(ADD) internally calls the SINGLE-argument mayBeString(child) (which defaults to recurse=true, the changed branch) on the ADD's operands. Therefore an input that reaches that inner recursion becomes observable through the R2 (recurse=false) API surface.\n\nI built `n = ADD((c ? 'a' : 2), 3)`: an ADD whose first operand is a HOOK with one string arm ('a') and one numeric arm (2). For its ADD leaf, mayBeStringHelper asks isNumericResult(n), which checks !mayBeString(HOOK) && !mayBeString(3). On the string/number HOOK arm: gold's anyResultsMatch -> mayBeString(HOOK)=true -> the ADD is deemed possibly-a-string -> mayBeString(n,false)=true; buggy's allResultsMatch -> mayBeString(HOOK)=false (not all arms strings) -> ADD treated as purely numeric -> mayBeString(n,false)=false. Empirically confirmed: the identical test PASSED against gold and FAILED (expected true, got false) against buggy. Because this is a distinctly low-level AST/NodeUtil witness (constructed AST, recurse=false invocation) not pinned by the visible compiler-level folding test testIssue821, it is a genuine discriminating witness for the R2 behavior of mayBeString(Node, boolean)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Test source lives at test/com/google/javascript/jscomp/PeepholeFoldConstantsTest.java; it drives PeepholeConstants via a PeepholeFoldConstants(late) pass wrapped in PeepholeOptimizationsPass inside getProcessor, with CompilerTestCase.testSame/test('input','same output')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix-target class per the issue header is com.google.javascript.jscomp.NodeUtil; PeepholeFoldConstants.java (the pass that does the actual folding and calls NodeUtil helpers) is NOT in the visible tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug scenario is that `(cond ? '1' : 2) + 3 + 4` must not be folded/reassociated, because when the HOOK yields the string '1' the '+' are string concatenations and reassociating to `(cond?...) + 7` would change the result."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "NodeUtil.isNumericResultHelper decides ADD is numeric only when neither operand mayBeString; NodeUtil.mayBeString/mayBeStringHelper rely on isNumericResult/isBooleanResult/isUndefined/isNull, and isNumericResult uses allResultsMatch to descend into HOOK/OR/AND branches."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "mayBeString(n, true) is the recursive variant; mayBeString(n, false) uses mayBeStringHelper directly and is untouched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The helper mayBeStringHelper classifies a node as possibly-a-string iff it is not (isNumericResult && isBooleanResult && isUndefined && isNull) — i.e., unless proven numeric, boolean, undefined, or null."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "anyResultsMatch (which over HOOK/AND/OR uses logical-OR over the possible-result branches) already existed in both revisions and predates this fix; only its call site inside mayBeString(...,recurse=true) changed from allResultsMatch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "isNumericResult/isBooleanResult explicitly recurse with allResultsMatch into HOOK/AND/OR branches; that behavior is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The net observable effect aligns with the surrounding scenario: a '+' whose operand can yield a string via one HOOK arm must not be treated as purely numeric (which would license reassociation/folding that the visible tests check), but the S_impl requirement above is stated purely in terms of mayBeString's return semantics without referencing the folding pass."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 claims the mayBeString(Node, boolean) non-recursive path (recurse=false -> mayBeStringHelper) is left unchanged by the fix. Per the task's implementation notes the fix modified ONLY the recurse=true call site (allResultsMatch -> anyResultsMatch); the recurse=false path is byte-identical semantics in buggy and gold. Therefore no oracle test can distinguish buggy from gold by exercising the recurse=false path: whatever that path returns in buggy it returns in gold, so no test of that behavior can fail-on-buggy/pass-on-gold. Empirically, the only test failing against buggy is PeepholeFoldConstantsTest.testIssue821 — which exercises the recursive HOOK-branch string-detection used to prevent `(cond?'1':2)+3+4` reassociation (R1-type behavior, explicitly excluded by R2), and that file is [VISIBLE] so its content can never serve as a witness. The [HIDDEN] NodeUtilTest.testMayBeString is not failing against buggy and contains only all-numeric-branch/simple cases whose results are identical under both recursion schemes; it does not isolate the recurse=false path's behavior in a way that distinguishes the two programs. No other hidden assertion covers the recurse=false/mayBeStringHelper semantics. Since there is no way to build an execution-confirmed test that passes gold and fails buggy strictly on the recurse=false path, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (NodeUtil.mayBeString(Node, boolean)): The mayBeString(Node, boolean) non-recursive path (recurse=false), which delegates directly to mayBeStringHelper, is left unchanged by the fix. — not entailed by S_vis (R2 asserts the mayBeString recurse=false non-recursive path is left unchanged and still delegates to mayBeStringHelper. Neither S_vis entry references a non-recursive path, mayBeStringHelper, or the fact that this code path is unmodified by the fix, so visible evidence provides no ground for this negative structural claim.); confirmed by a synthesized witness: The gold source of the fix at the recurse=true call site changed allResultsMatch to anyResultsMatch, leaving the recurse=false branch as `return mayBeStringHelper(n);`. This seemingly makes the recurse=false source line identical in buggy and gold, and the earlier Oracle Search concluded no test can separate them. But that reasoning is incomplete: mayBeString(n, false) -> mayBeStringHelper(n) -> isNumericResult(n) -> isNumericResultHelper(ADD) internally calls the SINGLE-argument mayBeString(child) (which defaults to recurse=true, the changed branch) on the ADD's operands. Therefore an input that reaches that inner recursion becomes observable through the R2 (recurse=false) API surface.\n\nI built `n = ADD((c ? 'a' : 2), 3)`: an ADD whose first operand is a HOOK with one string arm ('a') and one numeric arm (2). For its ADD leaf, mayBeStringHelper asks isNumericResult(n), which checks !mayBeString(HOOK) && !mayBeString(3). On the string/number HOOK arm: gold's anyResultsMatch -> mayBeString(HOOK)=true -> the ADD is deemed possibly-a-string -> mayBeString(n,false)=true; buggy's allResultsMatch -> mayBeString(HOOK)=false (not all arms strings) -> ADD treated as purely numeric -> mayBeString(n,false)=false. Empirically confirmed: the identical test PASSED against gold and FAILED (expected true, got false) against buggy. Because this is a distinctly low-level AST/NodeUtil witness (constructed AST, recurse=false invocation) not pinned by the visible compiler-level folding test testIssue821, it is a genuine discriminating witness for the R2 behavior of mayBeString(Node, boolean).",
+    "confidence": "Medium"
+  }
+}

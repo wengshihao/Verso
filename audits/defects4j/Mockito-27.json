@@ -1,0 +1,95 @@
+{
+  "task_id": "Mockito-27",
+  "status": "ok",
+  "duration_seconds": 350.2148284089999,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "Mockito-27",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a mock is created with invocation listeners (withSettings().invocationListeners(...)) and then reset(...) is called on it, the reset must preserve those listeners so that a subsequent call to a method on the mock (e.g. clear()) is still reported to each configured InvocationListener (i.e. its reportInvocation is invoked).",
+        "subject": "org.mockito.internal.util.MockUtil.resetMock / Mockito.reset",
+        "hunk_ids": [],
+        "cited_from": "test ListenersLostOnResetMockTest.java, verbatim:\n\nInvocationListener invocationListener = mock(InvocationListener.class);\n\nList mockedList = mock(List.class, withSettings().invocationListeners(invocationListener));\nreset(mockedList);\n\nmockedList.clear();\n\nverify(invocationListener).reportInvocation(any(MethodInvocationReport.class));"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "s_impl_1",
+        "statement": "Resetting a mock (Mockito.reset(mock)) does not change the default answer the mock was created with: after a reset, an unstubbed method invoked on the mock continues to produce the result dictated by the mock's originally configured answer (e.g. a mock created with RETURNS_MOCKS returns a mock for an object-returning unstubbed method; a mock with RETURNS_DEFAULTS returns null/empty), rather than being degraded to plain RETURNS_DEFAULTS behavior.",
+        "subject": "Mockito.reset / MockUtil.resetMock — default answer retention",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "s_impl_2",
+        "statement": "Resetting a mock that was created with registered invocation listeners (e.g. via withSettings().invocationListeners(...)/verboseLogging()) keeps those listeners active: a method invocation made on the same mock after a reset is still reported to the registered InvocationListener instances instead of the listeners being silently dropped by the reset.",
+        "subject": "Mockito.reset / MockUtil.resetMock — invocation listener retention",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "s_impl_1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 only concerns invocation-listener retention across reset; nothing in S_vis addresses preservation of the mock's configured default answer (RETURNS_MOCKS vs RETURNS_DEFAULTS). No visible evidence pins down default-answer retention on reset."
+      },
+      {
+        "requirement_id": "s_impl_2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 and its cited test exactly describe the behavior: creating a mock with withSettings().invocationListeners(...), calling reset(mock), then invoking a method (clear()) still triggers reportInvocation on the listener. This pins down the same specific requirement."
+      }
+    ],
+    "target_requirement_id": "s_impl_1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement s_impl_1 asserts that the buggy resetMock degrades a mock's configured default answer to plain RETURNS_DEFAULTS after Mockito.reset. I examined both resetMock implementations: gold rebuilds via newMethodInterceptorFilter(oldMockHandler.getMockSettings()) (single-consistent-settings path), while buggy builds the filter from a fresh blank settings hard-wired to RETURNS_DEFAULTS but builds the underlying MockHandler by copying the old handler that still carries the original settings.\n\nI empirically tested the exact requirement scenario (mock created with RETURNS_MOCKS, reset, then call an unstubbed object-returning method and assert non-null) against BOTH programs via run_test. It PASSED on the buggy program just as on gold. I also confirmed a custom default Answer (withSettings().defaultAnswer returning a marker) survives reset in the buggy build. In this particular buggy revision the default answer is *not* degraded on reset — the split settings still resolve unstubbed answers through the copied old MockHandler that retains the original default answer. The genuine regression this hunk fixes manifests only in the dropped InvocationNotifierHandler/listener layer (the ListenersLostOnResetMockTest witness found by the Oracle agent), not in default-answer retention.\n\nBecause no behavior asserting \"answer retained after reset\" can pass on gold while failing on this buggy build (and the reverse direction, asserting degradation, would fail on gold), no genuine witness for s_impl_1 exists. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "resetMock(T mock) is reached only through Mockito.reset(...) -> MockitoCore.reset(...)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Gold resetMock rebuilds the mock callback via newMethodInterceptorFilter(oldMockHandler.getMockSettings()), the same single-settings construction path used by createMock (which wraps the MockHandler in an InvocationNotifierHandler fed from those settings). The buggy version split the state: it built the MockHandler from the old settings but constructed the MethodInterceptorFilter from a fresh blank settings whose default answer was hard-wired to RETURNS_DEFAULTS and wired the raw MockHandler directly, dropping the notifier/listener layer."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "test/org/mockitousage/basicapi/ResetTest.shouldMaintainPreviousDefaultAnswer exists in both revisions and asserts a non-null result after reset on a RETURNS_MOCKS mock."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The specific held-out test driving fix of bug 27 is not in the repo's committed diff set; this extraction derives requirements solely from the behavior the gold hunk guarantees."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [s_impl_1]: I investigated whether the real oracle already contains a test that discriminates default-answer retention across Mockito.reset (requirement s_impl_1).\n\nThe single oracle test currently known to fail against the buggy program is org.mockitousage.bugs.ListenersLostOnResetMockTest::listener. I read and confirmed by re-running it: it passes on gold and fails on buggy (Wanted-but-not-invoked on the invocation listener after reset+mockedList.clear()). But its assertion is entirely about the invocation-listener/notifier layer being preserved through reset — it does not invoke any unstubbed answer path nor assert anything about default answers (it calls a void method clear()). It is therefore a witness for a *different* behavioral claim (listener retention), not for s_impl_1 (default-answer retention).\n\nThe only other reset-related test that exercises default-answer behavior is ResetTest.shouldMaintainPreviousDefaultAnswer (in test/org/mockitousage/basicapi/ResetTest.java, [HIDDEN]): mock created with RETURNS_MOCKS, reset, then assert an unstubbed object-returning method is non-null. I reproduced this method's exact semantics standalone (mock RETURNS_MOCKS -> reset -> assert goto() non-null, as well as a RETURNS_SMART_NULLS variant detecting whether non-default answers survive reset) and ran them against BOTH programs. Both PASSED against the buggy program as well as gold, because the buggy reset in this revision already retains the configured non-default answer after reset; the reset defect here manifests only as the dropped notifier/listener layer. Note also that shouldMaintainPreviousDefaultAnswer was not among the tests reported as failing against buggy.\n\nBecause the buggy version does not actually degrade the default answer on reset, no oracle test can pass on gold while failing on buggy for the default-answer-retention behavior of s_impl_1. I checked the ResetTest file, the directly failing ListenersLostOnResetMockTest, ReturningDefaultValuesTest, StubbingMocksThatAreConfiguredToReturnMocksTest, MockUtilTest and SmartNulls/DeepStubbing-style default-answer tests; none house an assertion that (a) targets default-answer-after-reset and (b) fails on the buggy build. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [s_impl_1]: Requirement s_impl_1 asserts that the buggy resetMock degrades a mock's configured default answer to plain RETURNS_DEFAULTS after Mockito.reset. I examined both resetMock implementations: gold rebuilds via newMethodInterceptorFilter(oldMockHandler.getMockSettings()) (single-consistent-settings path), while buggy builds the filter from a fresh blank settings hard-wired to RETURNS_DEFAULTS but builds the underlying MockHandler by copying the old handler that still carries the original settings.\n\nI empirically tested the exact requirement scenario (mock created with RETURNS_MOCKS, reset, then call an unstubbed object-returning method and assert non-null) against BOTH programs via run_test. It PASSED on the buggy program just as on gold. I also confirmed a custom default Answer (withSettings().defaultAnswer returning a marker) survives reset in the buggy build. In this particular buggy revision the default answer is *not* degraded on reset — the split settings still resolve unstubbed answers through the copied old MockHandler that retains the original default answer. The genuine regression this hunk fixes manifests only in the dropped InvocationNotifierHandler/listener layer (the ListenersLostOnResetMockTest witness found by the Oracle agent), not in default-answer retention.\n\nBecause no behavior asserting \"answer retained after reset\" can pass on gold while failing on this buggy build (and the reverse direction, asserting degradation, would fail on gold), no genuine witness for s_impl_1 exists. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[s_impl_1] (Mockito.reset / MockUtil.resetMock — default answer retention) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement s_impl_1 asserts that the buggy resetMock degrades a mock's configured default answer to plain RETURNS_DEFAULTS after Mockito.reset. I examined both resetMock implementations: gold rebuilds via newMethodInterceptorFilter(oldMockHandler.getMockSettings()) (single-consistent-settings path), while buggy builds the filter from a fresh blank settings hard-wired to RETURNS_DEFAULTS but builds the underlying MockHandler by copying the old handler that still carries the original settings.\n\nI empirically tested the exact requirement scenario (mock created with RETURNS_MOCKS, reset, then call an unstubbed object-returning method and assert non-null) against BOTH programs via run_test. It PASSED on the buggy program just as on gold. I also confirmed a custom default Answer (withSettings().defaultAnswer returning a marker) survives reset in the buggy build. In this particular buggy revision the default answer is *not* degraded on reset — the split settings still resolve unstubbed answers through the copied old MockHandler that retains the original default answer. The genuine regression this hunk fixes manifests only in the dropped InvocationNotifierHandler/listener layer (the ListenersLostOnResetMockTest witness found by the Oracle agent), not in default-answer retention.\n\nBecause no behavior asserting \"answer retained after reset\" can pass on gold while failing on this buggy build (and the reverse direction, asserting degradation, would fail on gold), no genuine witness for s_impl_1 exists. found=false.",
+    "confidence": "Medium"
+  }
+}

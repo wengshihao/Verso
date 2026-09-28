@@ -1,0 +1,86 @@
+{
+  "task_id": "django__django-11951",
+  "status": "ok",
+  "duration_seconds": 73.4700380419381,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11951",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When QuerySet.bulk_create() receives a caller-supplied batch_size, the effective per-query batch size used for inserts must not exceed the backend-compatible maximum batch size; specifically it should be the minimum of the given batch_size and the value returned by ops.bulk_batch_size(fields, objs), exactly as bulk_update() caps its batch_size against the computed max (batch_size = min(batch_size, max_batch_size) if batch_size else max_batch_size). An explicit batch_size must therefore never override the compatibility cap and produce a query larger than the backend allows.",
+        "subject": "QuerySet._batched_insert",
+        "hunk_ids": [],
+        "cited_from": "bulk_create batch_size param overrides the compatible batch size calculation\n... batch_size param overrides compatible batch size calculation. This looks like a bug as bulk_update properly picks the minimum of two:\nhttps://github.com/django/django/blob/stable/2.2.x/django/db/models/query.py#L504\nI suggest using similar\n batch_size = min(batch_size, max_batch_size) if batch_size else max_batch_size\nlogic in bulk_create as well."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When bulk_create is called with a positive batch_size that exceeds the backend's per-batch compatible limit (as returned by the backend's operations.bulk_batch_size for the fields/objects being inserted), bulk_create does not honor the over-large user batch verbatim: the effective insert batch size becomes the backend's limit, so the objects are inserted across multiple validly-sized INSERT statements (and the call succeeds instead of issuing a single over-sized INSERT).",
+        "subject": "QuerySet.bulk_create / QuerySet._batched_insert",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly states that bulk_create's effective per-query batch size must be the minimum of the caller-supplied batch_size and ops.bulk_batch_size(fields, objs), exactly as bulk_update caps it, so an over-large batch_size is never honored verbatim and is clamped to the backend's limit. That directly pins down S_impl's behavior of splitting objects across multiple validly-sized INSERTs and the call succeeding rather than issuing one over-sized INSERT."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code is django/db/models/query.py: bulk_create() calls self._batched_insert() for both the objs_with_pk and objs_without_pk groups; _batched_insert() computes the effective size as `batch_size = (batch_size or max(ops.bulk_batch_size(fields, objs), 1))` and then slices `objs[i:i + batch_size]`. So when batch_size is non-None the backend-compatible bulk_batch_size limit is ignored (.i.e., the bug described), whereas bulk_update() at line ~504 does `batch_size = min(batch_size, max_batch_size) if batch_size else max_batch_size`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ops.bulk_batch_size() (BaseDatabaseOperations.bulk_batch_size, django/db/backends/base/operations.py) returns len(objs) by default but is overridden per-backend (e.g. SQLite caps batches so queries use at most 999 variables)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/ref/models/querysets.txt documents bulk_create's batch_size as follows: \"The ``batch_size`` parameter controls how many objects are created in a single query. The default is to create all objects in one batch, except for SQLite where the default is such that at most 999 variables per query are used.\""
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for bulk_create live in tests/bulk_create/tests.py (BulkCreateTests) with models in tests/bulk_create/models.py; existing tests such as test_explicit_batch_size and test_large_single_field_batch verify rows get inserted across batches but none currently exercise the interaction between a user-supplied batch_size and the backend compatible-batch cap."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to QuerySet._batched_insert in django/db/models/query.py; bulk_create() delegates both its with-pk and without-pk insert groups to this helper, so the fix applies to both paths. bulk_update() already used the min()/max_batch_size idiom, which this patch makes consistent with."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "bulk_create() asserts `batch_size is None or batch_size > 0`, so _batched_insert only ever sees None (default) or a positive user-supplied batch_size; the `else` falsy branch of the new expression corresponds to the None/default case and is behaviorally unchanged from the original."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ops.bulk_batch_size (BaseDatabaseOperations) returns len(objs) by default, but is overridden per-backend (e.g., SQLite) to cap the number of variables per query; thus for backends with no cap the new min(user_batch_size, len(objs)) yields the user batch_size whenever it is smaller than the object count."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Changing the batch size alters the number of INSERT statements executed but does not change which objects get created or the returned objs list, so the only externally observable consequences are count/size of the emitted INSERT queries (e.g., no RHS-after-DUPLICATE_KEY / too-many-variables errors) and resulting row contents."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

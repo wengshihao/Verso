@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-16901",
+  "status": "ok",
+  "duration_seconds": 126.42318412510213,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16901",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "When a query combines conditions via XOR (^) and runs on a backend whose connection.features.supports_logical_xor is False (no native XOR), the generated WHERE must implement odd-parity semantics over the node's children, not exactly-one: a row matches a XOR-connected node with N children iff an odd number of the children are true. Concretely, for a row already matching Q(id=37), the chains Q(id=37)^Q(id=37)^Q(id=37) and Q(id=37)^Q(id=37)^Q(id=37)^Q(id=37)^Q(id=37) must each yield count 1, while Q(id=37)^Q(id=37) and the 4-arg chain yield count 0 — so XOR with more than two arguments must not be treated as 'exactly one of the arguments is true'.",
+        "subject": "django/db/models/sql/where.py WhereNode.as_sql (XOR fallback); Q.__xor__/_combine (django/db/models/query_utils.py, Q children flattening)",
+        "hunk_ids": [],
+        "cited_from": "Issue (verbatim): \"The correct interpretation, and the interpretation of databases natively supporting XOR (e.g. MySQL), is that a ^ b ^ c is true when an odd number of the arguments are true. But Django's fallback interpretation is that a ^ b ^ c is true when exactly one argument is true:\" followed by the trace: \">>> Client.objects.filter(Q(id=37)).count()\\n1\\n>>> Client.objects.filter(Q(id=37) ^ Q(id=37)).count()\\n0\\n>>> Client.objects.filter(Q(id=37) ^ Q(id=37) ^ Q(id=37)).count()\\n0\\n>>> Client.objects.filter(Q(id=37) ^ Q(id=37) ^ Q(id=37) ^ Q(id=37)).count()\\n0\\n>>> Client.objects.filter(Q(id=37) ^ Q(id=37) ^ Q(id=37) ^ Q(id=37) ^ Q(id=37)).count()\\n0\\n(Expected: 1, 0, 1, 0, 1.)\". The current (buggy, exactly-one) fallback is at django/db/models/sql/where.py: \"if self.connector == XOR and not connection.features.supports_logical_xor: ... #   (a OR b OR c OR ...) AND (a + b + c + ...) == 1 ... rhs = Exact(1, rhs_sum)\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "Filtering results produced by the XOR fallback on backends without native logical XOR must agree with the interpretation of databases that natively support XOR (parity), so that an N-term XOR chain matches a row iff an odd number of its child predicates are true regardless of backend (DBs with and without native XOR give the same result sets for the same XOR query).",
+        "subject": "django/db/models/sql/where.py WhereNode.as_sql XOR fallback vs. native-XOR backends",
+        "hunk_ids": [],
+        "cited_from": "Issue (verbatim): \"The correct interpretation, and the interpretation of databases natively supporting XOR (e.g. MySQL), is that a ^ b ^ c is true when an odd number of the arguments are true.\" and \"This was introduced in #29865.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On a database backend whose connection.features.supports_logical_xor is False, a WHERE clause built from a chained XOR (WhereNode with connector XOR) over more than two operands matches a row exactly when an odd number of the operand conditions are true (parity semantics), rather than matching only when exactly one operand is true. In particular, with three or more identical true operands the row now matches (previously it did not, since the old exactly-one semantics made the count of 3 true operands false).",
+        "subject": "django.db.models.sql.where.WhereNode.as_sql (XOR fallback)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For the XOR fallback on a backend lacking native XOR with at most two operands, the emitted predicate still matches a row exactly when an odd number (i.e. exactly one for two operands) of the operand conditions is true; behavior for these arities is unchanged by the patch and remains correct parity.",
+        "subject": "django.db.models.sql.where.WhereNode.as_sql (XOR fallback)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-1 explicitly specifies odd-parity semantics for XOR fallback over >2 children (3- and 5-arg identical-true chains must match), and REQ-2 confirms this parity must agree with native-XOR backends; this directly pins down R1's claim that rows with 3+ true operands now match."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "The parity semantics in REQ-1/REQ-2 (match iff odd number of children true) apply to ≤2 operands too, where odd means exactly one — REQ-1's expected trace confirms a 2-true-operand 2-arg chain yields count 0. This pins R2's ≤2-operand behavior as exactly-one/parity."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The XOR fallback lives in django/db/models/sql/where.py WithinNode.as_sql; the current visible code converts a XOR Node with N children into `(ch1 OR ch2 OR ...) AND (sum of CASE WHEN chi THEN 1 ELSE 0) == 1`, which is exactly-one semantics — the reported bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`connection.features.supports_logical_xor` (django/db/backends/base/features.py, `= False`) gates the fallback; backends without native XOR (e.g. SQLite, PostgreSQL) take that branch, while MySQL overrides it to True and emits native XOR (parity)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Chained `Q(a) ^ Q(b) ^ Q(c)` collapses into a single XOR WhereNode with all children flattened: via Q.__xor__ / Q._combine and Node.add / Q children handling in django/db/models/query_utils.py and django/utils/tree.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing XOR tests in tests/xor_lookups/tests.py (models.Number with `num = 0..9`) exercise `.filter`, negation, `.exclude`, queryset-stage XOR, pk XOR, and empty-IN under XOR, e.g. `test_filter_negated` uses 3-term chains with mixed negated children; however those children yield at most 2 true per cell within the tested range, so parity vs exactly-one are indistinguishable there — none of these tests pins the reported >2-identical-true-terms bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Repository tests live under tests/ (not sources); the XOR scenario model is tests/xor_lookups/models.py, and 'Client' in the issue is the reporter's own app model."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds `from django.db.models.functions import Mod`; the Mod function is consumed by H1's parity change and is not itself an independently observable behavior requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The parity guard `if len(self.children) > 2` means the fallback for 1- and 2-operand XOR is left at the existing `sum == 1` form; for those arities exactly-one and odd-count semantics coincide, so the guard does not create an observable semantic difference there."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The negated flag and AND node wrapping structure of the fallback are preserved unchanged; negated XOR still delegates through the same self.negated handling in as_sql."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only affects the NotImplementation-path branch in WhereNode.as_sql gated on `not connection.features.supports_logical_xor`; backends with native XOR (e.g. MySQL) are unaffected."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

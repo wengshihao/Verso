@@ -1,0 +1,129 @@
+{
+  "task_id": "django__django-16686",
+  "status": "ok",
+  "duration_seconds": 955.4751952500083,
+  "llm_calls": 46,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16686",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a QuerySet that carries annotations (added via annotate(...)) is asked for values() with a keyword that cannot be resolved into a model field (e.g. a misspelled/nonexistent annotation name), the resulting FieldError whose message reads 'Cannot resolve keyword <X> into field. Choices are: ...' MUST list that queryset's annotations among the valid 'Choices are' names, even when the annotations were masked out (not selected) by the values() call.",
+        "subject": "django/db/models/sql/query.py (Query.add_fields / error choice list building for values() keyword resolution)",
+        "hunk_ids": [],
+        "cited_from": "Issue report reproduces: \"Book.objects.annotate(annotation=Value(1)).values(\"annotation_type\")\" producing 'FieldError: Cannot resolve keyword \\'annotation_typo\\' into field. Choices are: age, book, book_contact_set, friends, id, name' and states: \"The resulting FieldError doesn't mention annotation as a valid choice\". Source location: django/db/models/sql/query.py, add_fields(), where the choice list is built as `names = sorted([*get_field_names_from_opts(opts), *self.extra, *self.annotation_select, *self._filtered_relations])` — because `self.annotation_select` only returns annotations in the currently-active mask, and a values() whose selection excludes the annotation clears that mask, the annotation name is absent from the list."
+      },
+      {
+        "id": "R2",
+        "statement": "A call of the form `.annotate(annotation=Value(1)).values(\"<typo-of-annotation>\")` that cannot resolve its value argument as a field should raise a FieldError (i.e., resolution failure / non-zero-affected-query path) rather than succeeding, so that the user is informed the keyword is invalid; the error-report behavior is what the requirement concerns (the name appears among Choices).",
+        "subject": "django/db/models/sql/query.py values() keyword resolution",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"When doing Book.objects.annotate(annotation=Value(1)).values(\"annotation_type\") The resulting FieldError doesn't mention annotation as a valid choice\"; and the quoted error in the report is a FieldError being raised for the unresolved keyword."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When QuerySet.values()/values_list() is given a name that matches an annotation/alias recorded in the query's annotations dict but that is not among the currently selected (unmasked) annotations (e.g. one added with select=False via alias(), or one already masked off by an earlier values() call), the call raises FieldError with message \"Cannot select the '<name>' alias. Use annotate() to promote it.\"",
+        "subject": "Query.set_values (QuerySet.values()/values_list() select of a non-selected annotation/alias)",
+        "hunk_ids": [
+          "H1",
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When QuerySet.values()/values_list() is given a name that is not resolvable as a model field, extra-select, or any annotation, and the queryset currently has at least one selected (unmasked) annotation, a FieldError is raised with message of the form \"Cannot resolve keyword '<name>' into field. Choices are: ...\" in which the Choices list includes those currently-selected annotation aliases (the annotations that this values() selection drops/masks off), instead of omitting them.",
+        "subject": "Query.set_values (QuerySet.values()/values_list() unresolvable field name while an annotation is selected)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only concerns listing annotation names inside the 'Cannot resolve keyword ... Choices are:' resolution FieldError; it contains nothing about the separate 'Cannot select the <alias>. Use annotate() to promote it.' error message or its condition (selecting a valid-but-unselected alias that isn't a resolution miss)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 require that annotate-created aliases (even when masked off by the current values() call) appear among the 'Choices are:' names of the Cannot-resolve-keyword FieldError instead of being omitted, which is exactly the target behavior of S_impl R2."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R1: when QuerySet.values()/values_list() is given a name present in the query's `annotations` dict but absent from the currently-unmasked `annotation_select`, it must raise FieldError \"Cannot select the '<name>' alias. Use annotate() to promote it.\".\n\nI reproduced R1 in the Django test harness (settings configured + django.setup() + annotations app) and ran it against BOTH gold and buggy.\n\nEvery construction that triggers R1 already behaves identically in the buggy and gold code, because the \"Cannot select ... alias. Use annotate() to promote it.\" error existed pre-fix too — in the buggy add_fields() (`elif name in self.annotations: raise FieldError(...)`) — which H1 only MOVED earlier into set_values() (and H0 deleted the now-dead add_fields branch). Concretely, I ran and confirmed gold PASSED == buggy PASSED for:\n  1. `Book.objects.alias(rating_alias=F('rating')-1).values('rating_alias')` — both raise the exact \"Cannot select the 'rating_alias' alias. Use annotate() to promote it.\" FieldError.\n  2. `Book.objects.annotate(total=Count('id')).values('name').values('total')` (annotation masked by the earlier values()) — both raise the exact \"Cannot select the 'total' alias...\" FieldError at the .values('total') call.\nI also tried the only candidate with a plausibly different outcome — naming an alias that collides with a real model field name so that buggy's field resolution in add_fields() would succeed instead of raising — but find impossible: Django forbids aliasing an annotation with a model field name (ValueError \"The annotation 'rating' conflicts with a field on the model\"), so the scenario is not constructible through the public API.\n\nBoth mechanisms (gold set_values branch and buggy add_fields branch) raise the same exception class, at the same call site, with byte-identical message text across each independently reachable R1 path. To be a genuine witness a test must FAIL on the buggy program; every R1-exercising test above PASSES on the buggy program (as they should since the pre-fix already produced the required error on these public-API paths), so no discriminating witness exists for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug-bearing code path: django/db/models/sql/query.py Query.set_values() is invoked by QuerySet.values()/_values(). For a queryset carrying annotations, a non-annotation/extra/field name gets passed to Query.add_fields(), whose `except FieldError` fallback builds the 'Choices are:' message."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In add_fields() the message source is: `names = sorted([*get_field_names_from_opts(opts), *self.extra, *self.annotation_select, *self._filtered_relations])`. It lists only annotation_select, which is mask-filtered (annotation_select returns annotations whose alias is in annotation_select_mask), whereas the actual annotation catalog is self.annotations. After values() runs and its selection does not include the annotation, set_values() clears the annotation mask, so the annotation drops out of annotation_select and is missing from the choice list."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "names_to_path() (query.py) has a parallel `available` list that also uses `*self.annotation_select`, so the same masking issue affects the other 'Cannot resolve keyword' path, although for the reported values() scenario add_fields re-raises the message."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No explicit regression test for this behavior is present in the visible tests; the requirement is grounded in the issue report text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The annotations test Book model (tests/annotations/models.py) offers a Book with related_name='book_contact_set' consistent with the report's field names, but the report's exact model is not defined in the visible code; the phrase and error text in the report remain the authoritative spec."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks live in django/db/models/sql/query.py: H0 edits Query.add_fields(), H1 edits Query.set_values()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "set_values() runs set_extra_mask/set_annotation_mask immediately after classifying the field names and only afterwards calls add_fields(); before this patch an unresolvable field name therefore reached add_fields() only after annotation_select had been cleared, so the generic 'Choices are:' list it built dropped the just-masked annotations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1's new 'elif f in self.annotations' branch targets annotations present in the query but not in annotation_select (added with select=False via the alias() Queryset feature, or masked by an earlier values()). The gold AliasTests.test_values_alias test asserts values('rating_alias')/values_list('rating_alias') on an aliased non-selected annotation raises the 'Cannot select ... Use annotate() to promote it.' FieldError."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes the equivalent 'name in self.annotations' special-case that previously lived in add_fields() (dead code after H1 raises the same error earlier in set_values())."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The else-branch names_to_path() call in H1 is guarded by 'if self.annotation_select:' so it only fires when at least one annotation is currently selected; names_to_path resolves names as fields and raises its FieldError (listing annotation_select) when they cannot be resolved."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1: when QuerySet.values()/values_list() is given a name recorded in the query's self.annotations but not in the currently selected (unmasked) annotation_select, it must raise FieldError \"Cannot select the '<name>' alias. Use annotate() to promote it.\"\n\nI examined the only oracle test that matches this message/mechanism: AliasTests.test_values_alias in tests/annotations/tests.py (asserts alias(rating_alias=...).values('rating_alias') and .values_list('rating_alias') both raise that FieldError), plus the surrounding alias/annotation tests. I also read the whole tests/annotations/tests.py, tests/annotations/models.py, and checked other values/alias locations (expressions/test_queryset_values.py, queries/tests.py, queries/test_query.py, etc.).\n\nTwo independent reasons this cannot be reported as a witness:\n\n1. The file tests/annotations/tests.py containing the canonical test is labeled [VISIBLE] (its assertion content was visible information), so per the auditing rules it can never serve as a witness regardless of how well it matches R1.\n\n2. More decisively, when I ran the actual test_values_alias behavior standalone against BOTH programs, it PASSED against the buggy program as well as gold: Book.objects.alias(rating_alias=F('rating')).values('rating_alias')/values_list('rating_alias') already raises the exact 'Cannot select the ra/rating_alias alias. Use annotate() to promote it.' FieldError in the pre-fix program (the message also arises via the alias-handling in add_fields()). A witness must FAIL on the buggy program; this test does not, so it does not even qualify empirically.\n\nI extended the probe to many chained/masking constructions (annotate -> earlier values() that masks an annotation -> later values(name-of-annotation), alias then another values, mixed alias+field selects, order_by, alias after annotate, values() then values(name), etc.) and confirmed gold and buggy produce byte-identical FieldError/ok outcomes on every construction path relevant to R1; none differentiates the two programs.\n\nSince no test in the oracle both (a) genuinely targets R1 and (b) fails against the buggy program and (c) rests on [HIDDEN] content, I conclude found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Target R1: when QuerySet.values()/values_list() is given a name present in the query's `annotations` dict but absent from the currently-unmasked `annotation_select`, it must raise FieldError \"Cannot select the '<name>' alias. Use annotate() to promote it.\".\n\nI reproduced R1 in the Django test harness (settings configured + django.setup() + annotations app) and ran it against BOTH gold and buggy.\n\nEvery construction that triggers R1 already behaves identically in the buggy and gold code, because the \"Cannot select ... alias. Use annotate() to promote it.\" error existed pre-fix too — in the buggy add_fields() (`elif name in self.annotations: raise FieldError(...)`) — which H1 only MOVED earlier into set_values() (and H0 deleted the now-dead add_fields branch). Concretely, I ran and confirmed gold PASSED == buggy PASSED for:\n  1. `Book.objects.alias(rating_alias=F('rating')-1).values('rating_alias')` — both raise the exact \"Cannot select the 'rating_alias' alias. Use annotate() to promote it.\" FieldError.\n  2. `Book.objects.annotate(total=Count('id')).values('name').values('total')` (annotation masked by the earlier values()) — both raise the exact \"Cannot select the 'total' alias...\" FieldError at the .values('total') call.\nI also tried the only candidate with a plausibly different outcome — naming an alias that collides with a real model field name so that buggy's field resolution in add_fields() would succeed instead of raising — but find impossible: Django forbids aliasing an annotation with a model field name (ValueError \"The annotation 'rating' conflicts with a field on the model\"), so the scenario is not constructible through the public API.\n\nBoth mechanisms (gold set_values branch and buggy add_fields branch) raise the same exception class, at the same call site, with byte-identical message text across each independently reachable R1 path. To be a genuine witness a test must FAIL on the buggy program; every R1-exercising test above PASSES on the buggy program (as they should since the pre-fix already produced the required error on these public-API paths), so no discriminating witness exists for R1."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (Query.set_values (QuerySet.values()/values_list() select of a non-selected annotation/alias)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R1: when QuerySet.values()/values_list() is given a name present in the query's `annotations` dict but absent from the currently-unmasked `annotation_select`, it must raise FieldError \"Cannot select the '<name>' alias. Use annotate() to promote it.\".\n\nI reproduced R1 in the Django test harness (settings configured + django.setup() + annotations app) and ran it against BOTH gold and buggy.\n\nEvery construction that triggers R1 already behaves identically in the buggy and gold code, because the \"Cannot select ... alias. Use annotate() to promote it.\" error existed pre-fix too — in the buggy add_fields() (`elif name in self.annotations: raise FieldError(...)`) — which H1 only MOVED earlier into set_values() (and H0 deleted the now-dead add_fields branch). Concretely, I ran and confirmed gold PASSED == buggy PASSED for:\n  1. `Book.objects.alias(rating_alias=F('rating')-1).values('rating_alias')` — both raise the exact \"Cannot select the 'rating_alias' alias. Use annotate() to promote it.\" FieldError.\n  2. `Book.objects.annotate(total=Count('id')).values('name').values('total')` (annotation masked by the earlier values()) — both raise the exact \"Cannot select the 'total' alias...\" FieldError at the .values('total') call.\nI also tried the only candidate with a plausibly different outcome — naming an alias that collides with a real model field name so that buggy's field resolution in add_fields() would succeed instead of raising — but find impossible: Django forbids aliasing an annotation with a model field name (ValueError \"The annotation 'rating' conflicts with a field on the model\"), so the scenario is not constructible through the public API.\n\nBoth mechanisms (gold set_values branch and buggy add_fields branch) raise the same exception class, at the same call site, with byte-identical message text across each independently reachable R1 path. To be a genuine witness a test must FAIL on the buggy program; every R1-exercising test above PASSES on the buggy program (as they should since the pre-fix already produced the required error on these public-API paths), so no discriminating witness exists for R1.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-13794",
+  "status": "ok",
+  "duration_seconds": 455.76512383297086,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13794",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The 'add' template filter must return the correctly concatenated string (not the empty string) when one operand is a plain str and the other is a lazy (str-delegating Promise/__proxy__, e.g. from gettext_lazy/lazystr) such that the two cannot both be coerced to int; concatenating them must not be swallowed by the except-Exception fallback.",
+        "subject": "django.template.defaultfilters.add",
+        "hunk_ids": [],
+        "cited_from": "Issue title/body: \"add filter is unable to concatenate strings with lazy string\" ... \"If you try to concatenate a string with a lazy string with the add template filter, the result is always the empty string because the add filter generates an exception (TypeError: can only concatenate str (not \\\"__proxy__\\\") to str).\"; implementation in django/template/defaultfilters.py: \"try:\\n    return value + arg\\nexcept Exception:\\n    return ''\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a lazy proxy value appears on the RIGHT-hand side of the addition operator (evaluated as ``<other> + <lazy_proxy>``, e.g. ``'foo' + some_lazy_str``), the operation's result is ``<other> + <cast concrete value of the lazy proxy>`` (including what that concrete result type's ``__add__`` would do, such as concatenating or raising as appropriate) rather than raising a TypeError.",
+        "subject": "django.utils.functional.lazy.__proxy__.__radd__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a lazy proxy value appears on the LEFT-hand side of the addition operator (evaluated as ``<lazy_proxy> + <other>``), the lazy proxy is forced to its concrete value and the operation's result is ``<cast concrete value> + <other>`` (delegating to the concrete value's ``__add__``) rather than raising a TypeError.",
+        "subject": "django.utils.functional.lazy.__proxy__.__add__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The S_vis entry describes exactly the lazy-on-right scenario: the add filter's `value + arg` with a plain str `value` and lazy proxy `arg` must yield the concatenated string (via the proxy's __radd__ delegating to the concrete value) rather than raising TypeError/returning empty. This pins down behavior into which `__radd__` must fit."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis concerns the add filter where the lazy proxy appears as the second operand (`value + arg`), i.e. the lazy-on-right case. Nothing in the visible evidence specifies that a lazy proxy on the LEFT of addition (`lazy + other`) must force to concrete and delegate; that orientation is not clearly covered."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_lazy_proxy_lhs_add_radd_companion",
+      "test_source": "from django.utils.functional import lazy\n\n\nclass Brace(object):\n    def __radd__(self, left):\n        return 'RADDbridge:' + str(left)\n\n\ndef test_lazy_proxy_lhs_add_radd_companion():\n    # R2: a lazy proxy on the LEFT of '+' must force to its concrete value\n    # and perform a real binary addition (delegating to the concrete value's\n    # __add__ / the other operand's __radd__) rather than raise TypeError.\n    ly = lazy(lambda: 'Answer', str)()\n    assert ly + Brace() == 'RADDbridge:Answer'\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (TypeError: must be str, not Brace at django/utils/functional.py __wrapper__)",
+      "explanation": "The gold fix adds an explicit `__proxy__.__add__` in django/utils/functional.py that returns `self.__cast() + other`. When a lazy proxy (produced by `lazy(func, str)`) appears on the LEFT of `+`, Python must perform a real binary addition against the concrete value, including the normal fallback to the right operand's `__radd__` for types that implement it. In the pre-fix (buggy) code the proxy had no explicit __add__, so the generic __prepare_class__ dynamically installed a wrapper that calls `getattr(str.__add__)` directly on the raw concrete value with the RAW other operand; that raises `TypeError: must be str, not Brace` instead of letting normal binary-op dispatch reach the operand's __radd__.\n\nThe witness places a lazy str proxy on the LEFT of `+` and adds a `Brace` object whose `__radd__` reflects/conjoins. Gold delegates through `self.__cast() + other`, hitting Brace.__radd__ and returning 'RADDbridge:Answer' (test PASSES). Buggy raises TypeError in functional.py __wrapper__ (test FAILS). This directly exercises requirement R2 (proxy on the left-hand side of the addition operator is forced and the operation delegated rather than raising TypeError), and is not already pinned by the visible add/test_functional suites (R1's visible requirements concern the proxy on the RIGHT and are insufficient for this target, as noted).\n\nExecution confirmed: gold -> PASSED; buggy -> FAILED with the reported TypeError."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in django/template/defaultfilters.py, filter 'add', whose int-coercion-then-'value + arg' fallback ends in 'except Exception: return ''', so a TypeError raised by str.__add__ against a lazy __proxy__ yields the empty string."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Lazy strings are produced by django.utils.translation.gettext_lazy / django.utils.functional.lazy(str,...), whose generated __proxy__ class subclasses Promise (django/utils/functional.py) and is not a str subclass, hence str + proxy raises TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/ref/templates/builtins.txt documents add: \"This filter will first try to coerce both values to integers. If this fails, it'll attempt to add the values together anyway. This will work on some data types (strings, list, etc.) and fail on others. If it fails, the result will be an empty string.\""
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing string/list/tuple concatenation coverage lives in tests/template_tests/filter_tests/test_add.py (test_add04, test_add05, test_add06); no lazy/translation test for add exists there presently."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Django's keep_lazy/keep_lazy_text machinery (django/utils/functional.py) is the general mechanism by which functions accept lazy-string arguments transparently."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to the __proxy__ class created in the closure of django.utils.functional.lazy(); both new magic methods (__add__, __radd__) delegate via __cast() so that adding forces evaluation to the concrete resultclass value."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "These two methods are defined for every __proxy__ regardless of which resultclass, but they only meaningfully succeed when the wrapped func's concrete result type supports the + operator (e.g. str)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before this patch __proxy__ had no __add__/__radd__, so `add` template filter's concatenation fallback with a lazy argument produced the empty string (documented in task notes)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the real oracle's test suite for any test that enforces R2: the lazy __proxy__ being on the LEFT-hand side of `+` is forced to its concrete value so `<proxy> + <other>` yields `<cast> + <other>` instead of raising TypeError.\n\nCandidates examined:\n- tests/utils_tests/test_functional.py — the canonical home for lazy() behavior in this suite. EXHAUSTIVELY read (full content shown): it tests lazy construction, repr, equality, classproperty, cached_property — there is NO test performing `lazy(...) + something` (proxy on LHS of +), nor any assertion that addition forces/evaluates to the cast concrete value.\n- tests/utils_tests/test_lazyobject.py ([VISIBLE]) — covers LazyObject/SimpleLazyObject attribute/index/iteration/comparison behaviors; no `+` operator-on-LHS test.\n- tests/template_tests/filter_tests/test_add.py ([VISIBLE]) — the add-filter tests (add01–add07, test_add). test_add04/05/06 concatenate str/list/tuple but all with plain (non-lazy) operands; no lazy/gettext_lazy value ever appears on the LHS of the concatenation, so nothing there exercises the new __add__/force path.\n- tests/i18n/tests.py, tests/template_tests/syntax_tests/i18n/test_filters.py, test_translate.py, test_underscore_syntax.py ([VISIBLE]) — exercise lazy strings through template rendering/% formatting, but never through `+` with the lazy proxy as the LHS operand.\n\nEvery file read is labeled [VISIBLE], and none of them contains an assertion that the lazy proxy supports `+` on its left (i.e. that `<lazy> + <x>` evaluates to `<cast> + <x>`). Since the fix under audit (adding __add__/__radd__ to the __proxy__ generated class in django/utils/functional.py's lazy()) is a NEW capability not previously present in Django, and the earlier task notes already record that no lazy/add concat test existed in test_add.py and no __add__ test exists in test_functional.py, the oracle appears to contain no pre-existing test asserting this specific R2 behavior. Also consistent with \"tests currently failing against the buggy program: none recorded\". I therefore found no genuine witness and report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.utils.functional.lazy.__proxy__.__add__): When a lazy proxy value appears on the LEFT-hand side of the addition operator (evaluated as ``<lazy_proxy> + <other>``), the lazy proxy is forced to its concrete value and the operation's result is ``<cast concrete value> + <other>`` (delegating to the concrete value's ``__add__``) rather than raising a TypeError. — not entailed by S_vis (S_vis concerns the add filter where the lazy proxy appears as the second operand (`value + arg`), i.e. the lazy-on-right case. Nothing in the visible evidence specifies that a lazy proxy on the LEFT of addition (`lazy + other`) must force to concrete and delegate; that orientation is not clearly covered.); confirmed by a synthesized witness: The gold fix adds an explicit `__proxy__.__add__` in django/utils/functional.py that returns `self.__cast() + other`. When a lazy proxy (produced by `lazy(func, str)`) appears on the LEFT of `+`, Python must perform a real binary addition against the concrete value, including the normal fallback to the right operand's `__radd__` for types that implement it. In the pre-fix (buggy) code the proxy had no explicit __add__, so the generic __prepare_class__ dynamically installed a wrapper that calls `getattr(str.__add__)` directly on the raw concrete value with the RAW other operand; that raises `TypeError: must be str, not Brace` instead of letting normal binary-op dispatch reach the operand's __radd__.\n\nThe witness places a lazy str proxy on the LEFT of `+` and adds a `Brace` object whose `__radd__` reflects/conjoins. Gold delegates through `self.__cast() + other`, hitting Brace.__radd__ and returning 'RADDbridge:Answer' (test PASSES). Buggy raises TypeError in functional.py __wrapper__ (test FAILS). This directly exercises requirement R2 (proxy on the left-hand side of the addition operator is forced and the operation delegated rather than raising TypeError), and is not already pinned by the visible add/test_functional suites (R1's visible requirements concern the proxy on the RIGHT and are insufficient for this target, as noted).\n\nExecution confirmed: gold -> PASSED; buggy -> FAILED with the reported TypeError.",
+    "confidence": "Medium"
+  }
+}

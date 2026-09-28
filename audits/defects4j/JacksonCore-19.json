@@ -1,0 +1,108 @@
+{
+  "task_id": "JacksonCore-19",
+  "status": "ok",
+  "duration_seconds": 66.60061065599984,
+  "llm_calls": 7,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-19",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When UTF8StreamJsonParser (a JsonParser over a UTF-8 byte-stream, e.g. created via JsonFactory.createParser(ByteArrayInputStream)) parses a standalone JSON floating-point number literal made of exactly 200 '1' characters followed by \".0\" (201 digits total), calling nextToken() must not throw an ArrayIndexOutOfBoundsException; the first nextToken() must return JsonToken.VALUE_NUMBER_FLOAT, getText() must equal the entire literal text, and the following nextToken() must return null (clean end of input).",
+        "subject": "UTF8StreamJsonParser.nextToken/_parseFloat",
+        "hunk_ids": [],
+        "cited_from": "TestNumericValues.testLongerFloatingPoint: \"public void testLongerFloatingPoint() throws Exception { StringBuilder input = new StringBuilder(); for (int i = 1; i < 201; i++) { input.append(1); } input.append(\".0\"); final String DOC = input.toString(); ... p = FACTORY.createParser(new ByteArrayInputStream(DOC.getBytes(\"UTF-8\"))); _testLongerFloat(p, DOC); p.close(); }\" and \"_testLongerFloat\": \"assertEquals(text, p.getText()); assertNull(p.nextToken());\". Issue: \"Produces: Exception in thread \\\"main\\\" java.lang.ArrayIndexOutOfBoundsException: 200 at com.fasterxml.jackson.core.json.UTF8StreamJsonParser._parseFloat(UTF8StreamJsonParser.java:1576) ... when attempting to parse fractional number that has exactly 200 numbers in the decimal part\""
+      },
+      {
+        "id": "R2",
+        "statement": "When ReaderBasedJsonParser (a JsonParser over a java.io.Reader, e.g. created via JsonFactory.createParser(StringReader)) parses a standalone JSON floating-point number literal made of exactly 200 '1' characters followed by \".0\", calling nextToken() must not throw an ArrayIndexOutOfBoundsException; the first nextToken() must return JsonToken.VALUE_NUMBER_FLOAT, getText() must equal the entire literal text, and the following nextToken() must return null (clean end of input).",
+        "subject": "ReaderBasedJsonParser.nextToken/_parseNumber2/_parseFloat",
+        "hunk_ids": [],
+        "cited_from": "TestNumericValues.testLongerFloatingPoint: \"// test out with both Reader and ByteArrayInputStream ... p = FACTORY.createParser(new StringReader(DOC)); _testLongerFloat(p, DOC); p.close();\" and \"_testLongerFloat\": \"assertToken(JsonToken.VALUE_NUMBER_FLOAT, p.nextToken()); assertEquals(text, p.getText()); assertNull(p.nextToken());\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When parsing a JSON number through the slow path and a fractional decimal point is reached at the moment the current TextBuffer output segment is already full, ReaderBasedJsonParser rolls over to a fresh text segment before writing that '.' character, so the input parses successfully into a VALUE_NUMBER_FLOAT token with correct token text rather than throwing an ArrayIndexOutOfBoundsException.",
+        "subject": "ReaderBasedJsonParser._parseNumber2 / Reader-based number parsing",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When parsing a JSON number with a fractional part and a fractional decimal point is reached at the moment the current TextBuffer output segment is already full, UTF8StreamJsonParser rolls over to a fresh text segment before writing that '.' character, so the input parses successfully into a VALUE_NUMBER_FLOAT token with correct token text rather than throwing an ArrayIndexOutOfBoundsException.",
+        "subject": "UTF8StreamJsonParser._parseFloat / byte-stream-based number parsing",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 tests ReaderBasedJsonParser with a 200x'1'+'.0' literal, which places the fractional '.' exactly at a full TextBuffer-segment boundary; it requires no AIOOBE, a VALUE_NUMBER_FLOAT token, and getText equal to the entire literal, pinning the rollover-to-fresh-segment behavior S_impl R1 describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 runs the identical long-fractional input through UTF8StreamJsonParser and its issue-report citation explicitly names _parseFloat throwing AIOOBE at index 200; the required successful float parse with full literal text pins the same rollover behavior S_impl R2 commits to."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in src/test/java/com/fasterxml/jackson/core/json/TestNumericValues.java (does not extend a JUnit class; plain assertToken/assertEquals helpers from com.fasterxml.jackson.core.BaseTest)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Parser implementations: UTF8StreamJsonParser (byte-stream input) and ReaderBasedJsonParser (Reader input), both extending ParserBase which holds shared number-parsing state (_intLength/_fractLength/_expLength, _numberNegative, NUM-type flags)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The regression test for this very bug (testLongerFloatingPoint, tagged [core#317]) already exists in the visible test file, exercising the exact 200-one-digits then '.0' input on both the StringReader and ByteArrayInputStream parse paths."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Related prior fixes referenced by both the issue and neighboring tests cover buffer-boundary number splitting (issues #157/#160, tests testLongNumbers/testLongNumbers2/testBigNumbers)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both parsers accumulate the textual representation into a shared TextBuffer (_textBuffer) and defer actual numeric conversion; JsonToken.VALUE_NUMBER_FLOAT and correct getText() are reset via ParserBase.resetFloat."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks guard exactly one write — the fractional decimal point ('INT_PERIOD'/'.') character in the numeric-text accumulation — before outBuf[outPtr++]; the fractional and exponent digit writes in both modified methods already contained the 'outPtr >= outBuf.length -> finishCurrentSegment + outPtr=0' rollover before this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is located in ReaderBasedJsonParser._parseNumber2 (invoked when a number is split across input buffer boundary or the integer-part output exceeded the current segment); H1 is located in UTF8StreamJsonParser._parseFloat (reached from that class's _parseNumber2 when a '.'/'e'/'E' termination is seen)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

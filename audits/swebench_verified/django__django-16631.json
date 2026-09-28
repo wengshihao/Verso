@@ -1,0 +1,166 @@
+{
+  "task_id": "django__django-16631",
+  "status": "ok",
+  "duration_seconds": 674.3067782910075,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16631",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "After rotating settings.SECRET_KEY and placing the previous key at the beginning of settings.SECRET_KEY_FALLBACKS, an already-established authenticated session whose stored auth hash (HASH_SESSION_KEY) was computed (via get_session_auth_hash) under that now-old key must continue to verify successfully when the user's password is unchanged, so that session verification in get_user() does not flush/log the user out.",
+        "subject": "django.contrib.auth session authentication hash verification (AbstractBaseUser.get_session_auth_hash / django.contrib.auth.get_user / login)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I recently rotated my secret key, made the old one available in SECRET_KEY_FALLBACKS and I'm pretty sure everyone on our site is logged out now.\" ... \"the salted_hmac function uses the SECRET_KEY by default and the AbstractBaseUser.get_session_auth_hash method does not call salted_hmac with a value for the secret keyword argument.\" And settings docs: \"Then remove the old values from the end of the SECRET_KEY_FALLBACKS when you are ready to expire the sessions, password reset tokens, and so on, that make use of them.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When the secret key under which a stored session auth hash was produced is neither the current settings.SECRET_KEY nor contained in settings.SECRET_KEY_FALLBACKS, that session auth hash must fail verification, causing the session to be flushed (the user logged out).",
+        "subject": "django.contrib.auth session authentication hash verification (AbstractBaseUser.get_session_auth_hash / django.contrib.auth.get_user / login)",
+        "hunk_ids": [],
+        "cited_from": "SECRET_KEY doc: \"When a secret key is no longer set as SECRET_KEY or contained within SECRET_KEY_FALLBACKS all of the above will be invalidated.\" (where 'the above' includes 'All sessions ... if you are using ... the default ... get_session_auth_hash()')."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "AbstractBaseUser.get_session_auth_fallback_hash() is a generator that, for each entry of settings.SECRET_KEY_FALLBACKS in order, yields a fallback session-auth-hash computed from the user's password field using that fallback secret as the HMAC secret (i.e., it yields len(settings.SECRET_KEY_FALLBACKS) values, each a distinct fallback-secret-derived hash).",
+        "subject": "django.contrib.auth.models.AbstractBaseUser.get_session_auth_fallback_hash",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In django.contrib.auth.get_user, when the session's stored _auth_user_hash does not constant-time-match the user's current-session-auth-hash (derived from settings.SECRET_KEY) but does constant-time-match a hash produced by get_session_auth_fallback_hash() for some secret in settings.SECRET_KEY_FALLBACKS, the session key is cycled (request.session.cycle_key()), request.session['_auth_user_hash'] is set to the user's current-session-auth-hash (derived from the current SECRET_KEY), and the user is kept authenticated (returned from get_user rather than being logged out).",
+        "subject": "django.contrib.auth.get_user",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "In django.contrib.auth.get_user, when the stored _auth_user_hash is absent or matches neither the user's current-session-auth-hash nor any fallback-secret hash from get_session_auth_fallback_hash(), the session is flushed and the user is logged out (get_user returns AnonymousUser).",
+        "subject": "django.contrib.auth.get_user",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "AbstractBaseUser.get_session_auth_hash() continues to return the session-auth-hash computed with the current settings.SECRET_KEY as the secret (the same value as before the change), so a session whose stored hash verifies against the current secret is unchanged by the fallback logic.",
+        "subject": "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes the outcome that old-key sessions keep verifying when the key is in SECRET_KEY_FALLBACKS, but never mentions a new get_session_auth_fallback_hash generator method, its generator nature, ordering over FALLBACKS, or per-fallback distinct hashes. This naming and behavior is a concrete patch design not derivable from the visible outcome/documents."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins down the outcome that a fallback-verifying session keeps the user authenticated (not flushed/logged out), matching part of R2. But the mechanism branches of R2 (request.session.cycle_key() and reassigning _auth_user_hash to the current-secret hash) are implementation specifics never mentioned in the visible issue/doc evidence, so the full compound behavior is not pinned down."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 directly states that when a stored session auth hash matches neither the current SECRET_KEY nor any entry of SECRET_KEY_FALLBACKS, verification fails and the session is flushed (user logged out). That is the same specific behavior R3 commits to for the no-match/absent case."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis focuses exclusively on old-key/fallback sessions and never asserts anything about get_session_auth_hash still returning the current-SECRET_KEY-derived value unchanged after the fix. The citation notes the method currently uses the default SECRET_KEY, but no visible statement pins down that this current-key behavior remains unmodified, so whether the patch leaves it intact is ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_get_session_auth_fallback_hash",
+      "test_source": "import types\nfrom django.conf import settings\n\nsettings.configure(\n    DEBUG=True,\n    SECRET_KEY=\"top-secret-key\",\n    SECRET_KEY_FALLBACKS=[],\n    INSTALLED_APPS=[\n        \"django.contrib.auth\",\n        \"django.contrib.contenttypes\",\n        \"django.contrib.sessions\",\n    ],\n    DATABASES={\n        \"default\": {\n            \"ENGINE\": \"django.db.backends.sqlite3\",\n            \"NAME\": \":memory:\",\n        }\n    },\n    AUTH_USER_MODEL=\"auth.User\",\n)\nimport django\ndjango.setup()\n\nfrom django.contrib.auth.models import User\nfrom django.test import override_settings\nfrom django.utils.crypto import salted_hmac\n\ndef test_get_session_auth_fallback_hash():\n    fallbacks = [\"fallback-abc\", \"fallback-def\", \"fallback-ghi\"]\n    user = User(password=\"shrimp-secret\")\n    with override_settings(SECRET_KEY_FALLBACKS=fallbacks):\n        produced = list(user.get_session_auth_fallback_hash())\n    key_salt = \"django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash\"\n    expected = [\n        salted_hmac(key_salt, \"shrimp-secret\", secret=fb, algorithm=\"sha256\").hexdigest()\n        for fb in fallbacks\n    ]\n    assert produced == expected\n    assert isinstance(user.get_session_auth_fallback_hash(), types.GeneratorType)",
+      "gold_result": "PASSED — gold yields a generator whose materialized values equal the three per-fallback salted_hmac hexdigests and len equals len(SECRET_KEY_FALLBACKS).",
+      "buggy_result": "FAILED — AttributeError: 'User' object has no attribute 'get_session_auth_fallback_hash' (method absent on buggy).",
+      "explanation": "R1 requires AbstractBaseUser.get_session_auth_fallback_hash() to be a generator that, for each entry of settings.SECRET_KEY_FALLBACKS in order, yields a salted_hmac(key_salt, password, secret=fallback, algorithm='sha256') hexdigest. The buggy (pre-fix) program has no such method at all — it only has get_session_auth_hash computed from the default SECRET_KEY. My witness sets three distinct SECRET_KEY_FALLBACKS via override_settings, creates a concrete auth.User with a fixed password field, materializes the generator, and asserts (a) it is a genuine Python generator object, and (b) its ordered yielded values exactly equal independently computed salted_hmac hexdigests keyed with each fallback secret (one per fallback, matching length). Execution results: PASS on gold (method exists, yields the three per-fallback hexdigests) and FAIL on buggy (AttributeError: 'User' object has no attribute 'get_session_auth_fallback_hash'). This behavior is not pinned down by any visible test/content: the buggy source and the entire visible test-suite (auth test_models, auth_backends, sessions_tests, tokens) never call get_session_auth_fallback_hash or rotate SECRET_KEY_FALLBACKS against the session-auth-hash method — the closest visible analog (PasswordResetTokenGenerator.check_token rotation) is a different mechanism. So the witness encodes a genuinely hidden behavioral fact."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "django.contrib.sessions.session auth flow: login() in django/contrib/auth/__init__.py stores user.get_session_auth_hash() under HASH_SESSION_KEY ('_auth_user_hash'); get_user() recomputes user.get_session_auth_hash() and constant_time_compares it against the stored value, flushing the session on mismatch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AbstractBaseUser.get_session_auth_hash() (django/contrib/auth/base_user.py) calls salted_hmac(key_salt, self.password, algorithm='sha256') with no secret argument, so django/utils/crypto.py's salted_hmac defaults secret to settings.SECRET_KEY; no fallback keys are consulted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "By contrast, PasswordResetTokenGenerator (django/contrib/auth/tokens.py) already iterates [self.secret, *self.secret_fallbacks] when check_token verifies, and django.core.signing.Signer.unsign iterates [self.key, *self.fallback_keys]; Signer.fallback_keys defaults to settings.SECRET_KEY_FALLBACKS."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "settings docs (docs/ref/settings.txt) for SECRET_KEY explicitly list 'All sessions ... if you are using ... the default AbstractBaseUser.get_session_auth_hash()' among its uses, and describe SECRET_KEY_FALLBACKS as enabling key rotation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs used for rotation quotes are in docs/ref/settings.txt under the SECRET_KEY and SECRET_KEY_FALLBACKS sections."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 only adds `from django.conf import settings` to base_user.py; it produces no observable behavior by itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_session_auth_fallback_hash() is a lazy generator (not a list); the code in get_user self-limits iteration via any()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The refactored structure in H0 (setting session_hash_verified rather than short-circuiting) preserves the original semantics: empty stored hash -> not verified."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_user always calls user.get_session_auth_hash() for the 'current' hash (delegates with secret=None -> SECRET_KEY), and session_auth_hash in the migration branch is that current-key-derived hash."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The no-match flush/logout path (R3) existed before the patch; the patch does not alter that case, but its presence still delimits the new rotation behavior in the same branch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the real oracle's auth/session test corpus for any test that genuinely tests R1 (that AbstractBaseUser.get_session_auth_fallback_hash() is a generator yielding, for each entry of settings.SECRET_KEY_FALLBACKS in order, a salted_hmac of the user's password field keyed with that fallback secret — len(SECRET_KEY_FALLBACKS) distinct values).\n\nFiles examined: tests/auth_tests/test_models.py (the natural unit-test home for an AbstractBaseUser method — contains AbstractBaseUserTests/AbstractUserTestCase but has NO test of get_session_auth_hash or get_session_auth_fallback_hash), tests/auth_tests/test_basic.py, tests/auth_tests/test_views.py (SessionAuthenticationTests cover password-change/session-hash invalidation but never rotate SECRET_KEY / don't set SECRET_KEY_FALLBACKS), tests/auth_tests/test_signals.py, tests/auth_tests/test_forms.py, tests/auth_tests/test_migrations.py, tests/auth_tests/test_tokens.py (its test_check_token_secret_key_fallbacks exercises PasswordResetTokenGenerator.check_token's own secret_fallbacks list — a different method/mechanism, and [VISIBLE]), tests/auth_tests/test_hashers.py, tests/auth_tests/test_auth_backends.py (exercises get_user but with no fallback/rotation assertions), tests/auth_tests/test_handlers.py, and tests/sessions_tests/tests.py.\n\nAll are labelled [VISIBLE], and none of them asserts the generator's fallback-hashing behavior. Consistent with this, \"Tests currently failing against the buggy program\" is recorded as (none). The pre-existing oracle test-suite predates this feature and contains no test that passes against gold yet fails against buggy for R1's specific behavior — the closest visible analogues (token account-rotation) concern a different requirement. Therefore no genuine oracle witness (and in particular no [HIDDEN]-content witness) exists for R1; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.contrib.auth.models.AbstractBaseUser.get_session_auth_fallback_hash): AbstractBaseUser.get_session_auth_fallback_hash() is a generator that, for each entry of settings.SECRET_KEY_FALLBACKS in order, yields a fallback session-auth-hash computed from the user's password field using that fallback secret as the HMAC secret (i.e., it yields len(settings.SECRET_KEY_FALLBACKS) values, each a distinct fallback-secret-derived hash). — not entailed by S_vis (S_vis describes the outcome that old-key sessions keep verifying when the key is in SECRET_KEY_FALLBACKS, but never mentions a new get_session_auth_fallback_hash generator method, its generator nature, ordering over FALLBACKS, or per-fallback distinct hashes. This naming and behavior is a concrete patch design not derivable from the visible outcome/documents.); confirmed by a synthesized witness: R1 requires AbstractBaseUser.get_session_auth_fallback_hash() to be a generator that, for each entry of settings.SECRET_KEY_FALLBACKS in order, yields a salted_hmac(key_salt, password, secret=fallback, algorithm='sha256') hexdigest. The buggy (pre-fix) program has no such method at all — it only has get_session_auth_hash computed from the default SECRET_KEY. My witness sets three distinct SECRET_KEY_FALLBACKS via override_settings, creates a concrete auth.User with a fixed password field, materializes the generator, and asserts (a) it is a genuine Python generator object, and (b) its ordered yielded values exactly equal independently computed salted_hmac hexdigests keyed with each fallback secret (one per fallback, matching length). Execution results: PASS on gold (method exists, yields the three per-fallback hexdigests) and FAIL on buggy (AttributeError: 'User' object has no attribute 'get_session_auth_fallback_hash'). This behavior is not pinned down by any visible test/content: the buggy source and the entire visible test-suite (auth test_models, auth_backends, sessions_tests, tokens) never call get_session_auth_fallback_hash or rotate SECRET_KEY_FALLBACKS against the session-auth-hash method — the closest visible analog (PasswordResetTokenGenerator.check_token rotation) is a different mechanism. So the witness encodes a genuinely hidden behavioral fact.",
+    "confidence": "Medium"
+  }
+}

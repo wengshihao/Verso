@@ -1,0 +1,110 @@
+{
+  "task_id": "django__django-15561",
+  "status": "ok",
+  "duration_seconds": 902.762487208005,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15561",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On the SQLite backend, running an AlterField that only adds or changes a field's `choices` option (i.e. changes nothing that affects the database column such as its type, nullability, default, or column name) must be a database no-op: it must not generate any schema SQL, in particular it must not perform the sqlite new-table + INSERT + DROP + rename table-rebuild dance.",
+        "subject": "DatabaseSchemaEditor.alter_field (sqlite3 backend) / field choices change handling",
+        "hunk_ids": [],
+        "cited_from": "\"even a seemingly db-transparent change like adding choices still generates sql (new table + insert + drop + rename) even though this shouldn't be needed. on e.g. postgres the same migration generates no sql\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "The base Field class exposes a per-field-class attribute `non_db_attrs` (a tuple of attribute names whose change does not affect a column definition and thus is ignored when deciding whether a field alteration is needed). Its default value includes blank, choices, db_column, editable, error_messages, help_text, limit_choices_to, on_delete, related_name, related_query_name, validators, and verbose_name; standard field subclasses inherit it. A custom field subclass may override/extend `non_db_attrs` to declare which of its deconstruct keyword attributes are non-schema-affecting.",
+        "subject": "django.db.models.Field.non_db_attrs",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "BaseDatabaseSchemaEditor._field_should_be_altered decides whether a field needs altering by removing from the OLD field's deconstruction kwargs only the attributes that the old field's own class declares in its `non_db_attrs`, and from the NEW field's deconstruction kwargs only the attributes the new field's own class declares in `non_db_attrs`, then comparing (path, positional args, keyword args) plus whether the column name changed. Consequently the set of ignored attributes may differ between the old and new field types (each side's declaration is honored), rather than coming from one shared fixed list.",
+        "subject": "django.db.backends.base.schema.BaseDatabaseSchemaEditor._field_should_be_altered",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Altering a field where the only difference is in its `choices` attribute (the column name and other schema-affecting attributes unchanged) is now treated as no alteration — no database ALTER TABLE operation is emitted — because `choices` was added to the default non-db attribute list. (Previously such a change triggered an ALTER.)",
+        "subject": "django.db.backends.base.schema.BaseDatabaseSchemaEditor._field_should_be_altered",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only states the observable SQLite requirement that a choices-only AlterField be a no-op. It never mentions a per-field-class `non_db_attrs` attribute on Field, its default tuple contents, or the ability to override/extend it in subclasses, so nothing pins down this specific mechanism."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis describes which visible outcome is required (choices-only change = no-op), not the _field_should_be_altered deconstruction-kwargs filtering logic whereby each of the old and new field's own class declares the non_db_attrs to drop. That algorithmic generalization is entirely absent from the visible information."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis [R1] directly determines the same observable behavior R3 states: an AlterField whose only difference is `choices` must be treated as no alteration and emit no schema SQL / ALTER TABLE (sqlite must match postgres's no-sql behavior). The core behavioral claim is pinned even though the stated causal rationale references the non-db attribute list mechanism absent from S_vis."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_non_db_attrs_are_class_level_and_inherited",
+      "test_source": "def test_non_db_attrs_are_class_level_and_inherited():\n    from django.db.models.fields import CharField, Field\n\n    # Base class exposes a tuple whose members are the non-schema-affecting\n    # deconstruct keywords.\n    nda = Field.non_db_attrs\n    assert isinstance(nda, tuple)\n    expected = {\n        \"blank\",\n        \"choices\",\n        \"db_column\",\n        \"editable\",\n        \"error_messages\",\n        \"help_text\",\n        \"limit_choices_to\",\n        \"on_delete\",\n        \"related_name\",\n        \"related_query_name\",\n        \"validators\",\n        \"verbose_name\",\n    }\n    assert expected.issubset(set(nda))\n\n    # Standard subclasses inherit it unchanged.\n    assert CharField.non_db_attrs is nda\n\n    # A custom field may extend the tuple with its own non-schema kwargs.\n    class MyCustom(Field):\n        non_db_attrs = Field.non_db_attrs + (\"custom_option\",)\n\n    assert \"custom_option\" in MyCustom.non_db_attrs\n    assert CharField.non_db_attrs is CharField.non_db_attrs\n    assert MyCustom().non_db_attrs == MyCustom.non_db_attrs",
+      "gold_result": "For gold: PASSED — Field.non_db_attrs is a tuple containing blank/choices/db_column/editable/error_messages/help_text/limit_choices_to/on_delete/related_name/related_query_name/validators/verbose_name; subclasses like CharField resolve to the identical tuple; a custom subclass can extend it.",
+      "buggy_result": "For buggy: FAILED — AttributeError: type object 'Field' has no attribute 'non_db_attrs' (the pre-fix Field class has no non_db_attrs class attribute at all, so any access raises).",
+      "explanation": "R1 is precisely that the base django.db.models.Field class exposes a per-class attribute non_db_attrs — a tuple of non-schema-affecting attribute names (blank, choices, db_column, editable, error_messages, help_text, limit_choices_to, on_delete, related_name, related_query_name, validators, verbose_name) which standard subclasses inherit and which a custom subclass may override/extend. The buggy (pre-fix) Field has no such attribute and the schema editor kept a local non_database_attrs list lacking 'choices', so these requirements are entirely absent pre-fix. My test captures R1's semantics directly and is execution-confirmed: it PASSES against gold (Field.non_db_attrs exists as the full tuple, CharField inherits the identical object because the base defines it as a class attribute, and a fresh custom subclass can extend the tuple) and FAILS against buggy on the very first statement with `AttributeError: type object 'Field' has no attribute 'non_db_attrs'`. I checked the visible oracle (tests/schema/tests.py): it only ever exercises schema no-op behaviour through attribute changes and never inspects `Field.non_db_attrs` or its `choices` membership (its `test_alter_field_fk_attributes_noop` passes on both revisions since the attributes it varies were already in the buggy hardcoded list), so no existing visible assertion pins this down and the witness is not redundant."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "Field.deconstruct() emits `choices` as a keyword argument only when it differs from the None default (using equals-comparison), which is why `choices` appeared in kwargs and previously pushed _field_should_be_altered toward 'alter needed'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Prior to the patch, the exclusion list was a local hardcoded `non_database_attrs` list shared for both old and new fields; the patch makes it a class attribute per field type and adds `choices` to it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_field_should_be_altered returns True when the quoted column names differ OR the post-pop (path, args, kwargs) differ."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the requirement [R1] (Field.non_db_attrs as a per-field-class tuple of non-schema-affecting attributes whose change is ignored when deciding whether a field alteration is needed), whose observable effect is exercised through the schema editor's `_field_should_be_altered` logic (no-query/no-op alterations when only such attributes change) and through migration detection.\n\nI enumerated the oracle test files and inspected every plausible home for R1-behavior tests:\n- tests/schema/tests.py: contains the core behavioral tests (e.g. `test_alter_field_fk_attributes_noop` asserting zero queries when changing blank/editable/error_messages/help_text/limit_choices_to/on_delete/related_name/related_query_name/validators/verbose_name, and other `assertNumQueries(0)` alter-field tests). This file is labelled [VISIBLE], so its assertions were visible to repair systems and cannot serve as a witness.\n- tests/migrations/test_autodetector.py, test_state.py, test_commands.py, tests/field_deconstruction/tests.py, tests/model_fields/test_field_flags.py: also [VISIBLE]; the deconstruct/state/migration behaviors are all in visible content.\n- tests/schema/fields.py and tests/schema/models.py are [HIDDEN], but they contain only test-fixture model/custom-field *definitions* (custom ManyToManyField, MediumBlobField, Author/Book models), not any assertion about the Field.non_db_attrs semantics; they encode no R1 behavior.\n- tests/invalid_models_tests/test_custom_fields.py: unrelated (column None check).\n\nAlso, no test is recorded as failing against the buggy program. Because the only reality-tuned assertions for R1 (no-query/no-op schema alterations for non_db_attrs, and migration \"no change\" detection) live in [VISIBLE] content, and no [HIDDEN] assertion encodes R1's semantics, I could not identify or construct any execution-confirmed witness from hidden oracle material. Concluding found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.Field.non_db_attrs): The base Field class exposes a per-field-class attribute `non_db_attrs` (a tuple of attribute names whose change does not affect a column definition and thus is ignored when deciding whether a field alteration is needed). Its default value includes blank, choices, db_column, editable, error_messages, help_text, limit_choices_to, on_delete, related_name, related_query_name, validators, and verbose_name; standard field subclasses inherit it. A custom field subclass may override/extend `non_db_attrs` to declare which of its deconstruct keyword attributes are non-schema-affecting. — not entailed by S_vis (S_vis only states the observable SQLite requirement that a choices-only AlterField be a no-op. It never mentions a per-field-class `non_db_attrs` attribute on Field, its default tuple contents, or the ability to override/extend it in subclasses, so nothing pins down this specific mechanism.); confirmed by a synthesized witness: R1 is precisely that the base django.db.models.Field class exposes a per-class attribute non_db_attrs — a tuple of non-schema-affecting attribute names (blank, choices, db_column, editable, error_messages, help_text, limit_choices_to, on_delete, related_name, related_query_name, validators, verbose_name) which standard subclasses inherit and which a custom subclass may override/extend. The buggy (pre-fix) Field has no such attribute and the schema editor kept a local non_database_attrs list lacking 'choices', so these requirements are entirely absent pre-fix. My test captures R1's semantics directly and is execution-confirmed: it PASSES against gold (Field.non_db_attrs exists as the full tuple, CharField inherits the identical object because the base defines it as a class attribute, and a fresh custom subclass can extend the tuple) and FAILS against buggy on the very first statement with `AttributeError: type object 'Field' has no attribute 'non_db_attrs'`. I checked the visible oracle (tests/schema/tests.py): it only ever exercises schema no-op behaviour through attribute changes and never inspects `Field.non_db_attrs` or its `choices` membership (its `test_alter_field_fk_attributes_noop` passes on both revisions since the attributes it varies were already in the buggy hardcoded list), so no existing visible assertion pins this down and the witness is not redundant.",
+    "confidence": "Medium"
+  }
+}

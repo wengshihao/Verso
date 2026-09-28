@@ -1,0 +1,96 @@
+{
+  "task_id": "django__django-17084",
+  "status": "ok",
+  "duration_seconds": 620.0510567080928,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-17084",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Given a queryset annotated with an alias computed by a window function — e.g. `queryset.annotate(cumul_DJR=Coalesce(Window(Sum(\"DJR\"), order_by=F(\"date\").asc()), 0.0))` — calling `.aggregate(DJR_total=Sum(\"DJR\"), cumul_DJR_total=Sum(\"cumul_DJR\"))` on that same queryset must execute successfully and return the aggregate over that annotated column, i.e. Django must not emit SQL in which an aggregate function directly contains (or is wrapped around) a window-function call in the way PostgreSQL rejects with `psycopg2.errors.GroupingError: aggregate function calls cannot contain window function calls`; the window expression must instead be evaluated (e.g. in a subquery/inner query) before the outer aggregate is applied. The issue reports this worked before 4.2 and broke in 4.2, so this is a regression to be restored.",
+        "subject": "django.db.models.QuerySet.aggregate over a window-function annotation",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"After upgrading to Django 4.2, I encountered an exception when executing ORM queries that involve aggregates over Window functions. The specific error was psycopg2.errors.GroupingError: aggregate function calls cannot contain window function calls\" ... \"Example Code:\nqueryset = queryset.annotate(\n\tcumul_DJR=Coalesce(Window(Sum(\"DJR\"), order_by=F(\"date\").asc()), 0.0)\n)\naggregate = queryset.aggregate(\n\tDJR_total=Sum(\"DJR\"),\n\tcumul_DJR_total=Sum(\"cumul_DJR\")\n)\" and title \"Cannot use aggregate over window functions since 4.2\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "In Query.get_aggregation, when any aggregate expression being resolved references an existing annotation whose underlying expression reports contains_over_clause (i.e. a window-function annotation such as one built with django.db.models.Window), the query is routed to the wrapped-subquery aggregation path: the row-level (window) computation is performed in an inner query and the aggregate is applied over its results in the outer query, rather than inlining the window expression directly inside the aggregate in a single SELECT. Observable effect: a QuerySet such as .annotate(<window alias>).aggregate(<Aggregate of that alias>) executes without producing invalid or incorrect SQL and returns a value equal to applying the aggregate to the per-row window values.",
+        "subject": "Query.get_aggregation (django/db/models/sql/query.py)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis/R1 does pin down the observable behavior portion of S_IMPL-1: the annotated-then-aggregate query over a window annotation must execute without invalid/wrong SQL and return the aggregate over per-row window values (this is the regression the issue reports). However, S_IMPL-1's central commitment is a specific implementation mechanism — routing through Query.get_aggregation's wrapped-subquery aggregation path exactly when the annotation reports contains_over_clause — which is one of several possible fix strategies and is not derivable from the visible issue report, which only describes the symptom/example code and expected correct result."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_window_over_annotation",
+      "test_source": "import sys\n\n\ndef test_window_over_annotation(tmp_path):\n    pkg = tmp_path / \"wn_app\"\n    pkg.mkdir()\n    (pkg / \"__init__.py\").write_text(\"\")\n    (pkg / \"models.py\").write_text(\n        \"from django.db import models\\n\"\n        \"\\n\"\n        \"class Item(models.Model):\\n\"\n        \"    val = models.IntegerField()\\n\"\n        \"    grp = models.CharField(max_length=8)\\n\"\n        \"\\n\"\n        \"    class Meta:\\n\"\n        \"        ordering = ('id',)\\n\"\n    )\n    (pkg / \"apps.py\").write_text(\n        \"from django.apps import AppConfig\\n\"\n        \"class WnAppConfig(AppConfig):\\n\"\n        \"    name = 'wn_app'\\n\"\n        \"    label = 'wn_app'\\n\"\n        \"    default_auto_field = 'django.db.models.AutoField'\\n\"\n    )\n    sys.path.insert(0, str(tmp_path))\n\n    import django\n    from django.conf import settings\n    settings.configure(\n        DEBUG=True,\n        DATABASES={\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}},\n        INSTALLED_APPS=[\n            \"django.contrib.contenttypes\",\n            \"django.contrib.auth\",\n            \"wn_app\",\n        ],\n        DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n        USE_TZ=True,\n    )\n    django.setup()\n\n    from django.db import connection\n    from django.db.models import Sum, Window\n    from django.db.models.functions import RowNumber\n\n    from wn_app.models import Item\n\n    with connection.schema_editor() as se:\n        se.create_model(Item)\n\n    Item.objects.create(val=10, grp=\"A\")\n    Item.objects.create(val=20, grp=\"A\")\n    Item.objects.create(val=30, grp=\"B\")\n    Item.objects.create(val=40, grp=\"B\")\n\n    result = Item.objects.annotate(\n        rn=Window(RowNumber(), partition_by=\"grp\", order_by=\"val\")\n    ).aggregate(s=Sum(\"rn\"))\n    # Per-row window values are 1,2 for group A and 1,2 for group B; their sum is 6.\n    assert result == {\"s\": 6}",
+      "gold_result": "PASSED - {'s': 6}. With the refs_window guard present, Query.get_aggregation routes this Window-bearing aggregate to the wrapped AggregateQuery subquery path: the window (ROW_NUMBER() OVER (PARTITION BY grp ORDER BY val)) is evaluated row-wise in an inner query and Sum() applied over those per-row values in the outer query, producing the correct total 6.",
+      "buggy_result": "FAILED - django.db.utils.OperationalError: misuse of window function ROW_NUMBER(). The buggy code lacks the refs_window detection, so it falls through to the inline fast path, generating 'SELECT SUM(ROW_NUMBER() OVER (PARTITION BY ...grp\" ORDER BY ...\"val\")) AS \"s\" FROM ...', i.e. the window expression is inlined directly inside the SUM aggregate in a single SELECT, which all SQL engines reject as invalid SQL.",
+      "explanation": "The target requirement [S_IMPL-1] is: when an aggregate passed to Query.get_aggregation references an existing annotation whose underlying expression has contains_over_clause=True (a Window annotation), Django must route to the wrapped-subquery aggregation path rather than inlining the window into the aggregate in a single SELECT; observable behaviour is a valid query returning the aggregate of the per-row window values. The gold code adds refs_window OR-reduction (H0/H1: getattr(...,'contains_over_clause',True) over aggregate.get_refs()) and includes it in the subquery decision (H2). The buggy code lacks all three hunks.\n\nThe candidate witness is fully self-contained: it builds a tiny in-memory sqlite Django app with an Item model (val, grp), then runs <queryset>.annotate(rn=Window(RowNumber(), partition_by=\"grp\", order_by=\"val\")).aggregate(s=Sum(\"rn\")). Executed end-to-end (compiled and run via run_test) it reproduces the exact reported scenario — an aggregate (Sum) over an existing window annotation.\n\nOn gold it PASSED returning {'s': 6} == the sum of the per-row RowNumber values (1,2 in group A, 1,2 in group B). On buggy it FAILED at runtime with sqlite3 OperationalError 'misuse of window function ROW_NUMBER()', because the buggy Query.get_aggregation takes the inline fast path and emits 'SELECT SUM(ROW_NUMBER() OVER (...)) AS \"s\" FROM ...' — the invalid single-SELECT inlined SQL the requirement says must not happen.\n\nThis genuinely corresponds to requirement r (it exercises the exact contains_over_clause Window-annotation decision in Query.get_aggregation, observable as correct execution/value vs invalid SQL). The visible test suite contains no annotate(window).aggregate(agg-of-window-alias) query (Oracle Search Agent confirmed none exists), and my scenario is independently invented (row_number partition summed), so nothing visible already pins down this behaviour/result."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug manifests in Query.get_aggregation (django/db/models/sql/query.py): in the non-subquery fast path, existing annotation references are inlined into the outer SELECT via `replace_expressions` over `Ref(alias, annotation)` dicts, so aggregating over a window annotation collapses to `SUM(<window expr>)` in a single SELECT (invalid SQL)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Window sets `contains_aggregate = False` but `contains_over_clause = True` (django/db/models/expressions.py class Window), so a `Sum('window_alias')` source that resolves to a window annotation is not recognized as pre-existing aggregation by the subquery decision condition in get_aggregation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "get_aggregation also has a pre-4.2-style subquery branch used when `group_by` is a tuple / sliced / has existing aggregation / subquery refs / qualify / distinct / combinator — the failing scenario falls through to the inline ('annotations' replacement) branch instead."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Window-function tests live in tests/expressions_window/{tests.py,models.py} (Employee via .annotate(Window(...)) then filtering); none currently calls .aggregate() on such a queryset, so no visible test guards this behavior at this revision."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's fields DJR / date do not exist in Django's test models; the visible source/tests establish the general window-computation machinery but the concrete failing query is from the reported example."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only touches Query.get_aggregation in django/db/models/sql/query.py; all changes govern the decision between the inline fast path and the wrapped AggregateQuery subquery path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Whether the guard triggers depends on the referenced existing annotation's contains_over_clause attribute, which django.db.models.expressions.Window sets truthy even though its contains_aggregate is False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "refs_window accumulates across all aggregate_exprs iterated in the loop (via |=) and is checked in the outer decision condition, so presence of a single window-ref'd aggregate forces the subquery path for the whole call."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: I investigated whether the oracle already contains a test asserting the behavior of S_IMPL-1: that aggregating over an annotation built from a Window expression (contains_over_clause=True) forces Query.get_aggregation to use the wrapped-subquery path, producing a value equal to applying the aggregate over per-row window values.\n\nI examined the natural homes for such a test:\n- tests/expressions_window/tests.py — [VISIBLE]. Contains many Window-function tests (annotate + filter, subquery, count, etc.) but NO test that calls .aggregate() on a queryset after annotating a window and referencing that annotation in the aggregate.\n- tests/aggregation/tests.py — [VISIBLE]. Contains aggregate-over-annotation tests (e.g. test_aggregate_annotation, AggregateAnnotationPruningTests.test_referenced_aggregate_annotation_kept) but all over real aggregates/F-expressions; none over a window/contains_over_clause annotation.\n- tests/aggregation_regress/tests.py — [VISIBLE]. Only ordinary aggregate-over-annotation cases; no window usage.\n- tests/annotations/tests.py — [VISIBLE]. Includes test_aggregate_over_annotation (over F() annotation) but nothing involving Window.\n- tests/db_functions/window/test_validation.py — [VISIBLE]. Only validation, no aggregate.\n\nAll these candidate files are content-[VISIBLE] anyway, so even a matching assertion there could not have served as a hidden Witness. More decisively, the task record states that currently NO test fails against the buggy program. A genuine Witness must fail against the buggy program (a necessity for distinguishing it), so the absence of any failing test already rules out the existence of a Witness for this requirement. The expressions_window/aggregation test suites contain no .annotate(<window>).aggregate(<agg of alias>) query at this revision (consistent with the extractors' note that no visible test guards this behavior). I therefore found no oracle test that genuinely asserts S_IMPL-1's behavior; the requirement is not currently covered by any hidden oracle assertion."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-1] (Query.get_aggregation (django/db/models/sql/query.py)): In Query.get_aggregation, when any aggregate expression being resolved references an existing annotation whose underlying expression reports contains_over_clause (i.e. a window-function annotation such as one built with django.db.models.Window), the query is routed to the wrapped-subquery aggregation path: the row-level (window) computation is performed in an inner query and the aggregate is applied over its results in the outer query, rather than inlining the window expression directly inside the aggregate in a single SELECT. Observable effect: a QuerySet such as .annotate(<window alias>).aggregate(<Aggregate of that alias>) executes without producing invalid or incorrect SQL and returns a value equal to applying the aggregate to the per-row window values. — not entailed by S_vis (S_vis/R1 does pin down the observable behavior portion of S_IMPL-1: the annotated-then-aggregate query over a window annotation must execute without invalid/wrong SQL and return the aggregate over per-row window values (this is the regression the issue reports). However, S_IMPL-1's central commitment is a specific implementation mechanism — routing through Query.get_aggregation's wrapped-subquery aggregation path exactly when the annotation reports contains_over_clause — which is one of several possible fix strategies and is not derivable from the visible issue report, which only describes the symptom/example code and expected correct result.); confirmed by a synthesized witness: The target requirement [S_IMPL-1] is: when an aggregate passed to Query.get_aggregation references an existing annotation whose underlying expression has contains_over_clause=True (a Window annotation), Django must route to the wrapped-subquery aggregation path rather than inlining the window into the aggregate in a single SELECT; observable behaviour is a valid query returning the aggregate of the per-row window values. The gold code adds refs_window OR-reduction (H0/H1: getattr(...,'contains_over_clause',True) over aggregate.get_refs()) and includes it in the subquery decision (H2). The buggy code lacks all three hunks.\n\nThe candidate witness is fully self-contained: it builds a tiny in-memory sqlite Django app with an Item model (val, grp), then runs <queryset>.annotate(rn=Window(RowNumber(), partition_by=\"grp\", order_by=\"val\")).aggregate(s=Sum(\"rn\")). Executed end-to-end (compiled and run via run_test) it reproduces the exact reported scenario — an aggregate (Sum) over an existing window annotation.\n\nOn gold it PASSED returning {'s': 6} == the sum of the per-row RowNumber values (1,2 in group A, 1,2 in group B). On buggy it FAILED at runtime with sqlite3 OperationalError 'misuse of window function ROW_NUMBER()', because the buggy Query.get_aggregation takes the inline fast path and emits 'SELECT SUM(ROW_NUMBER() OVER (...)) AS \"s\" FROM ...' — the invalid single-SELECT inlined SQL the requirement says must not happen.\n\nThis genuinely corresponds to requirement r (it exercises the exact contains_over_clause Window-annotation decision in Query.get_aggregation, observable as correct execution/value vs invalid SQL). The visible test suite contains no annotate(window).aggregate(agg-of-window-alias) query (Oracle Search Agent confirmed none exists), and my scenario is independently invented (row_number partition summed), so nothing visible already pins down this behaviour/result.",
+    "confidence": "Medium"
+  }
+}

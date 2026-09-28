@@ -1,0 +1,94 @@
+{
+  "task_id": "scikit-learn__scikit-learn-25694",
+  "status": "ok",
+  "duration_seconds": 241.29622449993622,
+  "llm_calls": 15,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-25694",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "Calling partial_fit on a stochastic-solver (sgd/adam) MLPRegressor (and by extension MLPClassifier, sharing the same base) that was previously fitted/constructed with early_stopping=True must complete without raising the `TypeError` produced when `self.best_loss_` (None after an early_stopping fit) is used in the subtraction `self.best_loss_ - self.tol` inside `_update_no_improvement_count`; i.e. the no-improvement monitor must not be evaluated against a None best_loss_ during partial_fit.",
+        "subject": "MLPRegressor/MLPClassifier partial_fit after fit with early_stopping=True (BaseMultilayerPerceptron._fit_stochastic / _update_no_improvement_count)",
+        "hunk_ids": [],
+        "cited_from": "Issue \"Expected Results\": \"If early stopping is not supported for partial fit, it should handle this gracefully. If this is a bug - it should be fixed.\"; \"Actual Results\" traceback bottom: \"File .../_multilayer_perceptron.py\", line 721, in _update_no_improvement_count \\n    if self.loss_curve_[-1] > self.best_loss_ - self.tol:\\nTypeError: unsupported operand type(s) for -: 'NoneType' and 'float'\""
+      },
+      {
+        "id": "vis-2",
+        "statement": "The code comment 'early_stopping in partial_fit doesn't make sense' (guard `early_stopping = self.early_stopping and not incremental`) establishes that partial_fit (incremental) does not perform held-out validation early stopping; the model continues to update on the training loss path, so a partial_fit after an early-stopping fit must degrade to that training-loss-monitored behavior consistently rather than crashing.",
+        "subject": "BaseMultilayerPerceptron partial_fit with early_stopping semantics",
+        "hunk_ids": [],
+        "cited_from": "sklearn/neural_network/_multilayer_perceptron.py in _fit_stochastic: \"# early_stopping in partial_fit doesn't make sense\\nearly_stopping = self.early_stopping and not incremental\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Calling MLPClassifier.partial_fit or MLPRegressor.partial_fit (stochastic solver 'adam'/'sgd') on an estimator whose early_stopping parameter is True raises a ValueError with message \"partial_fit does not support early_stopping=True\", rather than continuing training. This applies regardless of whether the model was previously fit with early_stopping (which would leave best_loss_ = None) or is a first partial_fit call, and it occurs before validation-set splitting / weight initialization of the incremental pass.",
+        "subject": "BaseMultilayerPerceptron._fit_stochastic invoked via MLPClassifier.partial_fit / MLPRegressor.partial_fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "vis-1",
+          "vis-2"
+        ],
+        "rationale": "S_vis establishes only that calling partial_fit after an early_stopping fit currently crashes with a TypeError (vis-1) and that the code comments reflect early stopping in partial_fit 'doesn't make sense' (vis-2). Neither pins down the specific patch remedy of raising a ValueError with the exact message 'partial_fit does not support early_stopping=True' on ANY partial_fit call with early_stopping=True; vis-1's 'Expected Results' explicitly leaves open whether to reject or fix. The specific blocking ValueError behavior is a design decision not entailed by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_mlp_partial_fit_after_fit",
+      "test_source": "import numpy as np\nimport pytest\nfrom sklearn.neural_network import MLPClassifier, MLPRegressor\n\ndef test_mlp_partial_fit_after_fit():\n    rng = np.random.RandomState(0)\n    X = rng.rand(60, 4)\n\n    # classifier: fit with early_stopping then partial_fit\n    y_class = np.array([0, 1, 2] * 20)\n    clf = MLPClassifier(solver=\"sgd\", early_stopping=True, max_iter=5, random_state=0)\n    clf.fit(X, y_class)\n    with pytest.raises(\n        ValueError, match=\"partial_fit does not support early_stopping=True\"\n    ):\n        clf.partial_fit(X, y_class, classes=[0, 1, 2])\n\n    # regressor: fit with early_stopping then partial_fit\n    Xr = rng.rand(60, 4)\n    yr = 2.0 * Xr[:, 0] + 1.0\n    reg = MLPRegressor(solver=\"sgd\", early_stopping=True, max_iter=5, random_state=0)\n    reg.fit(Xr, yr)\n    with pytest.raises(\n        ValueError, match=\"partial_fit does not support early_stopping=True\"\n    ):\n        reg.partial_fit(Xr, yr)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (TypeError: unsupported operand type(s) for -: 'NoneType' and 'float' at _fit_stochastic, reaching _update_no_improvement_count with best_loss_=None during the incremental partial_fit pass)",
+      "explanation": "R1 requires that MLPClassifier/MLPRegressor partial_fit on an estimator whose early_stopping=True raises ValueError \"partial_fit does not support early_stopping=True\", rather than crashing or continuing training (both for a previously-fitted-with-early_stopping model, and consistent with the notebook's description that best_loss_ is left None).\n\nThe prompt's \"currently failing against the buggy program\" list identifies exactly this new regression behavior in the oracle's hidden test suite as test_mlp_partial_fit_after_fit[MLPClassifier]/[MLPRegressor]. I confirmed there is no other test in the oracle (test_mlp.py, test_base.py and the other neural_network test files — all the visible content) that asserts this specific ValueError; the only relevant assertions are those hidden test cases, which were not exposed in the [VISIBLE] renderings but are the oracle tests the buggy run reports as failing.\n\nI built a standalone test method replicating that hidden oracle test (fit an sgd MLP with early_stopping=True, then call partial_fit, expecting ValueError \"partial_fit does not support early_stopping=True\") for both MLPClassifier and MLPRegressor. Mechanical execution confirms the witness gap:\n- Against gold (fixed): PASSED — both classifiers raise the exact ValueError, so control flow does not proceed into the incremental training/validation-splitting pass.\n- Against buggy (pre-fix): FAILED — the classifier's partial_fit reaches _update_no_improvement_count with early_stopping forced False while best_loss_ is None and crashes with TypeError (NoneType - float), i.e. the exact crash R1 says must be replaced by the ValueError.\n\nThis directly enforces the behavioral claim in R1 (partial_fit with early_stopping=True must raise the ValueError before any incremental pass) and discriminates gold (pass) from buggy (fail)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug originates in the shared base class sklearn/neural_network/_multilayer_perceptron.py BaseMultilayerPerceptron, affecting both MLPRegressor (issue) and MLPClassifier (see parametrized early-stopping tests and shared code)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The codebase already attempts to disable validation early stopping during partial_fit via the guard in _fit_stochastic; the crash arises because `_initialize` set `self.best_loss_ = None` (when self.early_stopping=True during the original fit) and partial_fit skips _initialize (first_pass False), so the else/training-loss branch of _update_no_improvement_count subtracts tol from a None best_loss_."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MLP partial_fit tests are in sklearn/neural_network/tests/test_mlp.py (test_partial_fit_regression, test_partial_fit_classification); no visible test covers fit-with-early_stopping then partial_fit."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "early_stopping docstring / Attributes note: 'best_loss_ ... If early_stopping=True, this attribute is set to None.'"
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is in the shared base class _fit_stochastic (sklearn/neural_network/_multilayer_perceptron.py), so it affects both MLPClassifier.partial_fit and MLPRegressor.partial_fit for stochastic solvers. LBFGS does not offer partial_fit (guarded by _check_solver)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The old `self.early_stopping and not incremental` silently zeroed out early stopping for any incremental fit, leaving the model in a state where the training-loss branch of _update_no_improvement_count could subtract self.tol from a None best_loss_ (initialized to None in _initialize when early_stopping=True)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For non-incremental fit() the behavior is unchanged (early_stopping flag now equals self.early_stopping directly)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (BaseMultilayerPerceptron._fit_stochastic invoked via MLPClassifier.partial_fit / MLPRegressor.partial_fit): Calling MLPClassifier.partial_fit or MLPRegressor.partial_fit (stochastic solver 'adam'/'sgd') on an estimator whose early_stopping parameter is True raises a ValueError with message \"partial_fit does not support early_stopping=True\", rather than continuing training. This applies regardless of whether the model was previously fit with early_stopping (which would leave best_loss_ = None) or is a first partial_fit call, and it occurs before validation-set splitting / weight initialization of the incremental pass. — not entailed by S_vis (S_vis establishes only that calling partial_fit after an early_stopping fit currently crashes with a TypeError (vis-1) and that the code comments reflect early stopping in partial_fit 'doesn't make sense' (vis-2). Neither pins down the specific patch remedy of raising a ValueError with the exact message 'partial_fit does not support early_stopping=True' on ANY partial_fit call with early_stopping=True; vis-1's 'Expected Results' explicitly leaves open whether to reject or fix. The specific blocking ValueError behavior is a design decision not entailed by the visible evidence.); confirmed by a oracle witness: R1 requires that MLPClassifier/MLPRegressor partial_fit on an estimator whose early_stopping=True raises ValueError \"partial_fit does not support early_stopping=True\", rather than crashing or continuing training (both for a previously-fitted-with-early_stopping model, and consistent with the notebook's description that best_loss_ is left None).\n\nThe prompt's \"currently failing against the buggy program\" list identifies exactly this new regression behavior in the oracle's hidden test suite as test_mlp_partial_fit_after_fit[MLPClassifier]/[MLPRegressor]. I confirmed there is no other test in the oracle (test_mlp.py, test_base.py and the other neural_network test files — all the visible content) that asserts this specific ValueError; the only relevant assertions are those hidden test cases, which were not exposed in the [VISIBLE] renderings but are the oracle tests the buggy run reports as failing.\n\nI built a standalone test method replicating that hidden oracle test (fit an sgd MLP with early_stopping=True, then call partial_fit, expecting ValueError \"partial_fit does not support early_stopping=True\") for both MLPClassifier and MLPRegressor. Mechanical execution confirms the witness gap:\n- Against gold (fixed): PASSED — both classifiers raise the exact ValueError, so control flow does not proceed into the incremental training/validation-splitting pass.\n- Against buggy (pre-fix): FAILED — the classifier's partial_fit reaches _update_no_improvement_count with early_stopping forced False while best_loss_ is None and crashes with TypeError (NoneType - float), i.e. the exact crash R1 says must be replaced by the ValueError.\n\nThis directly enforces the behavioral claim in R1 (partial_fit with early_stopping=True must raise the ValueError before any incremental pass) and discriminates gold (pass) from buggy (fail).",
+    "confidence": "High"
+  }
+}

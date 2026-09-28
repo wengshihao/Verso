@@ -1,0 +1,95 @@
+{
+  "task_id": "Jsoup-4",
+  "status": "ok",
+  "duration_seconds": 193.73983016999773,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-4",
+    "s_vis": [
+      {
+        "id": "Rx2",
+        "statement": "unescape preserves input text unchanged for a numeric character-reference whose value lies outside the 16-bit Unicode char range (e.g. the decimal reference \"&0987654321;\" = 987654321 > 0xFFFF) and for an unrecognized named entity (e.g. \"&unknown\"), i.e. Entities.unescape(\"&0987654321; &unknown\") must equal \"&0987654321; &unknown\" rather than forcing the out-of-range value through a Character.toString((char)...) cast.",
+        "subject": "Entities.unescape",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(\"&0987654321; &unknown\", Entities.unescape(\"&0987654321; &unknown\"));"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_REQ1",
+        "statement": "Entities.unescape resolves a named character reference case-sensitively against the entity table, so that an entity reference whose name contains uppercase letters decodes to the code point of that exact casing (e.g. \"&Aacute;\" decodes to U+00C1 rather than being lowercased and resolving to the distinct lower-case entity U+00E1).",
+        "subject": "Entities.unescape",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_REQ2",
+        "statement": "Entities.escape (in both base and full/extended modes) emits named character references that preserve the original casing of the entity name as defined in the base/full entity table, so that a character with a mixed-case or uppercase canonical name (e.g. U+00C6 Æ whose canonical name is \"AElig\") is escaped to that exact-cased reference (\"&AElig;\") rather than to a lowercased name decoding to a different character.",
+        "subject": "Entities.escape",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_REQ1",
+        "entailed": "false",
+        "checked_ids": [
+          "Rx2"
+        ],
+        "rationale": "Rx2 only pins down that unrecognized named entities and out-of-range numeric references are passed through unchanged by unescape; it says nothing about case-sensitive table lookup of recognized entities with uppercase names like Aacute. Nothing in S_vis covers case-sensitive resolution."
+      },
+      {
+        "requirement_id": "S_IMPL_REQ2",
+        "entailed": "false",
+        "checked_ids": [
+          "Rx2"
+        ],
+        "rationale": "Rx2 concerns Entities.unescape passthrough behavior only; there is no S_vis coverage of Entities.escape emitting case-preserving named references. Nothing pins down the escape casing behavior."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_REQ1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target requirement S_IMPL_REQ1 says Entities.unescape must resolve named character references case-sensitively (e.g. &Aacute; → U+00C1 rather than being lowercased to aacute → U+00E1). The buggy code lowercases m.group(1) before the full.containsKey lookup; gold removes the toLowerCase.\n\nI built and runtime-confirmed a fully discriminating candidate that drives the actual re-fixed code path unmodified: a reflection-based test that invokes the package-private Entities.unescape via getDeclaredMethod(\"unescape\", String.class)/setAccessible(true) (the method is not public, and the standalone test compiles in the default package so direct calling is impossible). The source is:\n  @Test public void witnessCaseSensitiveUnescapeReflect() throws Exception {\n      java.lang.reflect.Method m = org.jsoup.nodes.Entities.class.getDeclaredMethod(\"unescape\", String.class);\n      m.setAccessible(true);\n      assertEquals(\"\\u00C1\", m.invoke(null, \"&Aacute;\"));\n      assertEquals(\"\\u00E1\", m.invoke(null, \"&aacute;\"));\n  }\nRunning it gave: gold = PASSED (&Aacute;→Á=U+00C1, &aacute;→á=U+00E1) and buggy = FAILED with org.junit.ComparisonFailure \"expected:<[Á]> but was:<[á]>\", confirming the lowercasing bug on &Aacute;.\n\nHowever, I cannot in good conscience classify this as a legitimate hidden Witness. The oracle-search stage already established that the only oracle content enforcing this exact behavior (case-sensitive named-entity decoding that collapses the uppercase vs lowercase Latin-1 variants) is the [VISIBLE] EntitiesTest.caseSensitive test (which asserts &Uuml;&uuml;&amp;&AMP → \"Ü ü & &\"), plus entities in the visible unescape/escape tests. My reflection test picks a different concrete entity (&Aacute; vs &Uuml;) written in different words, but it re-pins exactly the same already-visible fact (that uppercase entity names must not be lowercased before table lookup). Nothing in the hidden oracle layer independently enforces r — the only tests that pin down r are piece of the exact material a repair system already saw. Under the rules that a witnessed fact must not be derivable from visible content, and per the earlier oracle finding that all 11 hidden oracle test files contain no case-sensitive unescape-of-named-entity assertion, no legitimate hidden witness exists. I therefore report found=false, documenting that I did synthesize and confirm a runtime-distinguishing test but it only mirrors the visible EntitiesTest rather than surfacing a hidden fact."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "Entity name maps: `full` (name→char) used by unescape stores keys in original (mixed/uppercase) case; `baseByVal`/`fullByVal` (char→name) used by escape store case-preserving names after the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Distinct case variants of the same base Latin-1 entity (e.g. Aacute U+00C1 vs aacute U+00E1) are separate keys mapping to different code points, which is why exact-casing matters."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "unescape's named-reference branch only consults the `full` map (not base), and its numeric branch is unaffected by these hunks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both maps are populated in the static initializer from `baseArray`/`fullArray` Object[][] literals; later duplicates of the same char overwrite earlier ones in the by-value maps."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_REQ1]: The target requirement r — Entities.unescape resolving named character references case-sensitively (e.g. &Aacute;→U+00C1 rather than lowercased to &aacute;→U+00E1) — is genuinely tested only by the `caseSensitive` (and partly `escape`) test methods in `src/test/java/org/jsoup/nodes/EntitiesTest.java`. That test asserts `Entities.unescape(\"&Uuml; &uuml; &amp; &AMP\")` equals \"Ü ü & &\", which would fail if unescape lowercased entity names before lookup (buggy) and pass with the case-preserving gold fix; it is among the tests currently failing against the buggy program.\n\nHowever, that entire test file is marked [VISIBLE] (content-based, same material a repair system already saw), and the instructions are explicit that an assertion drawn from [VISIBLE] content can never serve as a Witness, no matter how well it matches r. I read all 11 oracle test files; the [HIDDEN] files (DocumentTest, ElementTest, NodeTest, TextNodeTest, AttributeParseTest, ParserTest, ParseTest, CleanerTest, ElementsTest, SelectorTest) contain no assertion that decodes a mixed/uppercase-case named entity reference through Entities.unescape to the exact-casing code point. Their entity-related assertions involve numeric/character references, parsing, escaping, or other behaviors unrelated to case-sensitive unescape of named entity variants. Therefore, even though the visible EntitiesTest genuinely covers r, no [HIDDEN] oracle test enforces r, so no legitimate witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_REQ1]: Target requirement S_IMPL_REQ1 says Entities.unescape must resolve named character references case-sensitively (e.g. &Aacute; → U+00C1 rather than being lowercased to aacute → U+00E1). The buggy code lowercases m.group(1) before the full.containsKey lookup; gold removes the toLowerCase.\n\nI built and runtime-confirmed a fully discriminating candidate that drives the actual re-fixed code path unmodified: a reflection-based test that invokes the package-private Entities.unescape via getDeclaredMethod(\"unescape\", String.class)/setAccessible(true) (the method is not public, and the standalone test compiles in the default package so direct calling is impossible). The source is:\n  @Test public void witnessCaseSensitiveUnescapeReflect() throws Exception {\n      java.lang.reflect.Method m = org.jsoup.nodes.Entities.class.getDeclaredMethod(\"unescape\", String.class);\n      m.setAccessible(true);\n      assertEquals(\"\\u00C1\", m.invoke(null, \"&Aacute;\"));\n      assertEquals(\"\\u00E1\", m.invoke(null, \"&aacute;\"));\n  }\nRunning it gave: gold = PASSED (&Aacute;→Á=U+00C1, &aacute;→á=U+00E1) and buggy = FAILED with org.junit.ComparisonFailure \"expected:<[Á]> but was:<[á]>\", confirming the lowercasing bug on &Aacute;.\n\nHowever, I cannot in good conscience classify this as a legitimate hidden Witness. The oracle-search stage already established that the only oracle content enforcing this exact behavior (case-sensitive named-entity decoding that collapses the uppercase vs lowercase Latin-1 variants) is the [VISIBLE] EntitiesTest.caseSensitive test (which asserts &Uuml;&uuml;&amp;&AMP → \"Ü ü & &\"), plus entities in the visible unescape/escape tests. My reflection test picks a different concrete entity (&Aacute; vs &Uuml;) written in different words, but it re-pins exactly the same already-visible fact (that uppercase entity names must not be lowercased before table lookup). Nothing in the hidden oracle layer independently enforces r — the only tests that pin down r are piece of the exact material a repair system already saw. Under the rules that a witnessed fact must not be derivable from visible content, and per the earlier oracle finding that all 11 hidden oracle test files contain no case-sensitive unescape-of-named-entity assertion, no legitimate hidden witness exists. I therefore report found=false, documenting that I did synthesize and confirm a runtime-distinguishing test but it only mirrors the visible EntitiesTest rather than surfacing a hidden fact."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_IMPL_REQ1] (Entities.unescape) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target requirement S_IMPL_REQ1 says Entities.unescape must resolve named character references case-sensitively (e.g. &Aacute; → U+00C1 rather than being lowercased to aacute → U+00E1). The buggy code lowercases m.group(1) before the full.containsKey lookup; gold removes the toLowerCase.\n\nI built and runtime-confirmed a fully discriminating candidate that drives the actual re-fixed code path unmodified: a reflection-based test that invokes the package-private Entities.unescape via getDeclaredMethod(\"unescape\", String.class)/setAccessible(true) (the method is not public, and the standalone test compiles in the default package so direct calling is impossible). The source is:\n  @Test public void witnessCaseSensitiveUnescapeReflect() throws Exception {\n      java.lang.reflect.Method m = org.jsoup.nodes.Entities.class.getDeclaredMethod(\"unescape\", String.class);\n      m.setAccessible(true);\n      assertEquals(\"\\u00C1\", m.invoke(null, \"&Aacute;\"));\n      assertEquals(\"\\u00E1\", m.invoke(null, \"&aacute;\"));\n  }\nRunning it gave: gold = PASSED (&Aacute;→Á=U+00C1, &aacute;→á=U+00E1) and buggy = FAILED with org.junit.ComparisonFailure \"expected:<[Á]> but was:<[á]>\", confirming the lowercasing bug on &Aacute;.\n\nHowever, I cannot in good conscience classify this as a legitimate hidden Witness. The oracle-search stage already established that the only oracle content enforcing this exact behavior (case-sensitive named-entity decoding that collapses the uppercase vs lowercase Latin-1 variants) is the [VISIBLE] EntitiesTest.caseSensitive test (which asserts &Uuml;&uuml;&amp;&AMP → \"Ü ü & &\"), plus entities in the visible unescape/escape tests. My reflection test picks a different concrete entity (&Aacute; vs &Uuml;) written in different words, but it re-pins exactly the same already-visible fact (that uppercase entity names must not be lowercased before table lookup). Nothing in the hidden oracle layer independently enforces r — the only tests that pin down r are piece of the exact material a repair system already saw. Under the rules that a witnessed fact must not be derivable from visible content, and per the earlier oracle finding that all 11 hidden oracle test files contain no case-sensitive unescape-of-named-entity assertion, no legitimate hidden witness exists. I therefore report found=false, documenting that I did synthesize and confirm a runtime-distinguishing test but it only mirrors the visible EntitiesTest rather than surfacing a hidden fact.",
+    "confidence": "Medium"
+  }
+}

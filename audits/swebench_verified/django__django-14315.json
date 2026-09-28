@@ -1,0 +1,130 @@
+{
+  "task_id": "django__django-14315",
+  "status": "ok",
+  "duration_seconds": 195.26523600006476,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14315",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "BaseDatabaseClient.runshell must launch the database client subprocess with an environment that always contains the current process's os.environ (with any backend-specified env dict entries overlaid on top), including in the case where the backend's settings_to_cmd_args_env() returns an empty-but-not-None dict ({}), which must therefore result in the full os.environ being passed rather than an empty environment.",
+        "subject": "django/db/backends/base/client.py BaseDatabaseClient.runshell",
+        "hunk_ids": [],
+        "cited_from": "base/client.py runshell: 'args, env = self.settings_to_cmd_args_env(self.connection.settings_dict, parameters)\\n        if env:\\n            env = {**os.environ, **env}\\n        subprocess.run(args, env=env, check=True)'; postgresql/client.py: 'env = {}\\n        if passwd:\\n            env[\\'PGPASSWORD\\'] = str(passwd)'; issue: 'postgresql client returns empty dict instead of None for env ... as a result os.environ is not used and empty env passed to subprocess.'"
+      },
+      {
+        "id": "R2",
+        "statement": "With a PostgreSQL connection configuration that sets no PASSWORD, service, sslmode/sslrootcert/sslcert/sslkey, or passfile, the combination of runshell and settings_to_cmd_args_env must result in the launched psql subprocess receiving the parent process's os.environ values (so environment-configured settings such as PGPASSWORD or PGHOST set in the ambient environment are honored), not an empty environment.",
+        "subject": "django/db/backends/postgresql/client.py DatabaseClient.settings_to_cmd_args_env",
+        "hunk_ids": [],
+        "cited_from": "test_postgresql.py test_nopass asserts env == {} while test_crash_password_does_not_leak merges '{**os.environ, **env}'; issue: 'database client runshell doesn't respect os.environ values in some cases'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "BaseDatabaseClient.runshell invokes the client executable via subprocess.run with env=None (so the child inherits the calling process's os.environ) whenever settings_to_cmd_args_env returns a falsy env value such as an empty dict, instead of passing that empty dict/env to the subprocess.",
+        "subject": "BaseDatabaseClient.runshell",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When settings_to_cmd_args_env returns a truthy (non-empty) env dict, BaseDatabaseClient.runshell still runs the client with the dict merged over the process environment ({**os.environ, **env}), unchanged.",
+        "subject": "BaseDatabaseClient.runshell",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The PostgreSQL DatabaseClient.settings_to_cmd_args_env returns env=None (rather than an empty dict {}) as its second tuple element when no connection-specific environment variables (PGPASSWORD, PGSERVICE, PGSSL*, PGPASSFILE) are configured; it still returns the non-empty environment dict when at least one is configured.",
+        "subject": "DatabaseClient.settings_to_cmd_args_env (postgresql)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins the outcome that full os.environ (not empty) is passed to the subprocess when settings returns a falsy/empty env, but does not pin the exact mechanism of passing env=None vs. env=os.environ; the issue text even suggests the fix could instead live in the pgsql settings function returning None."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly states the child env always contains os.environ with backend-specified env dict entries overlaid on top, matching the exact {**os.environ, **env} merging that appears verbatim in the cited base/client.py code."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 pins that pgsql must ultimately yield os.environ rather than an empty environment, and the cited issue mentions pgsql 'returns empty dict instead of None,' but S_vis does not definitively commit that the pgsql settings function itself (rather than a generic runshell change) must return env=None."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_runshell_uses_env_none_for_empty_dict",
+      "test_source": "from unittest import mock\nfrom django.db.backends.base.client import BaseDatabaseClient\n\n\nclass FakeClient(BaseDatabaseClient):\n    def settings_to_cmd_args_env(self, settings_dict, parameters):\n        return ([\"foo\"], {})\n\n\ndef test_runshell_uses_env_none_for_empty_dict():\n    class FakeConnection:\n        settings_dict = {}\n    client = FakeClient(FakeConnection())\n    with mock.patch(\"django.db.backends.base.client.subprocess.run\") as run:\n        client.runshell([])\n        run.assert_called_once_with([\"foo\"], env=None, check=True)\n",
+      "gold_result": "PASSED (subprocess.run called with env=None for falsy env={})",
+      "buggy_result": "FAILED (subprocess.run called with env={} instead of env=None: Actual run(['foo'], env={}, check=True), expected env=None)",
+      "explanation": "Requirement R1 is that BaseDatabaseClient.runshell must hand env=None to subprocess.run whenever settings_to_cmd_args_env returns a falsy env value such as an empty dict, so that the child inherits os.environ rather than receiving an empty environment. The buggy code guards the merge with `if env:` and never resets {}, so an empty dict is forwarded verbatim as env={}; the gold code uses `env = {...} if env else None`, mapping any falsy env ({}) to None. My witness drives runshell end-to-end through a subclass whose settings_to_cmd_args_env returns (['foo'], {}), and — after patching subprocess.run — asserts that run is invoked with env=None (rather than env={}). Execution confirms gold passes (env=None forwarded) while the buggy program fails because it forwards env={} (empty environment) instead of inheriting os.environ. The visible tests only assert settings_to_cmd_args_env's raw return value or manually replicate the overlay by calling subprocess directly; none route a falsy env through runshell to check the env= argument, so this input/behavior is not pinned down anywhere visible and is a genuine hidden discriminator."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible bug: BaseDatabaseClient.runshell merges os.environ only when the 'env' returned by settings_to_cmd_args_env() is truthy ('if env:'). PostgreSQL's settings_to_cmd_args_env() always builds a plain dict 'env = {}' and populates it only when relevant settings are present, so in the common no-password/no-SSL case it returns exactly {} (falsy), which makes runshell skip the os.environ merge and call subprocess.run with env={} (empty environment). By contrast MySQL (env=None when no password), SQLite and Oracle always return None or a non-empty dict, avoiding the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant files: django/db/backends/base/client.py (runshell + settings_to_cmd_args_env stub), django/db/backends/postgresql/client.py, django/db/backends/mysql/client.py, oracle/client.py, sqlite3/client.py; management command django/core/management/commands/dbshell.py; tests under tests/dbshell/ (test_postgresql.py has test_nopass expecting env=={}; both test_postgresql.py and test_mysql.py test_crash_password_does_not_leak replicate the '{**os.environ, **env}' overlay manually because they invoke subprocess directly)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PostgreSQL client.runshell overrides runshell only to set SIGINT to SIG_IGN around super().runshell(); architecture layer (django/db/backends) has no check files beyond the backend *_client tests located in tests/dbshell."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tests/dbshell/test_postgresql.py (test_nopass, test_parameters) and test_mysql.py replicate the {**os.environ, **env} overlay manually because they call settings_to_cmd_args_env/subprocess directly rather than through BaseDatabaseClient.runshell."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Note: test_nopass and test_parameters in tests/dbshell/test_postgresql.py still assert an env of {} from the PostgreSQL settings_to_cmd_args_env even though H1 changes the empty-configuration return to None; these direct-return assertions appear inconsistent with H1 unless those test expectations were updated separately."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The H0 change also has independent effect for any backend that returns {} from settings_to_cmd_args_env: an empty dict is falsy, so H0 alone maps it to None in runshell; H1 additionally normalizes the PostgreSQL method's own return value."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 concerns BaseDatabaseClient.runshell passing env=None to subprocess.run whenever settings_to_cmd_args_env returns a falsy 'env' value (e.g. the empty dict that PostgreSQL's method returns in the no-credentials case), instead of forwarding that empty dict.\n\nI examined every oracle test relevant to runshell/dbshell:\n- tests/dbshell/tests.py — only tests the dbshell management command's FileNotFoundError path (test_command_missing); nothing about env handling.\n- tests/dbshell/test_postgresql.py — test_nopass/test_parameters/etc. call settings_to_cmd_args_env DIRECTLY and assert its returned env is {}; they do NOT go through runshell, so they do not exercise the subprocess.run(env=...) path that R1 modifies. test_sigint_handler calls connection.client.runshell([]) but only inspects the SIGINT signal handler, not the env argument. test_crash_password_does_not_leak manually replicates the {**os.environ, **env} overlay by invoking subprocess.run itself rather than via runshell.\n- tests/dbshell/test_mysql.py — likewise tests settings_to_cmd_args_env outputs directly and manually replicates the overlay; never routes a falsy env through BaseDatabaseClient.runshell.\n- tests/dbshell/test_sqlite.py / test_oracle.py — only assert the (args, env) tuple returned by settings_to_cmd_args_env (env literally None there); no runshell/subprocess invocation.\n- tests/backends/base/test_client.py — only verifies settings_to_cmd_args_env raises NotImplementedError on the base class; does not exercise runshell's env handoff.\n\nBecause every test that would be affected by this change tests the settings_to_cmd_args_env return value directly (asserting {} and None respectively), and none of them invokes runshell in a way that checks whether subprocess.run receives env=None vs {}, no oracle test can distinguish the buggy behavior from the fixed one for R1. This is corroborated by the benchmark noting \"(none recorded)\" currently-failing tests against the buggy program.\n\nFurthermore, all of the above test content is labeled [VISIBLE], and a witness may rest only on genuinely [HIDDEN] assertions. No [HIDDEN] test exercising the falsy-env -> env=None runshell handoff exists in the oracle. I therefore submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (BaseDatabaseClient.runshell): BaseDatabaseClient.runshell invokes the client executable via subprocess.run with env=None (so the child inherits the calling process's os.environ) whenever settings_to_cmd_args_env returns a falsy env value such as an empty dict, instead of passing that empty dict/env to the subprocess. — not entailed by S_vis (S_vis pins the outcome that full os.environ (not empty) is passed to the subprocess when settings returns a falsy/empty env, but does not pin the exact mechanism of passing env=None vs. env=os.environ; the issue text even suggests the fix could instead live in the pgsql settings function returning None.); confirmed by a synthesized witness: Requirement R1 is that BaseDatabaseClient.runshell must hand env=None to subprocess.run whenever settings_to_cmd_args_env returns a falsy env value such as an empty dict, so that the child inherits os.environ rather than receiving an empty environment. The buggy code guards the merge with `if env:` and never resets {}, so an empty dict is forwarded verbatim as env={}; the gold code uses `env = {...} if env else None`, mapping any falsy env ({}) to None. My witness drives runshell end-to-end through a subclass whose settings_to_cmd_args_env returns (['foo'], {}), and — after patching subprocess.run — asserts that run is invoked with env=None (rather than env={}). Execution confirms gold passes (env=None forwarded) while the buggy program fails because it forwards env={} (empty environment) instead of inheriting os.environ. The visible tests only assert settings_to_cmd_args_env's raw return value or manually replicate the overlay by calling subprocess directly; none route a falsy env through runshell to check the env= argument, so this input/behavior is not pinned down anywhere visible and is a genuine hidden discriminator.",
+    "confidence": "Medium"
+  }
+}

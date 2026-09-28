@@ -1,0 +1,98 @@
+{
+  "task_id": "django__django-15737",
+  "status": "ok",
+  "duration_seconds": 138.8881315420149,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15737",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When _prepare_related_fields_for_save (during save/bulk_create) finds that a cached related FK object (whose pk was previously auto-generated/unsaved) now has a non-None pk while the instance's FK id attribute is still empty, setting the FK to that id must NOT evict the already-cached related object reference — so a subsequent access like child.parent returns the cached parent without any extra lazy DB read.",
+        "subject": "django.db.models.Model._prepare_related_fields_for_save",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"However, when the child's ForeignKeyDeferredAttrbute \"parent_id\" changes value from None to the parent's ID, the child's internal cache containing the reference to \"parent\" is cleared. The subsequent reference to child.parent then must do a lazy read and reload parent from the database.\" ... and \"The print statement will cause an unnecessary lazy read of the parent object.\" Scenario code: `parent = Parent(name='parent_object')\nchild = Child(parent=parent)\nparent.save()\nchild.save()\nprint(child.parent.name)`. Proposed change: \"setattr(self, field.name, obj)\" so that \"the associated \"parent_id\" attribute [is set] while ensuring that the currently referenced object remains referenced.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When a related object referenced by a cached FK (e.g. child.parent) has had its pk generated from a save, and the child's FK id is still in empty_values (None), then preparing the child for save must still populate the child's FK id attribute with the related object's pk (child.parent_id = child.parent.pk), preserving the earlier data-loss fix.",
+        "subject": "django.db.models.Model._prepare_related_fields_for_save",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"Closed ticket #29497 solved a problem with potential data loss in this situation by essentially executing child.parent_id = child.parent.pk while preparing the child object to be saved.\" (And the current buggy source still contains `elif getattr(self, field.attname) in field.empty_values: ... setattr(self, field.attname, obj.pk)` in `_prepare_related_fields_for_save`.)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When save()/bulk_create()/bulk_update() (which call Model._prepare_related_fields_for_save()) runs on an instance whose cached forward relation has an empty local id value (getattr(instance, field.attname) in field.empty_values) but whose cached related object has a non-None pk, the instance's cached relation must be retained: after the save-preparation step the FK is assigned through the related-object descriptor so that subsequently reading the relation accessor (e.g. instance.<field>) returns the same live object instance rather than re-querying the database.",
+        "subject": "Model._prepare_related_fields_for_save",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly describes the exact scenario (cached FK related object whose pk has become non-None while the child's FK id attribute is still empty during save preparation) and requires that setting the FK must NOT evict the cached related reference so subsequent access returns the cached object without a lazy DB read. S_vis R2 independently confirms that the child's FK id gets populated with the cached object's pk. The S_impl requirement that the cached relation be retained and the accessor return the same live object rather than requerying the DB is exactly this behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix surface is the single line in Model._prepare_related_fields_for_save (django/db/models/base.py): the `elif getattr(self, field.attname) in field.empty_values:` branch does `setattr(self, field.attname, obj.pk)`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Setting field.attname (e.g. parent_id) routes through ForeignKeyDeferredAttribute.__set__ (django/db/models/fields/related_descriptors.py), which deletes the cached related value when the stored value changes and the field is cached — the mechanism that causes the unnecessary lazy read."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible regression test for this specific ticket is present in the repo; the only nearby existing test is BulkCreateTests.test_nullable_fk_after_parent / test_nullable_fk_after_parent_bulk_create (tests/bulk_create/tests.py) covering the related-object-assigned-before-save scenario but re-fetching from DB rather than asserting on cache/query behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/bulk_create/tests.py also asserts (test_unsaved_parent) that bulk_create() raises ValueError when the referenced parent has pk None, which this fix does not touch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ForeignKey id empty is detected via `getattr(self, field.attname) in field.empty_values`; the fix must preserve that detection/code path while changing how the id gets applied to the cache."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is a single line in Model._prepare_related_fields_for_save (django/db/models/base.py): the branch `elif getattr(self, field.attname) in field.empty_values:` changed from `setattr(self, field.attname, obj.pk)` to `setattr(self, field.name, obj)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Setting field.attname routes through ForeignKeyDeferredAttribute.__set__ (django/db/models/fields/related_descriptors.py), which when the stored value differs and the field is cached calls field.delete_cached_value(instance), evicting the cached related object; the fix instead routes through the forward FK descriptor (ForwardManyToOneDescriptor.__set__), which sets the local id to obj.pk AND re-establishes the cache to obj."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_prepare_related_fields_for_save is invoked from Model.save(), QuerySet.bulk_create(), and QuerySet.bulk_update()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The DB-committed value of the FK id is identical before and after (obj.pk); the patch only affects retention of the in-memory cached related object / avoidance of a redundant lazy DB read."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

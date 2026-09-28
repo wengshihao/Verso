@@ -1,0 +1,187 @@
+{
+  "task_id": "django__django-11885",
+  "status": "ok",
+  "duration_seconds": 490.83396662503947,
+  "llm_calls": 39,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11885",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a single delete operation (via on_delete=models.CASCADE emulating fast 'DELETE FROM <table> WHERE <fk>_id IN ...' deletion) produces more than one fast delete targeting the same database table — e.g. deleting a Person whose Model has a symmetric self-ManyToManyField 'friends' yields deletes on person_friends by from_id and by to_id; deleting a User referenced by Entry.created_by and Entry.updated_by yields deletes on entry by created_by_id and updated_by_id — the deletion Collector must combine the queries by table so only one DELETE per table is issued, of the form \"DELETE FROM person_friends WHERE from_id = :id OR to_id = :id\" / \"DELETE FROM entry WHERE created_by_id = :id OR updated_by_id = :id\", rather than issuing one DELETE statement per relation (reducing DB roundtrips accordingly).",
+        "subject": "django.db.models.deletion.Collector fast-delete query combination",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"the collection logic should combine such queries by table to reduce the number of roundtrips to the database.\" and the before/after query lists: before = \"DELETE FROM person_friends WHERE from_id = :id\\nDELETE FROM person_friends WHERE to_id = :id\\n...\\nDELETE FROM entry WHERE created_by_id = :id\\nDELETE FROM entry WHERE updated_by_id = :id\" ; after = \"DELETE FROM person_friends WHERE from_id = :id OR to_id = :id\\n...\\nDELETE FROM entry WHERE created_by_id = :id OR updated_by = :id\""
+      },
+      {
+        "id": "R2",
+        "statement": "The number of resulting DELETE round trips after such a delete must collapse each distinct target table to a single DELETE statement (regardless of how many CASCADE relations from that table, such as both directions of a self-M2M junction or two FKs to the same referenced model, point at the deleted object), i.e. combining 'N queries depending on the number of foreign relationships' down to one query per table.",
+        "subject": "django.db.models.deletion.Collector fast-delete query combination",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"But both queries (or N queries depending on the number of foreign relationships) can be combined into a single one by using OR\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When a delete cascades to a set of related models that are all fast-deletable, the collector now gathers, for each related_model, all the referencing auto-created one-to-one/one-to-many reverse-relation fields (whose remote model is that same related_model), and issues the related-objects fast-delete for that model batched over the union of those fields rather than one per referencing field. Externally observable as the number and shape of raw DELETE statements emitted by delete(): objects referencing the deleted rows through several such fields of the same model are removed in one per-table DELETE batch (per object-size batch) rather than in one DELETE per field, and each such referencing object is deleted exactly once rather than once per referencing field.",
+        "subject": "Collector.collect / Collector.delete (django.db.models.deletion) fast-delete grouping by related model",
+        "hunk_ids": [
+          "H2",
+          "H5",
+          "H6",
+          "H8",
+          "H9"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ2",
+        "statement": "Collector.subclasses and callers: related_objects now accepts (related_model, related_fields, objs) where related_fields is a list of fields, and returns the queryset of related_model over the base manager (using the write DB) filtered by the OR of every field in related_fields via '<field.name>__in=objs' — i.e. the queryset is the union of objects reachable through any of the listed fields. A directly observable consequence is that the returned queryset selects each related object once even when the same object matches multiple fields.",
+        "subject": "Collector.related_objects (django.db.models.deletion)",
+        "hunk_ids": [
+          "H9"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ3",
+        "statement": "NestedObjects.related_objects (used by the admin 'delete confirmation' cascade-display path in django.contrib.admin.utils) has been adapted to the new multi-field signature: it delegates to the base Collector.related_objects(related_model, related_fields, objs) and then applies select_related on the returned queryset for every related field name in related_fields (rather than for a single relation). Because NestedObjects.can_fast_delete always returns False, its collect still walks one referencing field at a time, so the observable admin nested-display of cascade-related objects is preserved while the override stays compatible with the new base-method contract.",
+        "subject": "NestedObjects.related_objects (django.contrib.admin.utils)",
+        "hunk_ids": [
+          "H0",
+          "H9"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ4",
+        "statement": "The on_delete cascade handling for a single deleted model now evaluates fast-delete candidacy per related_model (a model class whose referencing fields have all been grouped) instead of independently per fetched related-object queryset of each referencing field; fields that do not individually lead to a fast-deletable model are still walked one-by-one through their on_delete handler per object batch, while fields sharing a fast-deletable related_model are handled together. Observably, deleting even through a single referencing field continues to fast-delete the related table exactly as before (single DELETE per batch), and the merged-group logic changes only the count/grouping of fast-DELETE statements when multiple fields share a fast-deletable related_model.",
+        "subject": "Collector.collect on_delete dispatch / can_fast_delete grouping",
+        "hunk_ids": [
+          "H9"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ5",
+        "statement": "The fast-object-avoidance logic for an on_delete handler's related objects (deferring non-referenced columns via .only() unless signals are connected or the query uses select_related) is preserved when applied to the per-model merged query results, so the columns actually selected/fetched for each related model during cascade still exclude non-referenced fields in the same situations as before.",
+        "subject": "Collector.collect select-column deferral ('only') for on_delete-path related objects",
+        "hunk_ids": [
+          "H9"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1's cited evidence explicitly gives the exact observable output REQ1 commits to: a delete cascading through multiple referencing fields of the same model (e.g. created_by_id and updated_by_id on entry; from_id and to_id on a symmetric self-M2M junction) is combined per table into a single 'DELETE ... OR ...' statement, each referencing object removed once."
+      },
+      {
+        "requirement_id": "REQ2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes only the observable merging of DELETE statements in the deletion Collector output. Nothing in R1/R2 (or their citations) mentions the internal Collector.related_objects method signature change to (related_model, related_fields, objs) or its OR-union __in queryset semantics."
+      },
+      {
+        "requirement_id": "REQ3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis contains no reference to NestedObjects, django.contrib.admin.utils, admin delete-confirmation, or the select_related adaptation of NestedObjects.related_objects."
+      },
+      {
+        "requirement_id": "REQ4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins the observable effect (single-field deletes unchanged, multiple fields sharing a table merged into one grouped DELETE), which REQ4 also states. But REQ4 is primarily framed as an internal re-dispatch of on_delete/can_fast_delete candidacy per related_model, and S_vis gives no detail about that implementation structure, leaving which code path performs the merge unpinned."
+      },
+      {
+        "requirement_id": "REQ5",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis says nothing about fast-object-avoidance via .only() column deferral, non-referenced column exclusion, or select_related handling during on_delete-path collection; so it could not pin the preservation of that deferral in merged query results."
+      }
+    ],
+    "target_requirement_id": "REQ2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Deletion is orchestrated by django.db.models.deletion.Collector; fast deletes accumulate in self.fast_deletes (a list of queryset-likes) and are executed one-by-one in delete() via qs._raw_delete, each incrementing deleted_counter — this is the code the issue targets (no per-table merging yet)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A queryset qualifies for the fast delete path via Collector.can_fast_delete(...), active in collect() for top-level objs and for each 'auto-created' related candidate (get_candidate_relations_to_delete yields one_to_one/one_to_many auto-created reverse relations; plain many-to-many relation objects are not included there)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's example schema (Person.friends symmetric self M2M, User, Entry with created_by/updated_by FKs) does not exist verbatim among the visible test models (tests/delete/models.py); the closest present patterns are M2MFrom/M2MTo and tests like test_fast_delete_m2m/test_fast_delete_revm2m that assert on query counts."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing delete tests (tests/delete/tests.py) assert query counts via assertNumQueries / ctx.captured_queries and internal SELECT shape (e.g. test_only_referenced_fields_selected), establishing that query-count assertions are the accepted witness style for such deletion behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The report's final line carries a typo 'DELETRE FROM user WHERE id = :id' and its proposed combined SQL writes 'updated_by = :id' (vs original 'updated_by_id = :id'); these are illustrative query lists, not literal repo code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H2 (self.data=defaultdict(set)), H3 (self.dependencies=defaultdict(set)), H4/H6 (data/field_updates accessed via [] auto-creating), H1 (imports) are a defaultdict plumbing refactor that changes the internal storage types of Collector.data / Collector.field_updates / Collector.dependencies from plain dict to defaultdict(a). These are not directly externally observable via the public delete()/collect() API and were made to support the per-model grouping in H9; no separate behavioral requirements were extracted for them."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H7 changes can_fast_delete: when the passed 'objs' has a '_meta', the model is now resolved as objs._meta.model (the concrete model associated with the options/class) instead of type(objs); together with fast-delete candidacy now being invoked on a related model class (rather than a fetched per-field queryset), this lets candidacy decisions reflect the concrete model in proxy-related and grouping scenarios."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H8 changes get_del_batches to accept a list of fields and compute connection batch size from the joined field names, supporting the merged multi-field fast-delete groups; batch size semantics for a single field are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single-object fast-delete fast path in Collector.delete and the management of signal emissions / field_updates replay before/after collection are unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Base Collector.related_objects signature change (single 'related' relation → (related_model, [fields])) is part of patch-internal API churn driven by the same feature; NestedObjects in contrib.admin was updated (H0) to stay in sync because NestedObjects.collect routes every cascade through the base overridden method."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ2]: I investigated REQ2 (Collector.related_objects refactored to accept (related_model, [fields], objs) returning a queryset filtered by the OR of fields over the write-DB base manager, with each related object selected once).\n\nFindings:\n1. No tests are recorded as failing against the buggy program. Since a test failing on buggy is a NECESSARY condition to be a witness for any requirement of this patch, this is already a strong signal that no oracle test exercises the changed behavior in a buggy/gold-distinguishing way.\n2. I read the relevant oracle deletion test files: tests/delete/tests.py and tests/delete_regress/tests.py (both flagged [VISIBLE]), plus their models. The delete tests that touch fast-delete/query-count behavior (test_fast_delete_m2m, test_fast_delete_revm2m, test_large_delete*) assert query counts but do NOT assert the OR-union/\"select each related object once\" semantics of related_objects — they exercise single-path M2M/many-to-one cascades, not a model whose related objects are reachable through multiple fields.\n3. REQ2 is about an internal Collector API behavior; the only near-by model scenario (delete_regress Researcher with two FKs to Contact) uses on_delete=SET_NULL, which never routes the target through Collector.related_objects' union path, and its test only checks nulling, not the union query.\n4. All test content plausibly exercising this behavior that I inspected is [VISIBLE]; no [HIDDEN] assertion covering the OR-union/dedup of related_objects exists.\n5. Furthermore, the mechanical run_test harness could not execute real repository Django tests here: importing delete.models fails (ModuleNotFoundError, test app not installed in the harness env) and even a trivial django.test.TestCase fails in setUpClass due to unconfigured database connections. So I could not mechanically confirm a pass/fail for any candidate even if one existed.\n\nBecause (a) no failing tests are recorded, (b) no examined oracle test (visible or hidden) asserts the specific union/dedup semantics of REQ2, and (c) no candidate could be mechanically validated, I conclude the real pre-existing oracle does not contain a genuine witness for REQ2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ2]: gave up after exhausting its exploration budget without concluding (22 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ2] (Collector.related_objects (django.db.models.deletion)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

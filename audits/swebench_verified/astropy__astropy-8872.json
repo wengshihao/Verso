@@ -1,0 +1,120 @@
+{
+  "task_id": "astropy__astropy-8872",
+  "status": "ok",
+  "duration_seconds": 358.7388178750407,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "astropy__astropy-8872",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Constructing a Quantity from float16 input without an explicit dtype preserves the float16 dtype rather than auto-upgrading it to float64: in particular `(np.float16(1) * u.km).dtype` must be `dtype('float16')`, i.e. float16 values must behave like the other float types (float32, float64, float128) whose dtype is preserved during Quantity creation / unit multiplication.",
+        "subject": "astropy.units.quantity.Quantity.__new__ / Quantity dtype inference on multiplication by a unit",
+        "hunk_ids": [],
+        "cited_from": "\"float16 quantities get upgraded to float64 automatically... it gets upgraded automatically to `np.float64`, which is something that does not happen with other float types:\" ```In [74]: (np.float16(1) * u.km) Out[74]: <Quantity 1. km> In [75]: (np.float16(1) * u.km).dtype Out[75]: dtype('float64')``` However: ```In [76]: (np.float32(1) * u.km).dtype Out[76]: dtype('float32') ... In [78]: (np.float128(1) * u.km).dtype Out[78]: dtype('float128')```"
+      },
+      {
+        "id": "R2",
+        "statement": "The default-dtype conversion must continue to apply (only) to inputs that cannot represent float (e.g. integers, booleans, and object arrays) and to be overridden when a dtype argument is given explicitly: with no explicit dtype an integer-valued input Quantity defaults to a float64 dtype (q2 = u.Quantity(int-quantity) -> q2.dtype == float), and when dtype=int is supplied the integer dtype is retained.",
+        "subject": "astropy.units.quantity.Quantity.__new__ / default dtype handling",
+        "hunk_ids": [],
+        "cited_from": "\"Test that if an explicit dtype is given, it is used, while if not, numbers are converted to float (including decimal.Decimal, which numpy converts to an object; closes #1419)\" ... \"q1 = u.Quantity(12, unit=u.m / u.s, dtype=int); assert q1.dtype == int; q2 = u.Quantity(q1); assert q2.dtype == float; assert q2.value == float(q1.value)\" ... \"If dtype is specified, use it, but if not, convert int, bool to float\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Quantity is constructed from a non-Quantity input (numpy array/scalar) with dtype=None and no explicit conversion, a value whose dtype kind is integer ('iu') or object ('O') is cast to a float (float64) Quantity, while a floating-point value of a non-default float dtype such as float16 is NOT widened to float64 — the resulting Quantity retains the input's float dtype.",
+        "subject": "Quantity.__new__ default-dtype coercion (raw-array path)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When Quantity is constructed from an existing Quantity input (no unit change) with dtype=None and copy=True, an integer-kind input Quantity is promoted to float64, whereas a float16 (or other float-kind) input Quantity keeps its original float dtype instead of being widened to float64 — only integer-kind inputs trigger the float default in this code path.",
+        "subject": "Quantity.__new__ default-dtype coercion (Quantity-input, copy=True path)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly pins float16 preservation on a raw float16 value (`np.float16(1)*u.km` keeps float16), and S_vis R2/citation pins integer/object inputs defaulting to float64 while an explicit dtype overrides — together fully covering the raw-array behavior described in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2's citation test `u.Quantity(q1)` (int Quantity -> float64) directly pins the integer-promotion half of the Quantity-input copy=True path, but the float16/float-kind Quantity being kept at its own dtype on that specific code path is never demonstrated in visible evidence (S_vis R1's float16 case is only shown on the raw-scalar `* u.km` path). It may follow by extension of the general 'only int/bool/object get default float' principle, but that path-specific claim is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test",
+      "test_source": "import astropy.units as u\nimport numpy as np\n\ndef test():\n    q = u.Quantity(np.array([1.0, 2.0], dtype=np.float16))\n    q2 = u.Quantity(q, copy=True)\n    assert q2.dtype == np.float16\n",
+      "gold_result": "PASSED (float16 Quantity input with dtype=None, copy=True keeps dtype float16)",
+      "buggy_result": "FAILED — AssertionError: dtype('float64') == numpy.float16 (buggy widens the float16 Quantity input to float64)",
+      "explanation": "R2 is the Quantity.__new__ default-dtype coercion rule for the Quantity-input, copy=True path (input is an existing Quantity, no unit change, dtype=None): only integer-kind ('iu') inputs trigger promotion to float64, whereas float-kind inputs such as float16 must keep their own float dtype rather than being widened to float64. The gold H1 fix replaces the buggy condition `not (np.can_cast(np.float32, value.dtype) or value.dtype.fields)` with `value.dtype.kind in 'iu'`, so the discriminating behavior is: constructing a new Quantity from a float16 Quantity input (copy=True, dtype defaulting to None) must preserve float16 on gold but yields float64 on the buggy version (since float16 cannot be safely cast to float32, the buggy condition wrongly treats it like an integer and widens to float64). My witness constructs `q = Quantity(np.array([1.0,2.0], dtype=np.float16))` and then `Quantity(q, copy=True)`, asserting the resulting dtype is still float16. Verified by execution: PASSED against gold (float16 preserved) and FAILED against buggy (AssertionError, dtype became float64). This float16-Quantity-input preservation scenario is not pinned down anywhere in the [VISIBLE] material: the visible test_preserve_dtype only exercises integer->float promotion from a Quantity input and float32 preservation from a *plain ndarray* input (neither triggers the distinct float16 Quantity-input clause of R2), and all other quantity unit test files are VISIBLE without such an assertion, so this is a genuine hidden fact not reconstructible by the repair system from visible tests. (Source format is pytest-compatible since the run_test harness for this Python repo executes it that way; same source byte-for-byte was confirmed PASS/FAIL as reported.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Quantity implementation lives in astropy/units/quantity.py; unit tests in astropy/units/tests/test_quantity.py (class TestQuantityCreation.test_preserve_dtype and test_dimensionless_operations are the most relevant)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The float16->float64 promotion originates in Quantity.__new__ in quantity.py where, when dtype is None, values are cast to float on the condition `(not (np.can_cast(np.float32, value.dtype) or value.dtype.fields) or value.dtype.kind == 'O')`. Since np.can_cast(np.float32, np.float16) is False, float16 falls into the same branch that is documented/meant for integers, booleans, and object arrays, so float16 scalars/arrays get `astype(float)`ed to float64."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter notes the related issue #6389; no fix entry exists yet in CHANGES.rst for this report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_preserve_dtype already verifies float32 preservation and integer-to-float default, so a correct fix must not regress either."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 is documentation-only: the dtype docstring now reads that integer and (non-Quantity) object inputs are converted to float by default (previously it claimed any input 'that cannot represent float' including int/bool). It adds no independently-testable behavior beyond what H1/H2 implement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The bool ('b') dtype kind is not included in the check 'iuO' in H2 nor 'iu' in H1; a Python bool scalar is converted to a bool ndarray before this check and so is not cast by this logic."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold H2 retains the object-kind ('O') case in the coercion branch, matching the docstring's '(non-Quantity) object inputs'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both H1 and H2 previously coerced float16 and float128 (any float not safely castable to float32) to float64; the fix confines default coercion to integer/object inputs."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated whether the real oracle already contains a test that witnesses R2 (Quantity.__new__ default-dtype coercion when the input is a Quantity, dtype=None, copy=True: integer-kind inputs promote to float64 while float-kind inputs such as float16 keep their dtype instead of being widened to float64).\n\nThe single test in the failing list is astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype. Reading test_quantity.py shows this whole file (including that method) is labeled [VISIBLE]. More importantly, when I mechanically reproduced and ran the exact current content of test_preserve_dtype against BOTH the buggy and gold programs, it PASSED against both. Its assertions only cover integer->float promotion from a Quantity input (q2=..Quantity(q1 with dtype=int)) and float32 preservation from a *plain ndarray* input (u.Quantity(a3, u.yr)) — none of them exercise the distinct clause of R2: that a float16/other-float *Quantity* input (Quantity-input, copy=True path) must NOT be widened to float64. I confirmed the behavior difference directly: constructing from a float16 Quantity input fails on buggy (widened to float64) and passes on gold (keeps float16).\n\nI searched the other quantity test files in the units suite (test_quantity_array_methods.py, test_quantity_non_ufuncs.py, test_quantity_ufuncs.py, test_quantity_helpers.py, test_quantity_annotations.py, test_quantity_decorator.py) — all labeled [VISIBLE] and none contain a float16/float-non-widening Quantity-input assertion for R2. No [HIDDEN] content relevant to R2 exists in the oracle that I could find, and every witness candidate I examined is drawn from [VISIBLE] content (which can never serve as a Witness since it was never hidden from the repair system). The float16-preservation assertion is a behavior I could only reconstruct myself from the requirement, not from any [HIDDEN] oracle assertion.\n\nTherefore, no genuine [HIDDEN] oracle test enforces R2, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (Quantity.__new__ default-dtype coercion (Quantity-input, copy=True path)): When Quantity is constructed from an existing Quantity input (no unit change) with dtype=None and copy=True, an integer-kind input Quantity is promoted to float64, whereas a float16 (or other float-kind) input Quantity keeps its original float dtype instead of being widened to float64 — only integer-kind inputs trigger the float default in this code path. — not entailed by S_vis (S_vis R2's citation test `u.Quantity(q1)` (int Quantity -> float64) directly pins the integer-promotion half of the Quantity-input copy=True path, but the float16/float-kind Quantity being kept at its own dtype on that specific code path is never demonstrated in visible evidence (S_vis R1's float16 case is only shown on the raw-scalar `* u.km` path). It may follow by extension of the general 'only int/bool/object get default float' principle, but that path-specific claim is not pinned down.); confirmed by a synthesized witness: R2 is the Quantity.__new__ default-dtype coercion rule for the Quantity-input, copy=True path (input is an existing Quantity, no unit change, dtype=None): only integer-kind ('iu') inputs trigger promotion to float64, whereas float-kind inputs such as float16 must keep their own float dtype rather than being widened to float64. The gold H1 fix replaces the buggy condition `not (np.can_cast(np.float32, value.dtype) or value.dtype.fields)` with `value.dtype.kind in 'iu'`, so the discriminating behavior is: constructing a new Quantity from a float16 Quantity input (copy=True, dtype defaulting to None) must preserve float16 on gold but yields float64 on the buggy version (since float16 cannot be safely cast to float32, the buggy condition wrongly treats it like an integer and widens to float64). My witness constructs `q = Quantity(np.array([1.0,2.0], dtype=np.float16))` and then `Quantity(q, copy=True)`, asserting the resulting dtype is still float16. Verified by execution: PASSED against gold (float16 preserved) and FAILED against buggy (AssertionError, dtype became float64). This float16-Quantity-input preservation scenario is not pinned down anywhere in the [VISIBLE] material: the visible test_preserve_dtype only exercises integer->float promotion from a Quantity input and float32 preservation from a *plain ndarray* input (neither triggers the distinct float16 Quantity-input clause of R2), and all other quantity unit test files are VISIBLE without such an assertion, so this is a genuine hidden fact not reconstructible by the repair system from visible tests. (Source format is pytest-compatible since the run_test harness for this Python repo executes it that way; same source byte-for-byte was confirmed PASS/FAIL as reported.)",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "task_id": "matplotlib__matplotlib-23057",
+  "status": "ok",
+  "duration_seconds": 516.570938791032,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-23057",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "In an interactive IPython session started for a GUI backend (e.g. `ipython --pylab=tk`, also reported for Qt5), once a first plotting command (e.g. `plot(arange(10))`) has drawn a `y = x` line in an on-screen figure, every subsequent pyplot command that adds or mutates artists of that figure (e.g. `plot(-arange(10))`, `tripcolor(...)`) must automatically update the on-screen figure to show the newly added artist (`y = -x` line) without the user needing to call `pyplot.draw()`; and an explicit `pyplot.draw()` issued afterwards must produce no visible change (the figure must already show both lines).",
+        "subject": "pyplot interactive redraw after each plotting command (matplotlib figure redraw under IPython %pylab, Qt5 and Tk backends)",
+        "hunk_ids": [],
+        "cited_from": "Issue 'Actual outcome': \"2. After the second `plot` command, the figure does not update. 3. After the `draw` command, the figure updates to show both the `y = x` and `y = -x` lines.\" / 'Expected outcome': \"2. After the second `plot` command, the figure updates with the addition of a `y = -x` line. (This is the deviation.) 3. The `draw` command should produce no visible change in the figure.\" / Bug summary: \"subsequent calls to `pyplot.plot` and `pyplot.tripcolor` fail to update an on-screen figure until `pyplot.draw` is invoked.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When matplotlib is running inside IPython (interactive, non-PLAIN REPL hook state), a 'post_execute' callback is registered that, after each user command has finished executing and before the prompt is returned to the user, invokes draw_idle on every pyplot-managed stale figure — so any figure whose content was changed during that just-executed command is automatically redrawn on screen without an explicit draw() call.",
+        "subject": "pyplot.install_repl_displayhook / _draw_all_if_interactive / Gcf.draw_all (IPython post_execute auto-redraw)",
+        "hunk_ids": [],
+        "cited_from": "pyplot.py install_repl_displayhook docstring: \"The display hook gets called when the read-evaluate-print-loop (REPL) of the shell has finished the execution of a command. We use this callback to be able to automatically update a figure in interactive mode. This works both with IPython and with vanilla python shells.\" and `ip.events.register(\"post_execute\", _draw_all_if_interactive)`. _pylab_helpers.Gcf.draw_all: \"Redraw all stale managed figures, or, if *force* is True, all managed figures.\" Guide (interactive_guide.rst): \"In ``IPython`` we use the ``'post_execute'`` hook to invoke `~.backend_bases.FigureCanvasBase.draw_idle` on any stale figures after having executed the user's input, but before returning the prompt to the user.\""
+      },
+      {
+        "id": "R3",
+        "statement": "The automatic post-execute redraw of stale figures applies to the set of figures created through the pyplot interface and tracked as 'figure managers' (i.e. those iterated by Gcf.draw_all over all figure managers); a figure added to the current axes by a plotting command such as pyplot.plot is among these managed figures and therefore subject to this redraw. (Corollary framing of the redraw contract used by R1/R2.)",
+        "subject": "Gcf.draw_all / manager sorting of figures (only figures managed by pyplot get redrawn)",
+        "hunk_ids": [],
+        "cited_from": "_pylab_helpers.Gcf class docstring: \"The canvas of a figure created through pyplot is associated with a figure manager, which handles the interaction between the figure and the backend... This class ... consists of an OrderedDict mapping figure/manager numbers to managers\" and draw_all body: \"for manager in cls.get_all_fig_managers(): if force or manager.canvas.figure.stale: manager.canvas.draw_idle()\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-1",
+        "statement": "After pyplot.switch_backend() completes a switch to a concrete (named, non-auto-sentinel) backend, the current shell's REPL/pylab display hook is (re)installed: in an interactive matplotlib session -- including an IPython '--pylab' session where install_repl_displayhook registers pyplot._draw_all_if_interactive as the IPython post_execute handler -- figures are automatically re-drawn at the end of subsequent input commands (interactive auto-redraw is active). This holds whether the backend load is the session's first lazy load through _get_backend_mod or a later explicit backend switch reached through any other entry point; previously the hook was installed only inside _get_backend_mod's `if _backend_mod is None` first-lazy-load branch, so a backend switch performed once a backend was already loaded (e.g. via an explicit switch_backend / matplotlib.use call) left the auto-redraw display hook unregistered.",
+        "subject": "pyplot.switch_backend / interactive auto-redraw display hook installation",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "REQ-1 commits to a code-level fix: the REPL/display hook must be reinstalled after every pyplot switch_backend() to a concrete backend, including later switches made once a backend is already loaded (the hook having previously been registered only in _get_backend_mod's first-lazy-load branch). None of the S_vis requirements mention backend switching or switch_backend at all; R1-R3 only describe the intended end behavior (auto-redraw of updated figures) and the general install_repl_displayhook/post_execute and Gcf.draw_all mechanisms, with no evidence that a later backend switch breaks or needs to reinstate the hook. Thus visible information does not pin down this specific switch-backend reinstallation behavior."
+      }
+    ],
+    "target_requirement_id": "REQ-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_switch_backend_reinstalls_displayhook",
+      "test_source": "def test_switch_backend_reinstalls_displayhook():\n    import matplotlib\n    import matplotlib.pyplot as plt\n    # Ensure a concrete backend is loaded.\n    plt.switch_backend(\"agg\")\n    # De-register the hook so we can verify switch_backend re-installs it.\n    plt.uninstall_repl_displayhook()\n    assert plt._REPL_DISPLAYHOOK.name == \"NONE\"\n    # Switch backend again even though one is already loaded.\n    plt.switch_backend(\"agg\")\n    # A concrete backend switch must reinstall the repl display hook.\n    assert plt._REPL_DISPLAYHOOK.name == \"PLAIN\"",
+      "gold_result": "PASSED (in golden/pyplot._REPL_DISPLAYHOOK becomes PLAIN after the second switch_backend)",
+      "buggy_result": "FAILED — AssertionError: assert 'NONE' == 'PLAIN' at the final assert (after second switch_backend the hook stays NONE, since install_repl_displayhook is only run in _get_backend_mod's first-lazy-load branch)",
+      "explanation": "REQ-1 says pyplot.switch_backend() must (re)install the REPL display hook when it completes a switch to a concrete backend even when a backend is ALREADY loaded (not just on the +first+lazy load path through _get_backend_mod). In matplotlib.pyplot the `_REPL_DISPLAYHOOK` module global is NONE by default and becomes PLAIN each time install_repl_displayhook() runs in a non-IPython shell, and uninstall_repl_displayhook() resets it back to NONE. The witness derives directly from the diff: the gold fix moved `install_repl_displayhook()` from inside `_get_backend_mod`'s `if _backend_mod is None` branch to the tail of switch_backend, so an explicit later switch on an already-loaded backend now re-triggers hook installation whereas in the buggy version it does not.\n\nThe test first loads a concrete backend (`plt.switch_backend(\"agg\")`), then calls `uninstall_repl_displayhook()` to force `_REPL_DISPLAYHOOK` back to NONE while `_backend_mod` remains non-None, then calls `plt.switch_backend(\"agg\")` again and asserts the hook is reinstalled (PLAIN). On gold the trailing switch_backend reaches the relocated install_repl_displayhook and the assert holds (PASSED); on the buggy revision no backend is lazily re-created (backend already loaded) so install_repl_displayhook is never reached and the hook stays NONE (FAILED at the final assert).\n\nI confirmed this is not an already-visible assertion: the Oracle Search Agent established that the visible lib/matplotlib/tests/test_pyplot.py and the related interactive/backend test files contain no test of install_repl_displayhook/switch_backend/post_execute hook registration, so reaching into the private `_REPL_DISPLAYHOOK` state to check that a post-load switch re-registers the hook exposes a fact that no visible assertion forces."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug report (bisected to commit f937b0ab5ef9d5ffe9f2f58f6391357783cc4afa) states this is a regression between matplotlib 3.5.1 and 3.5.2 affecting figure redraw, observed with both pyplot.plot and pyplot.tripcolor and on both Qt5 and Tk backends."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Auto-redraw plumbing lives in: lib/matplotlib/pyplot.py (install_repl_displayhook, _draw_all_if_interactive, _get_backend_mod, _auto_draw_if_interactive, plot/gca wrappers), lib/matplotlib/_pylab_helpers.py (Gcf.draw_all over stale figures), lib/matplotlib/backend_bases.py (FigureCanvasBase.draw_idle/_idle_draw_cntx, _is_idle_drawing flag), and lib/matplotlib/figure.py (figure.is_stale / stale flags, Figure.draw setting stale=False)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Two complementary auto-redraw paths exist: (a) for a plain (non-IPython) REPL, figure().stale_callback is set to pyplot._auto_draw_if_interactive which calls fig.canvas.draw_idle when the figure becomes stale (guarded by interactive() and not canvas.is_saving() / _is_idle_drawing); (b) for IPython, install_repl_displayhook registers _draw_all_if_interactive as a post_execute hook which calls Gcf.draw_all() (only stale figures)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because --pylab / IPython uses path (b), a regression there should be visible as the second-plot-command-not-refreshing symptom described in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Documented behavior on display: pyplot.draw docstring says it is equivalent to calling ``fig.canvas.draw_idle()`` ('Redraw the current figure... his is equivalent to calling ``fig.canvas.draw_idle()``'); FigureCanvasBase.draw_idle docstring says a widget redraw is requested for when control returns to the GUI event loop and that multiple draw_idle calls coalesce into a single render."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under lib/matplotlib/tests/ (e.g. test_pyplot.py); no test file for this specific #23057 symptom is present in the visible tree, so an image/timing-based interactive redraw test is the likely fix validation surface."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Guide doc/doc/users/explain/interactive_guide.rst documents the stale-artist and idle-draw design that underlies the reported behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change moves install_repl_displayhook() from within _get_backend_mod (guarded by `if _backend_mod is None`, i.e. one-time first lazy backend load) to the tail of switch_backend, executing whenever a concrete backend load completes; the auto-sentinel resolution path reaches this via its recursive concrete switch_backend calls."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "install_repl_displayhook() is idempotent in effect: it early-returns when _REPL_DISPLAYHOOK is already IPYTHON, and otherwise (re)sets PLAIN when no running IPython is found, so repeated invocation is a no-op in effect under IPython and re-asserts plain-REPL state otherwise."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "install_repl_displayhook() registers pyplot._draw_all_if_interactive as IPython's post_execute event handler (and enables the GUI event loop) when IPython is running; for a plain REPL it leaves _REPL_DISPLAYHOOK as PLAIN, which figure() later consults to assign fig.stale_callback = _auto_draw_if_interactive."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Function invoked by switch_backend after `matplotlib.backends.backend = newbackend`: pyplot.switch_backend(...) in lib/matplotlib/pyplot.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The relocation closes a gap where a backend switch reached via an explicit switch_backend/matplotlib.use call after pyplot already had a loaded backend could complete without the display hook being registered, because the old install site (in _get_backend_mod) only ran on the first lazy load (when _backend_mod was None)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-1]: I searched the oracle to find a Witness for REQ-1 (after pyplot.switch_backend() completes, install_repl_displayhook must (re)register the IPython post_execute handler / otherwise install a REPL display hook, for a concrete backend switch on an already-loaded backend, not only on the first lazy load).\n\nThe single test reported failing against the buggy program is lib/matplotlib/tests/test_pyplot.py::test_pylab_integration. However, reading lib/matplotlib/tests/test_pyplot.py returns the file entirely labeled [VISIBLE] and its full content does not contain any `test_pylab_integration` function, nor any test referencing install_repl_displayhook, _draw_all_if_interactive, switch_backend, post_execute, IPython/pylab integration, or Gcf.draw_all registration. (The visible file ends at test_set_current_axes_on_subfigure.) Because that whole file's content is visible material, no assertion from it could serve as a hidden Witness regardless.\n\nI additionally checked the other plausibly relevant hidden/visible interactive & backend test files: lib/matplotlib/tests/conftest.py and lib/mpl_toolkits/tests/conftest.py ([HIDDEN] but trivial single-line imports of matplotlib.testing.conftest), lib/matplotlib/tests/test_backends_interactive.py ([VISIBLE], GUI smoke/thread/blit tests with no repl displayhook assertion), test_backend_pgf.py and test_backend_bases.py ([VISIBLE], rendering/canvas tests unrelated to the display-hook-install concern). None of these contains a [HIDDEN] assertion that tests the REQ-1 behavior (re-registering the auto-redraw display hook when a backend is switched after one is already loaded).\n\nSince no genuine [HIDDEN] oracle assertion that tests this exact requirement is readable to me (the named failing test's source is not present in the oracle files I can access, and all other relevant material is [VISIBLE]), I could not construct/build an execution-confirmed witness and must report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ-1] (pyplot.switch_backend / interactive auto-redraw display hook installation): After pyplot.switch_backend() completes a switch to a concrete (named, non-auto-sentinel) backend, the current shell's REPL/pylab display hook is (re)installed: in an interactive matplotlib session -- including an IPython '--pylab' session where install_repl_displayhook registers pyplot._draw_all_if_interactive as the IPython post_execute handler -- figures are automatically re-drawn at the end of subsequent input commands (interactive auto-redraw is active). This holds whether the backend load is the session's first lazy load through _get_backend_mod or a later explicit backend switch reached through any other entry point; previously the hook was installed only inside _get_backend_mod's `if _backend_mod is None` first-lazy-load branch, so a backend switch performed once a backend was already loaded (e.g. via an explicit switch_backend / matplotlib.use call) left the auto-redraw display hook unregistered. — not entailed by S_vis (REQ-1 commits to a code-level fix: the REPL/display hook must be reinstalled after every pyplot switch_backend() to a concrete backend, including later switches made once a backend is already loaded (the hook having previously been registered only in _get_backend_mod's first-lazy-load branch). None of the S_vis requirements mention backend switching or switch_backend at all; R1-R3 only describe the intended end behavior (auto-redraw of updated figures) and the general install_repl_displayhook/post_execute and Gcf.draw_all mechanisms, with no evidence that a later backend switch breaks or needs to reinstate the hook. Thus visible information does not pin down this specific switch-backend reinstallation behavior.); confirmed by a synthesized witness: REQ-1 says pyplot.switch_backend() must (re)install the REPL display hook when it completes a switch to a concrete backend even when a backend is ALREADY loaded (not just on the +first+lazy load path through _get_backend_mod). In matplotlib.pyplot the `_REPL_DISPLAYHOOK` module global is NONE by default and becomes PLAIN each time install_repl_displayhook() runs in a non-IPython shell, and uninstall_repl_displayhook() resets it back to NONE. The witness derives directly from the diff: the gold fix moved `install_repl_displayhook()` from inside `_get_backend_mod`'s `if _backend_mod is None` branch to the tail of switch_backend, so an explicit later switch on an already-loaded backend now re-triggers hook installation whereas in the buggy version it does not.\n\nThe test first loads a concrete backend (`plt.switch_backend(\"agg\")`), then calls `uninstall_repl_displayhook()` to force `_REPL_DISPLAYHOOK` back to NONE while `_backend_mod` remains non-None, then calls `plt.switch_backend(\"agg\")` again and asserts the hook is reinstalled (PLAIN). On gold the trailing switch_backend reaches the relocated install_repl_displayhook and the assert holds (PASSED); on the buggy revision no backend is lazily re-created (backend already loaded) so install_repl_displayhook is never reached and the hook stays NONE (FAILED at the final assert).\n\nI confirmed this is not an already-visible assertion: the Oracle Search Agent established that the visible lib/matplotlib/tests/test_pyplot.py and the related interactive/backend test files contain no test of install_repl_displayhook/switch_backend/post_execute hook registration, so reaching into the private `_REPL_DISPLAYHOOK` state to check that a post-load switch re-registers the hook exposes a fact that no visible assertion forces.",
+    "confidence": "Medium"
+  }
+}

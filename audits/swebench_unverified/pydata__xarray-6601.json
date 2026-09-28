@@ -1,0 +1,111 @@
+{
+  "task_id": "pydata__xarray-6601",
+  "status": "ok",
+  "duration_seconds": 398.1747473749565,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-6601",
+    "s_vis": [
+      {
+        "id": "polyval-dim-order",
+        "statement": "Calling xr.polyval(coords['azimuth_time'], polyfit_coefficients) where coords['azimuth_time'] is a 1-D DataArray (with a datetime64 'azimuth_time' dim) and polyfit_coefficients is a 2-D DataArray with dims ('degree', 'axis') and an integer 'degree' coordinate, must return a DataArray whose dimension order is ('azimuth_time', 'axis') — the evaluation-coordinate dimension first, as in xarray v2022.3.0 — rather than ('axis', 'azimuth_time').",
+        "subject": "xarray.core.computation.polyval",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"For example, the following code returns different results... ds_out = xr.polyval(azimuth_time.coords[\"azimuth_time\"], polyfit_coefficients) print(ds_out.dims)\" followed by the two outputs: \"xarray v2022.3.0\\n('azimuth_time', 'axis')\\n\\nxarray v2022.3.1.dev103+gfc282d59\\n('axis', 'azimuth_time')\" and \"I noticed that the dimension order of the object returned by the latest polyval (main, unreleased) is different compared to xarray<=2022.3.0.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "xr.polyval returns an output whose non-degree broadcast dimension ordering is anchored on the evaluation coordinate `coord`: the Horner accumulator is seeded from a full broadcast (all-zero DataArray) matching `coord`'s dimensions/coordinates, placed as the leading operand of the first addition with the highest-degree coefficient term `coeffs.isel(degree_dim=max_deg, drop=True)`, so that when the leading-coefficient term and `coord` disagree in dimension order the returned array's dimension ordering/index structure and (DataArray) name follow `coord` rather than the coefficient array.",
+        "subject": "xr.polyval (xarray.core.computation.polyval)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "xr.polyval produces a dimensionally consistent result independent of the dtype of the evaluation coordinate: because `zeros_like(coord)` is applied after `_ensure_numeric`, a datetime64/timedelta64 `coord` (already converted to its int64-nanoseconds/float numeric representation) orders its broadcast dimensions the same way a numerically-dtyped coordinate with equal intrinsic structure would, instead of flipping the leading broadcast dimension order as occurred when the coefficient term was the leading operand.",
+        "subject": "xr.polyval (xarray.core.computation.polyval)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "polyval-dim-order"
+        ],
+        "rationale": "The visible issue pins down that polyval's returned dims follow the evaluation coordinate (('azimuth_time','axis')) for the reported datetime64 case, which is the observable surface of R1's ordering claim. But R1 also commits to a specific mechanism (seeding the Horner accumulator from a zeros-like full broadcast as leading operand) and to index-structure/name propagation when coeff and coord disagree — none of which the visible evidence reveals, so the exact behavior isn't pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "polyval-dim-order"
+        ],
+        "rationale": "The visible evidence does exercise a datetime64 coord and confirm coord-first order, which is consistent with R2's claim. However, R2's substance is that dtype-independence is guaranteed because zeros_like(coord) is applied after _ensure_numeric (int64-nanoseconds conversion), and no visible evidence demonstrates that internal conversion, the ordering-equivalence across dtypes, or its causal role."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_polyval_anchors_dim_order_on_coord",
+      "test_source": "import numpy as np\nimport xarray as xr\n\ndef test_polyval_anchors_dim_order_on_coord() -> None:\n    coord = xr.DataArray([1.0, 2.0, 3.0], dims=\"x\", name=\"eval_coord\")\n    coeffs = xr.DataArray(\n        np.asarray([[1.0, 2.0, 3.0], [0.5, -1.0, 2.0]], dtype=float),\n        dims=(\"y\", \"degree\"),\n        coords={\"degree\": [0, 1, 2]},\n    )\n    result = xr.polyval(coord=coord, coeffs=coeffs)\n    assert result.dims == (\"x\", \"y\"), repr(result.dims)\n",
+      "gold_result": "PASSED (result.dims == ('x','y'), anchored on coord 'x' first)",
+      "buggy_result": "FAILED (AssertionError: ('y','x') != ('x','y') - dim order followed the highest-degree coefficient slice's dim 'y')",
+      "explanation": "R1 is exactly about the dimension-ordering anchoring of the returned polyval array. The gold patch seeds the Horner accumulator with `zeros_like(coord) + coeff-highest-degree-slice`, placing the full coord broadcast first; the buggy patch has `coeff-highest-degree-slice + zeros_like(coord)`, placing the coefficient slice first. I built a coord DataArray with dims (\"x\",) and a coeff array with broadcast dim \"y\" wrapping a \"degree\" dim [0,1,2]. The highest-degree term `coeffs.isel(degree=2, drop=True)` then has dims (\"y\",), which disagrees in order with coord's (\"x\",). When these are added, xarray orders the resulting dims after the leading operand: gold → ('x','y') (anchored on the eval coord), buggy → ('y','x') (anchored on the coefficient slice). I empirically confirmed with run_test that the identical assertion (result.dims == (\"x\",\"y\")) PASSES against gold and FAILS against buggy. The visible polyval tests use only xr.testing.assert_allclose, which re-aligns operands by dimension label and therefore does not pin the returned dim order — so this hidden dim-order fact is genuinely distinguishing, matching the known insufficiency of the visible S_vis requirements for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "xr.polyval lives in xarray/core/computation.py and is evaluated via Horner's method (res = highest-degree term + zeros_like(coord), then for deg descending  res *= coord; res += isel(degree deg)); it validates that degree_dim is a labeled index coordinate of integer dtype, reindexes coeffs onto np.arange(max_deg+1), and calls _ensure_numeric on coord to convert datetime64/timedelta64 input."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "polyval tests are in xarray/tests/test_computation.py (test_polyval parametrized; note expected results use xr.testing.assert_allclose, so they pin numeric values but the dim order the issue reports on main ('axis','azimuth_time') is not contradicted by those tests since they assert on multi-dim broadcasts where coeff dims are checked via assert_allclose)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the reported case coord carries a datetime64 coordinate that _ensure_numeric converts to int64 nanoseconds via datetime_to_numeric with an offset of np.datetime64('1970-01-01')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The entire developer patch is a single hunk [H0] in xarray/core/computation.py inside xr.polyval: it swaps the operand order of the (commutative) first Horner's-method accumulation from `coeffs.isel(degree_dim=max_deg, drop=True) + zeros_like(coord)` to `zeros_like(coord) + coeffs.isel(degree_dim=max_deg, drop=True)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the addition is commutative in value, the only observable effect of this change is on the dimension ordering / coordinate-index anchoring (and possibly output name) of the returned xarray object when `coord` and the degree-sliced coefficient term carry different relative dimension orders."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "zeros_like (xarray.core.common.zeros_like/full_like) preserves the reference DataArray's dims, coords, index structure and name while zeroing its data, so putting it first makes `coord`'s structure the governing/leading operand of the accumulation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "polyval first runs `coord = _ensure_numeric(coord)`, converting datetime64 data to int64 ns (offset 1970-01-01) and timedelta64 to float before the Horner loop, so the accumulations always happen on numeric dtypes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The analysis could not be executed against a live xarray session, so the precise resulting dimension tuple for arbitrary broadcast inputs (which depends on xarray's internal binary broadcast/alignment ordering) is characterized behaviorally in terms of coord being the leading/anchor operand rather than as a literal dim tuple."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated R1 (xr.polyval anchoring returned dim ordering / index structure / name on `coord` when the leading coefficient term and `coord` disagree in dimension order, via seeding the Horner accumulator with zeros_like(coord) placed first).\n\nThe entire polyval test surface lives in xarray/tests/test_computation.py (the parametrized test_polyval and test_polyval_degree_dim_checks). I confirmed the \"broadcast-x\" case whose tests are reported as failing (test_polyval[broadcast-x-False/True]) uses only `xr.testing.assert_allclose`, i.e. it pins *numeric values* (and equal data-variable structure after realignment by dimension label), NOT the returned Dimension/coordinate-ordering or name that R1 is about. I mechanically reproduced the broadcast-x polyval computation against the buggy build and it PASSES (dims already come out (\"y\",\"x\") regardless of operand order in that case), confirming the visible assertion does not distinguish the buggy vs fixed operand order and is not an R1 witness.\n\nCritically, xarray/tests/test_computation.py is labeled [VISIBLE], meaning all its assertions — including these failing broadcast-x cases and any polyval checks — are drawn from content a repair system already saw. Per the rules an assertion taken from [VISIBLE] content can never serve as a Witness, no matter how well it seems to match R1. I surveyed the full oracle file list; polyval is exercised only in test_computation.py, and no [HIDDEN] test file contains an assertion that verifies xr.polyval's returned dim-order/index-structure/name is anchored on `coord` (i.e. checks result.dims ordering against coord when coord and the degree-sliced highest-coefficient term disagree in dimension order). Since such a genuine hidden witness does not exist in this oracle, I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (xr.polyval (xarray.core.computation.polyval)): xr.polyval returns an output whose non-degree broadcast dimension ordering is anchored on the evaluation coordinate `coord`: the Horner accumulator is seeded from a full broadcast (all-zero DataArray) matching `coord`'s dimensions/coordinates, placed as the leading operand of the first addition with the highest-degree coefficient term `coeffs.isel(degree_dim=max_deg, drop=True)`, so that when the leading-coefficient term and `coord` disagree in dimension order the returned array's dimension ordering/index structure and (DataArray) name follow `coord` rather than the coefficient array. — not entailed by S_vis (The visible issue pins down that polyval's returned dims follow the evaluation coordinate (('azimuth_time','axis')) for the reported datetime64 case, which is the observable surface of R1's ordering claim. But R1 also commits to a specific mechanism (seeding the Horner accumulator from a zeros-like full broadcast as leading operand) and to index-structure/name propagation when coeff and coord disagree — none of which the visible evidence reveals, so the exact behavior isn't pinned down.); confirmed by a synthesized witness: R1 is exactly about the dimension-ordering anchoring of the returned polyval array. The gold patch seeds the Horner accumulator with `zeros_like(coord) + coeff-highest-degree-slice`, placing the full coord broadcast first; the buggy patch has `coeff-highest-degree-slice + zeros_like(coord)`, placing the coefficient slice first. I built a coord DataArray with dims (\"x\",) and a coeff array with broadcast dim \"y\" wrapping a \"degree\" dim [0,1,2]. The highest-degree term `coeffs.isel(degree=2, drop=True)` then has dims (\"y\",), which disagrees in order with coord's (\"x\",). When these are added, xarray orders the resulting dims after the leading operand: gold → ('x','y') (anchored on the eval coord), buggy → ('y','x') (anchored on the coefficient slice). I empirically confirmed with run_test that the identical assertion (result.dims == (\"x\",\"y\")) PASSES against gold and FAILS against buggy. The visible polyval tests use only xr.testing.assert_allclose, which re-aligns operands by dimension label and therefore does not pin the returned dim order — so this hidden dim-order fact is genuinely distinguishing, matching the known insufficiency of the visible S_vis requirements for R1.",
+    "confidence": "Medium"
+  }
+}

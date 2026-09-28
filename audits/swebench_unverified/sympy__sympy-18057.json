@@ -1,0 +1,116 @@
+{
+  "task_id": "sympy__sympy-18057",
+  "status": "ok",
+  "duration_seconds": 870.6244612090522,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-18057",
+    "s_vis": [
+      {
+        "id": "S_VIS_1",
+        "statement": "Comparing sympy.Symbol('x') to an arbitrary foreign object whose __repr__ returns a string like 'x.y' (which would eval to attribute access on a Symbol) must not raise an AttributeError; the equality check must not attempt to eval the foreign object's repr for comparison purposes.",
+        "subject": "sympy.core.expr.Expr.__eq__ / sympy.Symbol equality with arbitrary non-sympy objects",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"import sympy\nclass C:\n    def __repr__(self):\n        return 'x.y'\n_ = sympy.Symbol('x') == C()\" ... \"E   AttributeError: 'Symbol' object has no attribute 'y'\" ... \n\"Sympy incorrectly attempts to eval reprs in its __eq__ method ... It is especially surprising for an equality check to trigger that kind of behavior. This should be fixed ASAP.\""
+      },
+      {
+        "id": "S_VIS_2",
+        "statement": "sympy.Symbol('x') must NOT compare as equal to an arbitrary foreign object whose __repr__ returns the string 'x'; such a comparison must yield inequality (the expression `assert sympy.Symbol('x') != C()` with that repr must pass), because equality must not be decided by sympifying/eval'ing the object's repr.",
+        "subject": "sympy.core.expr.Expr.__eq__ / sympy.Symbol equality with arbitrary non-sympy objects",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Related issue: an unknown object whose repr is `x` will incorrectly compare as equal to a sympy symbol x:\n\n    class C:\n        def __repr__(self):\n            return 'x'\n\n    assert sympy.Symbol('x') != C()  # fails\" and \"Where code is:\n\nSymbol ('x' ).y\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Expr equality (__eq__) against a Python native string returns False regardless of the string text (e.g. Symbol('x') == 'x' is False and Integer(1) == '1' is False), rather than sympify-parsing the string content and comparing against it (which could otherwise make Symbol('x') == 'x' evaluate to True).",
+        "subject": "Expr.__eq__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Expr equality (__eq__) against an operand that is not convertible to a SymPy Expr through known SymPy mechanisms (already-SymPy / Basic type, registered converter, _sympy_/_sympify_ hook, or numeric float/int coercion) returns False rather than attempting the eval-based repr-string parse of that operand (which could otherwise raise a non-SympifyError exception such as AttributeError that propagates out of __eq__).",
+        "subject": "Expr.__eq__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "S_VIS_1",
+          "S_VIS_2"
+        ],
+        "rationale": "R1 concerns Expr.__eq__ against a native Python string operand (Symbol('x')=='x', Integer(1)=='1'), i.e. not sympify-parsing string content. S_VIS_1 and S_VIS_2 only describe comparisons against custom foreign objects (instances of class C) whose __repr__ evals, and never mention native strings as operands, so the visible evidence does not pin down the string-operand behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "S_VIS_1",
+          "S_VIS_2"
+        ],
+        "rationale": "S_VIS_1 directly pins down the core of R2: comparing Symbol('x') to a non-convertible foreign object whose repr evals to 'x.y' (raising AttributeError) must not raise/propagate an AttributeError out of __eq__ and must not attempt to eval the operand's repr for comparison. This matches R2's requirement to avoid the eval-based repr parse that otherwise propagates a non-SympifyError exception, returning via normal (non-matching) equality instead."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_expr_eq_string",
+      "test_source": "def test_expr_eq_string():\n    from sympy import Symbol\n    assert not (Symbol('x') == 'x')",
+      "gold_result": "PASSED — gold's Expr.__eq__ uses _sympify(other) (strict), so comparing the Symbol instance against the py-str 'x' raises SympifyError caught by the enclosing except clause, yielding False; `assert not (...) == 'x'` holds.",
+      "buggy_result": "FAILED — buggy's Expr.__eq__ uses sympify(other), which parses the string 'x' into Symbol('x'), so `Symbol('x') == 'x'` returns True; the assertion `assert not (...)` fails with AssertionError.",
+      "explanation": "Requirement R1 states that Expr equality (__eq__) against a Python-native string returns False regardless of string text, rather than sympify-parsing and comparing. The discriminating input `Symbol('x') == 'x'` exercises the fixed code path: on the buggy build, sympify('x') parses to Symbol('x') so equality degenerates to True; on the gold build _sympify (strict) raises SympifyError which is swallowed to return False. Both run_test executions used the exact byte-identical test_source above, PASSING on gold and FAILING on buggy. Visible coverage: the closest visible tests (test_equal.py test_cmp_issue_4357, test_cmp_bug1) compare the *class* Symbol (`Symbol == 'x'`, `Symbol == t`) or an unrelated T() object, not a Symbol instance against a native string, and pass on the buggy build; test_numbers.py's Float-vs-string test passes on buggy too because Number overrides __eq__. No visible content pins `Symbol('x') == 'x' -> False`, so this is a genuine hidden-behavior witness for the Expr.__eq__ fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible root cause path: sympy/core/expr.py `Expr.__eq__` calls `sympify(other)` inside a `try/except (SympifyError, SyntaxError)`. sympy/core/sympify.py `sympify` falls back, for objects with no known converter / `_sympy_` / float/int coercion, to `a = unicode(a)` (i.e. repr) then `parse_expr(...)` and ultimately eval, so an arbitrary object is sympified from its repr string."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sympify's docstring warns it uses eval ('Note that this function uses ``eval``, and thus shouldn't be used on unsanitized input.'), but the bug is that Expr.__eq__ hands arbitrary operands to full sympify before ruling out strings/untrusted objects."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the trace the failing eval is at sympy/parsing/sympy_parser.py eval_expr: 'code, global_dict, local_dict)  # take local objects in preference', where 'x.y' became code `Symbol ('x' ).y` which raises AttributeError because a Symbol has no attribute y. Only (SympifyError, SyntaxError) are caught in Expr.__eq__, so the AttributeError propagates; and for repr 'x', parse succeeds yielding Symbol('x') so equality incorrectly returns True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests examined: sympy/core/tests/test_sympify.py and sympy/core/tests/test_expr.py do not (in this snapshot) contain an explicit regression test for issue 18057; the expected behaviors are stated directly in the issue report."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch swaps sympify(other) for _sympify(other) in Expr.__eq__, i.e. sympify(other, strict=True), which raises SympifyError for strings and objects with no SymPy converter/_sympy_ hook/numeric coercion, and that SympifyError is already caught by the enclosing except clause returning False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_sympify (strict) still converts genuine SymPy objects, converter-registered objects, and float/int-coercible operands, so equality with Python numbers behaves as before."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Known-coercible comparisons (e.g. numbers) do not represent new observable behavior introduced by this patch; only the previously-parse-based paths (strings and non-strictly-sympifyable objects) are newly committed."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated the oracle for a witness of R1 (Expr.__eq__ against a Python-native string returns False, e.g. Symbol('x') == 'x' being False), which is the newly-committed behavior of the fix (swapping sympify(other) for _sympify(other) in Expr.__eq__).\n\nI confirmed the distinguishing semantics empirically: a test `assert not (Symbol('x') == 'x')` PASSES on the gold program and FAILS on the buggy program (buggy returns True because it sympifies the string). However, my job is to find an existing ORACLE test (with [HIDDEN] content) that asserts this exact behavior, not to invent one.\n\nWhat I checked:\n- sympy/core/tests/test_expr.py, test_sympify.py, test_equal.py, test_basic.py, test_relational.py, test_arit.py, test_symbol.py, test_complex.py, test_containers.py, test_numbers.py, test_subs.py, test_eval.py, test_function.py, test_args.py — all are labeled [VISIBLE], and I confirmed via reading that none contain a regression asserting a Symbol(-instance)/Expr-vs-native-string inequality of the kind R1 commits (Symbol('x') == 'x' is False). The closest visible items, e.g. test_equal.py's test_cmp_issue_4357 ('Symbol == \"x\"') compare the class object, not an instance, and pass on buggy; test_numbers.py's test_dont_accept_str ('Float(\"0.2\") != \"0.2\"') concerns a Float (Number overrides __eq__) and I verified it PASSES on the buggy program too, so it does not exercise the newly-fixed Expr.__eq__ path.\n- The task's \"Tests currently failing against the buggy program\" list for R1 is recorded as (none), and I empirically confirmed that only non-Number Expr-vs-string comparisons (e.g. Symbol('x') == 'x') actually regress on the buggy program; Integer/Float vs string already returned False even on the buggy build.\n\nEvery file I found that touches expression/number/string equality is [VISIBLE] content, which per the Verso rules can never serve as a witness (the regression behavior must be enforced by content the system never saw). Since I could not locate any [HIDDEN] oracle test asserting Symbol/Expr vs native-string equality is False, there is no genuine witness available and I submit found=false. (A witness for R1 would have had to be a hidden test failing on buggy; none qualifies.)"
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Expr.__eq__): Expr equality (__eq__) against a Python native string returns False regardless of the string text (e.g. Symbol('x') == 'x' is False and Integer(1) == '1' is False), rather than sympify-parsing the string content and comparing against it (which could otherwise make Symbol('x') == 'x' evaluate to True). — not entailed by S_vis (R1 concerns Expr.__eq__ against a native Python string operand (Symbol('x')=='x', Integer(1)=='1'), i.e. not sympify-parsing string content. S_VIS_1 and S_VIS_2 only describe comparisons against custom foreign objects (instances of class C) whose __repr__ evals, and never mention native strings as operands, so the visible evidence does not pin down the string-operand behavior.); confirmed by a synthesized witness: Requirement R1 states that Expr equality (__eq__) against a Python-native string returns False regardless of string text, rather than sympify-parsing and comparing. The discriminating input `Symbol('x') == 'x'` exercises the fixed code path: on the buggy build, sympify('x') parses to Symbol('x') so equality degenerates to True; on the gold build _sympify (strict) raises SympifyError which is swallowed to return False. Both run_test executions used the exact byte-identical test_source above, PASSING on gold and FAILING on buggy. Visible coverage: the closest visible tests (test_equal.py test_cmp_issue_4357, test_cmp_bug1) compare the *class* Symbol (`Symbol == 'x'`, `Symbol == t`) or an unrelated T() object, not a Symbol instance against a native string, and pass on the buggy build; test_numbers.py's Float-vs-string test passes on buggy too because Number overrides __eq__. No visible content pins `Symbol('x') == 'x' -> False`, so this is a genuine hidden-behavior witness for the Expr.__eq__ fix.",
+    "confidence": "Medium"
+  }
+}

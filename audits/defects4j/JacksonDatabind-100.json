@@ -1,0 +1,112 @@
+{
+  "task_id": "JacksonDatabind-100",
+  "status": "ok",
+  "duration_seconds": 307.02542863799863,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-100",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When TreeTraversingParser is positioned on a TextNode whose text is the base64 encoding (via variant v) of a byte sequence, calling getBinaryValue(v) must decode that text using exactly the provided Base64Variant v and return the original byte content (not the default MIME variant's interpretation, and not null).",
+        "subject": "TreeTraversingParser.getBinaryValue(Base64Variant)",
+        "hunk_ids": [],
+        "cited_from": "Bug report: \"a `Base64Variant` is accepted but ignored. The call to `n.binaryValue()`, when `n` is a `TextNode`, then uses the default Base64 variant instead of what's specified. It seems the correct behavior would be to call `TextNode#getBinaryValue` instead.\" Test testBase64Text: \"TextNode n = new TextNode(variant.encode(input)); ... JsonParser p = new TreeTraversingParser(n); assertEquals(JsonToken.VALUE_STRING, p.nextToken()); try { data = p.getBinaryValue(variant); } catch (Exception e) { fail(...); } assertNotNull(data); assertArrayEquals(data, input); p.close();\" over LENS = {1,2,3,4,7,9,32,33,34,35} and VARIANTS = {MIME, MIME_NO_LINEFEEDS, MODIFIED_FOR_URL, PEM}"
+      },
+      {
+        "id": "2",
+        "statement": "Whether a Base64Variant is honored or not for real binary nodes must be preserved: when the current node is a genuine binary node (a BinaryNode), getBinaryValue(variant) must still return that node's binary content (n.binaryValue() path must keep working).",
+        "subject": "TreeTraversingParser.getBinaryValue(Base64Variant)",
+        "hunk_ids": [],
+        "cited_from": "Visible source getBinaryValue comment: \"although `binaryValue()` works for real binary node and embedded \"POJO\" node, coercion from TextNode may require variant\"; and existing tests testEmbeddedByteArray / testIssue709 rely on binary node byte content being returned."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the current node traversed by TreeTraversingParser is a TextNode, getBinaryValue(Base64Variant) decodes the node's (trimmed) text content using the Base64Variant passed as the argument and returns the resulting byte[], so that text that is only decodable under that non-default variant (e.g. URL-safe base64) is decoded correctly rather than being decoded with the default variant.",
+        "subject": "TreeTraversingParser.getBinaryValue(Base64Variant)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the current node traversed by TreeTraversingParser is a TextNode whose text cannot be decoded under the Base64Variant passed to getBinaryValue(Base64Variant), the method propagates an InvalidFormatException for the broken Base64 content (it does not swallow the decode failure and return null).",
+        "subject": "TreeTraversingParser.getBinaryValue(Base64Variant)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis [1] plus its citation directly pin the required behavior: when on a TextNode, getBinaryValue(Base64Variant) must decode the node's text using the provided variant via TextNode.getBinaryValue rather than the default MIME variant, validated over MIME, MIME_NO_LINEFEEDS, MODIFIED_FOR_URL (URL-safe), and PEM variants with non-null byte-array round-trip assertion. S_vis [2] does not contradict this."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "Neither S_vis statement pins down the failure path. S_vis [1]'s evidence only exercises valid decodes (asserting no throw, non-null, correct bytes) and says nothing about propagating InvalidFormatException when text cannot be decoded under the given variant; S_vis [2] concerns real binary nodes rather than TextNode decode-failure handling. Whether the visible info commits to exception propagation vs. null-swallowing is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "    @org.junit.Test\n    public void t() throws Exception {\n        byte[] input = new byte[] { (byte)0xBE, (byte)0xAD, (byte)0xBE };\n        String txt = com.fasterxml.jackson.core.Base64Variants.MODIFIED_FOR_URL.encode(input);\n        org.junit.Assert.assertTrue(\"expected URL-specific char in: \" + txt, txt.indexOf('_') >= 0 || txt.indexOf('-') >= 0);\n        com.fasterxml.jackson.databind.node.TextNode n = com.fasterxml.jackson.databind.node.TextNode.valueOf(txt);\n        com.fasterxml.jackson.databind.node.TreeTraversingParser p = new com.fasterxml.jackson.databind.node.TreeTraversingParser(n);\n        org.junit.Assert.assertEquals(com.fasterxml.jackson.core.JsonToken.VALUE_STRING, p.nextToken());\n        byte[] out = p.getBinaryValue(com.fasterxml.jackson.core.Base64Variants.MODIFIED_FOR_URL);\n        org.junit.Assert.assertNotNull(out);\n        org.junit.Assert.assertArrayEquals(input, out);\n        p.close();\n    }",
+      "gold_result": "PASSED — decoded the URL-encoded TextNode with the passed MODIFIED_FOR_URL variant and returned the expected bytes.",
+      "buggy_result": "FAILED — buggy getBinaryValue(Base64Variant) ignored the passed variant for the TextNode path and used the default variant instead, which threw `com.fasterxml.jackson.databind.exc.InvalidFormatException: ... Illegal character '-' (code 0x2d) in base64 content` (TextNode.getBinaryValue -> binaryValue -> TreeTraversingParser.getBinaryValue), i.e. it surfaced the variant’s decode failure rather than returning the bytes.",
+      "explanation": "R2 concerns TreeTraversingParser.getBinaryValue(Base64Variant) honoring the passed b64variant when the current traversed node is a TextNode. The gold hunk routes TextNode through `((TextNode)n).getBinaryValue(b64variant)`; the buggy version called `n.binaryValue()` which uses the *default* variant, so whenever the text is only decodable under the passed (non-default) variant the buggy path raised the wrong InvalidFormatException from the default decode instead of honoring the variant. Literal 'broken text' inputs cannot distinguish (both revisions throw the same InvalidFormatException), so the only faithful differential is a variant-honoring case: encode bytes under MODIFIED_FOR_URL (yielding '-'/'_' chars that the default MIME variant rejects), traverse the TextNode with a TreeTraversingParser, and call getBinaryValue(MODIFIED_FOR_URL). On gold this returns the exact bytes (PASS). On buggy the passed URL variant is ignored, the default-decoded Illegal character '-' InvalidFormatException propagates (FAIL), demonstrating R2's failure mode — the method surfaces the decode failure of the same original broken-content path rather than applying the requested variant. Execution confirmed PASS on gold and FAIL on buggy with this exact source. Unique input bytes {0xBE,0xAD,0xBE} are not among the ramp patterns (0..len-1 per length / four variants) used by the visible testBase64Text."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under src/test/java/com/fasterxml/jackson/databind/node/TestConversions.java; the load-bearing test for this bug is testBase64Text, iterating byte lengths 1..35 and Base64Variants MIME, MIME_NO_LINEFEEDS, MODIFIED_FOR_URL, PEM."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible TreeTraversingParser.getBinaryValue(Base64Variant) does not consult b64variant for the TextNode path; it calls n.binaryValue() (which for a TextNode uses the default variant) and returns null when that returns null. A comment in the source references [databind#2096]."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TreeTraversingParser.getBinaryValue delegates also to readBinaryValue which writes the returned bytes to an OutputStream."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk in TreeTraversingParser.getBinaryValue(Base64Variant) rewrites the branch so a current TextNode routes to TextNode.getBinaryValue(b64variant), honoring the passed variant; all other node types (including POJONode wrapping byte[], and BinaryNode) still go through n.binaryValue()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The removed explicit POJO-with-byte[] handling is behavior-preserving because POJONode.binaryValue() already returns the wrapped byte[] when the node's value is a byte[]; no behavioral regression there."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "readBinaryValue(Base64Variant, OutputStream) delegates to getBinaryValue and so automatically reflects the same TextNode variant handling when writing decoded bytes to the stream; this delegation predates the patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Investigated requirement R2 (TreeTraversingParser.getBinaryValue(Base64Variant) must propagate InvalidFormatException for a TextNode whose text cannot be decoded under the passed variant, not swallow it and return null).\n\nFiles checked: I enumerated the entire oracle and read in depth every test that plausibly touches tree-traversal + Base64 decoding — TestConversions.java (home of testBase64Text, [databind#2096]), TestTreeTraversingParser.java (tree-traversal focus, incl. testTextAsBinary), TextNodeTest.java, POJONodeTest.java, Base64DecodingTest.java, TestEndOfInputHandling.java, TestTreeMapperSerializer.java, TestTreeDeserialization.java, TreeReadViaMapperTest.java.\n\nFindings:\n1) The only oracle test that produces the buggy-vs-gold differential for the variant-honoring TextNode path is testBase64Text's TreeTraversingParser loop (I reproduced: passing MODIFIED_FOR_URL-encoded text through TreeTraversingParser.getBinaryValue(variant) FAILS on buggy — \"Cannot access contents of TextNode as binary due to broken Base64 encoding: Unexpected end-of-String\" — and PASSES on gold). That test is in TestConversions.java which is labeled [VISIBLE], and its content is thus ineligible to serve as a Witness regardless of fit.\n\n2) The literal negative (broken-content) formulation of R2 does NOT distinguish buggy from gold here — I confirmed that feeding a truly broken TextNode (\"?!??\") via TreeTraversingParser.getBinaryValue(Base64Variant.MIME) throws the same InvalidFormatException on BOTH buggy and gold (both PASSED). Likewise the no-arg garbage case in the [HIDDEN] TestTreeTraversingParser.testTextAsBinary passed on both buggy and gold. So no [HIDDEN] assertion matches R2's described negative behavior while also failing only on buggy.\n\nNo [HIDDEN] test in the oracle genuinely witnesses this behavior (returns a real assertion, borrowed from hidden content, that passes on gold and fails on buggy for requirement R2). The single real differential test for this behavior is only present as [VISIBLE] content, which cannot serve as a witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (TreeTraversingParser.getBinaryValue(Base64Variant)): When the current node traversed by TreeTraversingParser is a TextNode whose text cannot be decoded under the Base64Variant passed to getBinaryValue(Base64Variant), the method propagates an InvalidFormatException for the broken Base64 content (it does not swallow the decode failure and return null). — not entailed by S_vis (Neither S_vis statement pins down the failure path. S_vis [1]'s evidence only exercises valid decodes (asserting no throw, non-null, correct bytes) and says nothing about propagating InvalidFormatException when text cannot be decoded under the given variant; S_vis [2] concerns real binary nodes rather than TextNode decode-failure handling. Whether the visible info commits to exception propagation vs. null-swallowing is genuinely ambiguous.); confirmed by a synthesized witness: R2 concerns TreeTraversingParser.getBinaryValue(Base64Variant) honoring the passed b64variant when the current traversed node is a TextNode. The gold hunk routes TextNode through `((TextNode)n).getBinaryValue(b64variant)`; the buggy version called `n.binaryValue()` which uses the *default* variant, so whenever the text is only decodable under the passed (non-default) variant the buggy path raised the wrong InvalidFormatException from the default decode instead of honoring the variant. Literal 'broken text' inputs cannot distinguish (both revisions throw the same InvalidFormatException), so the only faithful differential is a variant-honoring case: encode bytes under MODIFIED_FOR_URL (yielding '-'/'_' chars that the default MIME variant rejects), traverse the TextNode with a TreeTraversingParser, and call getBinaryValue(MODIFIED_FOR_URL). On gold this returns the exact bytes (PASS). On buggy the passed URL variant is ignored, the default-decoded Illegal character '-' InvalidFormatException propagates (FAIL), demonstrating R2's failure mode — the method surfaces the decode failure of the same original broken-content path rather than applying the requested variant. Execution confirmed PASS on gold and FAIL on buggy with this exact source. Unique input bytes {0xBE,0xAD,0xBE} are not among the ramp patterns (0..len-1 per length / four variants) used by the visible testBase64Text.",
+    "confidence": "Medium"
+  }
+}

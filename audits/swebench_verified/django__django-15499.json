@@ -1,0 +1,106 @@
+{
+  "task_id": "django__django-15499",
+  "status": "ok",
+  "duration_seconds": 106.83104916696902,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15499",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a CreateModel operation (on model name X, carrying its own fields/options/bases/managers) is immediately followed by an AlterModelManagers operation on the same model name X, the MigrationOptimizer must reduce those two operations into a single CreateModel operation on X that retains the CreateModel's fields/options/bases and takes as its manager list the managers-lowering effect of the AlterModelManagers operation (i.e. the sole resulting CreateModel carries X's final managers).",
+        "subject": "django.db.migrations.operations.models.CreateModel.reduce",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"During migration optimization, CreateModel + AlterModelOptions is reduced to just CreateModel, with the model options. Similarly, CreateModel + AlterModelManagers can become just CreateModel.\" Existing code in CreateModel.reduce collapses the options case (\"isinstance(operation, AlterModelOptions) and self.name_lower == operation.name_lower\" returns a single [CreateModel(..., options=options, ...)]), and AlterModelManagers.state_forwards/ProjectState.alter_model_managers replace the model's whole manager list (\"model_state.managers = list(managers)\"), with no analogous branch handling AlterModelManagers in CreateModel.reduce."
+      },
+      {
+        "id": "R2",
+        "statement": "The reduction introduced for CreateModel + AlterModelManagers must preserve the net state change identically to applying both original operations in sequence: the collapsed operation sequence must end in exactly one CreateModel whose state equals the state that CreateModel-then-AlterModelManagers would have produced (CreateModel adds the model with the AlterModelManagers's managers as its final manager list).",
+        "subject": "django.db.migrations.optimizer.MigrationOptimizer / CreateModel.reduce around AlterModelManagers",
+        "hunk_ids": [],
+        "cited_from": "CreateModel.state_forwards builds ModelState(..., managers=list(self.managers)), and ProjectState.alter_model_managers (used by AlterModelManagers.state_forwards) does \"model_state.managers = list(managers)\" then reload_model; State-forwards semantics defined in django/db/migrations/state.py. The optimizer invariant documented in MigrationOptimizer: it \"returns a list of equal or shorter length ... operations are merged into one if possible.\""
+      },
+      {
+        "id": "R3",
+        "statement": "Collapsing two consecutive AlterModelManagers operations on the same model into just the later one, and truncating/merging a manager alteration when it would otherwise be optimized across an operation on a different model, must continue to hold once CreateModel absorbs an AlterModelManagers — i.e. the new CreateModel+AlterModelManagers reduction must compose correctly with the existing AlterModelManagers self-collapsing behavior (ModelOptionOperation.reduce returns [operation] for a same-model second AlterModelManagers) so that arbitrary runs like CreateModel, AlterModelManagers(managersA), AlterModelManagers(managersB) still reduce appropriately.",
+        "subject": "django.db.migrations.operations.models.AlterModelManagers.reduce (same model) and its can_reduce_through over distinct models",
+        "hunk_ids": [],
+        "cited_from": "AlterModelManagers extends ModelOptionOperation whose reduce does: \"if (isinstance(operation, (self.__class__, DeleteModel)) and self.name_lower == operation.name_lower): return [operation]\", and tests in tests/migrations/test_optimizer.py already exercise successive reductions (e.g. _test_create_alter_foo_field collapses CreateModel + alter-op + add/alter/rename/remove-field chains into one CreateModel)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a CreateModel for a model is immediately followed by an AlterModelManagers operation naming the same model (compared case-insensitively), MigrationOptimizer folding via CreateModel.reduce collapses the pair into a single CreateModel that keeps the original model name, fields, options, and bases, but whose manager list is the manager list carried by the AlterModelManagers operation (i.e. the later managers replace/replace the CreateModel's managers rather than being merged with them).",
+        "subject": "django.db.migrations.operations.models.CreateModel.reduce / MigrationOptimizer",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 and R2 both pin down that CreateModel immediately followed by AlterModelManagers on the same model folds (via CreateModel.reduce/MigrationOptimizer) into a single CreateModel that keeps the original model name, fields, options and bases and takes the AlterModelManagers manager list as its final manager list (later managers replace, not merge: alter_model_managers sets model_state.managers = list(managers)). S_vis R3 confirms the same-model matching is done case-insensitively via name_lower, covering the 'compared case-insensitively' detail. The full behavior of S_impl R1 is thereby entailed."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The feature lives in the migration optimizer; the operation-level reduction logic is in CreateModel.reduce (django/db/migrations/operations/models.py). CreateModel.reduce already has branches folding DeleteModel, RenameModel, AlterModelOptions, AlterTogetherOptionOperation, AlterOrderWithRespectTo, and FieldOperation families into a single CreateModel, but no branch for AlterModelManagers (that is the requested change)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AlterModelManagers is a no-op database-wise (database_forwards/database_backwards both pass) — managers only affect the migrated model state, so folding them into a prior CreateModel carries no DB-side cost."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CreateModel.deconstruct omits the managers kwarg when managers == [(\"objects\", models.Manager())] (default objects); tests/migrations/test_operations.py test_create_model asserts 'managers' not in deconstructed kwargs for that default case, tying manager-value handling to deconstruction/serialization too."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/migrations/test_optimizer.py (OptimizerTests, file under tests/migrations/) already contains the analogous collapsing test test_create_alter_model_options showing CreateModel+AlterModelOptions single-CreateModel serialization expectations, and defines EmptyManager (use_in_migrations=True) in tests/migrations/models.py for building manager lists in tests."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Optimization operates on a whole operation list via MigrationOptimizer.optimize/optimize_inner calling operation.reduce(other, app_label) pairwise; two same-model operations won't collapse if CreateModel.reduce returns False because can_reduce_through blocks same-model references."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new branch is added as an additional elif in CreateModel.reduce, inserted between the existing AlterModelOptions and AlterTogetherOptionOperation branches (line ~170 of django/db/migrations/operations/models.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The resulting CreateModel reuses self.fields, self.options, self.bases from the original CreateModel and takes managers from operation.managers (the AlterModelManagers managers) — managers are entirely replaced, not merged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Like the other fold branches, this reduction only triggers when operation is exactly an AlterModelManagers and name_lower matches; an AlterModelManagers on a different model falls through to super().reduce, whose can_reduce_through keeps the two operations separate."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "AlterModelManagers.database_forwards/database_backwards are no-ops (managers only affect model state), consistent with folding it away at the DB level being cost-free."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

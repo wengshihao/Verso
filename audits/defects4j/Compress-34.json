@@ -1,0 +1,107 @@
+{
+  "task_id": "Compress-34",
+  "status": "ok",
+  "duration_seconds": 130.4693436839989,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "Compress-34",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "X7875_NewUnix.parseFromLocalFileData(data, offset, length) must not throw an ArrayIndexOutOfBoundsException (nor read past the end of 'data') when it is invoked on a ux/0x7875 extra-field payload whose declared length is 0, i.e. when offset == data.length and length == 0 (equivalently, when a local extra field contains no version/UID/GID bytes at all).",
+        "subject": "X7875_NewUnix.parseFromLocalFileData(byte[], int, int)",
+        "hunk_ids": [],
+        "cited_from": "\"java.lang.ArrayIndexOutOfBoundsException: 13 at org.apache.commons.compress.archivers.zip.X7875_NewUnix.parseFromLocalFileData(X7875_NewUnix.java:199)... it seems the method tries to read more bytes than is actually available in the buffer.\" with parameters \"data = {byte[13]...} ... offset = 13 length = 0\""
+      },
+      {
+        "id": "R2",
+        "statement": "Reading a zip file whose entry carries a 0-sized local 'ux' (0x7875/X7875_NewUnix) extra field (bytes 0x75,0x78 followed by total size 0) must complete without throwing an exception, matching the interoperability expectation that such a file parses as readily as it does with 7zip and unzip.",
+        "subject": "X7875_NewUnix / org.apache.commons.compress.archivers.zip (ZipFile entry parse of ux field)",
+        "hunk_ids": [],
+        "cited_from": "\"The zip file does contain two .jpg images and is not a \"special\" (JAR, Openoffice, ... ) zip file... followed by 0-sized 'ux' field (bytes 9-12) that is supposed to contain UID/GID... In this case for some reason it does contain 0-sized data.\" and \"Note that 7zip and unzip can unzip the file without even a warning, so Commons Compress should be also able to handle that file correctly without choking on that exception.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "X7875_NewUnix.getCentralDirectoryLength() returns a ZipShort whose value is 0 regardless of the current UID/GID settings, rather than reporting the same length as getLocalFileDataLength().",
+        "subject": "X7875_NewUnix#getCentralDirectoryLength",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both visible-info entries concern parseFromLocalFileData not throwing when a 0-sized ux field is encountered in the local extra field (an ArrayIndexOutOfBoundsException fix at parse time and matching 7zip/unzip behavior). Neither entry mentions getCentralDirectoryLength() or specifies that it must return a ZipShort of value 0 regardless of UID/GID settings, which is an unrelated central-directory-length design decision the evidence does not pin down."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "centralDirLenAlwaysZero",
+      "test_source": "@Test\npublic void centralDirLenAlwaysZero() {\n    org.apache.commons.compress.archivers.zip.X7875_NewUnix xf = new org.apache.commons.compress.archivers.zip.X7875_NewUnix();\n    xf.setUID(4294967294L);\n    xf.setGID(4294967294L);\n    org.junit.Assert.assertEquals(0, xf.getCentralDirectoryLength().getValue());\n    org.junit.Assert.assertEquals(0, xf.getCentralDirectoryData().length);\n}\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: expected:&lt;0&gt; but was:&lt;11&gt; — buggy getCentralDirectoryLength() returns getLocalFileDataLength() which is 11 for large UID/GID instead of 0)",
+      "explanation": "Requirement S_IMPL_1 demands that X7875_NewUnix.getCentralDirectoryLength() always represent length 0 (matching the empty central-directory payload), independent of any UID/GID. On gold, H0 introduces a `ZipShort ZERO` and H1 makes the method return that constant. On buggy, the method returns getLocalFileDataLength(). The candidate sets an explicit large UID/GID pair (4294967294), which forces getLocalFileDataLength() to be 11 bytes (nonzero), then directly asserts that getCentralDirectoryLength().getValue()==0 (and that the central-dir data is a 0-length array). This is a discriminating witness: run against gold it PASSED; run against buggy it FAILED with expected &lt;0&gt; but was &lt;11&gt;, because the buggy method mirrored the nonzero local-file length. This scenario (querying central-dir length in isolation right after assigning large uid/gid, without the parse/re-parse arrangement in the visible test) directly exercises the requirement and distinguishes the fixed from the unfixed code."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Two source files are visible: src/main/java/org/apache/commons/compress/archivers/zip/X7875_NewUnix.java and src/test/java/org/apache/commons/compress/archivers/zip/X7875_NewUnixTest.java (plus the issue text). Utilities (ZipUtil.reverse, signedByteToUnsignedInt) and supporting classes (ExtraFieldUtils, ZipFile) are referenced but not visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Current parseFromLocalFileData unconditionally reads data[offset++] for version, then uidSize/gidSize and System.arraycopy - so a length-0 payload with offset==data.length walks off the end (source of the reported AIOOBE)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "parseFromCentralDirectoryData is a no-op and getCentralDirectoryData returns new byte[0]; the 0x7875 central-dir form (0x7855 'Ux') stores nothing per the class comments."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible test suite (testParseReparse) documents that emitted/parsed round-trip field data is never shorter than 3 bytes ({1,0,0}: version=1, uidLen=0, gidLen=0); it does not exercise parsing a truly 0-length payload, which is exactly the unhandled case in the report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Class resets uid=gid=1000 (ONE_THOUSAND) by default; report does not specify what uid/gid must be after handling the empty field, only that parsing must not throw."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only introduces a private constant ZipShort ZERO used by H1; it has no independent observable effect beyond supporting getCentralDirectoryLength() returning 0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getCentralDirectoryData() already returned new byte[0] (and parseFromCentralDirectoryData and getCentralDirectoryData were unchanged), so the central-directory form of this extra field stores an empty payload; H1 makes getCentralDirectoryLength() consistent with that empty central-directory payload rather than mirroring the local-file data length."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "parseFromLocalFileData (unchanged by the patch) unconditionally reads data[offset++] and can walk off the end for a 0-length payload; it is not modified in this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getCentralDirectoryLength() returns a ZipShort so its observable value is getValue()==0, independent of any UID/GID set via setUID/setGID."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_1]: Target requirement S_IMPL_1 asserts that X7875_NewUnix.getCentralDirectoryLength() returns ZipShort(ZERO) regardless of UID/GID setting. I inspected the entire real oracle test suite.\n\nThe only oracle test that asserts X7875_NewUnix.getCentralDirectoryLength() behaviour is `testParseReparse` in src/test/java/org/apache/commons/compress/archivers/zip/X7875_NewUnixTest.java, whose helper `parseReparse` contains `assertEquals(0, xf.getCentralDirectoryLength().getValue())`. However, that file is labelled [VISIBLE], and a Witness may only rest on [HIDDEN] content that the repair system never saw. A visible assertion — no matter how well it matches the requirement — cannot serve as a Witness.\n\nI then checked every other test file in the oracle for any (hidden) assertion exercising X7875's central-directory length: ExtraFieldUtils (uses AsiExtraField/UnrecognizedExtraField/Unparseable fields only), ZipArchiveEntryTest (Asi/Unrecognized fields), ZipFileTest, ZipArchiveInputStreamTest, ZipTestCase, ZipArchiveOutputStream tests, Maven221MultiVolumeTest, EncryptedArchiveTest, UTF8ZipFilesTest (UnicodePath fields), X5455_ExtendedTimestampTest, Scatter*/ParallelScatter tests (only setUnixMode on external attributes, which does not attach an X7875 uid/gid extra field), ChangeSetTestCase, ExplodeSupportTest, and the archive-level Pack200/Jar/IO tests. None of them construct an X7875_NewUnix field or check its getCentralDirectoryLength().\n\nConclusion: the real oracle does contain a genuine witness for this behaviour (the visible testParseReparse assertion), but all such content is [VISIBLE]. No [HIDDEN] oracle test asserts the behaviour required by S_IMPL_1, so no valid Witness can be submitted."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL_1] (X7875_NewUnix#getCentralDirectoryLength): X7875_NewUnix.getCentralDirectoryLength() returns a ZipShort whose value is 0 regardless of the current UID/GID settings, rather than reporting the same length as getLocalFileDataLength(). — not entailed by S_vis (Both visible-info entries concern parseFromLocalFileData not throwing when a 0-sized ux field is encountered in the local extra field (an ArrayIndexOutOfBoundsException fix at parse time and matching 7zip/unzip behavior). Neither entry mentions getCentralDirectoryLength() or specifies that it must return a ZipShort of value 0 regardless of UID/GID settings, which is an unrelated central-directory-length design decision the evidence does not pin down.); confirmed by a synthesized witness: Requirement S_IMPL_1 demands that X7875_NewUnix.getCentralDirectoryLength() always represent length 0 (matching the empty central-directory payload), independent of any UID/GID. On gold, H0 introduces a `ZipShort ZERO` and H1 makes the method return that constant. On buggy, the method returns getLocalFileDataLength(). The candidate sets an explicit large UID/GID pair (4294967294), which forces getLocalFileDataLength() to be 11 bytes (nonzero), then directly asserts that getCentralDirectoryLength().getValue()==0 (and that the central-dir data is a 0-length array). This is a discriminating witness: run against gold it PASSED; run against buggy it FAILED with expected &lt;0&gt; but was &lt;11&gt;, because the buggy method mirrored the nonzero local-file length. This scenario (querying central-dir length in isolation right after assigning large uid/gid, without the parse/re-parse arrangement in the visible test) directly exercises the requirement and distinguishes the fixed from the unfixed code.",
+    "confidence": "Medium"
+  }
+}

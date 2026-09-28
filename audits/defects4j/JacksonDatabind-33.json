@@ -1,0 +1,110 @@
+{
+  "task_id": "JacksonDatabind-33",
+  "status": "ok",
+  "duration_seconds": 259.77826153500064,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-33",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Method findUnwrappingNameTransformer(AnnotatedMember) must return null both when the member has no @JsonUnwrapped annotation AND when the annotation is present but its enabled() flag is false; only when a @JsonUnwrapped with enabled()==true is present must it return NameTransformer.simpleTransformer(prefix, suffix) built from that annotation's prefix and suffix values.",
+        "subject": "com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector#findUnwrappingNameTransformer(AnnotatedMember)",
+        "hunk_ids": [],
+        "cited_from": "if (ann == null || !ann.enabled()) {\n            return null;\n        }\n        String prefix = ann.prefix();\n        String suffix = ann.suffix();\n        return NameTransformer.simpleTransformer(prefix, suffix);"
+      },
+      {
+        "id": "R2",
+        "statement": "A member field annotated @JsonUnwrapped (default enabled, empty prefix/suffix) whose type has public fields x,y and a sibling property name must serialize so that its sub-fields are lifted to the enclosing object, producing output of the form {\"name\":\"Tatu\",\"x\":1,\"y\":2} with no nested wrapper key; equivalently such JSON deserializes back into populated name/location fields.",
+        "subject": "JacksonAnnotationIntrospector unwrapping behavior as exercised in TestUnwrapped (serialization/deserialization of @JsonUnwrapped properties)",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(\"{\\\"name\\\":\\\"Tatu\\\",\\\"x\\\":1,\\\"y\\\":2}\",\n                MAPPER.writeValueAsString(new Unwrapping(\"Tatu\", 1, 2)));"
+      },
+      {
+        "id": "R3",
+        "statement": "When an @JsonUnwrapped member is declared on a class, the serialized property set must come from the flattened/unwrapped sub-properties rather than from an enclosing wrapper key, e.g. serializing Outer whose private field inner is @JsonUnwrapped yields output containing the inner fields' names and values but not the literal string \"inner\".",
+        "subject": "JacksonAnnotationIntrospector unwrapping handling for a private @JsonUnwrapped field (TestUnwrapped.testUnwrappedAsPropertyIndicator)",
+        "hunk_ids": [],
+        "cited_from": "assertTrue(actual.contains(\"animal\"));\n        assertTrue(actual.contains(\"Zebra\"));\n        assertFalse(actual.contains(\"inner\"));"
+      },
+      {
+        "id": "R4",
+        "statement": "@JsonUnwrapped members must be treated as implying existence of a property for deserialization-name resolution (i.e. represented as an unnamed/empty property name so unwrapping applies) within findNameForDeserialization.",
+        "subject": "com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector#findNameForDeserialization(Annotated)",
+        "hunk_ids": [],
+        "cited_from": "} else if (_hasAnnotation(a, JsonDeserialize.class)\n                    || _hasAnnotation(a, JsonView.class)\n                    || _hasAnnotation(a, JsonUnwrapped.class) // [#442]\n                    || _hasAnnotation(a, JsonBackReference.class)\n                    || _hasAnnotation(a, JsonManagedReference.class)) {\n                    name = \"\";"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "JacksonAnnotationIntrospector.findNameForSerialization(Annotated), for a member that carries no @JsonGetter and no (explicit) @JsonProperty, treats a member annotated with @JsonBackReference, @JsonManagedReference, or @JsonUnwrapped as implying an implicitly-named serialization property: it returns PropertyName.construct(\"\") rather than null (so that the member is still discovered as a serializable property whose name is resolved by default), just as members annotated with @JsonSerialize, @JsonView, or @JsonRawValue already are.",
+        "subject": "JacksonAnnotationIntrospector.findNameForSerialization(Annotated)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis R4 documents the same code pattern (setting name='' when @JsonUnwrapped/@JsonBackReference/@JsonManagedReference present) but in the sibling findNameForDeserialization path, not findNameForSerialization; S_vis R2/R3 are black-box serialization tests that pass regardless of the internal return-value change. Nothing directly shows findNameForSerialization returning PropertyName.construct(\"\") vs null, so the specific serialization-side behavior is plausible but not pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "managedRefOnPrivateGetterlessFieldDiscovered",
+      "test_source": "@Test\npublic void managedRefOnPrivateGetterlessFieldDiscovered() throws Exception {\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    String json = mapper.writeValueAsString(ManagedOnlyBean.newInstance());\n    org.junit.Assert.assertTrue(\"managed-ref field should appear in serialized JSON\", json.contains(\"leafValue\"));\n}\n\nstatic class ManagedOnlyBean {\n    @com.fasterxml.jackson.annotation.JsonManagedReference(\"thePair\")\n    private Leaf leaf;\n\n    static ManagedOnlyBean newInstance() {\n        ManagedOnlyBean b = new ManagedOnlyBean();\n        b.leaf = new Leaf(\"leafValue\");\n        return b;\n    }\n}\n\nstatic class Leaf {\n    public String value;\n    @com.fasterxml.jackson.annotation.JsonBackReference(\"thePair\")\n    public ManagedOnlyBean owner;\n    public Leaf(String v) { value = v; }\n}\n",
+      "gold_result": "PASSED — the private getterless field annotated only with @JsonManagedReference gets discovered as a serializable property (findNameForSerialization hits the newly-added @JsonManagedReference branch returning an empty PropertyName) and serializes to JSON containing \"leafValue\".",
+      "buggy_result": "FAILED — JsonMappingException: \"No serializer found for class ...ManagedOnlyBean and no properties discovered to create BeanSerializer\". In the buggy revision the @JsonManagedReference annotation is absent from the findNameForSerialization disjunction, so the getterless private field (no getter, no @JsonProperty) is not discovered and the bean is treated as empty.",
+      "explanation": "R1 says findNameForSerialization must treat a member annotated with @JsonManagedReference/@JsonBackReference/@JsonUnwrapped (but carrying no @JsonGetter/@JsonProperty) as an implicitly-named serialization property by returning PropertyName.construct(\"\") instead of null. My witness targets the @JsonManagedReference branch. The bean ManagedOnlyBean has a single private, getterless field annotated only with @JsonManagedReference (paired, per reference semantics, with a @JsonBackReference on the child leaf). Because the field is private and has no getter or @JsonProperty, its only path to serialization discovery is the empty-name \"property indicator\" branch in findNameForSerialization that the fix adds for @JsonManagedReference. I confirmed by execution: gold passes (field discovered, JSON contains \"leafValue\"), and buggy fails with \"no properties discovered to create BeanSerializer\" (field invisible to serialization since the branch is missing). This is a genuinely distinct witness from any visible material: the two visible files are only JacksonAnnotationIntrospector.java (source) and struct/TestUnwrapped.java, whose single distinguishing test (testUnwrappedAsPropertyIndicator) exercises only the @JsonUnwrapped annotation - R1's newly-covering @JsonManagedReference/@JsonBackReference behavior is not pinned anywhere visible, and this scenario builds a real managed/back reference pair where the discovery decision is decisive."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue tracker text for JacksonDatabind-33 could NOT be fetched; the only visible pointer is that the fix touches com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector (from the visible description) plus jackson-databind issue 1013 by URL. The visible material is exactly two files: the introspector source and src/test/java/com/fasterxml/jackson/databind/struct/TestUnwrapped.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TestUnwrapped.java imports com.fasterxml.jackson.annotation.* and extends BaseMapTest (BaseMapTest is not in the visible tree), and all its tests describe ordinary @JsonUnwrapped serialize/deserialize round-trips plus [databind#615] and a private @JsonUnwrapped field case; none is an explicit regression test for a distinct new bug, so the tests visible here likely pass both before and after the fix and do not by themselves pin down the defect."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The only @JsonUnwrapped-relevant logic inside JacksonAnnotationIntrospector is findUnwrappingNameTransformer (deciding whether a member is unwrapped and building prefix/suffix transformer) and the findNameForDeserialization branch treating @JsonUnwrapped as implying a property; these are the constraints a fix must preserve."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because no failing scenario or expected-vs-actual delta is described anywhere in the visible material, R2–R4 restate generic unwrapping expectations the visible tests already encode rather than any newly-fixed behavior; R1 is the load-bearing claim on the actual fix surface."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix touches only findNameForSerialization, adding @JsonUnwrapped, @JsonBackReference, and @JsonManagedReference to the disjunction that yields an empty property name instead of null. findNameForDeserialization already handled these three annotations (its branch lists JsonUnwrapped [#442], JsonBackReference, JsonManagedReference) before this change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Returning an empty PropertyName (rather than null) is the existing intra-file convention for signaling 'this member is a property but bear no explicit name; derive it by default' — used by the @JsonSerialize/@JsonView/@JsonRawValue branch of the same method. The precise downstream effect (unwrapping, back/forward reference linkage vs ordinary property) is resolved by other introspector methods (findUnwrappingNameTransformer, findReferenceType), not by this hunk."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns the serialization-branch change (findNameForSerialization) where a member that carries NO @JsonGetter and no explicit @JsonProperty, but IS annotated with @JsonUnwrapped/@JsonBackReference/@JsonManagedReference, must yield an implicit \"empty\"/default property name (PropertyName.construct(\"\")) so the member is still discovered as a serializable property.\n\nFunctionally the behavior is pinned by the oracle test `TestUnwrapped.testUnwrappedAsPropertyIndicator`, which uses a PRIVATE, getterless `@JsonUnwrapped` field whose name can be discovered only via R1's empty-name branch. I confirmed by running it against both programs: PASSED against gold, FAILED against buggy (\"No properties discovered to create BeanSerializer ... no properties discovered\"), i.e. it genuinely distinguishes buggy from gold on exactly R1.\n\nHowever, that test lives in src/test/java/com/fasterxml/jackson/databind/struct/TestUnwrapped.java, which read_test_file labels [VISIBLE] (it is one of the two files the repair system already saw). Per the auditor rules, an assertion drawn from [VISIBLE] content can never serve as a Witness, no matter how well it matches r — so this functional match is disqualified.\n\nI then searched the [HIDDEN] test files for any test that reproduces R1's distinguishing condition (a member discoverable ONLY via the empty/default-name property-indicator logic for @JsonUnwrapped/@JsonBackReference/@JsonManagedReference — i.e. non-public/getterless, no @JsonProperty). I reviewed all @JsonUnwrapped-related hidden files (struct/TestUnwrappedWithPrefix, struct/TestUnwrappedWithSameName647, ser/TestUnwrappedWithTypeInfo) and all back/managed-reference serialization files (struct/TestParentChildReferences, struct/TestBackRefsWithPolymorphic, struct/TestForwardReference, jsontype/TestExternalId, etc.), plus ser/TestAnnotations etc. In all of these the @JsonManagedReference/@JsonBackReference/@JsonUnwrapped members sit on public fields or conventional (public/protected) getters whose names are discovered through normal naming rules regardless of R1, so every one of those tests behaves identically before and after the fix and is not a distinguishing witness. None places the annotation on a getterless/non-public member that relies on the empty-name branch for serialization discovery.\n\nAccordingly the only genuine oracle test witnessing R1 is the [VISIBLE] testUnwrappedAsPropertyIndicator; since a Witness must rest solely on [HIDDEN] assertions and no [HIDDEN] test covers this scenario, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (JacksonAnnotationIntrospector.findNameForSerialization(Annotated)): JacksonAnnotationIntrospector.findNameForSerialization(Annotated), for a member that carries no @JsonGetter and no (explicit) @JsonProperty, treats a member annotated with @JsonBackReference, @JsonManagedReference, or @JsonUnwrapped as implying an implicitly-named serialization property: it returns PropertyName.construct(\"\") rather than null (so that the member is still discovered as a serializable property whose name is resolved by default), just as members annotated with @JsonSerialize, @JsonView, or @JsonRawValue already are. — not entailed by S_vis (S_vis R4 documents the same code pattern (setting name='' when @JsonUnwrapped/@JsonBackReference/@JsonManagedReference present) but in the sibling findNameForDeserialization path, not findNameForSerialization; S_vis R2/R3 are black-box serialization tests that pass regardless of the internal return-value change. Nothing directly shows findNameForSerialization returning PropertyName.construct(\"\") vs null, so the specific serialization-side behavior is plausible but not pinned down.); confirmed by a synthesized witness: R1 says findNameForSerialization must treat a member annotated with @JsonManagedReference/@JsonBackReference/@JsonUnwrapped (but carrying no @JsonGetter/@JsonProperty) as an implicitly-named serialization property by returning PropertyName.construct(\"\") instead of null. My witness targets the @JsonManagedReference branch. The bean ManagedOnlyBean has a single private, getterless field annotated only with @JsonManagedReference (paired, per reference semantics, with a @JsonBackReference on the child leaf). Because the field is private and has no getter or @JsonProperty, its only path to serialization discovery is the empty-name \"property indicator\" branch in findNameForSerialization that the fix adds for @JsonManagedReference. I confirmed by execution: gold passes (field discovered, JSON contains \"leafValue\"), and buggy fails with \"no properties discovered to create BeanSerializer\" (field invisible to serialization since the branch is missing). This is a genuinely distinct witness from any visible material: the two visible files are only JacksonAnnotationIntrospector.java (source) and struct/TestUnwrapped.java, whose single distinguishing test (testUnwrappedAsPropertyIndicator) exercises only the @JsonUnwrapped annotation - R1's newly-covering @JsonManagedReference/@JsonBackReference behavior is not pinned anywhere visible, and this scenario builds a real managed/back reference pair where the discovery decision is decisive.",
+    "confidence": "Medium"
+  }
+}

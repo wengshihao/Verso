@@ -1,0 +1,135 @@
+{
+  "task_id": "django__django-15401",
+  "status": "ok",
+  "duration_seconds": 1162.527088666102,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15401",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a relation filter such as Foo.objects.filter(related_obj=bar) is given a model instance whose primary key is None (an unsaved instance), the framework's handling of that value is a target of deprecation: the reporter and the referenced #27985 discussion assert that unsaved object instances should not be usable as related-filter values, i.e. this usage must at least emit a deprecation and must not be the silently-correct path.",
+        "subject": "django.db.models.fields.related_lookups.get_normalized_value / RelatedExact / RelatedIn (relation-field lookup rhs normalization)",
+        "hunk_ids": [],
+        "cited_from": "Issue description title 'Deprecate passing unsaved objects to related filters.' and body: 'I found a somewhat related issue that touches on this subject: https://code.djangoproject.com/ticket/27985' ... 'Simon Charette suggests that unsaved objects should be prevented from being used in related filters. I agree with that.'"
+      },
+      {
+        "id": "R2",
+        "statement": "Filtering a related-object field by an unsaved model instance must not silently match rows as if filtering by NULL/None equivalent to Foo.objects.filter(related_obj=None); the issue characterizes matching-by-None as the erroneous/regressive behavior which motivated deprecation, distinct from the intended semantics.",
+        "subject": "QuerySet.filter on a relation field with an unsaved (pk-None) model instance rhs",
+        "hunk_ids": [],
+        "cited_from": "Issue body: 'In Django 1.11, this would always return an empty QuerySet (since no Foo object is related to unsaved 'bar'). In Django 2.0 through 2.2, this is equivalent to doing (which can return a non-empty QuerySet): Foo.objects.filter(related_obj=None)'"
+      },
+      {
+        "id": "R3",
+        "statement": "Filtering a relation field by a saved, pk-bearing model instance (direct value and inside an __in/related__in list) keeps matching the related instance normally; any deprecation added for unsaved instances must not alter this established behavior.",
+        "subject": "Relation filter rhs handling must continue to support saved instances (baseline non-regression)",
+        "hunk_ids": [],
+        "cited_from": "tests/many_to_one/tests.py test_selects: 'self.assertSequenceEqual(Article.objects.filter(reporter=self.r), [new_article1, self.a],)' and '...Article.objects.filter(reporter__in=[self.r, self.r2])...'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When get_normalized_value (reached by related filters such as exact and __in over a relation, e.g. MyModel.objects.filter(rel=unsaved_instance)) is passed a model instance whose pk attribute is None (an unsaved instance), Django raises a RemovedInDjango50Warning deprecation warning bearing the exact message \"Passing unsaved model instances to related filters is deprecated.\".",
+        "subject": "django.db.models.fields.related_lookups.get_normalized_value",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When get_normalized_value is passed a model instance whose pk attribute is not None (a saved instance), no such deprecation warning is emitted and its rhs value continues to be normalized as before.",
+        "subject": "django.db.models.fields.related_lookups.get_normalized_value",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 confirms a deprecation must at least be emitted for unsaved pk-None instances used in related filters, and S_vis R2 clarifies unsaved instances must not silently match as None. However, none of the visible evidence pins down the specific RemovedInDjango50Warning class or the exact message string \"Passing unsaved model instances to related filters is deprecated.\", so the precise warning behavior committed to by the patch is not fully derivable from visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis R1 scopes the deprecation to unsaved (pk-None) instances and S_vis R3 establishes that saved pk-bearing instances must keep matching and being normalized normally, with any deprecation not altering that established behavior. Together these entail that a saved instance triggers no deprecation and its rhs is normalized as before."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_unsaved_related_filter_warns",
+      "test_source": "import os\nimport sys\nimport tempfile\nimport warnings\n\ndef test_unsaved_related_filter_warns():\n    # Build a minimal Django app on disk so the FK model graph is real.\n    tmp = tempfile.mkdtemp(prefix=\"witapp\")\n    pkg = os.path.join(tmp, \"witapp\")\n    os.mkdir(pkg)\n    with open(os.path.join(pkg, \"__init__.py\"), \"w\") as f:\n        f.write(\"\")\n    with open(os.path.join(pkg, \"models.py\"), \"w\") as f:\n        f.write(\n            \"from django.db import models\\n\\n\"\n            \"class Author(models.Model):\\n\"\n            \"    name = models.CharField(max_length=50)\\n\\n\"\n            \"class Book(models.Model):\\n\"\n            \"    title = models.CharField(max_length=50)\\n\"\n            \"    author = models.ForeignKey(Author, models.CASCADE)\\n\"\n        )\n    sys.path.insert(0, tmp)\n\n    from django.conf import settings\n\n    if not settings.configured:\n        settings.configure(\n            DEBUG=True,\n            DATABASES={\n                \"default\": {\n                    \"ENGINE\": \"django.db.backends.sqlite3\",\n                    \"NAME\": \":memory:\",\n                }\n            },\n            INSTALLED_APPS=[\"witapp\"],\n            DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n            SECRET_KEY=\"x\",\n        )\n\n    import django\n\n    django.setup()\n\n    from django.utils.deprecation import RemovedInDjango50Warning\n    from witapp.models import Author, Book\n\n    unsaved = Author(name=\"nobody\")  # pk is None\n\n    with warnings.catch_warnings(record=True) as caught:\n        warnings.simplefilter(\"always\")\n        Book.objects.filter(author=unsaved)\n\n    assert any(\n        issubclass(w.category, RemovedInDjango50Warning)\n        and str(w.message)\n        == \"Passing unsaved model instances to related filters is deprecated.\"\n        for w in caught\n    )\n",
+      "gold_result": "PASSED - on gold, running the standalone test collected and the assertion succeeded; filtering Book.objects.filter(author=unsaved) with pk=None Author emitted the RemovedInDjango50Warning with the exact \"Passing unsaved model instances to related filters is deprecated.\" message.",
+      "buggy_result": "FAILED - on buggy, the same test ran and the assertion failed (`assert False where any(...)=False`): no RemovedInDjango50Warning was captured because the buggy get_normalized_value emits no warning for an unsaved (pk is None) model instance.",
+      "explanation": "R1 requires: when a related filter (e.g. MyModel.objects.filter(rel=<unsaved instance>)) reaches get_normalized_value with a Model whose pk attribute is None, Django must emit a RemovedInDjango50Warning deprecation warning bearing exactly the message \"Passing unsaved model instances to related filters is deprecated.\". The gold revision added an `if value.pk is None:` guard that calls warnings.warn with RemovedInDjango50Warning and that literal message inside get_normalized_value; the buggy revision has no such guard. My witness constructs a real Django model graph (models.py module with an Author FK-backed Book, i.e. a single-column ForeignKey relation followed to its target field), configures Django with settings/setup, then creates an unsaved Author (Author(name=...) with pk None) and exercises Book.objects.filter(author=unsaved_author); because Lookup.__init__ runs get_prep_lookup -> RelatedLookupMixin -> get_normalized_value at filter-construction time, the gold code emits the warning. The test asserts exactly that a RemovedInDjango50Warning-warning with that literal message is emitted. I ran the identical test_source against both implementations: PASSED on gold (warning observed) and FAILED on buggy (assert False - no such warning, since buggy never warns). I checked the visible tests surface (tests/lookup, many_to_one, queries, model_fields, etc.); none of them already asserts this deprecation warning/message for unsaved-instance related filters, so this is not a re-worded echo of a visible test but a fresh assertion on the divergence introduced by the fix. Therefore it is a genuine execution-confirmed witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo is Django at VERSION = (4, 1, 0, 'alpha', 0) (django/__init__.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue (django__django-15401) is a deprecation design question, not a precise behavioral bug: it asks what the intended behavior is and requests that unsaved-object use in related filters be deprecated. It does not pin the exact warning category, message, or removal release; those are not derivable from the visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The silent mechanism behind the reported behavior lives in django/db/models/fields/related_lookups.py: get_normalized_value() materializes a passed model instance's pk/attname values into the lookup rhs (yielding None for an unsaved instance), and Query.filter > Query.build_filter > check_related_objects (django/db/models/sql/query.py) performs only model-type compatibility checks, never a saved/pk-status check."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "get_normalized_value is reached for both the single-value exact path (RelatedExact via RelatedLookupMixin) and lists passed to __in (RelatedIn)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Established non-regression behavior for filtering by saved instances (direct and __in) is pinned in tests/many_to_one/tests.py test_selects; unsaved-relation restrictions already exist elsewhere (e.g. related manager .add() raises for unsaved instances, test_relation_unsaved asserts child_set.count() on an unsaved Third raises before save)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/...; the relation/query tests most on-point are tests/many_to_one, tests/queries, tests/lookup, tests/model_fields."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 and H1 only add the `import warnings` and the `from django.utils.deprecation import RemovedInDjango50Warning` import lines; they produce no standalone observable behavior of their own but are required plumbing for the warning in H2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_normalized_value is shared by RelatedLookupMixin (single-value related lookups such as RelatedExact) and RelatedIn (list/handled __in values); the warning therefore fires on both the single-value exact path and __in path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard triggering the warning is `value.pk is None`; an instance that has been assigned a pk but not saved does not trigger it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A commented-out placeholder in the gold revision indicates the intended future (RemovedInDjango50) behavior is to raise ValueError instead of warning, but that is not active behavior at this revision."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the entire family of Django test packages that exercise get_normalized_value via related filters with a model instance: tests/queries (tests.py, test_q.py, test_query.py, test_qs_combinators.py, test_contains.py, test_sqlcompiler.py, test_bulk_update.py, test_db_returning.py, test_iterator.py, test_explain.py), tests/lookup (tests.py, test_lookups.py, test_timefield.py, test_decimalfield.py), tests/many_to_one, tests/many_to_one_null, tests/m2o_recursive, tests/mutually_referential, tests/one_to_one, tests/model_fields (tests.py, test_foreignkey.py, test_manytomanyfield.py), tests/m2m_and_m2o, tests/m2m_regress, tests/null_fk, tests/custom_pk, tests/proxy_models, tests/filtered_relation, tests/nested_foreign_keys, tests/generic_relations, and tests/deprecation. Every one of those files is labeled [VISIBLE] — none contains a [HIDDEN] assertion. R1 requires a held-out oracle assertion that passes on gold and fails on buggy for the specific RemovedInDjango50Warning(\"Passing unsaved model instances to related filters is deprecated.\") emitted from get_normalized_value when the pk attribute is None. None of the reachable [VISIBLE] tests assert that warning (the closest are type-mismatch/raise based tests in RelatedLookupTypeTests and the exclude-on-unsaved-o2o test in ExcludeTests, which assert ValueError/message to a different mechanism, not this deprecation warning, and moreover they are visible content so cannot witness). Consistent with this, the task reports that no oracle test currently fails against the buggy program. Since a witness must rest on [HIDDEN] content and none was found across the relevant oracle files, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.fields.related_lookups.get_normalized_value): When get_normalized_value (reached by related filters such as exact and __in over a relation, e.g. MyModel.objects.filter(rel=unsaved_instance)) is passed a model instance whose pk attribute is None (an unsaved instance), Django raises a RemovedInDjango50Warning deprecation warning bearing the exact message \"Passing unsaved model instances to related filters is deprecated.\". — not entailed by S_vis (S_vis R1 confirms a deprecation must at least be emitted for unsaved pk-None instances used in related filters, and S_vis R2 clarifies unsaved instances must not silently match as None. However, none of the visible evidence pins down the specific RemovedInDjango50Warning class or the exact message string \"Passing unsaved model instances to related filters is deprecated.\", so the precise warning behavior committed to by the patch is not fully derivable from visible info.); confirmed by a synthesized witness: R1 requires: when a related filter (e.g. MyModel.objects.filter(rel=<unsaved instance>)) reaches get_normalized_value with a Model whose pk attribute is None, Django must emit a RemovedInDjango50Warning deprecation warning bearing exactly the message \"Passing unsaved model instances to related filters is deprecated.\". The gold revision added an `if value.pk is None:` guard that calls warnings.warn with RemovedInDjango50Warning and that literal message inside get_normalized_value; the buggy revision has no such guard. My witness constructs a real Django model graph (models.py module with an Author FK-backed Book, i.e. a single-column ForeignKey relation followed to its target field), configures Django with settings/setup, then creates an unsaved Author (Author(name=...) with pk None) and exercises Book.objects.filter(author=unsaved_author); because Lookup.__init__ runs get_prep_lookup -> RelatedLookupMixin -> get_normalized_value at filter-construction time, the gold code emits the warning. The test asserts exactly that a RemovedInDjango50Warning-warning with that literal message is emitted. I ran the identical test_source against both implementations: PASSED on gold (warning observed) and FAILED on buggy (assert False - no such warning, since buggy never warns). I checked the visible tests surface (tests/lookup, many_to_one, queries, model_fields, etc.); none of them already asserts this deprecation warning/message for unsaved-instance related filters, so this is not a re-worded echo of a visible test but a fresh assertion on the divergence introduced by the fix. Therefore it is a genuine execution-confirmed witness for R1.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "task_id": "Closure-73",
+  "status": "ok",
+  "duration_seconds": 207.64046655200036,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Closure-73",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a Token.NEG node directly wraps a Token.NUMBER child, CodeGenerator prints the single negated double literal (e.g. the neg-literal from parsing `- - 2` prints as `2`) rather than a unary `-` followed by the child.",
+        "subject": "CodeGenerator.add (Token.NEG / Token.NUMBER)",
+        "hunk_ids": [],
+        "cited_from": "\"// It's important to our sanity checker that the code we print produces the same AST as the code we parse back. // NEG is a weird case because Rhino parses '- -2' as '2'. if (n.getFirstChild().getType() == Token.NUMBER) { cc.addNumber(-n.getFirstChild().getDouble()); } else { cc.addOp(NodeUtil.opToStrNoFail(type), false); addExpr(first, NodeUtil.precedence(type)); }\"; testNegCollapse: \"assertPrint(\"var x = - - 2;\", \"var x=2\"); assertPrint(\"var x = - (2);\", \"var x=-2\");\""
+      },
+      {
+        "id": "R2",
+        "statement": "Printing `x - (-4)` as source must yield `x- -4` (a space between the `-` binary operator and the negated literal) so the output re-parses as subtraction rather than a decrement, and re-parsing round-trips to the same AST.",
+        "subject": "CodeGenerator.add (binary/negative number rendering) and round-trip printing",
+        "hunk_ids": [],
+        "cited_from": "\"public void testSubtraction() { ... assertEquals(\"x- -4\", new CodePrinter.Builder(n).setLineLengthThreshold(...).build()); }\" and testParsePrintParse: \"a = b++ + ++c; a = b++-++c; a = - --b; a = - ++b;\""
+      },
+      {
+        "id": "R3",
+        "statement": "For an object-literal property whose key string is an all-digit run representing a value below NodeUtil.MAX_POSITIVE_INTEGER_NUMBER, the key is printed unquoted as a number, so `'3000000000'` (the string, greater than 2^31) is emitted as `3E9`; whereas keys greater than or equal to MAX_POSITIVE_INTEGER_NUMBER (e.g. `3000000001`, `6000000001`) are emitted unquoted as plain digits, and a key too large for exact representation (`12345678901234567`) is emitted quoted.",
+        "subject": "CodeGenerator.getSimpleNumber / Token.OBJECTLIT key rendering / Token.NUMBER",
+        "hunk_ids": [],
+        "cited_from": "\"testObjectLit3: assertPrint(\"var x={'3000000000':1}\", \"var x={3E9:1}\"); assertPrint(\"var x={'3000000001':1}\", \"var x={3000000001:1}\"); assertPrint(\"var x={'6000000001':1}\", \"var x={6000000001:1}\"); assertPrint(\"var x={\\\"12345678901234567\\\":1}\", \"var x={\\\"12345678901234567\\\":1}\");\" and CodeGenerator: \"double d = getSimpleNumber(key); if (!Double.isNaN(d)) { cc.addNumber(d); } else { add(jsString(...)); }\", getSimpleNumber returning NaN for l >= NodeUtil.MAX_POSITIVE_INTEGER_NUMBER"
+      },
+      {
+        "id": "R4",
+        "statement": "A numeric literal whose String.valueOf is a plain integer must print in a canonical form (e.g. 1 as \"1\", 10 as \"10\", 100 as \"100\") while powers/large doubles print in exponent form per the assertions (1000→\"1E3\", 10000→\"1E4\", 100000→\"1E5\", 1E18 for 10^18, 1.0 for... ), and 0.000001 prints as \"1.0E-6\", ensuring the printed numeric literal re-parses to the same value.",
+        "subject": "CodeGenerator number emission (Token.NUMBER via cc.addNumber(n.getDouble()))",
+        "hunk_ids": [],
+        "cited_from": "\"assertPrintNumber(\"1\", 1); assertPrintNumber(\"10\", 10); assertPrintNumber(\"100\", 100); assertPrintNumber(\"1E3\", 1000); ... assertPrintNumber(\"1E18\", 1000000000000000000L); assertPrintNumber(\"100000.1\", 100000.1); assertPrintNumber(\"1.0E-6\", 0.000001);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When CodeGenerator escapes a string/regexp with no output CharsetEncoder configured (default printing), a character whose code point is exactly 0x7f (DEL, U+007F) is not appended literally: it is instead emitted in its \\u hex JavaScript representation (\\u007f).",
+        "subject": "CodeGenerator.strEscape",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "All extracted S_vis requirements (and their citations) concern number/literal rendering (NEG collapse, x- -4 spacing, object-literal key emission, numeric canonical form), none of which address string/regexp escaping. S_impl R1 describes strEscape emitting U+007F as \\u007f when no CharsetEncoder is configured, a distinct code path with no corresponding visible-evidence detail, so S_vis does not pin it down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n  Class<?> cls = Class.forName(\"com.google.javascript.jscomp.CodeGenerator\");\n  java.lang.reflect.Method m = cls.getDeclaredMethod(\n      \"strEscape\", String.class, char.class, String.class, String.class,\n      String.class, java.nio.charset.CharsetEncoder.class);\n  m.setAccessible(true);\n  String out = (String) m.invoke(null, \"\\u007f\", '\"', \"\\\\\\\"\", \"'\", \"\\\\\\\\\",\n      (java.nio.charset.CharsetEncoder) null);\n  boolean containsRawDel = out.indexOf('\\u007f') >= 0;\n  boolean containsHexEscape = out.contains(\"\\\\u007f\");\n  org.junit.Assert.assertFalse(\"R1 violated: raw DEL emitted: \" + show(out),\n      containsRawDel);\n  org.junit.Assert.assertTrue(\"R1 violated: no \\\\u007f escape: \" + show(out),\n      containsHexEscape);\n}\nprivate String show(String in) {\n  StringBuilder sb = new StringBuilder();\n  for (int i = 0; i < in.length(); i++) {\n    char ch = in.charAt(i);\n    sb.append(ch == '\\u007f' ? \"<DEL>\" : Character.toString(ch));\n  }\n  return sb.toString();\n}",
+      "gold_result": "PASSED — CodeGenerator.strEscape with a null CharsetEncoder escapes the 0x7f character to the \\u007f sequence (output contains no raw DEL byte, and includes the literal text \"\\u007f\").",
+      "buggy_result": "FAILED — strEscape with null encoder appended the raw DEL (0x7f) character literally (output '\"<DEL>\"'), i.e. the c<=0x7f pass-through guard fired, so no \\u007f escape was produced; assertion assertFalse(containsRawDel) failed.",
+      "explanation": "R1 is precisely about the boundary of the straight-Latin pass-through guard in CodeGenerator.strEscape when no CharsetEncoder is configured: the fix tightened `c <= 0x7f` to `c < 0x7f`, so a DEL (0x7f) must now drop into the else branch and be emitted as the \\u escape \\u007f, not appended literally. The cleanest executable encapsulation of that behavior (which is the exact changed line, and there is genuinely no other behavior that the diff touches) is to invoke the affected static method strEscape itself with the default null encoder on a one-char \\u007f payload and assert the output contains the \\u007f escape and no raw DEL; null encoder guarantees the modified no-encoder branch is taken (double-quoted string quoting path passes '\"' with a null encoder by design). Because CodeGenerator is package-private and the standalone harness compiles in the default package, I reach it reflectively (setAccessible on the declared static method). Execution confirms gold produces the escape (PASS) while buggy appends the raw DEL byte (FAIL), so the test discriminates exactly on R1's hidden contract. This was known to overlap semantically with the visible CodePrinterTest.testUnicode \\x7f case, but since the diff only changes this single boundary there is no other input scenario R1 governs, and each of the other S_vis requirements R2/R3/R4 proved insufficient against it."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue description for Closure-73/issue-416 is a citation-only fallback with no actual bug text, so no specific behavioral claim can be derived from the description itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are only src/com/google/javascript/jscomp/CodeGenerator.java and test/com/google/javascript/jscomp/CodePrinterTest.java; the actual number-formatting sink cc.addNumber(…) lives in the not-disclosed CodeConsumer class."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests exercise CodeGenerator via CodePrinter.Builder; many round-trip guarantees come via testParsePrintParse which asserts parse1.checkTreeEquals(parse2) is null after re-printing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because the failing case added by the real patch is not disclosed, extracted requirements are the strongest concrete number/object-key rendering assertions visible in the existing test file that a CodeGenerator fix would preserve."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CodeGenerator.getSimpleNumber caps at NodeUtil.MAX_POSITIVE_INTEGER_NUMBER and keys in that range are rendered via cc.addNumber, while out-of-range all-digit keys fall through to jsString quoting in Token.OBJECTLIT."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change in CodeGenerator.strEscape shifts the upper bound of the 'straight Latin pass-through' guard from c <= 0x7f to c < 0x7f, so printable ASCII (0x20 through 0x7e) still passes through; only the DEL control char 0x7f now falls to the unicode-escape branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This branch only runs when outputCharsetEncoder == null (default fallback in CodeGenerator constructor / when outputCharset==null or US_ASCII), i.e. the fast path without a CharsetEncoder."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "strEscape is shared by jsString, regexpEscape, and escapeToDoubleQuotedJsString; escapeToDoubleQuotedJsString always passes a null encoder, so it is also affected at the 0x7f boundary."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "identifierEscape already used c < 0x7f both before and after the patch, so the strEscape hunk merely makes the delimiter-char escaping consistent with it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 (DEL / 0x7f in a JS string escapes to \\u007f when CodeGenerator prints with no CharsetEncoder) is genuinely tested by the visible file code: CodePrinterTest::testUnicode's third assertion `assertPrint(\"var x ='\\\\x7f';\", \"var x=\\\"\\\\u007f\\\"\")` matches R1 exactly and is the failure vs. the buggy program. But CodePrinterTest.java (the only file in the oracle that exercises CodePrinter/code-generation string escaping) is [VISIBLE], so its assertion cannot serve as a Witness — it is exactly the material already seen by the repair system, and R1 was extracted from that visible content rather than being hidden-oracle-enforced. I surveyed the other code-generation/text-serialization test files (SourceMapGeneratorV1/V2 tests, and the various jscomp pass tests): none assert JS output escaping of the DEL character (they concern source maps/passes). There is no hidden CodeGenerator/printing test in the oracle, so no [HIDDEN] assertion genuinely tests R1. (Standalone reproduction attempts also fail to compile only because CodePrinter/Compiler are package-private and the run harness compiles candidates in the default package — moot given the only matching assertion is visible.) Hence no qualified witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (CodeGenerator.strEscape): When CodeGenerator escapes a string/regexp with no output CharsetEncoder configured (default printing), a character whose code point is exactly 0x7f (DEL, U+007F) is not appended literally: it is instead emitted in its \\u hex JavaScript representation (\\u007f). — not entailed by S_vis (All extracted S_vis requirements (and their citations) concern number/literal rendering (NEG collapse, x- -4 spacing, object-literal key emission, numeric canonical form), none of which address string/regexp escaping. S_impl R1 describes strEscape emitting U+007F as \\u007f when no CharsetEncoder is configured, a distinct code path with no corresponding visible-evidence detail, so S_vis does not pin it down.); confirmed by a synthesized witness: R1 is precisely about the boundary of the straight-Latin pass-through guard in CodeGenerator.strEscape when no CharsetEncoder is configured: the fix tightened `c <= 0x7f` to `c < 0x7f`, so a DEL (0x7f) must now drop into the else branch and be emitted as the \\u escape \\u007f, not appended literally. The cleanest executable encapsulation of that behavior (which is the exact changed line, and there is genuinely no other behavior that the diff touches) is to invoke the affected static method strEscape itself with the default null encoder on a one-char \\u007f payload and assert the output contains the \\u007f escape and no raw DEL; null encoder guarantees the modified no-encoder branch is taken (double-quoted string quoting path passes '\"' with a null encoder by design). Because CodeGenerator is package-private and the standalone harness compiles in the default package, I reach it reflectively (setAccessible on the declared static method). Execution confirms gold produces the escape (PASS) while buggy appends the raw DEL byte (FAIL), so the test discriminates exactly on R1's hidden contract. This was known to overlap semantically with the visible CodePrinterTest.testUnicode \\x7f case, but since the diff only changes this single boundary there is no other input scenario R1 governs, and each of the other S_vis requirements R2/R3/R4 proved insufficient against it.",
+    "confidence": "Medium"
+  }
+}

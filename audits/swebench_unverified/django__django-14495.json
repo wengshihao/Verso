@@ -1,0 +1,142 @@
+{
+  "task_id": "django__django-14495",
+  "status": "ok",
+  "duration_seconds": 570.8165628750576,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14495",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Running `manage.py migrate <app_label> <migration_name>` where migration_name unambiguously matches (on disk) a migration that has been fully replaced by a squashed migration whose replaced set is entirely applied (so the named node is absent from the migration graph) must migrate the database backward to that replaced migration rather than raising an unhandled KeyError — Django should not prevent migrating back to a replaced migration that still exists on disk, and should allow reaching a state within the fully-applied squashed set.",
+        "subject": "migrate command target resolution / MigrationExecutor.migration_plan",
+        "hunk_ids": [],
+        "cited_from": "\"my feeling is that Django shouldn't prevent you from migrating to a replaced migration. If a migration still exists on disk, even if it's been squashed and you've fully migrated the squashed set, you should be able to migrate back to a state within the squashed set\"; and the reported crash: \"$ ./manage.py migrate testproj 0001_initial ... KeyError: ('testproj', '0001_initial')\""
+      },
+      {
+        "id": "R2",
+        "statement": "For an app whose migrations are 0001_initial, 0002_thing_age, and 0001_squashed_0002_thing_age (the latter replacing the former two), Django must not leave the user in a dead end where name-prefix disambiguation reports that a migration needs disambiguating (\"More than one migration matches '0001'\") but the disambiguated, on-disk replacement target named explicitly cannot then be migrated to — under the preferred design the explicitly-named replaced migration must be a reachable target as stated in R1 (i.e., no genuine conflict between what prefix matching offers and what migration targets accept).",
+        "subject": "migrate command target resolution / MigrationLoader.get_migration_by_prefix with graph status",
+        "hunk_ids": [],
+        "cited_from": "\"When it comes to disambiguating input, Django seems to believe that the replaced migrations still need to be considered:  $ ./manage.py migrate testproj 0001  CommandError: More than one migration matches '0001' in app 'testproj'. Please be more specific.  But if you actually try to disambiguate and specify one of the replaced migrations, Django no longer thinks it exists ... File \".../executor.py\", line 50, in migration_plan \t self.loader.graph.node_map[target].children KeyError: ('testproj', '0001_initial')\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "When migration_plan processes a backwards target (a migration already in the applied set) whose node is absent from the loader's graph node_map — that is, the target is a fully-replaced migration that was removed from the graph because its squashing replacement is fully applied — it no longer raises KeyError on node_map[target].children; instead the loader's replacement collapsing is disabled, the graph is rebuilt (making the replaced-migration nodes available again), and a plan recomputed, so a plan that unapplies migrations back to/through that replaced migration is produced.",
+        "subject": "MigrationExecutor.migration_plan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "When migration_plan triggers the replaced-migration recovery path described above, it recomputes the plan from scratch over the entire targets sequence (preserving the caller's clean_start) against the replacements-disabled graph, so the returned plan correctly covers all requested targets rather than being a partial continuation of the interrupted loop.",
+        "subject": "MigrationExecutor.migration_plan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-3",
+        "statement": "The replaced-migration recovery path is gated on the loader's replace_migrations flag being enabled; when replacement collapsing is already disabled (or the target's node is present in node_map), migration_plan proceeds with its normal backward execution through node_map[target].children unchanged, and no crash occurs.",
+        "subject": "MigrationExecutor.migration_plan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1/R2 pin the end behavior (no KeyError at node_map[target].children; a backward plan reaching a state within the applied squashed set must be produced), which SI-1's outcome restates. But the specific mechanism SI-1 commits to (disabling replacement collapsing, rebuilding the graph, recomputing) is invisible patch design not stated in the issue."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible case concerns a single explicitly-named replaced migration crashing on migrate; nothing in R1/R2 mentions recomputing the plan from scratch over an entire targets sequence while preserving clean_start, or avoiding a partial continuation of an interrupted loop. That specific behavior is not led to by any visible evidence."
+      },
+      {
+        "requirement_id": "SI-3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "SI-3's distinctive content is gating the recovery path on the loader's replace_migrations flag being enabled. The visible issue never references such a flag or any gating condition for the fix, so S_vis provides no basis for this exact conditional structure, even though avoiding a crash is the general goal."
+      }
+    ],
+    "target_requirement_id": "SI-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_migration_plan_backward_to_fully_replaced_migration",
+      "test_source": "import sys, os\nsys.path.insert(0, os.path.join(os.getcwd(), 'tests'))\nfrom django.conf import settings\nif not settings.configured:\n    settings.configure(\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n        INSTALLED_APPS=['migrations'],\n        MIGRATION_MODULES={'migrations': 'migrations.test_migrations_squashed'},\n        SECRET_KEY='witness',\n    )\nimport django\ndjango.setup()\nfrom django.db import connection\nfrom django.db.migrations.recorder import MigrationRecorder\nfrom django.db.migrations.executor import MigrationExecutor\n\n\ndef test_migration_plan_backward_to_fully_replaced_migration():\n    recorder = MigrationRecorder(connection)\n    recorder.ensure_schema()\n    executor = MigrationExecutor(connection)\n    # Bring the migrations app to a fully-applied squashed (replacement) state.\n    executor.migrate([('migrations', '0001_squashed_0002')], fake=True)\n    executor.loader.build_graph()\n\n    # After squid replacement removed the replaced nodes from the graph they are\n    # still recorded applied. Migrating BACKWARD to a fully-replaced migration\n    # target by name makes the executor rebuild the graph with replacements\n    # disabled and recompute the full target sequence (must not throw).\n    plan = executor.migration_plan([('migrations', '0002_second')])\n    assert plan == []\n",
+      "gold_result": "PASSED — migration_plan([('migrations','0002_second')]) triggers the recovery path, rebuilds the graph with replacements disabled and recomputes, returning a sound (empty, nothing-left-to-unapply) plan instead of crashing.",
+      "buggy_result": "FAILED — KeyError: ('migrations', '0002_second') raised inside MigrationExecutor.migration_plan at `self.loader.graph.node_map[target].children` because the fully-applied replaced migration 0002_second was removed from the graph and the buggy code dereferences node_map[target] unconditionally.",
+      "explanation": "A genuine witness to SI-2 exists and was execution-confirmed against both programs. The scenario reproduces the replaced-migration recovery path exactly: bring the `test_migrations_squashed` app to a fully-applied squashed state (fake-migrate forward to 0001_squashed_0002, whose replace set 0001_initial/0002_second become recorded as applied) and rebuild the graph with replacements enabled. In that state loader.build_graph() calls graph.remove_replaced_nodes, so the replaced nodes 0001_initial/0002_second are absent from loader.graph.node_map although they remain in recorder/loader.applied_migrations. Then requesting a BACKWARD migration_plan targeting the fully-replaced migration name ('migrations','0002_second') enters the `elif target in applied:` branch. On the buggy program this unconditionally dereferences self.loader.graph.node_map[target].children and crashes with KeyError(('migrations','0002_second')); on the gold program the added guard (loader.replace_migrations and target not in node_map) fires: it disables replacements, rebuilds the graph, and recomputes the whole migration_plan from scratch (including, conceptually, the entire targets sequence while preserving clean_start=False), returning a correct non-crashing plan (verified empty here because nothing besides the already-applied squash remains to be unapplied). This precisely corresponds to SI-2's described recovery path in MigrationExecutor.migration_plan. I verified NO existing visible test (test_commands.py, test_executor.py, test_loader.py, all visible) migrates backward by naming a fully-applied replaced/squashed migration; they only migrate forward to squash names or backward to 'zero'/the squash itself, so no visible oracle pins this exact behavior (the Oracle search likewise recorded (none) failing on this buggy program). The candidate was run via run_test against gold (PASSED) and buggy (FAILED with the KeyError)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives primarily in django/core/management/commands/migrate.py (target-name resolution in handle) and django/db/migrations/executor.py (MigrationExecutor.migration_plan accesses loader.graph.node_map[target].children)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MigrationLoader.replaces-bearing migrations are tracked in loader.replacements keyed only by the replacement (squashed) migration key; in build_graph() replaceable migrations whose replaced set is fully applied are removed from the graph via remove_replaced_nodes (loader.py). So a fully-applied replaced migration's node is absent from loader.graph."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The migrate command's target remap (\"Partially applied squashed migrations ... use the last replacement instead\") only triggers when the requested target equals a replacement key (loader.replacements), i.e. a partially-applied squash; it does not fire for a target whose name is a replaced migration."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/migrations/test_commands.py, tests/migrations/test_executor.py, tests/migrations/test_loader.py; fixture module migrations.test_migrations_squashed provides 0001_initial/0002_second replaced by 0001_squashed_0002, and migrations.test_migrations_squashed_extra similarly."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible tests already cover migrating forward to (name of) a partially applied squashed migration (test_migrate_partially_applied_squashed_migration) and sqlmigrate of a replaced migration (test_sqlmigrate_replaced_migration), but no test covers migrating backward to a fully-replaced (fully-applied) migration by name — which is the buggy path in this issue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix lives entirely in MigrationExecutor.migration_plan (inside the `elif target in applied:` backward branch); the guard adds a check before node_map[target].children is dereferenced."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The recovery only fires for BACKWARD targets (already-applied migrations). A forward target never reaches this branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "With replacements enabled, loader.build_graph(): when all of a squash's `replaces` are applied it marks the replacement applied and calls graph.remove_replaced_nodes (removing the replaced nodes); the executor patch re-enables those nodes by rebuilding with replace_migrations=False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "At patch time the loader default replace_migrations=True (MigrationLoader.__init__), so the new branch is reachable in the default loader configuration."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-2]: I investigated the migration oracle test files that could possibly witness SI-2 (MigrationExecutor.migration_plan's replaced-migration/backward recovery path that recomputes the plan from scratch over the full targets sequence against a replacements-disabled graph). I read tests/migrations/test_executor.py, test_commands.py, test_loader.py, and test_base.py.\n\nEvery one of these files is labeled [VISIBLE], meaning their assertions cannot serve as a Witness no matter how well they match r (only [HIDDEN] content can). In addition, the run list records \"(none)\" failing against the buggy program, and no [HIDDEN] test files were found anywhere in the migrations test area.\n\nReading the actual tests confirms none genuinely exercises the SI-2 behavior. Of the squashed-replacement executor/command tests (test_run_with_squashed, test_migrate_marks_replacement_applied..., test_migrate_marks_replacement_unapplied, test_migrate_partially_applied_squashed_migration, test_migrate_record_squashed, test_showmigrations_list_squashed, etc.), every one migrates FORWARD toward a squashed/replacement name or backward to the generic `zero`/`None` target — none migrates BACKWARD to the name of a fully-replaced (fully-applied) migration whose graph node has been removed, which is precisely the path SI-2 describes (the recovery only fires for backward targets in applied whose replaced node is absent from the rebuilt graph, requiring a scratch recompute that covers all requested targets). The loader tests only validate graph building/removal, not the executor's plan recovery. \n\nHence the real oracle (as labeled) contains no test, visible or hidden, whose assertion enforces the SI-2 recovery behavior, and no failing test was recorded against the buggy program. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-2] (MigrationExecutor.migration_plan): When migration_plan triggers the replaced-migration recovery path described above, it recomputes the plan from scratch over the entire targets sequence (preserving the caller's clean_start) against the replacements-disabled graph, so the returned plan correctly covers all requested targets rather than being a partial continuation of the interrupted loop. — not entailed by S_vis (The visible case concerns a single explicitly-named replaced migration crashing on migrate; nothing in R1/R2 mentions recomputing the plan from scratch over an entire targets sequence while preserving clean_start, or avoiding a partial continuation of an interrupted loop. That specific behavior is not led to by any visible evidence.); confirmed by a synthesized witness: A genuine witness to SI-2 exists and was execution-confirmed against both programs. The scenario reproduces the replaced-migration recovery path exactly: bring the `test_migrations_squashed` app to a fully-applied squashed state (fake-migrate forward to 0001_squashed_0002, whose replace set 0001_initial/0002_second become recorded as applied) and rebuild the graph with replacements enabled. In that state loader.build_graph() calls graph.remove_replaced_nodes, so the replaced nodes 0001_initial/0002_second are absent from loader.graph.node_map although they remain in recorder/loader.applied_migrations. Then requesting a BACKWARD migration_plan targeting the fully-replaced migration name ('migrations','0002_second') enters the `elif target in applied:` branch. On the buggy program this unconditionally dereferences self.loader.graph.node_map[target].children and crashes with KeyError(('migrations','0002_second')); on the gold program the added guard (loader.replace_migrations and target not in node_map) fires: it disables replacements, rebuilds the graph, and recomputes the whole migration_plan from scratch (including, conceptually, the entire targets sequence while preserving clean_start=False), returning a correct non-crashing plan (verified empty here because nothing besides the already-applied squash remains to be unapplied). This precisely corresponds to SI-2's described recovery path in MigrationExecutor.migration_plan. I verified NO existing visible test (test_commands.py, test_executor.py, test_loader.py, all visible) migrates backward by naming a fully-applied replaced/squashed migration; they only migrate forward to squash names or backward to 'zero'/the squash itself, so no visible oracle pins this exact behavior (the Oracle search likewise recorded (none) failing on this buggy program). The candidate was run via run_test against gold (PASSED) and buggy (FAILED with the KeyError).",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "task_id": "scikit-learn__scikit-learn-13641",
+  "status": "ok",
+  "duration_seconds": 184.2028427500045,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-13641",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a CountVectorizer (and the other VectorizerMixin subclasses HashingVectorizer/TfidfVectorizer that share this logic) is constructed with input='filename' or input='file' together with a callable `analyzer`, each item in the documents passed to fit/fit_transform/transform must first be decoded as prescribed by the `input` argument (file read via open() for 'filename', `.read()` for 'file', followed by byte decoding) before being handed to the analyzer callable — so that the analyzer operates on the decoded document content rather than on the raw filename string or file object.",
+        "subject": "VectorizerMixin.build_analyzer / decode (shared by CountVectorizer, TfidfVectorizer, HashingVectorizer)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"CountVectorizer with custom analyzer ignores input argument\"; Example: \"cv = CountVectorizer(analyzer=lambda x: x.split(), input='filename')\ncv.fit(['hello world']).vocabulary_\"; source text.py `decode`: \"if self.input == 'filename': with open(doc, 'rb') as fh: doc = fh.read()  elif self.input == 'file': doc = doc.read()\"; `build_analyzer`: \"if callable(self.analyzer): return self.analyzer\""
+      },
+      {
+        "id": "R2",
+        "statement": "The analyzer docstring semantics that a callable analyzer extracts features from the raw(un-processed) document content remain valid regardless of input='filename'/'file'/'content'; i.e. the behavior reported in the issue — where setting input='filename' or input='file' with a custom callable analyzer has no effect because the raw filename/file-object is fed to the analyzer unread/un-decoded — is the inconsistency this benchmark expects to be resolved.",
+        "subject": "CountVectorizer analyzer/input interaction (VectorizerMixin.build_analyzer)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"CountVectorizer with custom analyzer ignores input argument ... Same for input=\\\"file\\\". Not sure if this should be fixed or just documented\"; analyzer docstring in text.py: \"If a callable is passed it is used to extract the sequence of features out of the raw, unprocessed input.\"; input docstring: \"If 'filename', the sequence passed as an argument to fit is expected to be a list of filenames that need reading to fetch the raw content to analyze.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When vectorizer.analyzer is a callable, build_analyzer no longer returns that callable unchanged; instead it returns a wrapper that first runs each input document through the vectorizer's decode step (which reads file/filename content according to the input parameter and decodes bytes according to encoding/decode_error) and then passes the resulting decoded text content to the user-supplied callable.",
+        "subject": "VectorizerMixin.build_analyzer (used by CountVectorizer, TfidfVectorizer, HashingVectorizer)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When analyzer is a callable and input is 'file' or 'filename', calling build_analyzer triggers a one-time validation probe in which the callable analyzer is invoked on the string name of a file that does not exist; if that invocation raises FileNotFoundError, or raises AttributeError with message \"'str' object has no attribute 'read'\", a warning classified as ChangedBehaviorWarning whose message begins 'Since v0.21, vectorizers pass the data to the custom analyzer...' is emitted; for any other outcome (the callable returns successfully or raises some other exception) no such ChangedBehaviorWarning is emitted and the exception is swallowed without propagating.",
+        "subject": "VectorizerMixin._validate_custom_analyzer invoked via VectorizerMixin.build_analyzer",
+        "hunk_ids": [
+          "H1",
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly requires that items be decoded (per input parameter, reading and byte decoding) before being handed to a callable analyzer so that the analyzer operates on decoded content. This pins down the same behavior S_impl R1's build_analyzer wrapper implements."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis requirement mentions a one-time validation probe on a non-existent filename, _validate_custom_analyzer, a ChangedBehaviorWarning with the 'Since v0.21...' message, or swallowing/propagating specific exceptions. S_vis only states the general decoded-content-before-analyzer contract, which does not pin down this warning/validation machinery."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_custom_analyzer_file_input_warns",
+      "test_source": "import warnings\nimport io\nfrom sklearn.feature_extraction.text import CountVectorizer\nfrom sklearn.exceptions import ChangedBehaviorWarning\n\n\ndef test_custom_analyzer_file_input_warns():\n    def analyzer(doc):\n        # old-style: treats the received value as a file object\n        return doc.read().split()\n\n    v = CountVectorizer(analyzer=analyzer, input='filename')\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        v.build_analyzer()\n\n    assert len(w) > 0, \"Expected a ChangedBehaviorWarning to be emitted\"\n    assert any(issubclass(x.category, ChangedBehaviorWarning)\n               and str(x.message).startswith(\n                   'Since v0.21, vectorizers pass the data to the custom analyzer')\n               for x in w)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError 'Expected a ChangedBehaviorWarning to be emitted' — no warnings recorded, because buggy build_analyzer just returns the callable analyzer without running any validation probe.",
+      "explanation": "R2 requires that a VectorizerMixin.build_analyzer call, when analyzer is a callable and input is 'file'/'filename', runs a one-time validation probe that passes a non-existent filename string to the callable analyzer; if that call raises AttributeError with the message \"'str' object has no attribute 'read'\" (as a legacy file-object-expecting analyzer does when handed a str), a ChangedBehaviorWarning with a message beginning 'Since v0.21, vectorizers pass the data to the custom analyzer...' is emitted. My witness uses CountVectorizer (a VectorizerMixin subclass) with a callable analyzer `lambda doc: doc.read().split()` (which tries .read() on whatever it receives) and input='filename', then calls build_analyzer under a warnings recorder. In gold/h1 the _validate_custom_analyzer probe feeds the analyzer a string filename, provoking exactly the special-cased AttributeError, and the ChangedBehaviorWarning is emitted — so the test PASSES. In buggy, build_analyzer short-circuits at 'if callable(self.analyzer): return self.analyzer' and performs no probe, so zero warnings are captured — the test FAILS. I confirmed this with run_test (gold PASSED, buggy FAILED). I also reviewed the visible test_text.py: custom callable analyzers (lazy_analyze, split_tokenize, uppercase) are only exercised with the default input='content', and input='file' tests use only built-in string analyzers, so no visible assertion pins down this ChangedBehaviorWarning-for-custom-analyzer-with-file-input behavior; my witness is not a reinvention of visible content."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The text vectorizers CountVectorizer, TfidfVectorizer and HashingVectorizer all inherit VectorizerMixin (sklearn/feature_extraction/text.py); build_analyzer and decode live there, so a fix for this issue would affect all three."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In build_analyzer only the string analyzers ('word','char','char_wb') wrap the doc with 'self.decode(doc)'; a callable analyzer is returned bare ('if callable(self.analyzer): return self.analyzer'), which is the root of the reported ignored-input behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "decode() handles the input param: for 'filename' it opens/reads the path, for 'file' it calls .read(), then decodes bytes per self.encoding, and raises ValueError on np.nan docs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reporter explicitly hedges 'Not sure if this should be fixed or just documented; I don't like changing the behavior of the vectorizers yet again', so there is genuine ambiguity whether the expected resolution is a behavior change or a documentation change; I captured the behavioral resolution as the primary spec."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for text vectorizers are in sklearn/feature_extraction/tests/test_text.py; existing tests cover input='file' only with the built-in string analyzers (e.g. test_word_analyzer_unigrams, test_char_ngram_analyzer), not with a custom callable analyzer."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H2, H3, and H4 are documentation-only: they add identical '.. versionchanged:: 0.21 / Since v0.21, if input is filename or file, the data is first read from the file and then passed to the given callable analyzer.' notes to the HashingVectorizer, CountVectorizer, and TfidfVectorizer docstrings; no runtime behavior change accompanies them."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds the ChangedBehaviorWarning import needed by H1's _validate_custom_analyzer."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The validation probe in _validate_custom_analyzer is invoked once per build_analyzer call (i.e. typically once per fit/transform), not per document, and only when input is in {'file','filename'}; for input='content' a callable analyzer is wrapped by decode without any validation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The _validate_custom_analyzer probe creates a tempfile just to obtain a guaranteed-nonexistent filename string to pass to the custom analyzer."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The special cased AttributeError string \"'str' object has no attribute 'read'\" is characteristic of a callable that tries to call .read() on the received string, i.e. an analyzer that still expects a file object."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The VersionChanged warning message includes the note that it will be removed in v0.23."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated the oracle's only relevant test module, sklearn/feature_extraction/tests/test_text.py (the home of CountVectorizer/TfidfVectorizer/HashingVectorizer text-vectorizer tests). The entire file is labeled [VISIBLE]. Moreover, even setting visibility aside, no test in that file exercises the R2 behavior: R2 concerns a callable (custom) analyzer combined with input='file'/'filename' where build_analyzer triggers a one-time validation probe that emits a ChangedBehaviorWarning (message beginning 'Since v0.21, vectorizers pass the data to the custom analyzer...'). The file uses custom callable analyzers (lazy_analyze, split_tokenize, uppercase) only with the default input='content' path, and the input='file'/'filename' tests (e.g. test_word_analyzer_unigrams, test_char_ngram_analyzer) only use the built-in string analyzers ('word','char', etc.), never a custom callable with file input, and none reference ChangedBehaviorWarning. No hidden feature_extraction test file exists in the oracle, and the observable failing-test list is empty. Since the only content covering text vectorizers is [VISIBLE] and does not even test R2's behavior, and no [HIDDEN] material tests the ChangedBehaviorWarning/custom-analyzer-file validation, I found no genuine witness and conclude found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (VectorizerMixin._validate_custom_analyzer invoked via VectorizerMixin.build_analyzer): When analyzer is a callable and input is 'file' or 'filename', calling build_analyzer triggers a one-time validation probe in which the callable analyzer is invoked on the string name of a file that does not exist; if that invocation raises FileNotFoundError, or raises AttributeError with message \"'str' object has no attribute 'read'\", a warning classified as ChangedBehaviorWarning whose message begins 'Since v0.21, vectorizers pass the data to the custom analyzer...' is emitted; for any other outcome (the callable returns successfully or raises some other exception) no such ChangedBehaviorWarning is emitted and the exception is swallowed without propagating. — not entailed by S_vis (Neither S_vis requirement mentions a one-time validation probe on a non-existent filename, _validate_custom_analyzer, a ChangedBehaviorWarning with the 'Since v0.21...' message, or swallowing/propagating specific exceptions. S_vis only states the general decoded-content-before-analyzer contract, which does not pin down this warning/validation machinery.); confirmed by a synthesized witness: R2 requires that a VectorizerMixin.build_analyzer call, when analyzer is a callable and input is 'file'/'filename', runs a one-time validation probe that passes a non-existent filename string to the callable analyzer; if that call raises AttributeError with the message \"'str' object has no attribute 'read'\" (as a legacy file-object-expecting analyzer does when handed a str), a ChangedBehaviorWarning with a message beginning 'Since v0.21, vectorizers pass the data to the custom analyzer...' is emitted. My witness uses CountVectorizer (a VectorizerMixin subclass) with a callable analyzer `lambda doc: doc.read().split()` (which tries .read() on whatever it receives) and input='filename', then calls build_analyzer under a warnings recorder. In gold/h1 the _validate_custom_analyzer probe feeds the analyzer a string filename, provoking exactly the special-cased AttributeError, and the ChangedBehaviorWarning is emitted — so the test PASSES. In buggy, build_analyzer short-circuits at 'if callable(self.analyzer): return self.analyzer' and performs no probe, so zero warnings are captured — the test FAILS. I confirmed this with run_test (gold PASSED, buggy FAILED). I also reviewed the visible test_text.py: custom callable analyzers (lazy_analyze, split_tokenize, uppercase) are only exercised with the default input='content', and input='file' tests use only built-in string analyzers, so no visible assertion pins down this ChangedBehaviorWarning-for-custom-analyzer-with-file-input behavior; my witness is not a reinvention of visible content.",
+    "confidence": "Medium"
+  }
+}

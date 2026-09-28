@@ -1,0 +1,81 @@
+{
+  "task_id": "django__django-16315",
+  "status": "ok",
+  "duration_seconds": 131.731740374933,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16315",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When bulk_create(..., update_conflicts=True, update_fields=[...], unique_fields=[...]) names model fields that declare a db_column (column name differs from the Python field name), the generated upsert SQL's ON CONFLICT target list and its DO UPDATE SET column assignments must reference the actual database column names (the fields' db_column values), not the Python field names — so that the statement is valid against the backend and performs the intended upsert rather than raising a 'column does not exist' syntax error.",
+        "subject": "QuerySet.bulk_create / DatabaseOperations.on_conflict_suffix_sql (postgresql)",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'The code which is generated for \"ON CONFLICT\" uses the field name and not the db_column which leads to a syntax error\n'ON CONFLICT(\"blacklistid\") DO UPDATE SET \"sectorid\" = EXCLUDED.\"sectorid\", ...\nPostgreSQL returns ERROR: column \"blacklistid\" does not exist at character 1508\nWhat should be generated is I think:\n'ON CONFLICT(\"BlacklistID\") DO UPDATE SET \"SectorID\" = EXCLUDED.\"SectorID\", ...' AND (quoting the wrongly-generated vs expected prefix) 'The \"INSERT\" code does take into account the db_columns INSERT INTO \"Activity_BlackListed\" (\"BlacklistID\",...) VALUES (%s, ...)'"
+      },
+      {
+        "id": "R2",
+        "statement": "The model used in the failing scenario declares fields whose Python/attribute names (e.g. blacklistid, sectorid) differ from their db_column values (e.g. BlacklistID, SectorID), and the field is referenced by its Python name in the unique_fields/update_fields arguments of bulk_create while the physical table column is the db_column value.",
+        "subject": "QuerySet._check_bulk_create_options / insert conflict resolution of fields",
+        "hunk_ids": [],
+        "cited_from": "Issue model snippet: 'blacklistid = models.IntegerField(primary_key=True, db_column=\"BlacklistID\")\nsectorid = models.IntegerField(null=True, blank=True, db_column=\"SectorID\")' and call 'qs.bulk_create(instances, update_conflicts=True, update_fields=[\"sectorid\", ...], unique_fields=[\"blacklistid\"])'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When QuerySet.bulk_create(...) is called with update_conflicts=True, each entry supplied in unique_fields and update_fields is resolved (through self.model._meta.get_field, mapping the 'pk' shortcut to the model's primary-key field name) into the corresponding model Field, and the upsert SQL appended by the database backend's on-conflict-suffix hook references those fields' actual database column names (f.column) rather than their model attribute names.",
+        "subject": "QuerySet.bulk_create",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins down the essential behavior: the on-conflict upsert SQL must reference actual database column names (db_column / f.column) rather than Python field attribute names in both the target list and DO UPDATE SET, because using attribute names raises a 'column does not exist' syntax error; R2 confirms unique_fields/update_fields are passed by Python name (blacklistid/sectorid) against db_column columns. The get_field/pk-shortcut resolution is an implementation detail, but the externally-observable behavior REQ1 commits to is fully covered by R1+R2."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The resolution move makes QuerySet.bulk_create resolve unique_fields/update_fields names into Field objects unconditionally (before consulting on_conflict / ignore_conflicts), so self.model._meta.get_field is invoked even on the ignore_conflicts path where those fields are not otherwise consulted. In the prior version that resolution only occurred inside _check_bulk_create_options on the update_conflicts branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SQLInsertCompiler.on_conflict_suffix_sql is now called with generator-of-columns (f.column for f in self.query.update_fields / unique_fields) instead of the stored name lists; backends such as PostgreSQL quote these directly into ON CONFLICT(...) DO UPDATE SET col = EXCLUDED.col."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_check_bulk_create_options (query.py) no longer resolves names to field objects internally; it now expects already-resolved Field objects and only performs the concrete/m2m and primary-key validation checks on them. Its concrete-field and no-primary-key validation behavior (ValueError messages) is otherwise unchanged from the pre-fix version."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The affected real-world case is an upsert target/update field whose model attribute name differs from its database column name (e.g. via db_column), where the old behavior generated the conflict clause with attribute names and produced broken SQL."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

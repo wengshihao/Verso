@@ -1,0 +1,112 @@
+{
+  "task_id": "pydata__xarray-4356",
+  "status": "ok",
+  "duration_seconds": 91.34825254196767,
+  "llm_calls": 12,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-4356",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Reducing a DataArray's data table with the `sum` method supplying a `min_count` and a list of more than one dimension (e.g. ['dim_0','dim_1']) must succeed and return the (skipna) sum of the valid values over those dimensions rather than raising a ValueError.",
+        "subject": "DataArray.sum / duck_array_ops.sum / nanops.nansum / nanops._maybe_null_out (multi-dim reduce with min_count)",
+        "hunk_ids": [],
+        "cited_from": "Title: 'sum: min_count is not available for reduction with more than one dimensions'. Body: '`sum` with `min_count` errors when passing more than one dim:' ... 'import xarray as xr\nda = xr.DataArray([[1., 2, 3], [4, 5, 6]])\nda.sum([\"dim_0\", \"dim_1\"], min_count=1)'. The current blocking code in xarray/core/nanops.py states: \"if hasattr(axis, '__len__'):  # if tuple or list\n        raise ValueError('min_count is not available for reduction with more than one dimensions.')\""
+      },
+      {
+        "id": "R2",
+        "statement": "For a `sum`/`prod` reduction over multiple dimensions with a `min_count`, the number of valid (non-NA) contributing elements for an aggregation must be the count of non-null values over all the reduced axes of that output element, the result becoming NA wherever that count is below `min_count`. In the reported example (a 2x3 array with no NaNs, min_count=1), the Valid-count is 6 over both dimensions, so the reduction must return the scalar total 21.0 and not be nulled out.",
+        "subject": "duck_array_ops.sum / duck_array_ops.prod / nanops.nansum / nanops.nanprod / nanops._maybe_null_out min_count valid-element counting across multiple axes",
+        "hunk_ids": [],
+        "cited_from": "Feature-request body: 'The logic to calculate the number of valid elements is here: .../nanops.py#L35 ... I *think* this can be fixed by replacing `mask.shape[axis]` with `np.take(a.shape, axis).prod()`'. The docs in xarray/core/ops.py _MINCOUNT_DOCSTRING: 'min_count : int, default: None\n    The required number of valid values to perform the operation.\n    If fewer than min_count non-NA values are present the result will\n    be NA.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S0",
+        "statement": "Calling _maybe_null_out (reached by sum/prod reductions that support min_count) with a multi-dimension axis given as a tuple or list together with a min_count no longer raises ValueError; the reduction executes instead of being blocked by the previously-unconditional multi-dimension rejection.",
+        "subject": "xarray.core.nanops._maybe_null_out (multi-dim axis + min_count)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S1",
+        "statement": "When min_count is supplied for a reduction over multiple dimensions (tuple/list axis), an output element is nulled out (replaced with the promoted dtype's fill value) exactly when the total number of non-null entries counted jointly across all of the reduced dimensions for that element is less than min_count — i.e. the valid-count comparison uses the full product of the reduced dimension sizes rather than a per-dimension or single-dimension comparison.",
+        "subject": "xarray.core.nanops._maybe_null_out (min_count semantics over multi-dim axis)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S0",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 states that reducing with sum/min_count over a list of more than one dimension must succeed rather than raise a ValueError, and its cited evidence quotes the exact nanops.py blocking code ('raise ValueError(min_count is not available for reduction with more than one dimensions)') that _maybe_null_out's multi-dim rejection would have triggered. This pins down that such reductions execute instead of being blocked."
+      },
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 explicitly pins down the joint-counting semantics: the valid count is the count of non-null values over all reduced axes, comparing against the product of reduced-dimension sizes (R2's citation proposes `np.take(a.shape, axis).prod()` vs the per-single-dim `mask.shape[axis]`), and the example (2x3, no NaNs, min_count=1, valid-count 6 over both dims returning 21.0) exactly matches S1's statement."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug mechanism: DataArray.sum(['dim_0','dim_1'], min_count=1) flows through ImplementsArrayReduce._reduce_method -> Variable.reduce -> duck_array_ops.sum (_create_nan_agg_method('sum')) -> nanops.nansum -> nanops._maybe_null_out, which gets axis=(0,1) (a tuple). nanops._maybe_null_out (xarray/core/nanops.py) begins by raising ValueError when hasattr(axis,'__len__'), i.e. before any counting logic runs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reducing over ALL dimensions by omitting dim (dim=None) passes axis=None and works with min_count via _maybe_null_out's scalar branch; only an explicit multi-dim axis tuple/list hits the blocked branch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both duck_array_ops.sum and duck_array_ops.prod set '.available_min_count = True' and funnel through the same nanops.nansum / nanops.nanprod->_maybe_null_out path, so the multi-dim-with-min_count case applies to sum and prod alike."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests exercising min_count (test_duck_array_ops.py test_min_count) only use aggdim None or a single 'x'; test_multiple_dims reduces over multiple dims but without min_count. Neither locks the multi-dim+min_count behavior currently."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "xarray/core/duck_array_ops.py lines 800-830 define sum/prod = _create_nan_agg_method('sum'/'prod'); xarray/core/nanops.py defines nansum/nanprod and _maybe_null_out with the blocking ValueError; xarray/core/ops.py wraps reduce methods and min_count docstring; injection happens via ops.inject_reduce_methods / _reduce_method in common.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch removes the early `if hasattr(axis, \"__len__\"): raise ValueError(....)` guard in _maybe_null_out so that tuple/list axes are no longer rejected."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For a scalar (single) integer axis, the gold expression `np.take(mask.shape, axis).prod()` is equivalent to the old `mask.shape[axis]`, so single-dimension min_count null-out semantics are unchanged; the change only affects the multi-dim case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both nansum and nanprod call _maybe_null_out with (result, axis, mask, min_count), so the multi-dim change applies to sum and prod reductions alike."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

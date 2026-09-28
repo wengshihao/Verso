@@ -1,0 +1,94 @@
+{
+  "task_id": "pydata__xarray-4695",
+  "status": "ok",
+  "duration_seconds": 323.84397166699637,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-4695",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Label-based indexing via DataArray.loc with a dict indexer whose key is the dimension-name string \"method\" (as in D2.loc[dict(dim1='x', method='a')]) must treat that dictionary entry as a label indexer selecting coordinates along the array's dimension literally named \"method\", returning the matching element — namely behaving equivalently to D1.loc[dict(dim1='x', dim2='a')] which selects along a differently-named dimension — instead of feeding the value into .sel's inexact-match fill 'method' parameter and raising the pandas ValueError \"Invalid fill method. Expecting pad (ffill), backfill (bfill) or nearest.\"",
+        "subject": "DataArray._LocIndexer.__getitem__ / DataArray.loc",
+        "hunk_ids": [],
+        "cited_from": "Issue sample: \"D1 = DataArray(empty, dims=['dim1', 'dim2'],   coords={'dim1':['x', 'y'], 'dim2':['a', 'b']})\nD2 = DataArray(empty, dims=['dim1', 'method'], coords={'dim1':['x', 'y'], 'method':['a', 'b']})\n\nprint(D1.loc[dict(dim1='x', dim2='a')])    # works\nprint(D2.loc[dict(dim1='x', method='a')])  # does not work!!\" and the observed error: \"ValueError: Invalid fill method. Expecting pad (ffill), backfill (bfill) or nearest.\" plus the stated expectation \"The name of the dimension should be irrelevant.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-1",
+        "statement": "Indexing a DataArray by label through .loc with a dict-like key (e.g. da.loc[{dim: label}]) returns the DataArray produced by selecting on those dimension labels, treating every dict key as a dimension/coordinate to look up rather than as a Python keyword argument — so this works correctly even when a dimension (or a key in the indexers dict) is named 'method', 'tolerance', 'drop', or 'indexers', which are reserved parameter names of DataArray.sel.",
+        "subject": "DataArray.loc / DataArray._LocIndexer.__getitem__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 directly pins the observed bug and intended fix for the 'method' dimension/collision case — .loc's dict keys must be treated as dimension label indexers rather than being fed into DataArray.sel's reserved 'method' parameter. However, SIMP-1 generalizes the claim to three additional reserved sel parameter names ('tolerance', 'drop', 'indexers') that are not exercised anywhere in the visible evidence, so the full breadth SIMP-1 asserts is not directly demonstrated; the same root-cause fix would plausibly cover them, but that is an inference rather than a pinning down."
+      }
+    ],
+    "target_requirement_id": "SIMP-1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_loc_dim_name_collision_method",
+      "test_source": "import xarray as xr\nimport numpy as np\n\ndef test_loc_dim_name_collision_method():\n    da = xr.DataArray(\n        np.arange(4.0).reshape(2, 2),\n        coords={\"dim1\": [\"x\", \"y\"], \"method\": [\"a\", \"b\"]},\n        dims=(\"dim1\", \"method\"),\n    )\n    # every dict key treated as a dimension/coordinate to look up\n    actual = da.loc[{\"dim1\": \"x\", \"method\": \"a\"}]\n    expected = da.sel({\"dim1\": \"x\", \"method\": \"a\"})\n    xr.testing.assert_identical(actual, expected)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (ValueError: Invalid fill method ... method='a' — DataArray._LocIndexer.__getitem__ splatted {...,'method':'a'} via self.data_array.sel(**key), binding 'a' to the reserved method keyword)",
+      "explanation": "Target requirement SIMP-1: DataArray .loc with a dict-like {dim:label} key must treat each key as a dimension/coord to look up, even when a dimension (or dict key) is named 'method'/'tolerance'/'drop'/'indexers' which collide with DataArray.sel's reserved keyword params. The oracle's real regression for this requirement is the reported node test_loc_dim_name_collision_with_sel_params (TestDataArray). I could not find that method inside the [VISIBLE] test_dataarray.py snapshot I was given (that visible file's loc/sel tests, e.g. test_loc, test_sel_method, only use ordinary dim names; S_vis confirmed visible tests never exercise a dim named after a reserved sel keyword), so it is surfaced as a held-out/hidden oracle test for exactly this patch. I reconstructed its behavior from the requirement / issue reproduction and confirmed it mechanically: building a 2-D dataarray over dims ('dim1','method') with coords labels ('x','y')/('a','b'), indexing da.loc[{'dim1':'x','method':'a'}] equals da.sel({'dim1':'x','method':'a'}) (the dict passed positionally). This is a faithful, conflict-free witness: on gold it passes; on buggy it fails at DataArray._LocIndexer.__getitem__ (xarray/core/dataarray.py:199 `self.data_array.sel(**key)`) by binding 'method' -> 'a' into sel's reserved method keyword, raising ValueError: Invalid fill method... Got 'a'. This precisely discriminates the fixed (pass dict positionally) vs buggy (splat via **key) code paths that SIMP-1 describes, and asserts the same 'labels selected' behavior with a reserved-named dim."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause localized to DataArray._LocIndexer.__getitem__ (xarray/core/dataarray.py): it dispatches dict keys via `self.data_array.sel(**key)`, so a dimension literally named 'method' binds to sel's reserved `method` keyword parameter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Dataset._LocIndexer.__getitem__ (xarray/core/dataset.py) is NOT similarly affected because it passes the whole dict positionally: `self.dataset.sel(key)`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DataArray.sel signature reserves keyword names method/tolerance/drop, all of which would collide with a dimension sharing those names when a dict is splatted via **key."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "remap_label_indexers / indexing.remap_label_indexers accept a plain dict (positional indexers) and correctly handle dim 'method' keys; the dictionary-to-keyword expansion is the failing step."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue reproduction is 2-D numpy-backed DataArrays over dimensions ('dim1','method') with coords labels 'x','y' and 'a','b'; expected selection result analogous to the dim2-named variant."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for loc/sel (xarray/tests/test_dataarray.py, test_sel/test_loc) do not exercise a dimension coinciding with a reserved .sel keyword, so the visible behavioral spec rests on the issue's reproduction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The modified code path applies to both dict-like .loc keys and, after expansion of Ellipsis-bearing non-dict keys into a dims-position dict, keys of the form {dim: label}; both cases now pass the dict positionally to DataArray.sel(key) as its first (indexers) argument."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Dataset._LocIndexer.__getitem__ (in xarray/core/dataset.py) is unaffected by this patch because it already passes its dict positionally as self.dataset.sel(key); the bug is specific to the DataArray loc indexer."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DataArray.sel signature is sel(self, indexers=None, method=None, tolerance=None, drop=False, **indexers_kwargs); passing the indexers dict positionally avoids all keyword-name collisions whereas splatting (**key) previously bound into method/tolerance/drop/indexers."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMP-1] (DataArray.loc / DataArray._LocIndexer.__getitem__): Indexing a DataArray by label through .loc with a dict-like key (e.g. da.loc[{dim: label}]) returns the DataArray produced by selecting on those dimension labels, treating every dict key as a dimension/coordinate to look up rather than as a Python keyword argument — so this works correctly even when a dimension (or a key in the indexers dict) is named 'method', 'tolerance', 'drop', or 'indexers', which are reserved parameter names of DataArray.sel. — not entailed by S_vis (R1 directly pins the observed bug and intended fix for the 'method' dimension/collision case — .loc's dict keys must be treated as dimension label indexers rather than being fed into DataArray.sel's reserved 'method' parameter. However, SIMP-1 generalizes the claim to three additional reserved sel parameter names ('tolerance', 'drop', 'indexers') that are not exercised anywhere in the visible evidence, so the full breadth SIMP-1 asserts is not directly demonstrated; the same root-cause fix would plausibly cover them, but that is an inference rather than a pinning down.); confirmed by a oracle witness: Target requirement SIMP-1: DataArray .loc with a dict-like {dim:label} key must treat each key as a dimension/coord to look up, even when a dimension (or dict key) is named 'method'/'tolerance'/'drop'/'indexers' which collide with DataArray.sel's reserved keyword params. The oracle's real regression for this requirement is the reported node test_loc_dim_name_collision_with_sel_params (TestDataArray). I could not find that method inside the [VISIBLE] test_dataarray.py snapshot I was given (that visible file's loc/sel tests, e.g. test_loc, test_sel_method, only use ordinary dim names; S_vis confirmed visible tests never exercise a dim named after a reserved sel keyword), so it is surfaced as a held-out/hidden oracle test for exactly this patch. I reconstructed its behavior from the requirement / issue reproduction and confirmed it mechanically: building a 2-D dataarray over dims ('dim1','method') with coords labels ('x','y')/('a','b'), indexing da.loc[{'dim1':'x','method':'a'}] equals da.sel({'dim1':'x','method':'a'}) (the dict passed positionally). This is a faithful, conflict-free witness: on gold it passes; on buggy it fails at DataArray._LocIndexer.__getitem__ (xarray/core/dataarray.py:199 `self.data_array.sel(**key)`) by binding 'method' -> 'a' into sel's reserved method keyword, raising ValueError: Invalid fill method... Got 'a'. This precisely discriminates the fixed (pass dict positionally) vs buggy (splat via **key) code paths that SIMP-1 describes, and asserts the same 'labels selected' behavior with a reserved-named dim.",
+    "confidence": "High"
+  }
+}

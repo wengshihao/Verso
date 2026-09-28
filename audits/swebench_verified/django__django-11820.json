@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-11820",
+  "status": "ok",
+  "duration_seconds": 560.8771158750169,
+  "llm_calls": 37,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11820",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A Meta.ordering entry that references the 'pk' of a related field (i.e. a path like '<relation>__pk' whose leading segment(s) resolve to valid forward relation(s) on the model and whose final segment is the 'pk' alias of the target model) must be accepted by the model system checks and must NOT trigger models.E015.",
+        "subject": "Model._check_ordering (Meta.ordering / models.E015 validation)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"models.E015 is raised when Meta.ordering contains __pk of a related field, e.g.: test_app.SomeModel: (models.E015) 'ordering' refers to the nonexistent field, related field, or lookup 'option__pk'. Regression in 440505cb2cadbe1a5b9fba246bcde6c04f51d07e.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Meta.ordering entries that genuinely refer to a nonexistent field, related field, or lookup (e.g. a bare nonexistent name, a missing terminal field on a related model like 'parent__missing_field', or a whole m2m relation) must continue to produce models.E015.",
+        "subject": "Model._check_ordering (Meta.ordering / models.E015 validation)",
+        "hunk_ids": [],
+        "cited_from": "tests/invalid_models_tests/test_models.py: test_ordering_pointing_to_missing_field asserts Error(\"'ordering' refers to the nonexistent field, related field, or lookup 'missing_field'.\", ... id='models.E015'); test_ordering_pointing_to_missing_related_model_field asserts Child with ordering ('parent__missing_field',) yields E015 for 'parent__missing_field'; test_non_valid asserts a ManyToManyField named 'relation' ordered via ['relation'] yields E015 for 'relation'."
+      },
+      {
+        "id": "R3",
+        "statement": "Ordering by the bare top-level 'pk' alias must remain a valid Meta.ordering field (no E015), consistent with the check's special handling that skips the literal field 'pk' as always-valid.",
+        "subject": "Model._check_ordering (Meta.ordering / 'pk' alias)",
+        "hunk_ids": [],
+        "cited_from": "django/db/models/base.py, Model._check_ordering: \"# Skip ordering on pk. This is always a valid order_by field but is an alias and therefore won't be found by opts.get_field.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-R1",
+        "statement": "When Model._check_ordering walks an ordering entry that contains '__' (a related-field path) segment by segment, a segment equal to 'pk' is interpreted as an alias for the primary key of the model reached at that point in the walk (resolved via that model's _meta.pk), not looked up as a field by name; consequently an ordering such as ('option__pk',) — a relation path ending in 'pk' whose remaining segments are valid relations/fields — is reported as valid and does not produce an E015 error from Model.check().",
+        "subject": "django.db.models.Model._check_ordering (E015 'ordering' check) ",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-R2",
+        "statement": "During the same Model._check_ordering relation-path walk, once a path segment resolves to a field that is not a relation, the walk no longer treats any subsequent segment as a field of the model owned by the enclosing relation path (in the buggy code _cls kept that model and a later segment matching one of its real field names was silently accepted); a further segment after a non-relation field is now acceptable only if it resolves as a registered transform/lookup of that non-relation field, and if it cannot, that ordering entry produces an E015 error.",
+        "subject": "django.db.models.Model._check_ordering (E015 'ordering' check) ",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis-R1 (grounded in the issue report that E015 is wrongly raised for 'option__pk') directly states that a relation path whose final segment is the target 'pk' alias with valid lead relations must be accepted without E015, matching S_impl-R1's outcome ('option__pk' ordering valid, no E015)."
+      },
+      {
+        "requirement_id": "S_impl-R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis-R2 generally requires nonexistent fields/lookups to keep producing E015, but no S_vis item or cited test pins the specific fixed behavior of walking past a non-relation field and requiring later segments to resolve only as registered transforms/lookups (buggy _cls retention silently accepting a matching enclosing-model field name). The relevant general statement doesn't pin that edge-case algorithm."
+      }
+    ],
+    "target_requirement_id": "S_impl-R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_relation_then_nonrelation_field_then_sibling",
+      "test_source": "import os\nimport sys\nimport django\n\nROOT = os.path.dirname(os.path.dirname(django.__file__))\nsys.path.insert(0, ROOT)\nsys.path.insert(0, os.path.join(ROOT, 'tests'))\n\nfrom django.conf import settings\n\nsettings.configure(\n    SECRET_KEY='x',\n    DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n    INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n    DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    USE_TZ=True,\n)\ndjango.setup()\n\nfrom django.core.checks import Error\nfrom django.db import models\nfrom django.test.utils import isolate_apps\n\n\n@isolate_apps('invalid_models_tests')\ndef test_relation_then_nonrelation_field_then_sibling():\n    class Parent(models.Model):\n        name = models.CharField(max_length=100)\n        other = models.CharField(max_length=100)\n\n        class Meta:\n            app_label = 'invalid_models_tests'\n\n    class Child(models.Model):\n        parent = models.ForeignKey(Parent, models.CASCADE)\n\n        class Meta:\n            app_label = 'invalid_models_tests'\n            ordering = ('parent__name__other',)\n\n    assert Child.check() == [\n        Error(\n            \"'ordering' refers to the nonexistent field, related field, or \"\n            \"lookup 'parent__name__other'.\",\n            obj=Child,\n            id='models.E015',\n        )\n    ]",
+      "gold_result": "PASSED (assertion satisfied: gold's Model._check_ordering now resets _cls to None after resolving the non-relation CharField 'name', so the later segment 'other' cannot be looked up as a field of Parent and, having no registered transform 'other' on the CharField, produces the E015 ordering error).",
+      "buggy_result": "FAILED (assertion failed: buggy's Model._check_ordering keeps _cls = Parent after resolving the non-relation CharField 'name', so the subsequent segment 'other' is silently resolved as a real field of Parent and Child.check() returns [] — no E015 raised).",
+      "explanation": "Target requirement S_impl-R2 concerns Model._check_ordering (E015 'ordering' check): during the relation-path walk, once a segment resolves to a non-relation field, no later segment may be treated as a field of the enclosing relation model. In the buggy code, _cls kept the enclosing relation model after a non-relation field, so a later segment matching a real field of that model (like 'other') was silently accepted; in the gold code the non-relation branch sets `_cls = None`, so that later segment fails get_field and — because the CharField 'name' has no registered transform called 'other' — an E015 ordering error is produced.\n\nThe constructed test models precisely exercise this discriminating behavior: Child has a ForeignKey 'parent' to Parent; Parent has a CharField 'name' and a sibling CharField 'other'. The ordering string 'parent__name__other' walks: parent (relation -> _cls=Parent), then name (a non-relation CharField on Parent), then other (a real field of Parent). This is the exact pattern where buggy and gold diverge and no visible oracle test pins it (existing visible E015 tests cover missing/nonexistent trailing segments and a registered lookup without a preceding relation but not relation->non-relation-field->sibling-field). Confirmed by execution: against the buggy program Child.check() returns [] (silently accepted), so the assertion demanding an E015 fails; against the gold program Child.check() returns the single E015 error satisfied by the assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The E015 ordering check lives in Model._check_ordering() (django/db/models/base.py). For ordering entries containing LOOKUP_SEP ('__'), it walks each segment via _meta.get_field(), following relations; E015 is raised in the related-fields loop when a segment fails get_field AND there is no matching registered transform. Top-level (non-related) nonexistent targets are caught separately in the same method. The literal string 'pk' (top-level) is explicitly excluded earlier as an always-valid alias, but a trailing 'pk' in a related path (e.g. 'option__pk') is not handled and currently falls through to E015 — this is the regression described. E015 ordering tests are in tests/invalid_models_tests/test_models.py (class OtherModelTests)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both behavioral changes live in the same rewritten loop inside Model._check_ordering() (django/db/models/base.py), which guards E015 errors for ordering entries that contain '__'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Ordering entries are preprocessed before this loop: '-' prefixes and '?'/expressions are stripped/skipped, and only entries containing LOOKUP_SEP reach this relation-walk; a top-level 'pk' is separately skipped as valid in the (unchanged) later part of the method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For simple valid chains that never traverse a relation (e.g. a top-level own-model CharField followed by a registered transform such as 'test__lower'), the buggy and gold revisions behave identically; the observable change from the added non-relation '_cls = None' reset only appears when a relation had been followed earlier in the same ordering string."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pk-alias branch resolves via '_cls._meta.pk' but the field's is_relation is still honored afterward, so a primary key that is itself a relation (e.g. a model whose PK is a parent-link OneToOneField) would still be descended."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk 'pk' behavior is the primary regression fix noted by earlier stages ('option__pk' previously fell through to E015 erroneously)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-R2]: I investigated whether any pre-existing oracle test exercises S_impl-R2 — the behavior in Model._check_ordering that, after a path segment resolves to a NON-relation field, no later segment may be resolved as a field of the model of the enclosing relation path (buggy code silently accepted it via a stale `_cls`); a further segment after a non-relation field is only legal if it resolves as a registered transform/lookup of that non-relation field, otherwise an E015 error is raised.\n\nScope of the check: The preceding-stage extractor already located all E015 'ordering' validation tests in tests/invalid_models_tests/test_models.py (class OtherModelTests). I read that file plus the remaining invalid_models_tests files (test_custom_fields, test_deprecated_fields, test_ordinary_fields, test_relative_fields, test_backend_specific), tests/check_framework/test_model_checks.py, tests/ordering/tests.py, and the model_options package and models.\n\nKey findings:\n1. All E015 ordering tests live ONLY in invalid_models_tests/test_models.py, which is labeled [VISIBLE]. Per Verso rules, assertions drawn from [VISIBLE] content can never be a Witness, whatever they check.\n2. Independently, none of those E015 tests actually discriminates buggy vs. gold for R2. They fall into two groups: (a) missing/nonexistent trailing segments (parent__missing_field, parent1__parent2__missing_field, missing_related__id, parent__missing_field on a non-relation) where both buggy and gold raise E015 identically; and (b) a genuinely registered lookup on a CharField without following any relation (test__lower), which both versions accept. None of them constructs the R2 discriminating pattern (follow a relation, land on a non-relation field, then use a further segment that is a real field of the relation's model — a case buggy would silently accept and gold must E015).\n3. Consistent with the header, no test currently fails against the buggy program (the necessary precondition for any witness), and I found no other validations exercising _check_ordering/ordering-E015 anywhere else.\n\nThe hidden files I encountered (model_options/models/default_related_name.py, tablespaces.py, models/__init__.py) are only data-model definitions for unrelated default_related_name/tablespace tests, not E015-ordering assertions, so they provide no witness either.\n\nConclusion: the real oracle does not contain any test that genuinely enforces the R2 non-relation `_cls` reset behavior; therefore no Witness exists (found=false)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-R2] (django.db.models.Model._check_ordering (E015 'ordering' check) ): During the same Model._check_ordering relation-path walk, once a path segment resolves to a field that is not a relation, the walk no longer treats any subsequent segment as a field of the model owned by the enclosing relation path (in the buggy code _cls kept that model and a later segment matching one of its real field names was silently accepted); a further segment after a non-relation field is now acceptable only if it resolves as a registered transform/lookup of that non-relation field, and if it cannot, that ordering entry produces an E015 error. — not entailed by S_vis (S_vis-R2 generally requires nonexistent fields/lookups to keep producing E015, but no S_vis item or cited test pins the specific fixed behavior of walking past a non-relation field and requiring later segments to resolve only as registered transforms/lookups (buggy _cls retention silently accepting a matching enclosing-model field name). The relevant general statement doesn't pin that edge-case algorithm.); confirmed by a synthesized witness: Target requirement S_impl-R2 concerns Model._check_ordering (E015 'ordering' check): during the relation-path walk, once a segment resolves to a non-relation field, no later segment may be treated as a field of the enclosing relation model. In the buggy code, _cls kept the enclosing relation model after a non-relation field, so a later segment matching a real field of that model (like 'other') was silently accepted; in the gold code the non-relation branch sets `_cls = None`, so that later segment fails get_field and — because the CharField 'name' has no registered transform called 'other' — an E015 ordering error is produced.\n\nThe constructed test models precisely exercise this discriminating behavior: Child has a ForeignKey 'parent' to Parent; Parent has a CharField 'name' and a sibling CharField 'other'. The ordering string 'parent__name__other' walks: parent (relation -> _cls=Parent), then name (a non-relation CharField on Parent), then other (a real field of Parent). This is the exact pattern where buggy and gold diverge and no visible oracle test pins it (existing visible E015 tests cover missing/nonexistent trailing segments and a registered lookup without a preceding relation but not relation->non-relation-field->sibling-field). Confirmed by execution: against the buggy program Child.check() returns [] (silently accepted), so the assertion demanding an E015 fails; against the gold program Child.check() returns the single E015 error satisfied by the assertion.",
+    "confidence": "Medium"
+  }
+}

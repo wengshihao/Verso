@@ -1,0 +1,112 @@
+{
+  "task_id": "Compress-36",
+  "status": "ok",
+  "duration_seconds": 87.47156228899985,
+  "llm_calls": 8,
+  "error": null,
+  "record": {
+    "task_id": "Compress-36",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling SevenZFile.read() (no-arg) after getNextEntry() has returned an archive entry that contains no content (an empty entry, e.g. marked as an empty stream with size 0 such as the '2.txt'/'5.txt' entries of the COMPRESS-348 archive) must not throw IllegalStateException(\"No current 7z entry (call getNextEntry() first).\"); instead it must behave as end-of-stream and return -1.",
+        "subject": "SevenZFile.read / getCurrentStream handling of empty (no-stream) entries",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Calling SevenZFile.read() on empty SevenZArchiveEntry throws IllegalStateException... When calling entry.read(...) afterwards an IllegalStateException (\"No current 7z entry (call getNextEntry() first).\") is thrown. IMHO, there should be another check for entry.getSize() == 0.\" Test readEntriesOfSize0: \"int b = sevenZFile.read(); if (\"2.txt\".equals(entry.getName()) || \"5.txt\".equals(entry.getName())) { assertEquals(-1, b); }\""
+      },
+      {
+        "id": "R2",
+        "statement": "Iterating an archive such as COMPRESS-348.7z with getNextEntry() must yield 5 non-null entries and, after calling read() on each (including the empty '2.txt' and '5.txt' ones), iteration must continue and reading a non-empty entry must yield a non-negative byte (not -1 and not an exception), so an empty entry must not corrupt the state for subsequent entries.",
+        "subject": "SevenZFile sequential iteration reading entries of the COMPRESS-348 archive",
+        "hunk_ids": [],
+        "cited_from": "Test readEntriesOfSize0: \"int entries = 0; SevenZArchiveEntry entry = sevenZFile.getNextEntry(); while (entry != null) { entries++; int b = sevenZFile.read(); ... } assertEquals(5, entries);\" and \"assertNotEquals(-1, b);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Reading the contents of the current entry when the entry's declared size (getSize()) is 0 does not throw an IllegalStateException even if no decompressed block stream is queued; instead the read is satisfied from an empty stream, so read() returns -1 and read(byte[])/read(byte[],int,int) report end-of-stream (no bytes read, EOF reached) as if reading from an empty input source.",
+        "subject": "SevenZFile.getCurrentStream / read methods",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "After a zero-size entry has been positioned as the current entry (via getNextEntry), reading that entry yields empty content immediately (all reads see end-of-stream from the first call onward), rather than treating the missing block stream as an error.",
+        "subject": "SevenZFile.getCurrentStream",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins that reading a size-0/no-content current entry must not throw IllegalStateException but behave as end-of-stream returning -1, and S_vis R2 confirms these empty entries are handled without state corruption. 'Behave as end-of-stream' from an empty source entails EOF from all read flavors (no-arg returning -1 and buffer variants reporting no bytes/EOF)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly states that the empty '2.txt'/'5.txt' entries (declared size 0, no content) yield -1/EOF immediately instead of throwing IllegalStateException, and its cited test asserts assertEquals(-1, b) from the first call, exactly the behavior S_impl R2 describes."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "In SevenZFile.buildDecodingStream(), an entry without a stream (empty-stream marker) has streamMap.fileFolderIndex == -1, and that branch (folderIndex < 0) just clears deferredBlockStreams and returns without pushing a stream onto deferredBlockStreams; a later read() then fails because getCurrentStream() throws IllegalStateException when deferredBlockStreams is empty."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getNextEntry() advances currentEntryIndex and calls buildDecodingStream(); read()/read(byte[])/read(byte[],int,int) delegate to getCurrentStream()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test resources (7z fixtures like COMPRESS-348.7z, 7z-empty-mhc-off.7z) are loaded via AbstractTestCase.getClassLoader().getResource(path), so the fixture .7z files are classpath resources, not visible in the source tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reported regression is blamed on COMPRESS-340 (the deferredBlockStreams redesign)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Empty entries in readFilesInfo get hasStream()==false and setSize(0); entries with a stream get fileFolderIndex set to a real folder."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the buggy revision, buildDecodingStream() gives empty/no-stream entries (streamMap.fileFolderIndex == -1) no queued stream (it clears deferredBlockStreams and returns), so a later read() reached getCurrentStream()'s empty-queue IllegalStateException. The patch special-cases size-0 entries in getCurrentStream() before that empty-queue check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard archive.files[currentEntryIndex].getSize() presumes getNextEntry() has advanced currentEntryIndex past -1; read() methods are documented/used only after getNextEntry. Size 0 corresponds to empty-file/dir entries which have hasStream()==false and setSize(0) in readFilesInfo."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "read(), read(byte[]), and read(byte[],int,int) all delegate to getCurrentStream(); once the empty ByteArrayInputStream is returned, all three read methods report end-of-stream consistently, so they are treated as one requirement."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

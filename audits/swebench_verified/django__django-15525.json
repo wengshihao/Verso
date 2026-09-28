@@ -1,0 +1,90 @@
+{
+  "task_id": "django__django-15525",
+  "status": "ok",
+  "duration_seconds": 126.96110737498384,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15525",
+    "s_vis": [
+      {
+        "id": "REQ1",
+        "statement": "Running `loaddata --database <non-default>` (or `serializers.deserialize(..., using=...)`) on a JSON fixture where the deserialized models use natural primary keys whose natural_key() method itself dereferences a ForeignKey (i.e. ``Book.natural_key`` returns ``(self.title,) + self.author.natural_key()``), and where the referenced ForeignKey target rows are created by the same fixture, must load successfully into a non-default database that is empty of that data — it must not raise ``DoesNotExist`` (e.g. ``Author matching query does not exist``) or a ``KeyError`` on the related-field descriptor — matching the behavior seen when loading the same fixture into the default database.",
+        "subject": "django.core.serializers (build_instance / natural-key resolution during loaddata with a non-default target database)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"loaddata fails on non-default database when natural keys uses foreign keys\"; Issue body: \"It works in the default database, but when I use it a second database, then I get an exception.\"; traceback: \"django/core/serializers/base.py\", line 332, in build_instance: `natural_key = Model(**data).natural_key()` ... `testbug.models.DoesNotExist: Author matching query does not exist.`; \"The problem doesn't appear if the data is already present in the default DB\" ; the model: `class Book(models.Model): ... author = models.ForeignKey(...)` ... `def natural_key(self): return (self.title,) + self.author.natural_key()`"
+      },
+      {
+        "id": "REQ2",
+        "statement": "When a model whose natural key traverses a ForeignKey (Book -> Author) is deserialized/loaded into a non-default database but the FK-target data (the Author) exists only in that target non-default database (created by the same fixture in that DB and not present in the default DB), the natural-key / FK lookup performed during de-deserialization must be routed to the designated `using` database so that the lookup succeeds instead of searching the default database and raising DoesNotExist.",
+        "subject": "django.core.serializers.base.build_instance / deserialize_fk_value FK resolution with the `db`/`using` alias",
+        "hunk_ids": [],
+        "cited_from": "Issue body: \"The problem doesn't appear if the data is already present in the default DB\" and the failing traceback showing `Author matching query does not exist.` raised from `self.author.natural_key()` while building an instance whose natural key dereferences the related `author` FK. Code in `deserialize_fk_value` resolves natural FK keys via `default_manager.db_manager(using).get_by_natural_key(*field_value)` and forwards `using` through `Deserializer(... using=self.using ...)` in loaddata.py and `build_instance(Model, data, using)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "build_instance, when reconstructing a model instance that has no pk in data and supports natural keys (its default manager has get_by_natural_key and the Model defines natural_key), computes that model's natural key on an instance bound to the target `db`, so that any lookups triggered while deriving the natural key (e.g. dereferencing a related object that exists only on the database aliased by `db`) are resolved against that target database rather than a different database.",
+        "subject": "django.core.serializers.base.build_instance natural-key resolution per target db",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "S_vis REQ1 pins the exact failing location: the traceback shows build_instance line 332 `natural_key = Model(**data).natural_key()` raising DoesNotExist when the Book instance's natural_key dereferences the Author FK that only exists on the non-default db. REQ2 commits that this natural-key/FK lookup must be routed to the designated `using` db (data forwarded as `build_instance(Model, data, using)`) so it resolves there instead of searching the default db. Together they imply the natural key is computed on an instance carrying the target `db` context (since natural_key dereferences related objects through the instance's db state), which is exactly R1."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is the Django source tree (django/core/serializers/{base,python,json}.py are the deserialization pipeline)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "loaddata passes the target DB alias both as `using=self.using` into `serializers.deserialize(...)` and for every save (`obj.save(using=self.using)`), with `handle_forward_references=True` in load_label."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In `django/core/serializers/base.py`, `build_instance(Model, data, db)` recomputes a model's natural key (when no `pk` is supplied) via `Model(**data).natural_key()`, which — for the reported Book model — dereferences the related `author` FK through its related descriptor, triggering a DB query that is part of the bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`deserialize_fk_value` correctly routes natural-FK lookups with `default_manager.db_manager(using).get_by_natural_key(...)` and defers forward references via `handle_forward_references`; the visible fix target appears to be the interaction between forward-reference deferral and natural-key-pk resolution in build_instance."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests exercising this area live in tests/fixtures/tests.py (ForwardReferenceTests, NaturalKeyFixtureTests) and tests/fixtures_regress/tests.py; only a default-db variant (test_db_loading in tests/fixtures/tests.py) currently exercises the `database=` option."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk adds two lines inside build_instance's natural-key branch: it captures the Model(**data) instance into `obj`, sets obj._state.db = db, and then calls natural_key() on that bound instance (previously natural_key() was called on an anonymous, DB-unbound Model(**data))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The returned value and exception behavior of build_instance are otherwise unchanged: on Model.DoesNotExist from the pk lookup the branch falls through and Model(**data) is returned."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

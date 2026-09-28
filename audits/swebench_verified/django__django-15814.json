@@ -1,0 +1,90 @@
+{
+  "task_id": "django__django-15814",
+  "status": "ok",
+  "duration_seconds": 577.481651875074,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15814",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Evaluating `AnotherModel.objects.select_related(\"custom\").only(\"custom__name\")` — where AnotherModel.custom is a ForeignKey targeting a proxy model ProxyCustomModel (proxy of a model CustomModel that defines the CharField `name`, with the FK nullable) — must not raise `ValueError` like `'id' is not in list`; materializing the queryset's rows must succeed, with the related proxy-model objects loaded so that at least the related target's primary-key column (attname `id`) is part of the selected columns even though `only()` restricted the related fields to `name`.",
+        "subject": "django/db/models/sql/query.py Query.deferred_to_data + select_related/only population of a related (proxy) model",
+        "hunk_ids": [],
+        "cited_from": "When I optimize a query using select_related() and only() methods from the proxy model I encounter an error: ... File \".../query.py\", line 2243, in __init__\n\tself.pk_idx = self.init_list.index(self.model_cls._meta.pk.attname)\nValueError: 'id' is not in list"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a defer()/only() column spec traverses an intermediate relation whose target model is a proxy model, Query.deferred_to_data registers the required pk/reference fields under the proxy's concrete backing model (so the concrete model's pk column is included among the selected/loaded columns), and the resulting query loads and populates the related (proxy) object with its pk correctly set rather than failing during object population because the pk column is missing.",
+        "subject": "Query.deferred_to_data defer/only+select_related column selection over ForeignKey-to-proxy",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 describes the same scenario (select_related+only over an FK-to-proxy must not raise ValueError, with the related proxy object's pk/`id` column included among selected columns) and does surface the general required outcome. However, S_impl R1 commits to a more specific mechanism — that Query.deferred_to_data registers the required pk/reference fields under the proxy's *concrete backing model* (a proxy-vs-concrete registration distinction) — which the visible issue trace (an error at a pk-index lookup) does not itself pin down; only the symptom and the outcome are visible, so full entailment of the mechanism is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_deferred_to_data_registers_pk_under_concrete_of_proxy",
+      "test_source": "import os, sys\nsys.path.insert(0, os.path.join(os.getcwd(), 'tests'))\nos.environ['DJANGO_SETTINGS_MODULE'] = ''\nfrom django.conf import settings\nif not settings.configured:\n    settings.configure(\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth', 'proxy_models'],\n        USE_TZ=True,\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\nimport django\ndjango.setup()\n\ndef test_t():\n    from proxy_models.models import Issue, ProxyTrackerUser, BaseUser, TrackerUser\n    qs = Issue.objects.select_related('assignee').only('assignee__name')\n    m = {}\n    qs.query.deferred_to_data(m)\n    # R1: the required pk/reference columns must be registered under the proxy\n    # target's concrete backing model (TrackerUser), not under the proxy class.\n    assert ProxyTrackerUser not in m\n    assert TrackerUser in m and 'baseuser_ptr_id' in m[TrackerUser]\n    assert BaseUser in m and 'name' in m[BaseUser]",
+      "gold_result": "PASSED (assert ProxyTrackerUser not in m holds; pk `baseuser_ptr_id` registered under concrete model TrackerUser, `name` under BaseUser)",
+      "buggy_result": "FAILED — AssertionError: assert <class 'proxy_models.models.ProxyTrackerUser'> not in {BaseUser:{'name'}, Issue:{'assignee_id','id'}, ProxyTrackerUser:{'baseuser_ptr_id'}} (pk registered under the proxy class instead of its concrete model)",
+      "explanation": "R1 concerns Query.deferred_to_data: when a defer()/only() column spec traverses an intermediate relation whose FK target is a proxy model (here Issue.assignee -> ProxyTrackerUser, whose concrete backing model is TrackerUser), the required pk/reference column must be registered under the concrete backing model rather than under the proxy class (else the resulting column/population machinery cannot find the pk). The gold fix inserts `cur_model = cur_model._meta.concrete_model`; the buggy pre-fix code lacks it. This test drives exactly the touched method: it builds a select_related('assignee').only('assignee__name') QuerySet on concrete Issue (FK target = ProxyTrackerUser, a multi-table-inheriting proxy whose pk/attname is baseuser_ptr_id) and inspects the dict produced by deferred_to_data. On gold the dict is keyed {BaseUser, Issue, TrackerUser} — the proxy class is absent and the concrete backing model TrackerUser holds the pk column — while on buggy the dict is keyed {BaseUser, Issue, ProxyTrackerUser}, i.e. the pk column is registered under the proxy class, exactly the mis-registration R1 forbids. Verified: gold PASSED, buggy FAILED. This differs from every visible test (proxy_models/defer tests use plain select_related without only() across a FK whose target is a proxy; none inspect deferred_to_data registration), so it is not merely re-deriving a visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue django__django-15814 targets framework code in django/db/models/sql/query.py (the `deferred_to_data` method), where the line `opts = cur_model._meta` is flagged; report suggests `opts = cur_model._meta.concrete_model._meta` as a fix."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The crash surfaces later in django/db/models/query.py `RelatedPopulator.__init__` at `self.pk_idx = self.init_list.index(self.model_cls._meta.pk.attname)` — the related (proxy) model's pk attname `id` is missing from the loaded columns because the deferred-column computation mis-handled a proxy FK target."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing defer/defer_regress tests already cover select_related().only() where the *queried* model is the proxy (e.g. test_target #22050 ProxyRelated.select_related().only(\"item__name\") and defer.py test_defer_proxy ChildProxy...only('id','name')), but no visible test covers a ForeignKey whose *target* is a proxy model combined with only()/select_related(), which is the exact 15814 scenario."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "models/proxy fixtures already exist under tests/defer, tests/defer_regress, tests/proxy_models, tests/select_related_regress; the 15814 case would need concrete model + FK-to-proxy with only('custom__name')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Fix location: django/db/models/sql/query.py, method Query.deferred_to_data; H0 adds `cur_model = cur_model._meta.concrete_model` right before `opts = cur_model._meta` inside the `for name in parts[:-1]` intermediate-field loop."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "deferred_to_data populates the `target` dict (mapping model -> set of attnames) in place; this dict is consumed both for SQL column selection and by QuerySet for field initialization, and must_include is keyed by model while opts is derived from the same cur_model, so cur_model being a proxy vs. concrete model determines both the dict key and which opts.pk is forced."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No field/constant/method involved beyond normalizing the model; unobservable for non-proxy targets (where ._meta.concrete_model equals the model itself)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I audited every oracle test file plausibly covering R1 (defer/tests.py, defer_regress/tests.py, select_related_regress/tests.py, proxy_models/tests.py, proxy_model_inheritance/tests.py) plus the corresponding model files. R1 requires a defer()/only() column spec whose intermediate relation has a ForeignKey *target that is a proxy model*, combined with select_related(), so the concrete backing model's pk is forced into the selected/loaded columns during Query.deferred_to_data.\n\nFindings: (1) The only fixture family containing a concrete model whose FK targets a proxy (Improvement/Issue with assignee/reporter/associated_bug pointing at ProxyTrackerUser/ProxyProxyBug) is tests/proxy_models/models.py, which is [HIDDEN] but holds ONLY model definitions — no assertions. (2) Every test that exercises those proxy relations is in the [VISIBLE] tests/proxy_models/tests.py, and those tests (test_proxy_bug, test_filter_proxy_relation_reverse, etc.) use plain select_related()/filter lookups — none combine only()/defer() with select_related() across a FK whose target is a proxy. (3) The proxy-defer tests that do exist (defer_regress #22050, defer) cover the case where the *queried* model is the proxy (or plain defer on same-model proxies), not a ForeignKey whose *target* is a proxy — the distinct R1 behavior — and they are all in [VISIBLE] files, so they could never serve as Witnesses regardless of their content.\n\nTherefore no genuine oracle Witness for R1 exists: the [HIDDEN] content in the relevant area is entirely fixture/model definitions with no assertions, and all candidate behavioral assertions are [VISIBLE]. Additionally, mechanical execution of any candidate in the standalone runtime failed at Django settings/DB configuration. Consequently found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Query.deferred_to_data defer/only+select_related column selection over ForeignKey-to-proxy): When a defer()/only() column spec traverses an intermediate relation whose target model is a proxy model, Query.deferred_to_data registers the required pk/reference fields under the proxy's concrete backing model (so the concrete model's pk column is included among the selected/loaded columns), and the resulting query loads and populates the related (proxy) object with its pk correctly set rather than failing during object population because the pk column is missing. — not entailed by S_vis (S_vis R1 describes the same scenario (select_related+only over an FK-to-proxy must not raise ValueError, with the related proxy object's pk/`id` column included among selected columns) and does surface the general required outcome. However, S_impl R1 commits to a more specific mechanism — that Query.deferred_to_data registers the required pk/reference fields under the proxy's *concrete backing model* (a proxy-vs-concrete registration distinction) — which the visible issue trace (an error at a pk-index lookup) does not itself pin down; only the symptom and the outcome are visible, so full entailment of the mechanism is genuinely ambiguous.); confirmed by a synthesized witness: R1 concerns Query.deferred_to_data: when a defer()/only() column spec traverses an intermediate relation whose FK target is a proxy model (here Issue.assignee -> ProxyTrackerUser, whose concrete backing model is TrackerUser), the required pk/reference column must be registered under the concrete backing model rather than under the proxy class (else the resulting column/population machinery cannot find the pk). The gold fix inserts `cur_model = cur_model._meta.concrete_model`; the buggy pre-fix code lacks it. This test drives exactly the touched method: it builds a select_related('assignee').only('assignee__name') QuerySet on concrete Issue (FK target = ProxyTrackerUser, a multi-table-inheriting proxy whose pk/attname is baseuser_ptr_id) and inspects the dict produced by deferred_to_data. On gold the dict is keyed {BaseUser, Issue, TrackerUser} — the proxy class is absent and the concrete backing model TrackerUser holds the pk column — while on buggy the dict is keyed {BaseUser, Issue, ProxyTrackerUser}, i.e. the pk column is registered under the proxy class, exactly the mis-registration R1 forbids. Verified: gold PASSED, buggy FAILED. This differs from every visible test (proxy_models/defer tests use plain select_related without only() across a FK whose target is a proxy; none inspect deferred_to_data registration), so it is not merely re-deriving a visible assertion.",
+    "confidence": "Medium"
+  }
+}

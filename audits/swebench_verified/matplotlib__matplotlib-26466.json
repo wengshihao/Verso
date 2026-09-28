@@ -1,0 +1,118 @@
+{
+  "task_id": "matplotlib__matplotlib-26466",
+  "status": "ok",
+  "duration_seconds": 274.708890000009,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-26466",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When an ndarray (or other mutable sequence) is passed as the `xy` argument to `ax.annotate(..., xy=<array>, xytext=..., arrowprops={...})` so that an arrow is drawn, subsequently mutating that same array in place (e.g. `xy_0[1] = 3`) must NOT change the position of the previously drawn/positioned arrow ending; the annotation must behave as if the xy point value at the time annotate was called had been captured, rather than as if the caller's array were still referenced. Passing a copy of the array (`xy=xy_0.copy()`) yields the same fixed, horizontal arrow as passing the array itself, confirming each annotation is independent of later mutation of the caller's array.",
+        "subject": "matplotlib.text.Annotation / _AnnotationBase (xy storage) and matplotlib.axes.Axes.annotate",
+        "hunk_ids": [],
+        "cited_from": "# this annotation is messed by later changing the array passed as xy kwarg\nax.annotate(s='', xy=xy_0, xytext=xy_f, arrowprops=dict(arrowstyle='<->'))\nxy_0[1] = 3# <--this  updates the arrow position\n\nxy_0 =np.array((1, 1))\nxy_f =np.array((4, 1))\n# using a copy of the array helps spoting where the problem is\nax.annotate(s='', xy=xy_0.copy(), xytext=xy_f, arrowprops=dict(arrowstyle='<->'))\nxy_0[1] = 3\n... **Actual outcome** [arrow tilted] **Expected outcome** Both arrows should be horizontal"
+      },
+      {
+        "id": "R2",
+        "statement": "The `xy` point used to position an annotation's arrow is read from what was passed to `annotate` at draw/update time rather than copied at construction: `_AnnotationBase.__init__` assigns the caller's object directly to `self.xy` (no copy is made), and `update_positions()` later obtains the annotated position via `self._get_position_xy(renderer)` / `_get_xy(...)`, which dereferences `self.xy` again. Consequently the current visible code is the locus where a fix must make in-place mutation have no effect on a subsequent arrow position determination.",
+        "subject": "matplotlib.text._AnnotationBase (self.xy storage and _get_xy/_get_position_xy) / Annotation.update_positions",
+        "hunk_ids": [],
+        "cited_from": "class _AnnotationBase:\n    def __init__(self,\n                 xy,\n                 xycoords='data',\n                 annotation_clip=None):\n        self.xy = xy  # stores caller reference; no copy\n    def _get_xy(self, renderer, xy, coords):\n        x, y = xy\n        ...\n        if xcoord == 'data':\n            x = float(self.convert_xunits(x))\n        ...\n    def _get_position_xy(self, renderer):\n        \"\"\"Return the pixel position of the annotated point.\"\"\"\n        return self._get_xy(renderer, self.xy, self.xycoords)\n... (Annotation.update_positions):\n        arrow_end = x1, y1 = self._get_position_xy(renderer)  # Annotated pos."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Constructing an Annotation/_AnnotationBase (e.g. via Axes.annotate) from an xy that is a numpy array does not alias the caller's array: the annotation stores a value copy of xy, so that later in-place mutation of the passed xy array after construction does not change the annotation's annotated point (e.g. the arrow target).",
+        "subject": "matplotlib.text._AnnotationBase.__init__ / Annotation.xy / Axes.annotate",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Constructing an OffsetFrom from a ref_coord that is a numpy array does not alias the caller's array: OffsetFrom stores a value copy of ref_coord, so that later in-place mutation of the passed ref_coord array after construction does not affect the offset transform returned by OffsetFrom.__call__.",
+        "subject": "matplotlib.text.OffsetFrom.__init__ / .__call__",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly states that in-place mutation of the xy array after annotate must not change the arrow/annotated position and that the annotation must behave as if the xy value had been captured at call time, which is exactly the value-copy no-aliasing behavior S_impl R1 requires. S_vis R2 confirms the annotation's point is read from the stored self.xy at update time, aligning on the same code region (_AnnotationBase/Axes.annotate)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry (nor either citation) mentions OffsetFrom, ref_coord, or offset transforms; both concern only _AnnotationBase's self.xy aliasing for annotate. There is no visible information that would lead a system to infer a value-copy requirement for OffsetFrom's ref_coord."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_offsetfrom_does_not_alias_numpy_ref_coord",
+      "test_source": "import numpy as np\nfrom matplotlib.text import OffsetFrom\nfrom matplotlib.transforms import IdentityTransform\n\n\ndef test():\n    arr = np.array([10., 20.])\n    of = OffsetFrom(IdentityTransform(), arr, unit=\"pixels\")\n    arr[0] = 100.\n    arr[1] = 200.\n    result = of(None).transform((0, 0))\n    assert result[0] == 10.0 and result[1] == 20.0, result\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (gold returned transform translating to [10, 20] after mutation, confirming copy; buggy returned [100, 200], confirming aliasing of the mutated caller array)",
+      "explanation": "R2 says OffsetFrom.__init__ must store a value copy of a numpy ref_coord so that later in-place mutation of the passed array does not affect the transform returned by OffsetFrom.__call__. The gold implementation does `x, y = ref_coord; self._ref_coord = x, y` (breaking the reference and unpacking into scalars), while the buggy one does `self._ref_coord = ref_coord` (retaining the caller's array). My witness constructs an OffsetFrom with an IdentityTransform artist and a numpy array [10, 20] as ref_coord (unit=\"pixels\" so no renderer is dereferenced), then mutates the array in place to [100, 200] and calls the OffsetFrom via `of.__call__` (implicit `of(None)`) checking the resulting transform maps (0,0) to (10,20). Gold returns the original (10,20) snapshot -> PASSED; buggy, because __call__ re-reads the *same aliased array* through IdentityTransform, computes (100,200) -> FAILED. This precisely targets OffsetFrom's copy-on-construction for numpy ref_coord and is not derivable from any [VISIBLE] assertion (test_offsetbox.py etc. never construct an OffsetFrom from a mutable numpy array and mutate it post-construction); both run_test calls confirm PASSED(gold)/FAILED(buggy) with this exact source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue #26466: reproduction mutates the numpy array passed as xy after `Axes.annotate` and observes the arrow move; a workaround shown (annotating with `xy_0.copy()`) produces the un-mutated horizontal arrow, indicating the bug is a retained reference to the caller's array in the annotation's xy."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Code path: `Axes.annotate` (lib/matplotlib/axes/_axes.py) constructs `mtext.Annotation(...)`. `Annotation`/`_AnnotationBase` in lib/matplotlib/text.py: `_AnnotationBase.__init__` stores `self.xy = xy`; `Annotation.update_positions` computes `arrow_end = x1, y1 = self._get_position_xy(renderer)`, which re-reads `self.xy` at draw/update time for data coords. By contrast `xytext`, when provided, is unpacked via `x, y = xytext` in `Annotation.__init__` into scalar Text position, so xytext is not reference-retained the way xy is."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant visible API surface is `Axes.annotate` / `matplotlib.text.Annotation`; no dedicated failing test file is committed in this checkout, only the standalone issue reproduction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H3 (in _AnnotationBase.__init__) is the core fix for issue #26466: unpacking `x, y = xy` turns a numpy-array xy into a scalar pair stored as a tuple, severing the reference to the caller's array that previously was retained as `self.xy`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 applies the same copy strategy in OffsetFrom.__init__ for ref_coord."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1/H2 are a behavior-preserving refactor within OffsetFrom: the private _get_scale method is removed and its `1 if unit==\"pixels\" else renderer.points_to_pixels(1)` computation is inlined into __call__, yielding an identical transform. They commit to no new observable behavior beyond what R2 covers."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The copy-on-unpack (via tuple-iteration x, y = ...) also validates the 2-scalar shape of the passed argument at construction time."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 (matplotlib.text.OffsetFrom.__init__ storing a value copy of a numpy ref_coord array so later in-place mutation does not affect the OffsetFrom.__call__ transform) is a narrow internal behavior. I enumerated the real oracle and inspected the files most plausibly holding such a test: lib/matplotlib/tests/test_offsetbox.py (AnnotationBbox/OffsetBox tests), lib/matplotlib/tests/test_text.py (Text/Annotation/annotate tests), and lib/mpl_toolkits/axes_grid1/tests/test_axes_grid1.py (inset/annotate connector tests). None of these contains any assertion that constructs an OffsetFrom (or an annotation) from a numpy-array ref_coord, mutates that array in place after construction, and checks that the resulting offset/annotation position is unchanged. Moreover, all these files are labeled [VISIBLE], whose assertions can never serve as Witness content regardless. No dedicated regression test for issue #26466's OffsetFrom copy behavior is committed in this oracle, and no test is recorded as failing against the buggy program (the necessary condition for any Witness). I found no [HIDDEN] oracle assertion covering R2, so no witness exists to report."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (matplotlib.text.OffsetFrom.__init__ / .__call__): Constructing an OffsetFrom from a ref_coord that is a numpy array does not alias the caller's array: OffsetFrom stores a value copy of ref_coord, so that later in-place mutation of the passed ref_coord array after construction does not affect the offset transform returned by OffsetFrom.__call__. — not entailed by S_vis (Neither S_vis entry (nor either citation) mentions OffsetFrom, ref_coord, or offset transforms; both concern only _AnnotationBase's self.xy aliasing for annotate. There is no visible information that would lead a system to infer a value-copy requirement for OffsetFrom's ref_coord.); confirmed by a synthesized witness: R2 says OffsetFrom.__init__ must store a value copy of a numpy ref_coord so that later in-place mutation of the passed array does not affect the transform returned by OffsetFrom.__call__. The gold implementation does `x, y = ref_coord; self._ref_coord = x, y` (breaking the reference and unpacking into scalars), while the buggy one does `self._ref_coord = ref_coord` (retaining the caller's array). My witness constructs an OffsetFrom with an IdentityTransform artist and a numpy array [10, 20] as ref_coord (unit=\"pixels\" so no renderer is dereferenced), then mutates the array in place to [100, 200] and calls the OffsetFrom via `of.__call__` (implicit `of(None)`) checking the resulting transform maps (0,0) to (10,20). Gold returns the original (10,20) snapshot -> PASSED; buggy, because __call__ re-reads the *same aliased array* through IdentityTransform, computes (100,200) -> FAILED. This precisely targets OffsetFrom's copy-on-construction for numpy ref_coord and is not derivable from any [VISIBLE] assertion (test_offsetbox.py etc. never construct an OffsetFrom from a mutable numpy array and mutate it post-construction); both run_test calls confirm PASSED(gold)/FAILED(buggy) with this exact source.",
+    "confidence": "Medium"
+  }
+}

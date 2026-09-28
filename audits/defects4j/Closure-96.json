@@ -1,0 +1,84 @@
+{
+  "task_id": "Closure-96",
+  "status": "ok",
+  "duration_seconds": 434.70438653199926,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "Closure-96",
+    "s_vis": [],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When type-checking a CALL or NEW against a function type whose last formal parameter is a var_args ('@param {...T}') parameter, every actual argument that has no corresponding fixed declared parameter is type-checked against that var_args parameter's type rather than being silently skipped: once all fixed (non-varargs) declared parameters have been consumed, each remaining actual argument is still matched against the retained var_args parameter while arguments remain.",
+        "subject": "TypeCheck.visitParameterList (argument type-matching for CALL/NEW against variadic function types)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [],
+        "rationale": "The S_vis list is entirely empty, so there is no visible information of any kind that could pin down the specific variadic argument type-matching behavior described by R1. With no supporting evidence, R1 cannot be entailed and is simply not covered by visible information."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "eachRemainingVarArgsArgumentIsTypeChecked",
+      "test_source": "@Test\npublic void eachRemainingVarArgsArgumentIsTypeChecked() throws Exception {\n  com.google.javascript.jscomp.Compiler compiler = new com.google.javascript.jscomp.Compiler();\n  com.google.javascript.jscomp.CompilerOptions options = new com.google.javascript.jscomp.CompilerOptions();\n  compiler.initOptions(options);\n  com.google.javascript.rhino.jstype.JSTypeRegistry registry = compiler.getTypeRegistry();\n\n  String externs = \"/** @constructor \\n * @param {*} var_args */ function Function(var_args) {}\"\n      + \"/** @type {!Function} */ Function.prototype.apply;\"\n      + \"/** @type {!Function} */ Function.prototype.call;\";\n\n  String js = \"/** @param {...number} var_args */\"\n      + \" function g(var_args) {}\"\n      + \" g(1, true, true);\";\n\n  java.util.List<com.google.javascript.jscomp.JSSourceFile> extFiles =\n      new java.util.ArrayList<com.google.javascript.jscomp.JSSourceFile>();\n  extFiles.add(com.google.javascript.jscomp.JSSourceFile.fromCode(\"[externs]\", externs));\n  java.util.List<com.google.javascript.jscomp.JSSourceFile> srcFiles =\n      new java.util.ArrayList<com.google.javascript.jscomp.JSSourceFile>();\n  srcFiles.add(com.google.javascript.jscomp.JSSourceFile.fromCode(\"[testcode]\", js));\n  compiler.init(extFiles, srcFiles, options);\n\n  com.google.javascript.rhino.Node n = compiler.getInput(\"[testcode]\").getAstRoot(compiler);\n  com.google.javascript.rhino.Node externsNode = compiler.getInput(\"[externs]\").getAstRoot(compiler);\n  com.google.javascript.rhino.Node block = new com.google.javascript.rhino.Node(\n      com.google.javascript.rhino.Token.BLOCK, externsNode, n);\n  block.setIsSyntheticBlock(true);\n\n  java.lang.reflect.Constructor<?> iCtor = null;\n  for (java.lang.reflect.Constructor<?> c :\n       Class.forName(\"com.google.javascript.jscomp.SemanticReverseAbstractInterpreter\").getDeclaredConstructors()) {\n    if (c.getParameterTypes().length == 2) { iCtor = c; break; }\n  }\n  iCtor.setAccessible(true);\n  Object interpreter = iCtor.newInstance(compiler.getCodingConvention(), registry);\n\n  java.lang.reflect.Constructor<?> tCtor = null;\n  for (java.lang.reflect.Constructor<?> c :\n       Class.forName(\"com.google.javascript.jscomp.TypeCheck\").getConstructors()) {\n    if (c.getParameterTypes().length == 5) { tCtor = c; break; }\n  }\n  Object typeCheck = tCtor.newInstance(compiler, interpreter, registry,\n      com.google.javascript.jscomp.CheckLevel.WARNING, com.google.javascript.jscomp.CheckLevel.OFF);\n\n  java.lang.reflect.Method proc = typeCheck.getClass().getMethod(\"processForTesting\",\n      com.google.javascript.rhino.Node.class, com.google.javascript.rhino.Node.class);\n  proc.invoke(typeCheck, externsNode, n);\n\n  // Both trailing arguments (2nd and 3rd) spill past the single var_args\n  // declaration, so BOTH must independently be matched against {...number}.\n  org.junit.Assert.assertEquals(\"each trailing var_args argument must be type-checked\",\n      2, compiler.getWarningCount());\n}\n",
+      "gold_result": "PASSED (exactly 2 type warnings: both the 2nd and 3rd spilled arguments, each boolean, are independently flagged against the {...number} var_args parameter)",
+      "buggy_result": "FAILED (assertEquals expected:<2> but was:<0>: pre-fix visitParameterList loop `while (arguments.hasNext() && parameters.hasNext())` stops after the first arg since the sole declared parameter is consumed, silently skipping BOTH trailing spilled arguments)",
+      "explanation": "Target requirement R1 says: for a CALL against a function type whose parameter list ends in a var_args param, after the fixed declared params are consumed EACH remaining actual argument must still be matched (\"while arguments remain\") against the retained var_args parameter — not silently skipped. The gold fix in TypeCheck.visitParameterList changes the loop from `while (arguments.hasNext() && parameters.hasNext())` to also continue while `parameter != null && parameter.isVarArgs()`; the buggy loop pops `parameters.next()` at the top of every iteration and once the (sole) declared {…number} var_args parameter is consumed it stops, skipping any further trailing arguments entirely.\n\nMy witness calls a {…number} var_args function `g` with `g(1, true, true)` — TWO arguments that spill past the single declared parameter. It then asserts exactly TWO type warnings, i.e. each spilled argument was independently matched against the retained {...number} parameter. Under gold both booleans are individually flagged (2 warnings: ordinal 2 and ordinal 3); under buggy the loop stops after argument `1` and silently drops both `true` arguments (0 warnings). Execution-confirmed: run_test against gold = PASSED (warning count 2); run_test against buggy = FAILED (warning count 0).\n\nThis scenario is credible and NOT already pinned by the visible one-arg test testFunctionArguments16 (which calls g(1,true) and asserts a SINGLE warning). An oracle that passed merely the visible test could still stop matching after only the first trailing argument; my witness's assertion that BOTH spilled arguments each produce a warning pins down the stronger \"each remaining actual argument… while arguments remain\" clause of R1, which the visible content does not establish. (A NEW-constructor variant was also explored but produced no flag under gold, so it could not serve as a witness; the pure-vs-pinned candidate was intentionally avoided.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible material is exactly three files: src/com/google/javascript/jscomp/TypeCheck.java, test/com/google/javascript/jscomp/TypeCheckTest.java, test/com/google/javascript/jscomp/CompilerTypeTestCase.java. All were read in full."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug's 'visible description' is a written fallback: it states the fix touches com.google.javascript.jscomp.TypeCheck and links to issue 229, but reproduces no bug-report text and could not fetch the authoritative description ('Could not automatically fetch the original bug report text...')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No regression test for this specific bug is present in the visible tree (no testIssue96/testIssue229-style test, and no newly-added focused test distinguishable from the large pre-existing TypeCheckTest suite). The tests present broadly cover general type-checking behavior and appear to represent the pre-fix state rather than a failing reproducer for this bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CONCLUSION on empty result: because neither the bug report body nor a focused failing test is visible, and the fix's content is not disclosed, no atomic, checkable behavioral requirement can be grounded in the visible material without speculating about the unknown bug. Reporting zero extractable requirements rather than fabricating claims."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Structural observation for later stages: TypeCheckTest extends CompilerTypeTestCase (which supplies DEFAULT_EXTERNS / CLOSURE_DEFS and the JSTypeRegistry-backed test harness); tests exercise TypeCheck via helpers like testTypes(...), testClosureTypes(...), parseAndTypeCheckWithScope(...), and getTypedPercent(...)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk H0 is entirely within TypeCheck.visitParameterList; it is shared by both CALL visits (visitCall) and NEW visits (visitNew)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix only alters behavior for functions whose function-type parameter list ends in a var_args parameter; for fixed-arity functions the loop still terminates once declared parameters run out, as before."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Requirement R1 was formulated so that it does not depend on how the var_args element type is internally compared by expectArgumentMatchesParameter — it only asserts that these trailing arguments are validated rather than left unchecked."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test that genuinely witnesses R1 (TypeCheck.visitParameterList matching each remaining actual argument against the retained var_args parameter type for a CALL/NEW whose function-type parameter list ends in a var_args parameter).\n\nCandidates examined:\n\n1) testFunctionArguments16 in TypeCheckTest.java — this is the exact test that currently fails against the buggy program and is an *exact* semantic match for R1: a var_args function typed `/** @param {...number} var_args */ function g(var_args){}` is called `g(1, true)`, and the test asserts that the trailing `true` (which has no fixed declared parameter) is type-checked and yields the \"actual parameter 2 of g does not match formal parameter / boolean vs (number|undefined)\" warning. Under the buggy (pre-fix) code the loop stops after fixed params and silently skips `true`, so the warning is absent and this test fails; under gold it passes. HOWEVER, read_test_file labels TypeCheckTest.java as [VISIBLE] — its content is byte-for-byte the material the repair system already saw. Per the auditor rules, an assertion drawn from [VISIBLE] content can NEVER serve as a Witness regardless of how well it matches r, because it was never hidden. So this failing test cannot be submitted.\n\n2) TypeCheckFunctionCheckTest.java ([HIDDEN]) — read in full. It only tests function/method *arity* enforcement (WRONG_ARGUMENT_COUNT, VAR_ARGS_MUST_BE_LAST, OPTIONAL_ARG_AT_END) and uses element type `...*` in var-args functions (e.g. testFunctionsWithJsDoc4/5/6), so it never exercises type *mismatches* of trailing extra arguments against a non-star var_args parameter. It does not test R1.\n\n3) LooseTypeCheckTest.java ([HIDDEN]) — read in full. This is a looseTypes fork of the TypeCheckTest and its testFunctionArguments suite stops at testFunctionArguments15 (arity/type inference); it contains no testFunctionArguments16-style variadic trailing argument type-match test. Not R1.\n\nNo other oracle test file targets this specific visitParameterList variadic trailing-argument type-matching behavior (the remaining ~180 oracle files concern unrelated compiler passes).\n\nConclusion: the only oracle test enforcing R1 (testFunctionArguments16) lives in [VISIBLE] content and is therefore disqualified as a Witness, and I found no [HIDDEN] counterpart for this behavior. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (TypeCheck.visitParameterList (argument type-matching for CALL/NEW against variadic function types)): When type-checking a CALL or NEW against a function type whose last formal parameter is a var_args ('@param {...T}') parameter, every actual argument that has no corresponding fixed declared parameter is type-checked against that var_args parameter's type rather than being silently skipped: once all fixed (non-varargs) declared parameters have been consumed, each remaining actual argument is still matched against the retained var_args parameter while arguments remain. — not entailed by S_vis (The S_vis list is entirely empty, so there is no visible information of any kind that could pin down the specific variadic argument type-matching behavior described by R1. With no supporting evidence, R1 cannot be entailed and is simply not covered by visible information.); confirmed by a synthesized witness: Target requirement R1 says: for a CALL against a function type whose parameter list ends in a var_args param, after the fixed declared params are consumed EACH remaining actual argument must still be matched (\"while arguments remain\") against the retained var_args parameter — not silently skipped. The gold fix in TypeCheck.visitParameterList changes the loop from `while (arguments.hasNext() && parameters.hasNext())` to also continue while `parameter != null && parameter.isVarArgs()`; the buggy loop pops `parameters.next()` at the top of every iteration and once the (sole) declared {…number} var_args parameter is consumed it stops, skipping any further trailing arguments entirely.\n\nMy witness calls a {…number} var_args function `g` with `g(1, true, true)` — TWO arguments that spill past the single declared parameter. It then asserts exactly TWO type warnings, i.e. each spilled argument was independently matched against the retained {...number} parameter. Under gold both booleans are individually flagged (2 warnings: ordinal 2 and ordinal 3); under buggy the loop stops after argument `1` and silently drops both `true` arguments (0 warnings). Execution-confirmed: run_test against gold = PASSED (warning count 2); run_test against buggy = FAILED (warning count 0).\n\nThis scenario is credible and NOT already pinned by the visible one-arg test testFunctionArguments16 (which calls g(1,true) and asserts a SINGLE warning). An oracle that passed merely the visible test could still stop matching after only the first trailing argument; my witness's assertion that BOTH spilled arguments each produce a warning pins down the stronger \"each remaining actual argument… while arguments remain\" clause of R1, which the visible content does not establish. (A NEW-constructor variant was also explored but produced no flag under gold, so it could not serve as a witness; the pure-vs-pinned candidate was intentionally avoided.)",
+    "confidence": "Medium"
+  }
+}

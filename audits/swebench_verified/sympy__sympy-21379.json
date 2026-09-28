@@ -1,0 +1,107 @@
+{
+  "task_id": "sympy__sympy-21379",
+  "status": "ok",
+  "duration_seconds": 591.0426806249889,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-21379",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For real symbols x, y, z, calling expr.subs({1: 1.0}) on expr = exp(sinh(Piecewise((x, y > x), (y, True)) / z)) must complete without raising PolynomialError and return the substituted expression (substituting every Integer atom 1 with Float 1.0 where present).",
+        "subject": "Expr.subs",
+        "hunk_ids": [],
+        "cited_from": "# This fails with \"PolynomialError: Piecewise generators do not make sense\"\nexpr.subs({1: 1.0})  # error\n# Now run it again (isympy...) w/o clearing cache and everything works as expected without error\nexpr.subs({1: 1.0})\n...\nx, y, z = symbols('x y z', real=True)\nexpr = exp(sinh(Piecewise((x, y > x), (y, True)) / z))\nexpr.subs({1: 1.0})"
+      },
+      {
+        "id": "R2",
+        "statement": "The same subs call (with real symbols x,y,z) must also not raise when the hyperbolic function inside exp is cosh or tanh in place of sinh, i.e. expr = exp(cosh(Piecewise((x, y > x), (y, True)) / z)) and expr = exp(tanh(Piecewise((x, y > x), (y, True)) / z)) both substitute cleanly.",
+        "subject": "Expr.subs",
+        "hunk_ids": [],
+        "cited_from": "# The error only (AFAIK) happens with cosh or tanh in place of sinh, otherwise it succeeds\n# (i.e. the bug is reported to reproduce for sinh, cosh, and tanh, and the fix must cover the reported family)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Mod.eval no longer propagates a PolynomialError raised by the internal gcd(p, q)/gcd_terms simplification step: when gcd(p, q) on the dividend/divisor arguments raises PolynomialError (e.g. piecewise-related generator issue), evaluation catches it, treats the extracted common factor G as 1 so that no gcd reduction is applied, and continues with the remainder of the Mod.eval simplification, ultimately returning a valid Mod result (an evaluated result or an unevaluated Mod form) instead of raising.",
+        "subject": "sympy.core.mod.Mod.eval",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only pins down that a .subs call on exp(hyperbolic(Piecewise)/z) expressions must not raise a PolynomialError and must substitute cleanly. It says nothing about Mod.eval's internal gcd(p,q)/gcd_terms step, catching the PolynomialError within Mod.eval, treating the common factor G as 1, or any Mod-specific code path, so the precise internal mechanism described by S_impl is not committed to by the visible information."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mod_gcd_piecewise_polynomialerror",
+      "test_source": "from sympy import Mod, Piecewise, exp\nfrom sympy.abc import x, y\n\ndef test_mod_gcd_piecewise_polynomialerror():\n    pw = Piecewise((x, x > 0), (0, True))\n    p = exp(x) + pw\n    r = Mod(p, y)\n    expected = Mod(Piecewise((x, x > 0), (0, True)) + exp(x), y, evaluate=False)\n    assert r == expected, repr(r)\n",
+      "gold_result": "PASSED — Mod.exp(x)+Piecewise(...) reaches the 'extract gcd' step of Mod.eval where gcd now catches PolynomialError, treats G=1, and returns the valid unevaluated Mod result; assertion holds.",
+      "buggy_result": "FAILED — calling Mod(exp(x)+pw, y) raises sympy.polys.polyerrors.PolynomialError: \"Piecewise generators do not make sense\" propagated out of the unprotected gcd(p,q) at sympy/core/mod.py:169 (Mod.eval).",
+      "explanation": "Requirement R1 is that Mod.eval must catch the PolynomialError raised by its internal gcd(p,q)/gcd_terms simplification step when the dividend/divisor auto-collect a Piecewise polynomial generator, treating G as 1 (skip gcd reduction) and returning a valid Mod instead of propagating the error.\n\nI constructed a Mod whose dividend p=exp(x)+Piecewise((x,x>0),(0,True)) is an Add with no Mod sub-arguments, so after the numeric/denest/Add fast-paths in Mod.eval it falls through unchanged to the '# extract gcd' section, where G=gcd(p,q) with q=y triggers _parallel_poly_from_expr to auto-collect the Piecewise as a generator and raise PolynomialError(\"Piecewise generators do not make sense\"). I verified gcd(exp(x)+pw, y) raises exactly that PolynomialError.\n\nOn the buggy program (no try/except) this error escapes Mod.eval during Mod(p,y), so construction raises. On the gold program the PolynomialError is caught, G is set to S.One, the gcd reduction is skipped, and Mod.eval continues to return a valid unevaluated Mod(exp(x)+pw,y). I confirmed by running the identical test source against both revisions: PASSED against gold, FAILED against buggy (PolynomialError). The test body asserts the resulting Mod equals its evaluate=False form, which distinguishes the unevaluated-but-valid return (gold) from the propagating exception (buggy).\n\nThis behavior is a genuinely hidden fact: the fully-visible test_Mod (sympy/core/tests/test_arit.py) exercises only ordinary numeric/denest/gcd/parity/factorial cases and contains no input that drives Mod.eval into the Piecewise-polynomial-generator PolynomialError branch, so it does not pin down this input as returning unevaluated rather than raising."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible 'error' is raised inside sympy/polys/polytools.py `_parallel_poly_from_expr`, which raises `PolynomialError(\"Piecewise generators do not make sense\")` when any auto-collected polynomial generator is a Piecewise instance."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction in the issue report is fully self-contained (module-level python snippet); no dedicated test file for it exists in the visible tree (tests are under sympy/*/tests/)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The report's narrowing observations (error stays for cosh/tanh, disappears if division by z removed, disappears if exp removed, only with real x and y) are diagnostic details of the same underlying subs path rather than independent behaviors a separate fix would need to satisfy."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug is cache/assumption-order dependent: the issue states that re-running the same call without clear_cache() works, implying the spurious PolynomialError is triggered only along certain assumption-computation paths during rebuild of the expression when real-assumed symbols are present."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sympy version referenced in the report is 1.8.dev."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks are in sympy/core/mod.py in the Mod.eval classmethod: H0 merely adds the PolynomialError import that is required for the except clause introduced in H1; H1 is the sole behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The comment in the gold code references 'issue 21373', the same bug under repair here."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The widened behavior only takes effect for p, q not already returned by the numerous earlier fast-path branches of Mod.eval (numeric, denest, Add/Mul handling, etc.) — i.e. inputs that reach the final gcd-extraction section."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The functional consequence of catching the error is equivalent to gcd extraction being skipped (G==1): smaller-gcd rewriting and any downstream numerical handling that depends on an extracted G are bypassed for such inputs."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 concerns a specific robustness change in Mod.eval (sympy.core.mod): catching the PolynomialError that the internal gcd(p,q)/gcd_terms step can raise when p/q involve piecewise-related polynomial generators, treating the common factor G as 1, and returning a valid Mod result instead of propagating the error.\n\nTo find a Witness I needed an oracle test that (a) is [HIDDEN] (not derivable from content the repair system saw), and (b) asserts this PolynomialError-catch behavior — i.e. a test that passes on gold and fails on buggy precisely because buggy lets the PolynomialError escape.\n\nI examined every test location in the oracle that plausibly exercises Mod.eval behavior:\n- sympy/core/tests/test_arit.py — this is the canonical home of all Mod tests (test_Mod, test_Mod_Pow, test_Mod_is_integer, test_Mod_is_nonposneg, etc.). The entire file is labeled [VISIBLE]. I read the whole test_Mod body; it contains only ordinary gcd-extraction, denesting, Float handling, parity, factorial/Wilson, and related numeric cases. There is no assertion that constructs a Mod whose dividend/divisor routing reaches the PolynomialError path (piecewise generator scenario), and nothing references issue 21373.\n- sympy/core/tests/test_eval.py, sympy/functions/elementary/tests/test_piecewise.py, sympy/simplify/tests/test_simplify.py — also entirely [VISIBLE], and none test this Mod.eval hardening (they exercise Piecewise/integration/simplify, not Mod.eval gcd PolynomialError handling).\n\nNo test for the R1 behavior exists in the oracle, and in particular no [HIDDEN] assertion enforces it. The notes already recorded '(none recorded)' of currently failing tests against the buggy program, consistent with the fact that existing Mod tests never route through the piecewise PolynomialError branch this fix touches — the fix is purely an added exception handler (equivalent to skipping gcd extraction with G==1) on a path no existing test reaches. A Witness would have to be a regression test added with the fix (asserting that an input previously raising PolynomialError now returns a Mod), but such a test is not present anywhere in this oracle under any file name, and the only file that could host it (test_arit.py) is fully visible anyway, so it could not serve as a Witness even if it existed here. Nothing in the oracle genuinely tests R1, so this is a found=false result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (sympy.core.mod.Mod.eval): Mod.eval no longer propagates a PolynomialError raised by the internal gcd(p, q)/gcd_terms simplification step: when gcd(p, q) on the dividend/divisor arguments raises PolynomialError (e.g. piecewise-related generator issue), evaluation catches it, treats the extracted common factor G as 1 so that no gcd reduction is applied, and continues with the remainder of the Mod.eval simplification, ultimately returning a valid Mod result (an evaluated result or an unevaluated Mod form) instead of raising. — not entailed by S_vis (S_vis only pins down that a .subs call on exp(hyperbolic(Piecewise)/z) expressions must not raise a PolynomialError and must substitute cleanly. It says nothing about Mod.eval's internal gcd(p,q)/gcd_terms step, catching the PolynomialError within Mod.eval, treating the common factor G as 1, or any Mod-specific code path, so the precise internal mechanism described by S_impl is not committed to by the visible information.); confirmed by a synthesized witness: Requirement R1 is that Mod.eval must catch the PolynomialError raised by its internal gcd(p,q)/gcd_terms simplification step when the dividend/divisor auto-collect a Piecewise polynomial generator, treating G as 1 (skip gcd reduction) and returning a valid Mod instead of propagating the error.\n\nI constructed a Mod whose dividend p=exp(x)+Piecewise((x,x>0),(0,True)) is an Add with no Mod sub-arguments, so after the numeric/denest/Add fast-paths in Mod.eval it falls through unchanged to the '# extract gcd' section, where G=gcd(p,q) with q=y triggers _parallel_poly_from_expr to auto-collect the Piecewise as a generator and raise PolynomialError(\"Piecewise generators do not make sense\"). I verified gcd(exp(x)+pw, y) raises exactly that PolynomialError.\n\nOn the buggy program (no try/except) this error escapes Mod.eval during Mod(p,y), so construction raises. On the gold program the PolynomialError is caught, G is set to S.One, the gcd reduction is skipped, and Mod.eval continues to return a valid unevaluated Mod(exp(x)+pw,y). I confirmed by running the identical test source against both revisions: PASSED against gold, FAILED against buggy (PolynomialError). The test body asserts the resulting Mod equals its evaluate=False form, which distinguishes the unevaluated-but-valid return (gold) from the propagating exception (buggy).\n\nThis behavior is a genuinely hidden fact: the fully-visible test_Mod (sympy/core/tests/test_arit.py) exercises only ordinary numeric/denest/gcd/parity/factorial cases and contains no input that drives Mod.eval into the Piecewise-polynomial-generator PolynomialError branch, so it does not pin down this input as returning unevaluated rather than raising.",
+    "confidence": "Medium"
+  }
+}

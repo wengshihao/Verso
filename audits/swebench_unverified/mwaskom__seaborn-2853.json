@@ -1,0 +1,124 @@
+{
+  "task_id": "mwaskom__seaborn-2853",
+  "status": "ok",
+  "duration_seconds": 358.8174030419905,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "mwaskom__seaborn-2853",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When lineplot aggregates data (estimator with error bar rendering, err_style == \"bars\"), the vertical confidence-interval error bars must be drawn opaque and must not inherit the alpha the user supplied for the plotted point/marker/line elements they replace; error-bar opacity may only be set explicitly (e.g. via err_kws/errorbar styling), restoring the pre-regression behavior where these error bars were always opaque.",
+        "subject": "_LinePlotter.plot error bars (err_style == \"bars\") alpha handling (seaborn/relational.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"x_estimator bars now inherit scatter_kws alpha / x_estimator error bars were previously always opaque, but now inherit alpha parameter from scatterplot settings (if present), since the error bars replace the scatterplot.\"  Code in _LinePlotter.plot: \"line_alpha = line.get_alpha()\" ... \"ebars = ax.errorbar( sub_data[\"x\"], sub_data[\"y\"], error_deltas, linestyle=\"\", color=line_color, alpha=line_alpha, **err_kws )\" (the line whose alpha is read was drawn earlier via \"lines.extend(ax.plot(sub_data[\"x\"], sub_data[\"y\"], **kws))\")."
+      },
+      {
+        "id": "R2",
+        "statement": "Band-style confidence intervals in the same aggregation path must be unaffected by this change: they continue to receive the translucent default alpha of .2 via err_kws rather than inheriting the alpha of the underlying plotted line (this behavior is already correct and distinct from the bars regression).",
+        "subject": "_LinePlotter.plot error bars (err_style == \"band\") alpha handling (seaborn/relational.py)",
+        "hunk_ids": [],
+        "cited_from": "Code in _LinePlotter.plot: \"if self.err_style == \"band\": err_kws.setdefault(\"alpha\", .2)\" followed by the fill_between call drawing the band with \"color=line_color, **err_kws\" (no alpha from line_alpha is forwarded)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a scatter-plot is drawn with a point-estimate aggregation (i.e. x_estimator or x_bins is in effect, so per-x estimate points plus vertical confidence-interval bars are rendered) and an alpha value is supplied in the scatter keywords (e.g. via regplot/lmplot scatter_kws), the vertical confidence-interval error-bar lines drawn at each estimate point are rendered with that same alpha rather than with their previous full-opacity default.",
+        "subject": "_RegressionPlotter.scatterplot aggregated (x_estimator/x_bins) path; observable via regplot/lmplot with scatter_kws alpha",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a scatter-plot is drawn with point-estimate aggregation (x_estimator/x_bins in effect) and NO alpha value is present in the scatter keywords, the vertical confidence-interval error-bar lines are rendered without any alpha override (unchanged, defaulting to full opacity).",
+        "subject": "_RegressionPlotter.scatterplot aggregated (x_estimator/x_bins) path; observable via regplot/lmplot scatter_kws without alpha",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis is entirely about _LinePlotter.plot (lineplot aggregation, err_style bars/band) in relational.py and never touches the _RegressionPlotter.scatterplot/regplot/lmplot path that S_impl R1 describes. Worse, S_vis R1 demands error bars stay opaque and NOT inherit alpha (restoring pre-regression behavior), the opposite of S_impl R1's claim that aggregate scatter error bars inherit scatter_kws alpha."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 concerns _RegressionPlotter.scatterplot aggregate scatter error bars without an alpha override, a code path entirely absent from S_vis, which only discusses _LinePlotter.plot bars/band alpha handling in relational.py. No S_vis entry pins down the no-alpha RegressionPlotter error-bar behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r1_ci_alpha",
+      "test_source": "import numpy as np\nimport seaborn as sns\n\ndef test_r1_ci_alpha():\n    x = np.array([1, 1, 2, 2, 3, 3, 1, 2, 3, 3])\n    y = np.array([1.0, 1.5, 2.0, 2.2, 3.0, 3.4, 1.2, 1.9, 3.1, 3.2])\n    ax = sns.regplot(x=x, y=y, x_estimator=np.mean, fit_reg=False,\n                     scatter_kws={\"alpha\": 0.4})\n    alphas = [child.get_alpha() for child in ax.lines]\n    assert len(alphas) > 0\n    assert all(a == 0.4 for a in alphas), alphas\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError: [None, None, None] (the three vertical CI error-bar ax.plot Line2D objects have alpha None instead of the supplied 0.4)",
+      "explanation": "Requirement R1 concerns `_RegressionPlotter.scatterplot`'s aggregated branch (reached when x_estimator/x_bins is in effect): the per-estimate vertical confidence-interval error bars are drawn via `ax.plot([x, x], ci, **ci_kws)` where `ci_kws` previously contained only color+linewidth (no alpha). The fix adds `if \"alpha\" in kws: ci_kws[\"alpha\"] = kws[\"alpha\"]`, so a scatter alpha flows into the CI-bar lines. My witness drives regplot with `x_estimator=np.mean` (aggregated point-estimate path) and `scatter_kws={\"alpha\": 0.4}` (fit_reg off so no regression line is drawn, isolating the CI bars), then asserts every `ax.lines` Line2D — the vertical CI error-bar line segments — has get_alpha()==0.4. On gold the CI bars inherit alpha 0.4 (PASSED); on buggy they retain alpha None (FAILED with [None, None, None]). This exercises exactly the patched else-branch (aggregated drawing), controlling the raw-data branch untouched by the patch. The visible `TestRegressionPlots.test_regplot_scatter_kws_alpha` only inspects `ax.collections[0]` — the raw scatter glyph alpha in the non-aggregated branch — and never checks the ax.plot CI error-bar alpha, so it does not pin down R1; my test is a distinct, genuine hidden witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report's literal parameter names (`x_estimator`, `scatter_kws`) do NOT appear anywhere in this source snapshot. The only aggregation feature in relational.py that draws estimate-points plus vertical error bars is the `_LinePlotter` path (estimator=..., errorbar=..., err_style=\"bars\"), invoked through `lineplot`/`relplot(kind=\"line\")`. The reported regression (error bars inheriting the element alpha) maps onto `alpha=line_alpha` being passed into `ax.errorbar` in that path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In `_ScatterPlotter`, the old `x_bins`/`estimator`/`ci`/`x_jitter` parameters are accepted but documented as '*Currently non-functional.*' — no aggregation scatterplot drawing exists there."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`_LinePlotter.plot` handles err_style=\"band\" (already setdefaults alpha .2 and does not forward line alpha) and err_style=\"bars\" (forwards `alpha=line_alpha` to ax.errorbar)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in tests/test_relational.py (TestLinePlotter.test_plot exercises band/bars err_style including alpha via err_kws), tests/test_categorical.py, and tests/_marks/, tests/_core/ for the objects interface; none of them currently assert the bars-do-not-inherit-alpha behavior, so tests do not further pin down the requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Subpackage seaborn/_core + _marks + _stats is the newer 'objects' interface (Plot.add(..., Scatter/Bar/...)); seaborn/categorical.py contains both the modernized (_CategoricalPlotterNew: stripplot/swarmplot) and legacy (_BoxPlotter/_BarPlotter/_PointPlotter...) categorical plotters. The modernized part only modernizes stripplot/swarmplot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch modifies only seaborn/regression.py inside _RegressionPlotter.scatterplot, in the else-branch (the x_estimator/x_bins aggregated point-estimate path) reached from regplot and lmplot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In this aggregated path the estimate points are drawn with ax.scatter(xs, ys, **kws) while the CI bars are older ax.plot([x, x], ci, **ci_kws) calls sharing a single ci_kws dict (color + linewidth)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds a conditional key-forward so that an 'alpha' already present in scatter kws is copied into ci_kws; it does not introduce any default alpha when 'alpha' is absent from the scatter keywords."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The non-aggregated raw-data branch of scatterplot (x_estimator is None) is untouched by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated the target requirement R1 (seaborn _RegressionPlotter.scatterplot aggregated x_estimator/x_bins point-estimate path, where vertical CI error-bar lines must inherit the alpha supplied via scatter_kws, observable through regplot/lmplot).\n\nWhat I checked in the oracle:\n- tests/test_regression.py — the file where all regplot/lmplot _RegressionPlotter aggregate-path tests live (TestRegressionPlots). Entire file is [VISIBLE], so none of its assertions can serve as a Witness. The one flagged as \"currently failing\" (TestRegressionPlots::test_regplot_scatter_kws_alpha) does not even exercise the R1 behavior semantically: it calls regplot with plain raw x/y (no x_estimator, no x_bins, no z/estimator groups) and only inspects ax.collections[0] (the raw scatter points') alpha/facecolor, never the ax.plot vertical CI error-bar lines that R1 is about. Since this is the raw-data branch which the patch does not touch, I confirmed by running it that it passes on both gold and buggy. It is therefore neither a [HIDDEN] witness nor a semantically-correct test of R1.\n- tests/test_relational.py and tests/test_axisgrid.py (the only other files exercising seaborn regression plotting via lmplot/FacetGrid/jointplot) are both [VISIBLE] and contain no x_estimator/x_bins CI-errorbar-alpha regression assertions.\n- tests/conftest.py is [HIDDEN], but it only defines data fixtures (wide_df, long_df, repeated_df, etc.) and contains no test of any R1 behavior.\n\nNo [HIDDEN] content anywhere in the oracle asserts that, when x_estimator/x_bins aggregation is in effect and an alpha is present in scatter_kws, the per-point vertical CI error-bar lines are drawn at that same alpha. Every assertion that could plausibly exercise the affected aggregated-branch code path lives in [VISIBLE] test_regression.py content, and even the failing visible test targets only the untouched raw scatter alpha/color of the scatter collection rather than the aggregated CI error lines. Accordingly, no [HIDDEN] witness exists for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (_RegressionPlotter.scatterplot aggregated (x_estimator/x_bins) path; observable via regplot/lmplot with scatter_kws alpha): When a scatter-plot is drawn with a point-estimate aggregation (i.e. x_estimator or x_bins is in effect, so per-x estimate points plus vertical confidence-interval bars are rendered) and an alpha value is supplied in the scatter keywords (e.g. via regplot/lmplot scatter_kws), the vertical confidence-interval error-bar lines drawn at each estimate point are rendered with that same alpha rather than with their previous full-opacity default. — not entailed by S_vis (S_vis is entirely about _LinePlotter.plot (lineplot aggregation, err_style bars/band) in relational.py and never touches the _RegressionPlotter.scatterplot/regplot/lmplot path that S_impl R1 describes. Worse, S_vis R1 demands error bars stay opaque and NOT inherit alpha (restoring pre-regression behavior), the opposite of S_impl R1's claim that aggregate scatter error bars inherit scatter_kws alpha.); confirmed by a synthesized witness: Requirement R1 concerns `_RegressionPlotter.scatterplot`'s aggregated branch (reached when x_estimator/x_bins is in effect): the per-estimate vertical confidence-interval error bars are drawn via `ax.plot([x, x], ci, **ci_kws)` where `ci_kws` previously contained only color+linewidth (no alpha). The fix adds `if \"alpha\" in kws: ci_kws[\"alpha\"] = kws[\"alpha\"]`, so a scatter alpha flows into the CI-bar lines. My witness drives regplot with `x_estimator=np.mean` (aggregated point-estimate path) and `scatter_kws={\"alpha\": 0.4}` (fit_reg off so no regression line is drawn, isolating the CI bars), then asserts every `ax.lines` Line2D — the vertical CI error-bar line segments — has get_alpha()==0.4. On gold the CI bars inherit alpha 0.4 (PASSED); on buggy they retain alpha None (FAILED with [None, None, None]). This exercises exactly the patched else-branch (aggregated drawing), controlling the raw-data branch untouched by the patch. The visible `TestRegressionPlots.test_regplot_scatter_kws_alpha` only inspects `ax.collections[0]` — the raw scatter glyph alpha in the non-aggregated branch — and never checks the ax.plot CI error-bar alpha, so it does not pin down R1; my test is a distinct, genuine hidden witness.",
+    "confidence": "Medium"
+  }
+}

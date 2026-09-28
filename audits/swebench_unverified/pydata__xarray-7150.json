@@ -1,0 +1,124 @@
+{
+  "task_id": "pydata__xarray-7150",
+  "status": "ok",
+  "duration_seconds": 436.1083565420704,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-7150",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "xarray.open_dataset must accept and return, without raising, a Dataset that a backend's open_dataset method has already decoded to contain a pandas MultiIndex coordinate (e.g. by running cf_xarray's decode_compress_to_multiindex inside the backend before returning). In particular, that Dataset must not trigger the error \"Cannot assign to the .data attribute of dimension coordinate a.k.a IndexVariable\" while open_dataset post-processes the backend-returned dataset.",
+        "subject": "xarray.backends.api.open_dataset (post-processing of backend-returned Dataset, e.g. _dataset_from_backend_dataset/_protect_dataset_variables_inplace)",
+        "hunk_ids": [],
+        "cited_from": ">>> loaded = xr.open_dataset(\"multiindex.nc\", engine=\"netcdf4-multiindex\", handle_multiindex=True)  # fails\n...\nValueError: Cannot assign to the .data attribute of dimension coordinate a.k.a IndexVariable 'measurement'. Please use DataArray.assign_coords, Dataset.assign_coords or Dataset.assign as appropriate.\n\nSo I'm guessing `xarray` is performing some operation on the dataset returned by the backend, and one of those leads to a failure if there is a multiindex already contained."
+      },
+      {
+        "id": "R2",
+        "statement": "For a NetCDF dataset written with its MultiIndex coordinate, the Dataset returned by xr.open_dataset when the backend performs the MultiIndex restoration internally (handle_multiindex=True) must be equal to the Dataset produced by opening with handle_multiindex=False and then applying the same restoration (decode_compress_to_multiindex) externally — i.e. both orders must give the same result.",
+        "subject": "xarray.backends.api.open_dataset round-trip equivalence for backend-decoded MultiIndex",
+        "hunk_ids": [],
+        "cited_from": ">>> loaded = xr.open_dataset(\"multiindex.nc\", engine=\"netcdf4-multiindex\", handle_multiindex=True)  # fails\n...\nbut this works:\n>>> loaded = xr.open_dataset(\"multiindex.nc\", engine=\"netcdf4-multiindex\", handle_multiindex=False)\n>>> loaded = decode_compress_to_multiindex(loaded)\n>>> assert loaded.equals(dataset)\n\nWhat did you expect to happen?\n\nI expected that it doesn't matter wheter `decode_compress_to_multi_index` is called inside the backend or afterwards, and the same dataset will be returned each time."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-s1",
+        "statement": "For each variable of the dataset, _protect_dataset_variables_inplace replaces the stored data with a CopyOnWriteArray wrapping of variable._data (itself wrapped in a MemoryCachedArray whenever the cache argument is truthy) exactly for those variables whose name is NOT a member of dataset._indexes; variables whose name IS one of the dataset's active indexes are skipped and left unmodified (their .data is never re-assigned).",
+        "subject": "xarray.backends.api._protect_dataset_variables_inplace",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-s2",
+        "statement": "Opening a backend Dataset (via xarray.open_dataset/open_dataarray path through _dataset_from_backend_dataset) succeeds without error when the Dataset carries an index/dimension coordinate (e.g. the coordinate indexes of a MultiIndex restored by a backend) whose variable name is not among that variable's own dims; in particular it no longer assigns .data to such index-coordinate variables and thereby no longer raises the ValueError('Cannot assign to the .data attribute of dimension coordinate...').",
+        "subject": "xarray.open_dataset (backend dataset post-processing)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-s1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "impl-s1 describes a precise internal implementation mechanism inside _protect_dataset_variables_inplace (wrapping variable._data in CopyOnWriteArray/MemoryCachedArray and skipping variables whose name is a dataset index). S_vis only records externally observable expectations (no error raised on opening a MultiIndex-bearing backend dataset; round-trip equality) and says nothing about which variables get wrapped/skipped inside that helper, so it cannot pin down this code-level behavior."
+      },
+      {
+        "requirement_id": "impl-s2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins the observable success condition that matches impl-s2's opening scenario (a MultiIndex/dimension-coordinate variable not among its own dims must not raise the 'Cannot assign to .data of IndexVariable' ValueError), so the requirement is not plainly false. However, impl-s2's phrasing commits to a specific internal post-processing behavior (open_dataset no longer assigns .data to such index-coordinate variables, tied to the _protect skip logic), which is a fix-internal mechanism the visible issue report does not uniquely dictate — the fix could plausibly be structured otherwise while still meeting the no-error expectation, so I conservatively judge it uncertain."
+      }
+    ],
+    "target_requirement_id": "impl-s1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_protect_non_index_dimension_coordinate",
+      "test_source": "import numpy as np\nimport xarray as xr\nfrom xarray.core import indexing\nfrom xarray.backends.api import _protect_dataset_variables_inplace\n\n\ndef test_protect_non_index_dimension_coordinate():\n    ds = xr.Dataset(\n        coords={\"x\": [10, 20]},\n        data_vars={\"foo\": (\"x\", np.array([1.0, 2.0]))},\n    )\n    # A deindexed dimension coordinate keeps dims == its own name but is no\n    # longer part of dataset._indexes, so the gold code must wrap its data\n    # (the buggy guard skips it because the name appears in its own dims).\n    ds = ds.drop_indexes(\"x\")\n    assert \"x\" not in ds._indexes\n    assert ds._variables[\"x\"].dims == (\"x\",)\n    _protect_dataset_variables_inplace(ds, True)\n    assert isinstance(ds._variables[\"x\"]._data, indexing.MemoryCachedArray)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (line 21: isinstance(ds._variables['x']._data, indexing.MemoryCachedArray) is False because the buggy guard `name not in variable.dims` skips the deindexed coordinate `x` (dims==('x',)) and leaves its _data as the raw PandasIndexingAdapter, never wrapping it)",
+      "explanation": "The target requirement [impl-s1] specifies that _protect_dataset_variables_inplace must wrap each variable's data in CopyOnWriteArray (+ MemoryCachedArray if cache) exactly for variables whose name is NOT in dataset._indexes; index variables are left unmodified. The buggy guard instead uses `name not in variable.dims` (whether the variable name appears among its own dimension names) which diverges whenever a non-index variable has a name occurring in its own dims.\n\nThe witness constructs a Dataset with a dimension coordinate `x` over dim `x`, then calls Dataset.drop_indexes(\"x\"), which converts the former IndexVariable into a plain base Variable that keeps dims == (\"x\",) but removes `x` from dataset._indexes. Under the gold guard `name not in dataset._indexes`, `x` qualifies for protection, so its _data is replaced by CopyOnWriteArray wrapped in MemoryCachedArray (cache=True assumed). Under the buggy guard `name not in variable.dims`, `x` is skipped (name in own dims), leaving _data as the raw PandasIndexingAdapter. The assertion `isinstance(ds._variables['x']._data, indexing.MemoryCachedArray)` therefore holds only for the gold program — verified empirically: PASS on gold, FAIL on buggy at exactly this assertion. This scenario (deindexed dimension-coordinate protection) exercises the new dataset._indexes membership guard that neither the visible test_dataset_caching (ordinary-data-variable wrappers) nor any other visible assertion touches; it does not require the external cf_xarray netCDF helpers of the original repro."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The repro uses external cf_xarray helpers (encode_multi_index_as_compress to save, decode_compress_to_multiindex to restore a MultiIndex) which are NOT part of this repo; the MultiIndex-bearing Dataset under test comes from the custom backend 'netcdf4-multiindex' subclassing NetCDF4BackendEntrypoint."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "xarray's open_dataset machinery is in xarray/backends/api.py: backend.open_dataset(...) returns a Dataset, which is then passed to _dataset_from_backend_dataset -> _protect_dataset_variables_inplace (wraps data of every variable whose name is not one of its dims with CopyOnWriteArray/MemoryCachedArray via variable.data = ...) before optional dask chunking."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "IndexVariable.data and IndexVariable.values setters (xarray/core/variable.py) unconditionally raise ValueError('Cannot assign to the .data attribute of dimension coordinate...'), so any code that writes variable.data on a dimension-coordinate/IndexVariable fails; this is the message in the issue traceback."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cf decode for netCDF4 files runs inside NetCDF4BackendEntrypoint.open_dataset (via StoreBackendEntrypoint->conventions.decode_cf_variables -> Dataset + ds.set_coords), so a backend that restores a MultiIndex on top of that returns a Dataset that xarray.open_dataset then post-processes again."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No regression test or developer patch for this behavior is present in the visible repo snapshot (no test content references issue 7150 or decode_compress)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_protect_dataset_variables_inplace is an internal private helper reached only from _dataset_from_backend_dataset, which itself is called by open_dataset (and via open_dataarray)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single-line patch replaces the guard `name not in variable.dims` with `name not in dataset._indexes`; all other lines (wrapping into CopyOnWriteArray then MemoryCachedArray when cache, assignment variable.data = data, and the inline 'no need to protect IndexVariable objects' comment) are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because IndexVariable.data assignment unconditionally raises, protecting a variable that already is a dataset index (whose name is in dataset._indexes) is what the new guard prevents; variables protected by the wrapping are those not participating as active dataset indexes regardless of whether the name also appears in the variable's own dims."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The repro path relies on an out-of-repo cf_xarray-style helper (decode_compress_to_multiindex) run inside a custom backend subclassing the netcdf4 entrypoint, i.e. no standard in-repo test exercises this exact membership divergence."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-s1]: I investigated whether the real oracle contains a test that genuinely witnesses `r` (_protect_dataset_variables_inplace wrapping variable data for every variable whose name is NOT in dataset._indexes, leaving dataset-index variables untouched).\n\nThe failing-test list points to `xarray/tests/test_backends_api.py::test_multiindex`. However, the full readable content of test_backends_api.py (labeled [VISIBLE], and inspected end-to-end — TestPreferredChunks is the last class) contains NO `test_multiindex` method at all, i.e. the named failing test is not present in any readable [HIDDEN]-or-[VISIBLE] oracle content for that file. None of the other backend/coordinate/index test files supply it either.\n\nI read the full oracle files most plausibly able to exercise this OpenDataset-internal helper: test_backends_api.py, test_backends.py, test_backends_common.py, test_conventions.py, test_indexes.py, test_backends_file_manager.py, test_backends_lru_cache.py, test_backends_locks.py, plus the conftest files and the properties tests. All such files' content is labeled [VISIBLE]; no [HIDDEN] assertion tests the target membership divergence. The only nearest-co-located behaviors found (e.g. test_backends.py CFEncodedBase.test_multiindex_not_implemented, which asserts NotImplementedError on a netCDF MultiIndex roundtrip; test_dataset_caching, which checks CopyOnWrite/MemoryCached wrappers on ordinary variables) do not exercise the new `name not in dataset._indexes` guard, and are all [VISIBLE] anyway, so they cannot serve as a hidden-content-derived witness.\n\nBecause (a) no readable [HIDDEN] oracle assertion in any file tests this exact behavior, and (b) all relevant readable assertions are [VISIBLE], no genuine witness can be established. Per instructions, I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-s1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-s1] (xarray.backends.api._protect_dataset_variables_inplace): For each variable of the dataset, _protect_dataset_variables_inplace replaces the stored data with a CopyOnWriteArray wrapping of variable._data (itself wrapped in a MemoryCachedArray whenever the cache argument is truthy) exactly for those variables whose name is NOT a member of dataset._indexes; variables whose name IS one of the dataset's active indexes are skipped and left unmodified (their .data is never re-assigned). — not entailed by S_vis (impl-s1 describes a precise internal implementation mechanism inside _protect_dataset_variables_inplace (wrapping variable._data in CopyOnWriteArray/MemoryCachedArray and skipping variables whose name is a dataset index). S_vis only records externally observable expectations (no error raised on opening a MultiIndex-bearing backend dataset; round-trip equality) and says nothing about which variables get wrapped/skipped inside that helper, so it cannot pin down this code-level behavior.); confirmed by a synthesized witness: The target requirement [impl-s1] specifies that _protect_dataset_variables_inplace must wrap each variable's data in CopyOnWriteArray (+ MemoryCachedArray if cache) exactly for variables whose name is NOT in dataset._indexes; index variables are left unmodified. The buggy guard instead uses `name not in variable.dims` (whether the variable name appears among its own dimension names) which diverges whenever a non-index variable has a name occurring in its own dims.\n\nThe witness constructs a Dataset with a dimension coordinate `x` over dim `x`, then calls Dataset.drop_indexes(\"x\"), which converts the former IndexVariable into a plain base Variable that keeps dims == (\"x\",) but removes `x` from dataset._indexes. Under the gold guard `name not in dataset._indexes`, `x` qualifies for protection, so its _data is replaced by CopyOnWriteArray wrapped in MemoryCachedArray (cache=True assumed). Under the buggy guard `name not in variable.dims`, `x` is skipped (name in own dims), leaving _data as the raw PandasIndexingAdapter. The assertion `isinstance(ds._variables['x']._data, indexing.MemoryCachedArray)` therefore holds only for the gold program — verified empirically: PASS on gold, FAIL on buggy at exactly this assertion. This scenario (deindexed dimension-coordinate protection) exercises the new dataset._indexes membership guard that neither the visible test_dataset_caching (ordinary-data-variable wrappers) nor any other visible assertion touches; it does not require the external cf_xarray netCDF helpers of the original repro.",
+    "confidence": "Medium"
+  }
+}

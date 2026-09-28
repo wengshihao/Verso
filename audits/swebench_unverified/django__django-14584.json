@@ -1,0 +1,115 @@
+{
+  "task_id": "django__django-14584",
+  "status": "ok",
+  "duration_seconds": 602.5090349579696,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14584",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When an application-level SQL statement is executed under query logging (CursorDebugWrapper.debug_sql), the DEBUG message emitted to the 'django.db.backends' logger must include the database alias of the connection the statement ran against, so that a user doing database routing can tell which database alias produced each logged query.",
+        "subject": "CursorDebugWrapper.debug_sql / django.db.backends logger",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"django.db.backends logging output should include the database alias\"; issue body: \"As this is essential information when working with database routing.\""
+      },
+      {
+        "id": "2",
+        "statement": "The extra logging context carried on the DEBUG records logged to the 'django.db.backends' logger for each executed SQL statement must make the database alias of the originating connection available to handlers (in addition to the already-present sql/params/duration context).",
+        "subject": "django.db.backends logger extra context",
+        "hunk_ids": [],
+        "cited_from": "docs/ref/logging.txt: \"Messages to this logger have the following extra context: * ``duration``: ... * ``sql``: ... * ``params``: ...\" combined with the issue requirement that the output include the database alias."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When CursorDebugWrapper.debug_sql emits a query-log entry to the 'django.db.backends' logger, the rendered debug message text appends the database connection's alias to the existing '(duration) sql; args=params' format, i.e. the message ends with '; alias=' followed by the connection alias (self.db.alias) after the args component.",
+        "subject": "django.db.backends.utils.CursorDebugWrapper.debug_sql (message text)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The log record emitted by CursorDebugWrapper.debug_sql carries, in addition to its duration/sql/params keys, an extra-context key 'alias' whose value is the connection's database alias (self.db.alias), so logging handlers/formatters can read it as the record's 'alias' attribute.",
+        "subject": "django.db.backends.utils.CursorDebugWrapper.debug_sql (logger extra context)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis [1] indicates the DEBUG message text must include the database alias, which R1 realizes, but it does not pin R1's exact commit-specific format — the message ending in '; alias=' appended after the args component. The issue/docs evidence only ask that output 'include the database alias' without specifying the message-text layout or delimiter, so this is ambiguous."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "2"
+        ],
+        "rationale": "S_vis [2] pins that the extra logging context on the 'django.db.backends' logger DEBUG records must carry the originating connection's database alias in addition to sql/params/duration so handlers can read it — precisely the same behavior R2 describes (an extra-context alias attribute for handlers). Only the incidental literal key spelling is unspecified."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "DebugSqlAliasTest.test_debug_sql_appends_connection_alias",
+      "test_source": "import unittest\n\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(DEBUG=True)\n\nfrom django.db.backends.utils import CursorDebugWrapper\n\n\nclass FakeDB:\n    alias = 'fake_alias'\n\n    def __init__(self):\n        self.queries_log = []\n\n\nclass FakeCursor:\n    pass\n\n\nclass DebugSqlAliasTest(unittest.TestCase):\n    def test_debug_sql_appends_connection_alias(self):\n        fake_db = FakeDB()\n        wrapper = CursorDebugWrapper(FakeCursor(), fake_db)\n        with self.assertLogs('django.db.backends', level='DEBUG') as cm:\n            with wrapper.debug_sql('SELECT 1', [42]):\n                pass\n        self.assertTrue(cm.records)\n        message = cm.records[0].getMessage()\n        self.assertIn('; alias=fake_alias', message)\n",
+      "gold_result": "PASSED — logger message captured from CursorDebugWrapper.debug_sql contains '; alias=fake_alias' (gold renders '(0.000) SELECT 1; args=[42]; alias=fake_alias').",
+      "buggy_result": "FAILED (AssertionError: '; alias=fake_alias' not found in '(0.000) SELECT 1; args=[42]') — buggy debug_sql omits the appended alias.",
+      "explanation": "R1 states that CursorDebugWrapper.debug_sql's emitted 'django.db.backends' log message must append '; alias=<connection alias>' (self.db.alias) after the args component. The gold hunk passed the extra positional format arg self.db.alias and the format string '; alias=%s', while the buggy version ended at '; args=%s'. The candidate witness drives exactly this code path: it builds a CursorDebugWrapper over a fake cursor with a fake db object carrying alias='fake_alias' and a queries_log, then invokes debug_sql as a context manager so the finally-block emits the logging record (DEBUG level on the 'django.db.backends' logger, which is guaranteed to fire because settings are configured with DEBUG=True and assertLogs sets the level). It then asserts the rendered getMessage() contains '; alias=fake_alias'. This genuinely corresponds to R1 and is not pinned down by any visible content: the only visible format assertions (last-executed-query dict entries, the schema-editor logger in tests/schema/test_logging.py) check different code paths/loggers and never assert the backends debug_sql alias text; and the single changed hunk H0 is exactly the message-format change captured here. Run_test confirmed PASSED on gold and FAILED on buggy with a readout showing the buggy message '(0.000) SELECT 1; args=[42]' lacking the alias."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant log-emitting code is in django/db/backends/utils.py: CursorDebugWrapper.debug_sql logs to the 'django.db.backends' logger with logger.debug('(%.3f) %s; args=%s', duration, sql, params, extra={'duration':..., 'sql':..., 'params':...})."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The connection wrapper holds self.db (a BaseDatabaseWrapper) whose .alias (django/db/backends/base/base.py stores self.alias = alias in __init__) carries the database alias; the schema editor's logger (django/db/backends/base/schema.py, loggger 'django.db.backends.schema') similarly has self.connection.alias."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/ref/logging.txt documents the 'django.db.backends' logger's extra context as duration/sql/params, and the query-time SQL logging only runs when settings.DEBUG is True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A visible test tests/schema/test_logging.py (SchemaLoggerTests.test_extra_args) asserts the exact message format and sql/params extra for the schema logger, so message-format changes there are coupled; the backends-logger alias fix targets django/db/backends/utils.py's CursorDebugWrapper.debug_sql."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single modified hunk H0 touches only the logger.debug call inside CursorDebugWrapper.debug_sql in django/db/backends/utils.py; no other code changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "self.db in CursorDebugWrapper is the BaseDatabaseWrapper passed to utils.CursorDebugWrapper(cursor, self) via BaseDatabaseWrapper.make_debug_cursor; its 'alias' is set in BaseDatabaseWrapper.__init__(settings_dict, alias=DEFAULT_DB_ALIAS), so self.db.alias is always present."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The aligned-change counterpart in the schema logger (django/db/backends/base/schema.py) is not part of this patch's hunks."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the oracle for a test that genuinely asserts R1: that CursorDebugWrapper.debug_sql emits to the 'django.db.backends' logger a message whose rendered text is followed by '; alias=' + connection alias.\n\nNo test is currently failing against the buggy program. I read the natural candidates: tests/backends/tests.py (the DEBUG query-logging tests: LastExecutedQueryTest.test_debug_sql, EscapingChecksDebug, BackendTestCase.test_queries, test_queries_limit — all [VISIBLE]); tests/schema/test_logging.py (SchemaLoggerTests.test_extra_args, [VISIBLE], but this asserts the SCHEMA-EDITOR logger's message '(params [...])' format in the django.db.backends.schema logger, which is co-located but a different logger/code path and is explicitly noted as not part of this patch's hunks — and it is visible content, so it cannot be a witness anyway); tests/backends/test_utils.py, tests/backends/base/test_schema.py, tests/test_runner/test_debug_sql.py, tests/test_runner/tests.py, tests/logging_tests/tests.py, tests/queries/tests.py, tests/utils_tests/test_connection.py.\n\nEvery one of these either (a) checks connection.queries['sql'] / 'time' dict entries (unchanged by this patch, which only alters the logger.debug message text, not the queries_log entries) or (b) captures the schema logger or django.request/django.security loggers on other code paths. None attaches an assertLogs('django.db.backends', ...) capture with an assertion that the debug_sql log message ends with '; alias=<alias>'. The cursor-DEBUG message format itself is never asserted for the connection alias anywhere in the oracle. I did not find any [HIDDEN] test file containing such an assertion — the only [HIDDEN] file I encountered (tests/backends/models.py) is a models helper, not a log-format test.\n\nAccordingly there is no pre-existing oracle test that fails on the buggy program and passes on the fixed program specifically because of the appended '; alias=' text, so no genuine witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.backends.utils.CursorDebugWrapper.debug_sql (message text)): When CursorDebugWrapper.debug_sql emits a query-log entry to the 'django.db.backends' logger, the rendered debug message text appends the database connection's alias to the existing '(duration) sql; args=params' format, i.e. the message ends with '; alias=' followed by the connection alias (self.db.alias) after the args component. — not entailed by S_vis (S_vis [1] indicates the DEBUG message text must include the database alias, which R1 realizes, but it does not pin R1's exact commit-specific format — the message ending in '; alias=' appended after the args component. The issue/docs evidence only ask that output 'include the database alias' without specifying the message-text layout or delimiter, so this is ambiguous.); confirmed by a synthesized witness: R1 states that CursorDebugWrapper.debug_sql's emitted 'django.db.backends' log message must append '; alias=<connection alias>' (self.db.alias) after the args component. The gold hunk passed the extra positional format arg self.db.alias and the format string '; alias=%s', while the buggy version ended at '; args=%s'. The candidate witness drives exactly this code path: it builds a CursorDebugWrapper over a fake cursor with a fake db object carrying alias='fake_alias' and a queries_log, then invokes debug_sql as a context manager so the finally-block emits the logging record (DEBUG level on the 'django.db.backends' logger, which is guaranteed to fire because settings are configured with DEBUG=True and assertLogs sets the level). It then asserts the rendered getMessage() contains '; alias=fake_alias'. This genuinely corresponds to R1 and is not pinned down by any visible content: the only visible format assertions (last-executed-query dict entries, the schema-editor logger in tests/schema/test_logging.py) check different code paths/loggers and never assert the backends debug_sql alias text; and the single changed hunk H0 is exactly the message-format change captured here. Run_test confirmed PASSED on gold and FAILED on buggy with a readout showing the buggy message '(0.000) SELECT 1; args=[42]' lacking the alias.",
+    "confidence": "Medium"
+  }
+}

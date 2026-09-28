@@ -1,0 +1,86 @@
+{
+  "task_id": "django__django-15930",
+  "status": "ok",
+  "duration_seconds": 357.830175209092,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15930",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A queryset that annotates with Case(When(~Q(pk__in=[]), then=Value(True)), default=Value(False), output_field=BooleanField()) does not crash; because ~Q(pk__in=[]) is an always-true condition every row must be annotated with True (the 'then' value), and the generated SQL must be syntactically valid (not contain an empty condition such as 'CASE WHEN THEN true').",
+        "subject": "django.db.models.expressions.Case / When",
+        "hunk_ids": [],
+        "cited_from": "Issue description: 'User.objects.annotate(_a=Case(When(~Q(pk__in=[]), then=Value(True)), default=Value(False), output_field=BooleanField(),)).order_by(\"-a\").values(\"pk\")' ... 'ProgrammingError: syntax error at or near \"THEN\" LINE 1: ..._user\".\"id\" FROM \"users_user\" ORDER BY CASE WHEN THEN true ...' 'The generated SQL is: SELECT \"users_user\".\"id\" FROM \"users_user\" ORDER BY CASE WHEN THEN True ELSE False END ASC' 'I expected behavior to annotate all rows with the value True since they all match.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "When.as_sql: when the condition compiles to an empty SQL string (a filter that matches every row, e.g. a negated empty lookup like ~Q(pk__in=[])), the CASE WHEN branch is emitted with an always-true predicate as its condition instead of a malformed/empty condition — so the WHEN's THEN result is returned for every row.",
+        "subject": "django.db.models.expressions.When.as_sql",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 captures the observable outcome required (no crash; SQL syntactically valid, not containing 'CASE WHEN THEN'; every row annotated True for ~Q(pk__in=[])), which is the trigger scenario. However, it does not spell out the specific implementation mechanism in When.as_sql of emitting an always-true predicate as the WHEN's condition when the compiled condition SQL is empty; that could be achieved by other means, so the exact mechanism is not pinned down."
+      }
+    ],
+    "target_requirement_id": "S_impl_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_negated_empty_when",
+      "test_source": "def test_witness_negated_empty_when():\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            DATABASES={\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}},\n            INSTALLED_APPS=[\n                \"django.contrib.contenttypes\",\n                \"django.contrib.auth\",\n                \"django.contrib.sessions\",\n                \"django.contrib.messages\",\n                \"django.contrib.staticfiles\",\n                \"tests.expressions_case\",\n            ],\n            SECRET_KEY=\"x\" * 32,\n            USE_TZ=True,\n            ROOT_URLCONF=\"tests.urls\",\n        )\n    django.setup()\n    from django.core.management import call_command\n    call_command(\"migrate\", run_syncdb=True, verbosity=0)\n    from django.db.models import Case, When, Value, Q\n    from tests.expressions_case.models import CaseTestModel as M\n    M.objects.all().delete()\n    M.objects.create(integer=1)\n    M.objects.create(integer=2)\n    M.objects.create(integer=3)\n    qs = M.objects.annotate(\n        selected=Case(\n            When(~Q(pk__in=[]), then=Value(\"selected\")),\n            default=Value(\"not selected\"),\n        )\n    )\n    assert qs.count() == 3\n    for obj in qs:\n        assert obj.selected == \"selected\"\n",
+      "gold_result": "PASSED — With the fix, When(~Q(pk__in=[]), then=Value(\"selected\"))'s condition compiles to empty SQL, and gold substitutes a compile of Value(True) for the empty condition, so the emitted CASE WHEN has an always-true predicate and all 3 rows come back \"selected\"; annotations iterate and assertions pass.",
+      "buggy_result": "FAILED — On the buggy program the WHEN condition is left as '' (empty), producing malformed SQL `SELECT ... CASE WHEN  THEN ... FROM \"expressions_case_casetestmodel\"`; executing it on SQLite raises `django.db.utils.OperationalError: near \"THEN\": syntax error`, so the test fails (as the target requirement demands).",
+      "explanation": "The target requirement S_impl_1 is about When.as_sql emitting an always-true predicate when the condition compiles to an empty SQL string (e.g. ~Q(pk__in=[]) matching every row), rather than a malformed empty condition. The gold fix substitutes `compiler.compile(Value(True))` for the empty `condition_sql`; the buggy code leaves it blank. I built a DB-backed witness using the existing visible models: CaseTestModel, with three rows, annotated with Case(When(~Q(pk__in=[]), then=Value(\"selected\")), default=Value(\"not selected\")). Execution confirmed: gold PASSED (all rows \"selected\" — the WHEN correctly becomes an always-true case), whereas buggy FAILED with `django.db.utils.OperationalError: near \"THEN\": syntax error` because it emits `CASE WHEN  THEN ...` (the empty condition), exactly the bug this requirement fixes. On visibility: the only empty-condition test in the otherwise [VISIBLE] tests.py (`test_annotate_with_empty_when`) uses the *non-negated* When(pk__in=[], ...) and asserts the opposite outcome (all rows \"not selected\"); the negated ~Q(pk__in=[]) always-true-WHEN behavior targeted here is not pinned down anywhere in visible material, and I did not reuse that existing test — my test exercises the distinct negated branch that actually discriminates the fix. Execution backing this result used the identical byte-for-byte source against both gold (PASSED) and buggy (FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug-specific source knowledge relevant here: tests live under tests/expressions_case/ and models under tests/expressions_case/models.py; an existing test test_annotate_with_empty_when covers only the NON-negated When(pk__in=[], ...) (all rows get 'not selected'), confirming the negated ~Q(pk__in=[]) scenario is unexercised visible behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Mechanics visible in source: lookups.In.process_rhs raises EmptyResultSet for an empty direct in-list; sql.where.WhereNode.as_sql returns ('', []) (match-everything) when the node is negated and its child raised EmptyResultSet; expressions.When.as_sql builds template 'WHEN %(condition)s THEN %(result)s' with no guard against an empty condition_sql; expressions.Case.as_sql only skips a case when compiler.compile(case) raises EmptyResultSet in full (never when the condition alone yields empty SQL), so the empty WHEN persists into the emitted CASE."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "When.__init__ raises TypeError for non-Q/non-boolean conditions and ValueError for an empty Q() condition, but ~Q(pk__in=[]) is a non-empty Q and passes constructor validation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix lives in expressions.When.as_sql: it substitutes compilation of Value(True) for an empty condition_sql before filling in the 'condition' template param of the CASE WHEN branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This scenario arises because lookups like an empty in-list combined with negation compile to a match-everything WHERE fragment that WhereNode.as_sql returns as an empty string; When has no upstream guard against that empty SQL."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only When's condition handling is touched; Case.as_sql and the constructor validation (~Q(...) still passes as a non-empty Q) are unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_1]: I investigated the oracle test suite for a witness of S_impl_1 (Django's `When.as_sql` emitting an always-true WHEN predicate when the condition compiles to an empty '' SQL string, e.g. from a negated empty lookup `~Q(pk__in=[])`).\n\nWhat I checked:\n1. `tests/expressions_case/tests.py` — the canonical home of all `Case`/`When` expression tests. It is **fully [VISIBLE]**, so no assertion in it can rest a witness no matter how well it matches. Its only empty-condition-related test is `test_annotate_with_empty_when`, which uses the **non-negated** `When(pk__in=[], then=Value(\"selected\"))` and asserts every row is \"not selected\" (the default). That is behaviorally the *opposite* scenario from S_impl_1: S_impl_1 is specifically about the *negated* `~Q(pk__in=[])` case, where the wanted result is that the THEN value ('selected') is returned for **every** row because the WHEN is emitted with an always-true predicate. So even setting visibility aside, `test_annotate_with_empty_when` does not exercise the same behavior.\n2. The `CaseWhenTests` (SimpleTestCase) methods in that same file only test constructor validation/argument errors and are likewise fully [VISIBLE]; none assert the always-true-WHEN-on-empty-condition behavior.\n3. `tests/expressions_case/models.py` is labeled [HIDDEN], but it contains only model field definitions (CaseTestModel, O2OCaseTestModel, FKCaseTestModel, Client) — no behavioral test assertion relevant to When.as_sql.\n4. I also checked the other expression-related suite `tests/expressions/tests.py` (also fully [VISIBLE]); its Case/When content (e.g. `test_case_in_filter_if_boolean_output_field`, EmptyResultSet handling in `ExistsTests`) does not test an empty-condition WHEN emitting an always-true CASE WHEN.\n5. Critically, no tests are recorded as failing against the buggy program — a hard precondition for any witness (it must fail on buggy and pass on gold). The visible suite's only empty-WHEN test passes identically on both variants since it covers the non-negated path.\n\nConclusion: the oracle contains no [HIDDEN] test assertion enforcing S_impl_1's negated-empty-condition always-true-WHEN behavior. All relevant assertions are [VISIBLE] and, moreover, none target this specific behavior. Therefore no witness exists and found=false is correct."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_1] (django.db.models.expressions.When.as_sql): When.as_sql: when the condition compiles to an empty SQL string (a filter that matches every row, e.g. a negated empty lookup like ~Q(pk__in=[])), the CASE WHEN branch is emitted with an always-true predicate as its condition instead of a malformed/empty condition — so the WHEN's THEN result is returned for every row. — not entailed by S_vis (R1 captures the observable outcome required (no crash; SQL syntactically valid, not containing 'CASE WHEN THEN'; every row annotated True for ~Q(pk__in=[])), which is the trigger scenario. However, it does not spell out the specific implementation mechanism in When.as_sql of emitting an always-true predicate as the WHEN's condition when the compiled condition SQL is empty; that could be achieved by other means, so the exact mechanism is not pinned down.); confirmed by a synthesized witness: The target requirement S_impl_1 is about When.as_sql emitting an always-true predicate when the condition compiles to an empty SQL string (e.g. ~Q(pk__in=[]) matching every row), rather than a malformed empty condition. The gold fix substitutes `compiler.compile(Value(True))` for the empty `condition_sql`; the buggy code leaves it blank. I built a DB-backed witness using the existing visible models: CaseTestModel, with three rows, annotated with Case(When(~Q(pk__in=[]), then=Value(\"selected\")), default=Value(\"not selected\")). Execution confirmed: gold PASSED (all rows \"selected\" — the WHEN correctly becomes an always-true case), whereas buggy FAILED with `django.db.utils.OperationalError: near \"THEN\": syntax error` because it emits `CASE WHEN  THEN ...` (the empty condition), exactly the bug this requirement fixes. On visibility: the only empty-condition test in the otherwise [VISIBLE] tests.py (`test_annotate_with_empty_when`) uses the *non-negated* When(pk__in=[], ...) and asserts the opposite outcome (all rows \"not selected\"); the negated ~Q(pk__in=[]) always-true-WHEN behavior targeted here is not pinned down anywhere in visible material, and I did not reuse that existing test — my test exercises the distinct negated branch that actually discriminates the fix. Execution backing this result used the identical byte-for-byte source against both gold (PASSED) and buggy (FAILED).",
+    "confidence": "Medium"
+  }
+}

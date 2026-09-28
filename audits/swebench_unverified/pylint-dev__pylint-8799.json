@@ -1,0 +1,116 @@
+{
+  "task_id": "pylint-dev__pylint-8799",
+  "status": "ok",
+  "duration_seconds": 345.5646874579834,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "pylint-dev__pylint-8799",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When running pylint and every message it could emit has been disabled (e.g. via `--disable=all` with no subsequent re-enabling of any message), the linter must short-circuit before doing the expensive per-module analysis work (building/parsing each module's AST and walking it), rather than spending seconds even on an empty/trivial input file.",
+        "subject": "PyLinter.check / lint pipeline (pylint/lint/pylinter.py)",
+        "hunk_ids": [],
+        "cited_from": "Title: \"Short circuit if all checks disabled\"; Bug description: \"$ touch test.py $ time pylint test.py --disable=all ... real    0m3.684s ...\"; Expected behavior: \"It is unacceptable that even on an empty file pylint runs for at least 3 seconds.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When `disable=all` is combined with an `enable=...` directive that re-enables a specific message/checker, that checker must remain fully active (the scoped disable+enable combination must keep working and not be wrongly short-circuited as 'all disabled').",
+        "subject": "message state enable/disable handling (_MessageStateHandler / disable=all semantics)",
+        "hunk_ids": [],
+        "cited_from": "tests/functional/u/unused/unused_import_everything_disabled.rc: \"[Messages Control]\\ndisable=all\\nenable=unused-import\" together with the paired source file unused_import_everything_disabled.py being expected to lint clean (no unused-import false positive even though class-attribute names shadow the imported names)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-1",
+        "statement": "Invoking the pylint Run entry point with no file/package arguments (and with --version / pylint-config command handling not otherwise short-circuiting) prints the single line \"No files to lint: exiting.\" to stdout and exits with code 32, instead of printing the full linter help text.",
+        "subject": "pylint.lint.run.Run (CLI invocation with empty file list)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "Invoking the pylint Run entry point with file/package arguments when the configuration disables every available check (the set of disabled messages spans all message definitions in the message store, i.e. equivalent to --disable=all with no enabling) prints the single line \"No files to lint: exiting.\" to stdout and exits with code 32 before running the lint, rather than proceeding to lint and report normally.",
+        "subject": "pylint.lint.run.Run (CLI invocation with all checks disabled)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "REQ-1 concerns the no-file-arguments case printing 'No files to lint: exiting.' and exiting 32. Neither S_vis entry mentions an empty file list or any such message/exit code; R1 is about disabling all checks on a given file (pylint test.py --disable=all) and R2 is about enable/disable scoping. Nothing pins down the empty-file-list message/exit behavior."
+      },
+      {
+        "requirement_id": "REQ-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 covers the same scenario (a file arg supplied with all checks disabled via --disable=all) and expects the linter to short-circuit before expensive per-module analysis rather than lint normally, which supports part of REQ-2. However, S_vis never specifies that the mechanism is printing the exact line 'No files to lint: exiting.' and exiting with code 32, so the full specific behavior described (specific stdout + exit code) is not pinned down. R2 only clarifies that a re-enabled checker should stay active, which does not add this detail."
+      }
+    ],
+    "target_requirement_id": "REQ-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_run_empty_files_prints_no_files_message",
+      "test_source": "def test_run_empty_files_prints_no_files_message():\n    import io\n    import sys\n    from contextlib import redirect_stdout\n\n    from pylint.lint.run import Run\n\n    class PilotExit(Exception):\n        def __init__(self, code):\n            self.code = code\n\n    buf = io.StringIO()\n    original_exit = sys.exit\n    try:\n        sys.exit = PilotExit\n        try:\n            with redirect_stdout(buf):\n                Run([])\n        except PilotExit as raised:\n            assert raised.code == 32\n    finally:\n        sys.exit = original_exit\n    assert buf.getvalue() == \"No files to lint: exiting.\\n\"\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (stdout is \"usage: pylint [options]...: full linter help\" instead of \"No files to lint: exiting.\")",
+      "explanation": "REQ-1 says that invoking the pylint Run entry point with no file/package arguments (and no --version / pylint-config short-circuit) must print the single line \"No files to lint: exiting.\" to stdout and exit with code 32, rather than dumping the full help text. The witness constructs the exact scenario: it calls Run([]) with sys.exit stubbed so it can capture both the thrown exit code (asserted == 32) and, by redirecting stdout to a StringIO, asserts the precise printed line equals \"No files to lint: exiting.\\n\". With no arguments there is no --version or pylint-config path, so this reaches the newly-changed branch in Run.__init__. The test PASSES on gold (which prints \"No files to lint: exiting.\" and sys.exit(32)) and FAILS on buggy (which sys.exit(32) too, but prints the full linter help text \"usage: pylint [options]...\"); the failure on buggy is at the last assertion, on the exact stdout text, proving the distinction. This stdout semantics is asserted by no visible oracle test: the only near-miss visible tests (test_error_missing_arguments, test_no_crash_with_formatting_regex_defaults in tests/test_self.py) check only the exit code, which equals 32 on both programs, so they cannot distinguish the two; my message-content assertion corresponds to a genuinely new/hidden oracle fact implementing REQ-1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The codebase is the pylint linter. Per-file lint entry point is PyLinter.check -> _lint_files/_lint_file -> _check_astroid_module in pylint/lint/pylinter.py; msg enable/disable state handled by _MessageStateHandler in pylint/lint/message_state_handler.py; `--disable=all` expands to disabling every message category (see _get_messages_to_set)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Checkers actually run are chosen by PyLinter.prepare_checkers() (pylint/lint/pylinter.py) which filters out checkers none of whose messages are enabled; the main 'self' checker is always kept in the needed list."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Performance is benchmarked not asserted: tests/benchmark/test_baseline_benchmarks.py measures wall-clock baselines (e.g. test_baseline_benchmark_j1); there are no regression tests with hard time thresholds."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A pre-existing functional regression test tests/functional/u/unused/unused_import_everything_disabled.{py,rc} exercises the config combination `disable=all` + `enable=unused-import` and expects clean output (no .txt expected-file, imports in the file are genuinely used)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change rewrites the existing 'no files to lint' branch (which previously fired only on empty args and printed linter.help() with exit code 32) to additionally fire when all checks are disabled, and replaces the help output with a short message; exit code in both cases stays 32."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The all-checks-disabled test uses the ad-hoc heuristic len(linter.config.disable) == len(linter.msgs_store._messages_definitions); note an existing functional test (disable=all + enable=unused-import) still runs cleanly, implying that configuration does not leave all messages disabled under this heuristic."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed branch is located after the --version and _is_pylint_config short-circuit paths in Run.__init__, so those invocations are unaffected."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-1]: I investigated REQ-1 (Run invoked — at the CLI/argv level — with no file/package arguments should print the single line \"No files to lint: exiting.\" and exit 32 instead of dumping the full linter help).\n\nFirst I confirmed the gold/buggy differential empirically: a test invoking Run([]) and asserting '\"No files to lint\" in stdout' + exit code 32 PASSES on gold but FAILS on buggy (buggy prints 'usage: pylint [options] ...' full help). So the requirement's behavior is real and distinguishable.\n\nHowever, a Witness must be a real oracle test that passes on gold, fails on buggy, and asserts THIS behavior from an oracle assertion. The task states \"tests currently failing against the buggy program: (none recorded)\" — and such a test is a NECESSARY condition for a witness. Consistent with that, I searched the plausible homes for an empty-argv CLI test:\n- tests/lint/test_run_pylint.py ([VISIBLE]) only covers invalid-flag/rcfile usage errors (usage text + code 32 for unknown options). No empty-file-list message test.\n- tests/test_self.py ([VISIBLE]) TestRunTC.test_error_missing_arguments runs Run([]) but asserts ONLY exit code 32 (no output check), so it passes on both gold and buggy; test_no_crash_with_formatting_regex_defaults similarly since full help also exits 32.\n- tests/test_pylint_runners.py, tests/lint/test_pylinter.py, tests/lint/unittest_lint.py, tests/lint/unittest_expand_modules.py, tests/lint/test_caching.py, tests/lint/test_utils.py, tests/test_regr.py, tests/test_func.py ([VISIBLE]) contain no empty-args invocation asserting REQ-1's message semantics.\n- The empty-argv case cannot be covered by any functional test, since functional tests always lint a specific .py module; the full file-list functional data (e.g. unused_import_everything_disabled.{py,rc}) relate to the distinct all-checks-disabled scenario and are not empty-file-argument tests either.\n\nBecause the recorded failing-vs-buggy set for this patch is empty and none of the oracle tests assert REQ-1's stdout semantics (the only near-miss tests assert only the exit code, which is 32 on both programs), no oracle [HIDDEN] assertion qualifies as a Witness for REQ-1. Conclusion: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ-1] (pylint.lint.run.Run (CLI invocation with empty file list)): Invoking the pylint Run entry point with no file/package arguments (and with --version / pylint-config command handling not otherwise short-circuiting) prints the single line \"No files to lint: exiting.\" to stdout and exits with code 32, instead of printing the full linter help text. — not entailed by S_vis (REQ-1 concerns the no-file-arguments case printing 'No files to lint: exiting.' and exiting 32. Neither S_vis entry mentions an empty file list or any such message/exit code; R1 is about disabling all checks on a given file (pylint test.py --disable=all) and R2 is about enable/disable scoping. Nothing pins down the empty-file-list message/exit behavior.); confirmed by a synthesized witness: REQ-1 says that invoking the pylint Run entry point with no file/package arguments (and no --version / pylint-config short-circuit) must print the single line \"No files to lint: exiting.\" to stdout and exit with code 32, rather than dumping the full help text. The witness constructs the exact scenario: it calls Run([]) with sys.exit stubbed so it can capture both the thrown exit code (asserted == 32) and, by redirecting stdout to a StringIO, asserts the precise printed line equals \"No files to lint: exiting.\\n\". With no arguments there is no --version or pylint-config path, so this reaches the newly-changed branch in Run.__init__. The test PASSES on gold (which prints \"No files to lint: exiting.\" and sys.exit(32)) and FAILS on buggy (which sys.exit(32) too, but prints the full linter help text \"usage: pylint [options]...\"); the failure on buggy is at the last assertion, on the exact stdout text, proving the distinction. This stdout semantics is asserted by no visible oracle test: the only near-miss visible tests (test_error_missing_arguments, test_no_crash_with_formatting_regex_defaults in tests/test_self.py) check only the exit code, which equals 32 on both programs, so they cannot distinguish the two; my message-content assertion corresponds to a genuinely new/hidden oracle fact implementing REQ-1.",
+    "confidence": "Medium"
+  }
+}

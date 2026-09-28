@@ -1,0 +1,175 @@
+{
+  "task_id": "Lang-32",
+  "status": "ok",
+  "duration_seconds": 213.83465488799993,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "Lang-32",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "HashCodeBuilder.getRegistry() returns null once a top-level reflection-based hashCode computation (e.g. via HashCodeBuilder.reflectionHashCode/hashCode()) has fully completed, so that no thread-local registry value is retained after reflection finishes (no memory leak on thread/container reuse) and the next reflection traversal starts from a clean, empty registry.",
+        "subject": "org.apache.commons.lang3.builder.HashCodeBuilder.REGISTRY / getRegistry() lifecycle",
+        "hunk_ids": [],
+        "cited_from": "testReflectionObjectCycle() body: \"a.hashCode();\\nassertNull(HashCodeBuilder.getRegistry());\\nb.hashCode();\\nassertNull(HashCodeBuilder.getRegistry());\" — contrasted with the current field \"private static final ThreadLocal<Set<IDKey>> REGISTRY = new ThreadLocal<Set<IDKey>>() {\\n    @Override\\n    protected Set<IDKey> initialValue() {\\n        return new HashSet<IDKey>();\\n    }\\n};\" whose stored Set is only emptied (never removed) by register/unregister."
+      },
+      {
+        "id": "R2",
+        "statement": "Computing a reflection-based hashCode over object graphs that cyclically reference one another (e.g. ReflectionTestCycleA <-> ReflectionTestCycleB) must terminate and complete normally without overflowing the stack or throwing.",
+        "subject": "org.apache.commons.lang3.builder.HashCodeBuilder.reflectionHashCode",
+        "hunk_ids": [],
+        "cited_from": "testReflectionObjectCycle(): \"a.hashCode();\" and its preceding comment \"Used to caused: java.lang.StackOverflowError ... at org.apache.commons.lang.builder.HashCodeBuilder.reflectionAppend(HashCodeBuilder.java:373)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On a thread on which no reflection hashing is in progress, HashCodeBuilder.getRegistry() returns null rather than returning an empty non-null Set — in particular it is null before any object has ever been registered on that thread (the ThreadLocal no longer auto-initializes a HashSet).",
+        "subject": "HashCodeBuilder.getRegistry()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "After every object registered on the current thread has been correspondingly unregistered (the tracked set becoming empty), the per-thread registry is discarded: HashCodeBuilder.getRegistry() returns null rather than retaining an empty Set, so repeated register/unregister reflection cycles leave no stale ThreadLocal value behind.",
+        "subject": "HashCodeBuilder registration lifecycle (register/unregister/getRegistry)",
+        "hunk_ids": [
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "HashCodeBuilder.register(Object) works even when invoked on a thread whose registry is currently null (i.e., before any registration or after a prior cleanup): it lazily brings a set into existence and adds the object so that a subsequent isRegistered(value) call for the same object returns true.",
+        "subject": "HashCodeBuilder.register(Object)",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "HashCodeBuilder.isRegistered(Object) returns false rather than throwing a NullPointerException when invoked on a thread that has no active registry (nothing currently registered).",
+        "subject": "HashCodeBuilder.isRegistered(Object)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R5",
+        "statement": "HashCodeBuilder.unregister(Object) is a harmless no-op (does not throw) when invoked on a thread whose registry is null; it only attempts removal when a registry actually exists, and after that removal leaves the registry null again if it became empty.",
+        "subject": "HashCodeBuilder.unregister(Object)",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's visible evidence (assertNull(HashCodeBuilder.getRegistry()) after reflection, contrasted with the auto-initializing ThreadLocal field) directly pins that getRegistry() returns null rather than an auto-initialized empty set, even before anything is registered."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 pins that no registry is retained after a reflection hashCode completes, but does not establish the specific mechanism/discard-point — that the registry is removed exactly when the tracked set becomes empty during unregister rather than via cleanup after reflection."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Cycle traversal succeeding (S_vis R2) is plausibly consistent with register lazily creating a set, and S_vis R1 shows a null registry state, but neither visibly pins that register() itself lazily resurrects a set and makes subsequent isRegistered() return true."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis does not visibly document isRegistered() returning false rather than throwing NPE on a thread with no registry; the cycle test implies null-safety somewhere but not the specific behavior of this method."
+      },
+      {
+        "requirement_id": "R5",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis shows the overall registry ends null, but does not pin that unregister() is a null-safe no-op and leaves the registry null on empty; that unregister-specific contract is not evidenced in the cited artifacts."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I genuinely attempted and repeatedly confirmed (run_test against both gold and buggy, several times each, stable results) a discriminating test that maps exactly to requirement R2 (register/unregister lifecycle; the per-thread registry must be discarded — getRegistry() returns null — once the last registered object is unregistered, with no stale empty Set retained across repeated cycles). The test drives the package-private static register/unregister/getRegistry methods through Java reflection (reachable from the harness's default package) and asserts null-after-register/null-before-cycle/non-null-while-registered/null-after-each-cycle. Result: gold PASSED, buggy FAILED (buggy's unregister never removes the REGISTRY ThreadLocal; it merely empties the Set, leaving getRegistry() non-null — precisely the defect R2 targets). This is a genuine, execution-confirmed gold-pass/buggy-fail discriminator for R2.\n\nHowever, per the Witness rules it does NOT qualify as a genuine hidden Witness. The oracle's only R2 regression test (testReflectionObjectCycle in the [VISIBLE] HashCodeBuilderTest) already asserts the identical observable property — assertNull(HashCodeBuilder.getRegistry()) after a register/unregister reflection cycle — and every visible file (the [VISIBLE] HashCodeBuilder.java source, the fix diff, and HashCodeBuilderTest) together pins down this exact lifecycle behavior. My candidate, although reached through a different mechanism (direct register/unregister invocation + explicit repeated-cycle emphasis, rather than a.hashCode() reflection indirection), restates the same already-visible assertion in different words, so a repair system already having seen the visible test would find nothing hidden here — the honest finding is found=false. (I still report the concrete candidate + its confirmed gold/buggy results for completeness.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two visible files: src/main/java/org/apache/commons/lang3/builder/HashCodeBuilder.java and src/test/java/org/apache/commons/lang3/builder/HashCodeBuilderTest.java. The bug title names ToStringStyle too, but no ToStringStyle source or test is visible, so no ToStringStyle behavior is derivable from this material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HashCodeBuilder.REGISTRY is a static ThreadLocal<Set<IDKey>> whose initialValue returns a fresh empty HashSet; the per-thread Set is only emptied via register/unregister and is never remove()d from the ThreadLocal — the object of the reported leak."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getRegistry()/isRegistered()/register()/unregister() are package-private static methods, and HashCodeBuilderTest lives in the same package org.apache.commons.lang3.builder (JUnit3, extends junit.framework.TestCase)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testReflectionObjectCycle is the primary regression test: after reflectionHashCode via .hashCode() completes, assertNull(HashCodeBuilder.getRegistry()) — a behaviour the current visible code (returns an empty non-null Set) would fail."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getRegistry/isRegistered/register/unregister are package-private static methods on HashCodeBuilder, and REGISTRY is a private static ThreadLocal<Set<IDKey>>."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "register lazy-creates the per-thread HashSet inside a block synchronized on HashCodeBuilder.class; unregister's removal and conditional REGISTRY.remove() (when the set becomes empty) are similarly synchronized."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change makes the per-thread registry value lifecycle explicit: it exists only while at least one object is currently being reflected, entering null state both before first registration and after the last unregister."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Concurrency-wise the ThreadLocal is inherently per-thread, so the synchronized-guard only affects the (re)lazy-initialization of a given thread's set."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: The oracle's test corpus contains exactly two files. The immediately-failing test for R2 is testReflectionObjectCycle in HashCodeBuilderTest, which after a.hashCode()/b.hashCode() asserts assertNull(HashCodeBuilder.getRegistry()) — that genuinely tests the R2 registry-lifecycle behavior (registry discarded when the tracked set empties — no stale ThreadLocal Set left behind). However, HashCodeBuilderTest is labeled [VISIBLE], so its assertions rest on content a repair system already saw and can never qualify as a Witness.\n\nThe only other file, HashCodeBuilderAndEqualsBuilderTest, is [HIDDEN] but does not test the registry lifecycle at all: it only asserts the equals/hashCode contract (equal objects must have equal reflection hash codes) via repeated reflectionHashCode calls and never inspects getRegistry()/register()/unregister() or the ThreadLocal lifecycle. Looping reflectionHashCode without asserting on registry state would not even fail on the buggy code (it would pass with a non-null empty Set left behind), so it cannot be a witness for R2.\n\nI examined every file the oracle contains; the sole R2 test is in [VISIBLE] content, so no [HIDDEN] assertion enforces this behavior. Result: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: I genuinely attempted and repeatedly confirmed (run_test against both gold and buggy, several times each, stable results) a discriminating test that maps exactly to requirement R2 (register/unregister lifecycle; the per-thread registry must be discarded — getRegistry() returns null — once the last registered object is unregistered, with no stale empty Set retained across repeated cycles). The test drives the package-private static register/unregister/getRegistry methods through Java reflection (reachable from the harness's default package) and asserts null-after-register/null-before-cycle/non-null-while-registered/null-after-each-cycle. Result: gold PASSED, buggy FAILED (buggy's unregister never removes the REGISTRY ThreadLocal; it merely empties the Set, leaving getRegistry() non-null — precisely the defect R2 targets). This is a genuine, execution-confirmed gold-pass/buggy-fail discriminator for R2.\n\nHowever, per the Witness rules it does NOT qualify as a genuine hidden Witness. The oracle's only R2 regression test (testReflectionObjectCycle in the [VISIBLE] HashCodeBuilderTest) already asserts the identical observable property — assertNull(HashCodeBuilder.getRegistry()) after a register/unregister reflection cycle — and every visible file (the [VISIBLE] HashCodeBuilder.java source, the fix diff, and HashCodeBuilderTest) together pins down this exact lifecycle behavior. My candidate, although reached through a different mechanism (direct register/unregister invocation + explicit repeated-cycle emphasis, rather than a.hashCode() reflection indirection), restates the same already-visible assertion in different words, so a repair system already having seen the visible test would find nothing hidden here — the honest finding is found=false. (I still report the concrete candidate + its confirmed gold/buggy results for completeness.)"
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (HashCodeBuilder registration lifecycle (register/unregister/getRegistry)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I genuinely attempted and repeatedly confirmed (run_test against both gold and buggy, several times each, stable results) a discriminating test that maps exactly to requirement R2 (register/unregister lifecycle; the per-thread registry must be discarded — getRegistry() returns null — once the last registered object is unregistered, with no stale empty Set retained across repeated cycles). The test drives the package-private static register/unregister/getRegistry methods through Java reflection (reachable from the harness's default package) and asserts null-after-register/null-before-cycle/non-null-while-registered/null-after-each-cycle. Result: gold PASSED, buggy FAILED (buggy's unregister never removes the REGISTRY ThreadLocal; it merely empties the Set, leaving getRegistry() non-null — precisely the defect R2 targets). This is a genuine, execution-confirmed gold-pass/buggy-fail discriminator for R2.\n\nHowever, per the Witness rules it does NOT qualify as a genuine hidden Witness. The oracle's only R2 regression test (testReflectionObjectCycle in the [VISIBLE] HashCodeBuilderTest) already asserts the identical observable property — assertNull(HashCodeBuilder.getRegistry()) after a register/unregister reflection cycle — and every visible file (the [VISIBLE] HashCodeBuilder.java source, the fix diff, and HashCodeBuilderTest) together pins down this exact lifecycle behavior. My candidate, although reached through a different mechanism (direct register/unregister invocation + explicit repeated-cycle emphasis, rather than a.hashCode() reflection indirection), restates the same already-visible assertion in different words, so a repair system already having seen the visible test would find nothing hidden here — the honest finding is found=false. (I still report the concrete candidate + its confirmed gold/buggy results for completeness.)",
+    "confidence": "Medium"
+  }
+}

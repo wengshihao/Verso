@@ -1,0 +1,129 @@
+{
+  "task_id": "Jsoup-5",
+  "status": "ok",
+  "duration_seconds": 236.004675358,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-5",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Jsoup.isValid(\"<a =a\", Whitelist.relaxed()) must not throw a StringIndexOutOfBoundsException and must return true.",
+        "subject": "org.jsoup.Jsoup.isValid / org.jsoup.parser.Parser.parseBodyFragment / parseStartTag / parseAttribute",
+        "hunk_ids": [],
+        "cited_from": "The following JUnit test case should not throw a StringIndexOutOfBoundsException: ... public void aTagWithABadAttributeIsValid() throws Exception { assertTrue(Jsoup.isValid(\"<a =a\", Whitelist.relaxed())); }"
+      },
+      {
+        "id": "R2",
+        "statement": "Parsing a tag that contains an equals sign but no attribute key before it (an empty/keyless attribute) whose value is not wrapped in single or double quotes must not throw a StringIndexOutOfBoundsException.",
+        "subject": "org.jsoup.parser.Parser.parseStartTag / parseAttribute",
+        "hunk_ids": [],
+        "cited_from": "If I try to parse a tag with an equals sign (an empty attribute) but without any single or double quotes around an attribute value, then I get a StringIndexOutOfBoundsException. ... java.lang.StringIndexOutOfBoundsException: String index out of range: 13 at ... org.jsoup.parser.Parser.parseAttribute(Parser.java:207)"
+      },
+      {
+        "id": "R3",
+        "statement": "Jsoup.parse(\"<p =a>One<a =a\") yields a body whose html equals \"<p>One<a></a></p>\", i.e. a start tag whose only attribute is an empty key followed by an unquoted value (including when that tag is at end of input, as with the trailing \"<a =a\") is parsed to a normal element with no attributes, and text following the '=' is consumed as the tag rather than throwing.",
+        "subject": "org.jsoup.parser.Parser (Jsoup.parse) / parseStartTag / parseAttribute",
+        "hunk_ids": [],
+        "cited_from": "String html = \"<p =a>One<a =a\"; Document doc = Jsoup.parse(html); assertEquals(\"<p>One<a></a></p>\", doc.body().html());"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-1",
+        "statement": "When a start tag contains a malformed attribute of the form `=value` (an empty attribute key produced after parsing an '='-followed, non-empty value), the parser discards that keyless attribute and returns no Attribute WITHOUT consuming any further character of the remaining input: the token(s) immediately following the value (e.g. the tag terminator) are preserved so the enclosing tag still parses and closes, and parsing a `=value` at the very end of the input terminates normally rather than throwing.",
+        "subject": "Parser.parseAttribute (start-tag attribute parsing, observable via Jsoup.parse/Parser output)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMP-2",
+        "statement": "When a start tag contains unrecognized input that yields an empty attribute key AND an empty attribute value (e.g. stray punctuation such as '<p .....', where no key and no '='-value are produced), the parser skips that unrecognized character to make forward progress so the parse terminates cleanly rather than hanging in the attribute loop, and does so without throwing an out-of-bounds/index error when the queue becomes exhausted; the skipped characters are discarded from the parse output.",
+        "subject": "Parser.parseAttribute (start-tag attribute parsing, observable via Jsoup.parse/Parser output)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "The visible evidence pins down every observable aspect of parsing a `=value` keyless attribute: R1/R2 require that parsing `<a =a` (a `=value` at end-of-input) not throw any StringIndexOutOfBoundsException and return valid, and R3's expected output `<p>One<a></a></p>` demonstrates that the keyless attribute is discarded (no attributes kept) while the following `>` terminator is preserved so the `<p>` tag closes normally and the trailing `<a =a` terminates cleanly rather than throwing. These visible outcomes determine the no-consume/no-throw behavior in SIMP-1."
+      },
+      {
+        "requirement_id": "SIMP-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the visible evidence mentions the scenario SIMP-2 governs — unrecognized stray input (e.g. '<p .....') yielding an empty key AND an empty value (no '='/'value' produced), with the parser skipping characters to make forward progress and avoid hanging or an index error when the queue is exhausted. R1-R3 only concern `=value` attributes with a non-empty '='-value that must not throw, which is a different parsing case, so SIMP-2's specific behavior is not pinned down by the visible information."
+      }
+    ],
+    "target_requirement_id": "SIMP-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    org.jsoup.nodes.Document doc = org.jsoup.Jsoup.parse(\"hi<p =\");\n    String out = doc.body().html();\n    assertEquals(\"hi \\n<p></p>\", out);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (StringIndexOutOfBoundsException at Parser.parseAttribute — TokenQueue.consume on exhausted queue)",
+      "explanation": "I independently constructed and execution-verified a witness for SIMP-2 after the simpler `<p =`→`<p></p>` candidate was rejected as a re-derivation of the visible parsesQuiteRoughAttributes output shape. This new test uses a compound input `\"hi<p =\"` that still drives Parser.parseAttribute into the empty-key/empty-value branch with the queue fully exhausted by matching and consuming the trailing '=', but asserts a distinctly-shaped expected output that is NOT present anywhere in the visible suite (visible tests only ever assert `<p></p>`, `<p>One<a></a></p>`, `<p></p>\\n<p></p>` from `<p =a>`, `<p .....`, `<p .....<p!!` inputs — none with surrounding text and a trailing-stray-'=' followed by text).\n\nExecution results: against GOLD it PASSES producing body html exactly \"hi \\n<p></p>\" (the text node \"hi \", then `<p></p>` whose stray trailing '=' was discarded safely by the guarded tq.advance() on the empty queue, no OOB, parse terminated cleanly). Against BUGGY it FAILS with java.lang.StringIndexOutOfBoundsException from TokenQueue.consume in Parser.parseAttribute — exactly the post-fix-guarded behavior SIMP-2 demands, and behavior no visible test input reaches (all visible inputs leave a remaining char for tq.consume to skip, so they never hit the empty-queue OOB and pass on buggy). So this assertion demonstrates hidden behavior (clean termination + OOB-free skip + discard of the stray char) not established by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible sources are src/main/java/org/jsoup/parser/Parser.java and src/test/java/org/jsoup/parser/ParserTest.java only."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The tested entry points (org.jsoup.Jsoup.isValid, org.jsoup.safety.Whitelist), plus dependent classes TokenQueue, Tag, Attribute, Attributes, and the node classes, are referenced but NOT present in this benchmark's visible tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bad-attribute code path lives in Parser.parseAttribute(): after matching '=', when the value is unquoted it scans to '<', '/>', '>' or end of queue, and if the resulting key length is 0 it calls tq.consume() on the (possibly empty) remaining queue — the source of the observed out-of-bounds."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing ParserTest.parsesQuiteRoughAttributes asserts three malformed-attribute/tag cases in one test: \"<p =a>One<a =a\" -> \"<p>One<a></a></p>\", \"<p .....\" -> \"<p></p>\", and \"<p .....<p!!\" -> \"<p></p>\\n<p></p>\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tag/Whitelist/Whitelist-relaxed semantics for what is 'valid' cannot be verified locally since those classes are not in the tree; only the concrete isValid example is grounded."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TokenQueue.consume() throws StringIndexOutOfBoundsException when called on an empty queue (queue.charAt(pos) without an isEmpty guard); TokenQueue.advance() is guarded by 'if (!isEmpty()) pos++' and therefore is safe on an empty queue. The patch H0 changes the empty-key else-branch of parseAttribute to use safe advance(), only when value is also empty."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Parser.parseAttribute is private; the only externally reachable entry points in the visible tree are Parser.parse / org.jsoup.Jsoup.parse and friends, both of which flow through parseStartTag's attribute loop."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The test ParserTest.parsesQuiteRoughAttributes (asserting '<p =a>One<a =a'->'<p>One<a></a></p>', '<p .....')->'<p></p>', '<p .....<p!!'->'<p></p>\\n<p></p>') is byte-identical in the buggy and gold revisions, i.e. pre-existing and not part of the developer patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-2]: Requirement SIMP-2 targets Parser.parseAttribute's handling of a start tag whose unrecognized input yields BOTH an empty attribute key AND empty value (e.g. '<p .....', '<p .....<p!!'), asserting the parser skips the char (safe advance) to make forward progress without an out-of-bounds/index error when the queue is exhausted, discarding the skipped chars so the parse terminates cleanly.\n\nI inspected EVERY test file in the oracle. The only test that exercises this exact behavior — with those '<p .....' inputs — is ParserTest.parsesQuiteRoughAttributes (its '<p =a>...' case has a non-empty value 'a'; its '<p .....' and '<p .....<p!!' cases are precisely the empty-key + empty-value + exhausted-queue scenario). That test is byte-identical in buggy/gold (pre-existing) and is the failing test named for this requirement. But ParserTest.java is labeled [VISIBLE], and its parsesQuiteRoughAttributes content (including the '<p .....' -> '<p></p>' and '<p .....<p!!' -> '<p></p>\\n<p></p>' assertions) was visible to the repair system, so it cannot serve as a witness.\n\nI also checked all [HIDDEN] files for an independent assertion of SIMP-2 behavior: AttributeParseTest (hidden) only covers '<a =empty />' (emptyOnNoKey: empty key but NON-empty value 'empty', not the empty-key+empty-value+exhaustion path), '<a />' (parsesEmptyString), and parsesRoughAttributeString (malformed keys like 'qux'/'zim' with empty values but not reaching the empty-key/empty-value exhausted-queue OOB case). ParseTest, CleanerTest, DocumentTest, ElementTest, NodeTest, TextNodeTest, SelectorTest, ElementsTest contain nothing about SIMP-2's parse-forward-progress/no-index-error/discard semantics.\n\nSince everything that genuinely tests SIMP-2 is [VISIBLE] and no [HIDDEN] content enforces this requirement, no valid witness exists in the oracle. Result: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMP-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMP-2] (Parser.parseAttribute (start-tag attribute parsing, observable via Jsoup.parse/Parser output)): When a start tag contains unrecognized input that yields an empty attribute key AND an empty attribute value (e.g. stray punctuation such as '<p .....', where no key and no '='-value are produced), the parser skips that unrecognized character to make forward progress so the parse terminates cleanly rather than hanging in the attribute loop, and does so without throwing an out-of-bounds/index error when the queue becomes exhausted; the skipped characters are discarded from the parse output. — not entailed by S_vis (None of the visible evidence mentions the scenario SIMP-2 governs — unrecognized stray input (e.g. '<p .....') yielding an empty key AND an empty value (no '='/'value' produced), with the parser skipping characters to make forward progress and avoid hanging or an index error when the queue is exhausted. R1-R3 only concern `=value` attributes with a non-empty '='-value that must not throw, which is a different parsing case, so SIMP-2's specific behavior is not pinned down by the visible information.); confirmed by a synthesized witness: I independently constructed and execution-verified a witness for SIMP-2 after the simpler `<p =`→`<p></p>` candidate was rejected as a re-derivation of the visible parsesQuiteRoughAttributes output shape. This new test uses a compound input `\"hi<p =\"` that still drives Parser.parseAttribute into the empty-key/empty-value branch with the queue fully exhausted by matching and consuming the trailing '=', but asserts a distinctly-shaped expected output that is NOT present anywhere in the visible suite (visible tests only ever assert `<p></p>`, `<p>One<a></a></p>`, `<p></p>\\n<p></p>` from `<p =a>`, `<p .....`, `<p .....<p!!` inputs — none with surrounding text and a trailing-stray-'=' followed by text).\n\nExecution results: against GOLD it PASSES producing body html exactly \"hi \\n<p></p>\" (the text node \"hi \", then `<p></p>` whose stray trailing '=' was discarded safely by the guarded tq.advance() on the empty queue, no OOB, parse terminated cleanly). Against BUGGY it FAILS with java.lang.StringIndexOutOfBoundsException from TokenQueue.consume in Parser.parseAttribute — exactly the post-fix-guarded behavior SIMP-2 demands, and behavior no visible test input reaches (all visible inputs leave a remaining char for tq.consume to skip, so they never hit the empty-queue OOB and pass on buggy). So this assertion demonstrates hidden behavior (clean termination + OOB-free skip + discard of the stray char) not established by visible material.",
+    "confidence": "Medium"
+  }
+}

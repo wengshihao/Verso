@@ -1,0 +1,116 @@
+{
+  "task_id": "Math-8",
+  "status": "ok",
+  "duration_seconds": 191.54641787800028,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "Math-8",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "When the distribution's first singleton is of a strict subtype (e.g. an anonymous `new Object() {}` subclass) while elements that `sample()` actually returns are of a broader runtime type (e.g. plain `Object`, a different class not assignable to the first singleton's class), `sample(int sampleSize)` must complete without throwing `ArrayStoreException` (or any exception), returning the sample array — i.e. the result array's component type must not be fixed solely to `singletons.get(0).getClass()` in a way that rejects later returned values. In the reported reproducer this means `new DiscreteDistribution<Object>(list).sample(1)` succeeds and, per the test, returns an array of length 1.",
+        "subject": "DiscreteDistribution.sample(int)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Creating an array with {{Array.newInstance(singletons.get(0).getClass(), sampleSize)}} in DiscreteDistribution.sample(int) is risky. An exception will be thrown if: * {{singleons.get(0)}} is of type T1, an sub-class of T, and * {{DiscreteDistribution.sample()}} returns an object which is of type T, but not of type T1.\" plus reproduction code; Test testIssue942: \"List<Pair<Object,Double>> list = new ArrayList<Pair<Object, Double>>();\nlist.add(new Pair<Object, Double>(new Object() {}, new Double(0)));\nlist.add(new Pair<Object, Double>(new Object() {}, new Double(1)));\nAssert.assertEquals(1, new DiscreteDistribution<Object>(list).sample(1).length);\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "`DiscreteDistribution.sample(int sampleSize)` must throw `NotStrictlyPositiveException` when `sampleSize <= 0` (a visible precondition of the method documented as '@throws NotStrictlyPositiveException if {@code sampleSize} is not positive' and enforced in the current code).",
+        "subject": "DiscreteDistribution.sample(int)",
+        "hunk_ids": [],
+        "cited_from": "Source: \"public T[] sample(int sampleSize) throws NotStrictlyPositiveException {\n    if (sampleSize <= 0) {\n        throw new NotStrictlyPositiveException(LocalizedFormats.NUMBER_OF_SAMPLES,\n                sampleSize);\n    }\n\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "DiscreteDistribution.sample(int sampleSize) is declared to return Object[] (its erasure is Object[]), so the multi-sample result is always returned as a plain Object-array regardless of the type argument T.",
+        "subject": "org.apache.commons.math3.distribution.DiscreteDistribution.sample(int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Calling sample(int) allocates the result array with runtime component type Object (not the runtime class of the first defined sample value), so the call completes and yields the sampled values even when a drawn element has a different runtime class than the first element of the distribution definition (i.e. no ArrayStoreException is thrown for such distributions).",
+        "subject": "org.apache.commons.math3.distribution.DiscreteDistribution.sample(int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-1 pins that the result array's component type must not be fixed solely to the first singleton's class so no ArrayStoreException occurs, which points in the same direction as R1. But R1's specific claim that the method is declared to return Object[] / 'always a plain Object-array regardless of T' is a declaration/erasure design statement not explicitly stated in the visible issue or S_vis."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-1 exactly pins R2's behavioral content: sample(int) must complete without throwing ArrayStoreException and the array's runtime component type must not be the first defined sample value's class, even when a drawn element has a different runtime class. REQ-2 concerns an unrelated precondition (non-positive sampleSize)."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    java.util.List<org.apache.commons.math3.util.Pair<Object,Double>> samples =\n        new java.util.ArrayList<org.apache.commons.math3.util.Pair<Object,Double>>();\n    samples.add(new org.apache.commons.math3.util.Pair<Object,Double>(null, Double.valueOf(1.0)));\n    org.apache.commons.math3.distribution.DiscreteDistribution<Object> d =\n        new org.apache.commons.math3.distribution.DiscreteDistribution<Object>(samples);\n    Object[] out = d.sample(4);\n    org.junit.Assert.assertEquals(4, out.length);\n    org.junit.Assert.assertEquals(Object.class, out.getClass().getComponentType());\n    for (Object o : out) { org.junit.Assert.assertNull(o); }\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (java.lang.NullPointerException at DiscreteDistribution.sample line 187 — buggy calls singletons.get(0).getClass() on a null first singleton)",
+      "explanation": "The requirement R1 is that DiscreteDistribution.sample(int) always returns a plain Object[] (its erasure) regardless of T, instead of (as in the buggy revision) building a T[] reflecting off the runtime class of singletons.get(0). The only behavioral surface of this fix is how the result array is constructed; the exclusively visible test (testIssue942 in DiscreteRealDistributionTest.java) already pins the scenario where the first singleton is a non-null object whose runtime type differs from subsequently drawn values (which in buggy triggers ArrayStoreException). That scenario is thereby already disclosed, so a witness must use a genuinely different input to be informative/un-pinned-down. I crafted a distinct input: a distribution whose first (and only) singleton is null. In the buggy revision sample(int) immediately dereferences singletons.get(0).getClass(), causing a NullPointerException (confirmed: FAILED on buggy with NPE at DiscreteDistribution.sample:187). The gold revision instead allocates new Object[sampleSize], samples null into each slot, and returns a plain Object[] whose component type is Object.class (confirmed: PASSED on gold, length 4, component type Object, all-null entries). This demonstrates the Object[] erasure semantics of R1 on an input the visible tests never exercise (no visible DiscreteDistribution test uses a null singleton). Both results were confirmed by actual run_test executions against the gold and buggy programs."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test file is located at src/test/java/org/apache/commons/math3/distribution/DiscreteRealDistributionTest.java and, despite its name, contains the method testIssue942 which constructs a `DiscreteDistribution<Object>` (the generic class at src/main/java/org/apache/commons/math3/distribution/DiscreteDistribution.java, package org.apache.commons.math3.distribution) and exercises the bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testIssue942 uses weights: first pair `new Object(){}/0.0`, second pair `new Object()/1.0`, so only the plain Object has nonzero probability and therefore `sample()` deterministically returns a plain Object whose runtime class differs from the anonymous first singleton."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DiscreteDistribution has no dedicated test file in the visible set; the only disclosed exercise of it is testIssue942 in DiscreteRealDistributionTest. Constructor validation (NotPositiveException, MathArithmeticException, MathIllegalArgumentException) and behavior in DiscreteRealDistribution live in classes not shown here (only DiscreteRealDistribution's own tests are visible)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The source file was normalized (SVN keyword `$Id$` replaced) but semantics unchanged."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DiscreteDistribution's probability/getSamples/reseedRandomGenerator/sample() methods are not implicated by the issue and have no disclosed behavioral tests in this benchmark."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy revision built the sample array via java.lang.reflect.Array.newInstance(singletons.get(0).getClass(), sampleSize) and returned T[]; gold revision returns Object[] allocated with new Object[sampleSize]. Issue scenario: a distribution whose first (weight-zero) sample has an anonymous runtime class while the drawn value is a plain Object — assignment into the anonymously-typed array would throw ArrayStoreException in the buggy revision."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The rest of sample(int)'s body (NotStrictlyPositiveException for sampleSize<=0, and filling each slot with sample()) is unchanged by the patch; those behaviors are not part of this patch's change surface."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns DiscreteDistribution.sample(int) returning a plain Object[] array (its declared/erased return type) regardless of T, whereas the buggy revision built a T[] via reflection on the first singleton's class (causing ArrayStoreException when a differently-typed value is drawn).\n\nThe only test in the real oracle that exercises this DiscreteDistribution.sample(int) behavior is testIssue942 in DiscreteRealDistributionTest.java. I confirmed by running its logic that it FAILS against buggy (ArrayStoreException at DiscreteDistribution.sample line 190) and PASSES against gold, so it does genuinely test the R1 behavior. HOWEVER, DiscreteRealDistributionTest.java is labeled [VISIBLE] — its content was already visible to the repair system — so it can never serve as a Witness per the rules.\n\nThe only [HIDDEN] oracle file, DiscreteIntegerDistributionTest.java, tests the concrete DiscreteIntegerDistribution class and its sample(int) returning int[]; it does not exercise the generic DiscreteDistribution.sample(int) return-type/erasure behavior at all, and its sample tests would not distinguish buggy from gold for a Object[]/T[] distinction.\n\nI checked every test file in the oracle. No [HIDDEN] assertion tests R1; everything relevant to R1 lives in [VISIBLE] content, so no genuine witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (org.apache.commons.math3.distribution.DiscreteDistribution.sample(int)): DiscreteDistribution.sample(int sampleSize) is declared to return Object[] (its erasure is Object[]), so the multi-sample result is always returned as a plain Object-array regardless of the type argument T. — not entailed by S_vis (REQ-1 pins that the result array's component type must not be fixed solely to the first singleton's class so no ArrayStoreException occurs, which points in the same direction as R1. But R1's specific claim that the method is declared to return Object[] / 'always a plain Object-array regardless of T' is a declaration/erasure design statement not explicitly stated in the visible issue or S_vis.); confirmed by a synthesized witness: The requirement R1 is that DiscreteDistribution.sample(int) always returns a plain Object[] (its erasure) regardless of T, instead of (as in the buggy revision) building a T[] reflecting off the runtime class of singletons.get(0). The only behavioral surface of this fix is how the result array is constructed; the exclusively visible test (testIssue942 in DiscreteRealDistributionTest.java) already pins the scenario where the first singleton is a non-null object whose runtime type differs from subsequently drawn values (which in buggy triggers ArrayStoreException). That scenario is thereby already disclosed, so a witness must use a genuinely different input to be informative/un-pinned-down. I crafted a distinct input: a distribution whose first (and only) singleton is null. In the buggy revision sample(int) immediately dereferences singletons.get(0).getClass(), causing a NullPointerException (confirmed: FAILED on buggy with NPE at DiscreteDistribution.sample:187). The gold revision instead allocates new Object[sampleSize], samples null into each slot, and returns a plain Object[] whose component type is Object.class (confirmed: PASSED on gold, length 4, component type Object, all-null entries). This demonstrates the Object[] erasure semantics of R1 on an input the visible tests never exercise (no visible DiscreteDistribution test uses a null singleton). Both results were confirmed by actual run_test executions against the gold and buggy programs.",
+    "confidence": "Medium"
+  }
+}

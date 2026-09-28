@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-14447",
+  "status": "ok",
+  "duration_seconds": 634.7909908749862,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14447",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The database cache backend must cull expired cache entries (rows whose expires column precedes the current time) on each cache-writing operation, so a set/add/touch does not leave expired rows behind.",
+        "subject": "django.core.cache.backends.db.DatabaseCache",
+        "hunk_ids": [],
+        "cited_from": "docs/topics/cache.txt: \"the database cache does not support automatic culling of expired entries at the database level. Instead, expired cache entries are culled each time ``add()``, ``set()``, or ``touch()`` is called.\" AND django/core/cache/backends/db.py `_base_set`/`_cull`: \"cursor.execute('DELETE FROM %s WHERE expires < %%s' % table, [connection.ops.adapt_datetimefield_value(now)])\""
+      },
+      {
+        "id": "R2",
+        "statement": "When a DB cache instance has nothing else configured beyond OPTIONS={'MAX_ENTRIES': 30} (so CULL_FREQUENCY defaults to 3), after one sets keys 'cull1'..'cull49' each with a 1000-second timeout through a loop that overflows the cache and triggers culling, the backend must leave exactly 29 of those keys present (as reported by has_key).",
+        "subject": "django.core.cache.backends.db.DatabaseCache._cull",
+        "hunk_ids": [],
+        "cited_from": "_caches_setting_base 'cull': {'OPTIONS': {'MAX_ENTRIES': 30}}; BaseCacheTests.test_cull: `self._perform_cull_test('cull', 50, 29)`; and _perform_cull_test body: \"for i in range(1, initial_count): cull_cache.set('cull%d' % i, 'value', 1000) ... self.assertEqual(count, final_count)\""
+      },
+      {
+        "id": "R3",
+        "statement": "When a DB cache is configured with OPTIONS={'CULL_FREQUENCY': 0, 'MAX_ENTRIES': 30} (CULL_FREQUENCY 0 meaning the whole cache is dumped when the limit is reached), after setting keys 'cull1'..'cull49' the same way, the backend must leave exactly 18 of those keys present.",
+        "subject": "django.core.cache.backends.db.DatabaseCache._cull",
+        "hunk_ids": [],
+        "cited_from": "_caches_setting_base 'zero_cull': {'OPTIONS': {'CULL_FREQUENCY': 0, 'MAX_ENTRIES': 30}}; DBCacheTests.test_zero_cull override: `self._perform_cull_test('zero_cull', 50, 18)` (contrast BaseCacheTests.test_zero_cull's 19); _perform_cull_test loop sets each key with timeout 1000 and counts remaining via has_key."
+      },
+      {
+        "id": "R4",
+        "statement": "Forcing the cache's `_max_entries` to -1 (so that culling is triggered on the first stored record) must cause culling to delete the previously stored rows while still leaving the just-set record 'force_cull_delete' retrievable via has_key.",
+        "subject": "django.core.cache.backends.db.DatabaseCache",
+        "hunk_ids": [],
+        "cited_from": "DBCacheTests.test_cull_delete_when_store_empty: \"old_max_entries = cull_cache._max_entries; cull_cache._max_entries = -1; try: cull_cache.set('force_cull_delete', 'value', 1000); self.assertIs(cull_cache.has_key('force_cull_delete'), True)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMPL-1",
+        "statement": "For a DatabaseCache, when a write sets a value after the total row count in the cache table already exceeds _max_entries, culling first deletes the rows whose expires time is earlier than the current time, and the table's oldest remaining rows are additionally evicted only if the number of entries still present after that expiry purge exceeds _max_entries — so still-valid entries are not evicted merely because already-expired rows had pushed the total count above _max_entries.",
+        "subject": "DatabaseCache._base_set/_cull (expiry-purge-then-conditional key-cull threshold)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMPL-2",
+        "statement": "For a DatabaseCache configured with CULL_FREQUENCY=0, when the pre-existing total row count (before any purge) recorded at the start of the write exceeds _max_entries, the entire cache (all rows, across the whole table) is cleared rather than any partial/expiry-only removal being performed.",
+        "subject": "DatabaseCache._cull (CULL_FREQUENCY=0 full clear branch)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMPL-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "R1 documents expired rows being purged on each write (DELETE expires<now), supporting the purge-first component, but none of the visible tests use expired keys (R2/R3/R4 all set non-expired 1000s-timeout keys), so the distinctive claim that valid entries are evicted only if the post-expiry-purge count still exceeds max_entries is not pinned down."
+      },
+      {
+        "requirement_id": "SIMPL-2",
+        "entailed": "true",
+        "checked_ids": [
+          "R3",
+          "R1",
+          "R2",
+          "R4"
+        ],
+        "rationale": "R3 explicitly describes the CULL_FREQUENCY=0 configuration, notes this means the whole cache is dumped when the limit is reached, and provides a test (final count 18 after a refilling loop) consistent with full-table clears at overflow, which directly commits to SIMPL-2's full-clear behavior."
+      }
+    ],
+    "target_requirement_id": "SIMPL-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I read the full gold and buggy versions of django/core/cache/backends/db.py and the entire visible tests/cache/tests.py surface.\n\nAnalysis of the actual code change: this is a behavior-preserving performance refactor of DatabaseCache._cull. Buggy _cull performs `DELETE ... WHERE expires < now`, then issues a fresh `SELECT COUNT(*)` to recount the remaining rows and culls oldest rows only if that post-delete count exceeds _max_entries. Gold _cull performs the same DELETE, then computes `remaining_num = num - cursor.rowcount` where `num` is the row-count captured earlier in _base_set (before the delete) and `cursor.rowcount` is the number of rows the DELETE removed; it culls only if that `remaining_num` exceeds _max_entries. When cursor.rowcount accurately reflects deleted rows (which it does on all Django core RDBMS backends — SQLite/Postgres/MySQL/Oracle for DELETE statements), the gold value remaining_num is numerically identical to the actual post-delete count that the buggy version recounts. So in every single-threaded, real-backend scenario the two versions make identical decisions: both delete expired rows first, and both additionally cull oldest valid rows only if what remains after the expiry purge still exceeds _max_entries.\n\nThe target requirement r asks precisely for that semantics. But that semantics is ALREADY implemented identically in the buggy program (its recount after the purge plays the same role as gold's num - rowcount). Therefore no external-behavior test — including one constructing r's exact scenario (already-expired rows pushing the raw count above _max_entries while valid entries alone stay within the limit) — can fail on buggy while passing on gold. The only conceivable divergence point is cursor.rowcount itself being unreliable, which is an internal implementation mechanism of the core RDBMS backends, not an observable spec, and cannot be exercised through the public cache API against the real backends the test harness uses.\n\nThe visible tests (BaseCacheTests.test_cull/test_zero_cull, DBCacheTests.test_zero_cull, test_cull_delete_when_store_empty) all insert non-expiring entries and merely count surviving cull victims; none constructs r's scenario or asserts valid-entry survival past the expiry purge. Crucially, no test in the entire visible suite fails on the buggy program, consistent with the finding that this patch changes no externally observable behavior.\n\nI confirmed there is no oracle that discriminates: any test asserting r's semantics passes on both buggy and gold, and any test that could in principle distinguish them would have to assert on internal implementation mechanics (cursor.rowcount masking) that no real test could drive. Hence no genuine Witness exists."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant files: django/core/cache/backends/db.py (DatabaseCache._base_set and _cull are the code under concern), django/core/cache/backends/base.py (BaseCache defaults: _max_entries=300, _cull_frequency=3 via OPTIONS.MAX_ENTRIES/CULL_FREQUENCY), tests/cache/tests.py (DBCacheTests), docs/topics/cache.txt."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/cache/tests.py defines the DB test caches under `_caches_setting_base`: 'cull' = {MAX_ENTRIES:30} (CULL_FREQUENCY defaults to 3), 'zero_cull' = {CULL_FREQUENCY:0, MAX_ENTRIES:30} and applies them via @override_settings(CACHES=...) in DBCacheTests."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DBCacheTests lives in tests/cache/tests.py as `class DBCacheTests(BaseCacheTests, TransactionTestCase)` and extends BaseCacheTests but overrides test_zero_cull (18 remaining vs the inherited 19)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The current buggy _cull issues a second `SELECT COUNT(*)` after the expired-delete, then culls old rows by cache_key if count still exceeds _max_entries; the issue proposes (as 'no-brainer'/'simple win') passing the already-known pre-cull count into _cull and computing num = count - cursor.rowcount instead, stating the goal is a behavior-preserving performance refactor (no new external behavior is requested by the report itself)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report quotes the two query sites at GitHub lines ~120-131 and ~254-260, both of which are the pre-existing counts in _base_set and _cull."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Backend is aimed at the same CULL_FREQUENCY=0 branch through self.clear() (per docs: 'A value of 0 for CULL_FREQUENCY means that the entire cache will be dumped when MAX_ENTRIES is reached.'), and CULL_FREQUENCY describes fraction culled with actual ratio 1/CULL_FREQUENCY."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This is a behavior-preserving performance refactor of DatabaseCache._cull (django/core/cache/backends/db.py): it removes the redundant second `SELECT COUNT(*)` issued inside _cull after the expired-row DELETE, replacing it with the entry count `num` captured earlier in _base_set (H0/H1) minus `deleted_count = cursor.rowcount` from the DELETE (H2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_cull's signature changed from `_cull(self, db, cursor, now)` to `_cull(self, db, cursor, now, num)`; the only call site is in _base_set, so the new parameter is fully internal. The `_cull_frequency == 0` branch (full self.clear()) is unchanged by H2 and still executes whenever _base_set entered _cull (num > _max_entries)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new logic equates remaining rows as num minus the number of expired rows actually deleted by the DELETE; it relies on cursor.rowcount accuracy of the core RDBMS backends, though this is an implementation mechanism rather than an observable spec."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMPL-1]: Requirement [SIMPL-1] describes DatabaseCache _cull behavior: after a write pushes the cache row-count above _max_entries, expired rows are purged first, and valid/oldest rows are only additionally evicted if the count remaining AFTER the expiry purge still exceeds _max_entries (valid entries must not be evicted merely because expired rows had pushed the total count over the limit).\n\nI checked the entire relevant oracle surface. The only cache test file is tests/cache/tests.py, which I read fully and is labeled [VISIBLE] (content the repair system already saw — ineligible to serve as a witness). Its only cull-oriented tests are BaseCacheTests.test_cull / test_zero_cull / DBCacheTests.test_zero_cull (via _perform_cull_test) and test_cull_delete_when_store_empty; all insert entries with a long non-expiring timeout (1000) and merely count survivors of culling. None constructs the r scenario (already-expired rows pushing the total count above _max_entries while valid entries alone stay under the limit) nor asserts that valid entries survive the expiry purge.\n\nMoreover, the record states that no tests currently fail against the buggy program, and prior-stage analysis establishes that this patch is a behavior-preserving refactor (the redundant second SELECT COUNT(*) inside _cull is replaced with num - cursor.rowcount). Both buggy and gold already implement delete-expired-then-conditionally-cull-oldest semantics identically, so no test can differentiate them on this behavior. Since every necessary condition for a Witness fails (no hidden content, no test that fails on buggy and passes on gold, no test asserting precisely r's scenario), I conclude found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMPL-1]: I read the full gold and buggy versions of django/core/cache/backends/db.py and the entire visible tests/cache/tests.py surface.\n\nAnalysis of the actual code change: this is a behavior-preserving performance refactor of DatabaseCache._cull. Buggy _cull performs `DELETE ... WHERE expires < now`, then issues a fresh `SELECT COUNT(*)` to recount the remaining rows and culls oldest rows only if that post-delete count exceeds _max_entries. Gold _cull performs the same DELETE, then computes `remaining_num = num - cursor.rowcount` where `num` is the row-count captured earlier in _base_set (before the delete) and `cursor.rowcount` is the number of rows the DELETE removed; it culls only if that `remaining_num` exceeds _max_entries. When cursor.rowcount accurately reflects deleted rows (which it does on all Django core RDBMS backends — SQLite/Postgres/MySQL/Oracle for DELETE statements), the gold value remaining_num is numerically identical to the actual post-delete count that the buggy version recounts. So in every single-threaded, real-backend scenario the two versions make identical decisions: both delete expired rows first, and both additionally cull oldest valid rows only if what remains after the expiry purge still exceeds _max_entries.\n\nThe target requirement r asks precisely for that semantics. But that semantics is ALREADY implemented identically in the buggy program (its recount after the purge plays the same role as gold's num - rowcount). Therefore no external-behavior test — including one constructing r's exact scenario (already-expired rows pushing the raw count above _max_entries while valid entries alone stay within the limit) — can fail on buggy while passing on gold. The only conceivable divergence point is cursor.rowcount itself being unreliable, which is an internal implementation mechanism of the core RDBMS backends, not an observable spec, and cannot be exercised through the public cache API against the real backends the test harness uses.\n\nThe visible tests (BaseCacheTests.test_cull/test_zero_cull, DBCacheTests.test_zero_cull, test_cull_delete_when_store_empty) all insert non-expiring entries and merely count surviving cull victims; none constructs r's scenario or asserts valid-entry survival past the expiry purge. Crucially, no test in the entire visible suite fails on the buggy program, consistent with the finding that this patch changes no externally observable behavior.\n\nI confirmed there is no oracle that discriminates: any test asserting r's semantics passes on both buggy and gold, and any test that could in principle distinguish them would have to assert on internal implementation mechanics (cursor.rowcount masking) that no real test could drive. Hence no genuine Witness exists."
+      }
+    ],
+    "verdict": "INCONCLUSIVE",
+    "rationale": "[SIMPL-1] (DatabaseCache._base_set/_cull (expiry-purge-then-conditional key-cull threshold)) was flagged as uncertain by S_vis, Oracle Search found no match, and no synthesized candidate ever compiled successfully: I read the full gold and buggy versions of django/core/cache/backends/db.py and the entire visible tests/cache/tests.py surface.\n\nAnalysis of the actual code change: this is a behavior-preserving performance refactor of DatabaseCache._cull. Buggy _cull performs `DELETE ... WHERE expires < now`, then issues a fresh `SELECT COUNT(*)` to recount the remaining rows and culls oldest rows only if that post-delete count exceeds _max_entries. Gold _cull performs the same DELETE, then computes `remaining_num = num - cursor.rowcount` where `num` is the row-count captured earlier in _base_set (before the delete) and `cursor.rowcount` is the number of rows the DELETE removed; it culls only if that `remaining_num` exceeds _max_entries. When cursor.rowcount accurately reflects deleted rows (which it does on all Django core RDBMS backends — SQLite/Postgres/MySQL/Oracle for DELETE statements), the gold value remaining_num is numerically identical to the actual post-delete count that the buggy version recounts. So in every single-threaded, real-backend scenario the two versions make identical decisions: both delete expired rows first, and both additionally cull oldest valid rows only if what remains after the expiry purge still exceeds _max_entries.\n\nThe target requirement r asks precisely for that semantics. But that semantics is ALREADY implemented identically in the buggy program (its recount after the purge plays the same role as gold's num - rowcount). Therefore no external-behavior test — including one constructing r's exact scenario (already-expired rows pushing the raw count above _max_entries while valid entries alone stay within the limit) — can fail on buggy while passing on gold. The only conceivable divergence point is cursor.rowcount itself being unreliable, which is an internal implementation mechanism of the core RDBMS backends, not an observable spec, and cannot be exercised through the public cache API against the real backends the test harness uses.\n\nThe visible tests (BaseCacheTests.test_cull/test_zero_cull, DBCacheTests.test_zero_cull, test_cull_delete_when_store_empty) all insert non-expiring entries and merely count surviving cull victims; none constructs r's scenario or asserts valid-entry survival past the expiry purge. Crucially, no test in the entire visible suite fails on the buggy program, consistent with the finding that this patch changes no externally observable behavior.\n\nI confirmed there is no oracle that discriminates: any test asserting r's semantics passes on both buggy and gold, and any test that could in principle distinguish them would have to assert on internal implementation mechanics (cursor.rowcount masking) that no real test could drive. Hence no genuine Witness exists.",
+    "confidence": "Low"
+  }
+}

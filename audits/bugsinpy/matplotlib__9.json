@@ -1,0 +1,138 @@
+{
+  "task_id": "matplotlib__9",
+  "status": "ok",
+  "duration_seconds": 231.50576783297583,
+  "llm_calls": 50,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__9",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A polar axes created with `fig.add_subplot(polar=True)` on which `set_rorigin()` is called with a negative value (e.g. `ax_g.set_rorigin(-78)`) must render correctly when saved to a raster format (PNG via the Agg backend); the raster output must match the correct rendering obtained from a vector format (PDF) and from interactive drawing.",
+        "subject": "PolarAxes.set_rorigin / rendering to raster backend",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"When saving a png of a polar plot with the r-origin set \\\"by hand,\\\" saving the result as a png plot doesn't work as expected. Saving it as PDF works as expected. Working interactively and saving it with the UI as a png works as expected.\" Reproduction: `ax_g.set_rorigin(-78)  # Replacing this with ax_g.set_rmin works as expected, so the problem comes from this line.` followed by `fig.savefig(\"bug.png\")` and `fig.savefig(\"bug.pdf\")`."
+      },
+      {
+        "id": "R2",
+        "statement": "A polar axes with `set_rorigin()` set to a value different from the radial view limits must produce a consistent image for both the raster and vector backends; the polar projection's radial scaling derived from the origin (`(r - get_rorigin()) * get_rsign()`) must be applied identically across backends.",
+        "subject": "PolarTransform.transform_non_affine / rorigin radial scaling",
+        "hunk_ids": [],
+        "cited_from": "polar.py: `if self._use_rmin and self._axis is not None:\\n            r = (r - self._axis.get_rorigin()) * self._axis.get_rsign()` and `def get_rsign(self): return np.sign(self._originViewLim.y1 - self._originViewLim.y0)`. Issue expected outcome is the correct PDF rendering reproduced as PNG."
+      },
+      {
+        "id": "R3",
+        "statement": "A polar axes configured with `set_rmax(2.0)`, `set_rmin(0.5)` and `set_rorigin(0.0)` renders successfully (used as a reference/baseline behavior).",
+        "subject": "PolarAxes.set_rorigin combined with set_rmin/set_rmax",
+        "hunk_ids": [],
+        "cited_from": "test_polar.py test_polar_rorigin: `ax.set_rmax(2.0)` / `ax.set_rmin(0.5)` / `ax.set_rorigin(0.0)` under `@image_comparison(['polar_rorigin'], style='default')`."
+      },
+      {
+        "id": "R4",
+        "statement": "A polar axes with an inverted radial axis (`set_ylim(2, 0)`) and a rorigin set to `3` renders successfully.",
+        "subject": "PolarAxes.set_rorigin with inverted y limits",
+        "hunk_ids": [],
+        "cited_from": "test_polar.py test_polar_invertedylim_rorigin: `ax.set_ylim(2, 0)` / `ax.set_rorigin(3)` under `@image_comparison(['polar_invertedylim_rorigin.png'], style='default')`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "PolarAxes.draw(renderer) flushes any pending (stale) view-limit autoscaling for the axes (and its share-group siblings) before it reads the view limits, so the geometry it produces — the Wedge patch center/theta1/theta2/radius/width, the start/end/inner spine visibility and transforms, and the radial-label transform (`yaxis_text_transform`) derived from the real view limits, rorigin and rsign — is computed from the up-to-date limits rather than the pre-autoscale limits; i.e. after a draw with autoscaling pending, the drawn output corresponds to the same limits that `get_xlim()`/`get_ylim()`/`get_rmin()`/`get_rmax()` report.",
+        "subject": "matplotlib.projections.polar.PolarAxes.draw",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis describes the observed rorigin raster-vs-vector bug (R1), the rorigin radial-scaling formula in PolarTransform.transform_non_affine and get_rsign (R2), and two baseline rorigin image-comparison tests (R3, R4), but nothing mentions PolarAxes.draw flushing pending stale view-limit autoscaling for the axes and its share-group siblings before reading the limits, nor drawing geometry computed from the up-to-date limits. The specific draw()-time autoscale-flush mechanism is not pinned down by any visible entry."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "NO GENUINE BEHAVIORAL WITNESS COULD BE EXECUTED — the run_test environment cannot import matplotlib at all, so R1's \"drawn output\" semantics are not reachable.\n\nEvidence gathered by executing diagnostics via run_test against both revisions:\n- `/workspace` is the matplotlib source checkout (3.3-era: lib/matplotlib/projections/polar.py, src/*.cpp, extern/agg24-svn, no build products).\n- Python is 3.8. numpy 1.24.4 is installed (pip list), but `import matplotlib` fails: first `ModuleNotFoundError: pyparsing` (needed by matplotlib/rcsetup.py -> fontconfig_pattern.py), and there is NO pyparsing anywhere on the filesystem.\n- Watching the whole filesystem for the compiled extensions matplotlib requires (`ft2font*.so`, `_path*.so`, `_backend_agg*.so`, ...) returns ZERO hits, and there is no built/installed matplotlib in site-packages. So `matplotlib.figure`, `matplotlib.path`, `matplotlib.patches`, the Agg backend, and therefore any `fig.canvas.draw()` capable of exercising `PolarAxes.draw`'s Wedge/spine/yaxis_text_transform geometry are all unreachable.\n- I attempted the only workaround (injecting a stub `pyparsing` module into sys.modules and adding /workspace/lib to sys.path): import progressed from rcsetup into fontconfig_pattern but then hit pyparsing parser semantics, and would still be blocked by the absent C extensions. This route is not viable.\n\nI also confirmed the visible test material (lib/matplotlib/tests/test_polar.py) only pins the bug down through @image_comparison baselines (baselines not shipped) and unrelated assertions; it does not give a reuseable behavioral assertion for R1, consistent with the earlier S_vis and Oracle findings.\n\nThe only execution-confirmed gold-PASS/buggy-FAIL discriminator I could build is necessarily NON-BEHAVIORAL (a source/AST inspection of PolarAxes.draw asserting `self._unstale_viewLim()` is its first statement and precedes the first `_realViewLim` read). Exact results: gold -> PASSED; buggy -> FAILED ('First statement of PolarAxes.draw is not a bare call: Assign(... np.rad2deg(self._realViewLim.intervalx) ...)'). I am deliberately NOT submitting this as a genuine witness because it merely re-derives the presence of the patch text rather than asserting the drawn geometry the requirement is about, and R1 is explicitly a behavioral requirement about Wedge center/theta1/theta2/radius/width, spine visibility/transforms and yaxis_text_transform being computed from the unstaled limits.\n\nTo build a real behavioral witness someone would need an environment where matplotlib actually imports and renders (pyparsing + compiled extensions present); then a suitable test would, e.g., leave autoscaling pending (e.g. `ax.plot(theta, r)` with `ax.set_rorigin(2)` and no intervening get_xlim/get_ylim), call `fig.canvas.draw()`, and assert that `ax.patch.get_width()`/`get_theta1()`/`get_theta2()`/`get_radius()` and `ax._yaxis_text_transform` agree with the post-draw `ax.get_xlim()`/`ax.get_ylim()`/`ax.get_rmin()`/`ax.get_rmax()` — my hand-analysis of such a scenario (plot r in [0.5,3] plus set_rorigin(2)) indicates gold yields width ~ radius while buggy yields a negative/stale width (rsign computed from the pre-autoscale viewLim), which would discriminate; but this could not be executed here, so it is unverified and therefore not submitted."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: lib/matplotlib/projections/polar.py and lib/matplotlib/tests/test_polar.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The second issue in the description ('support markevery in prop_cycle', raising `ValueError: Key axes.prop_cycle: Unknown artist properties: {'markevery'}`) concerns rcsetup/artist-property validation, none of which appears in the visible files; it therefore yields no extractable visible requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "polar.py: PolarAxes builds `self._originViewLim = mtransforms.LockableBbox(self.viewLim)`; `set_rorigin(v)` sets `self._originViewLim.locked_y0 = v`; `get_rsign()` returns `np.sign(self._originViewLim.y1 - self._originViewLim.y0)`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "polar.py: PolarTransform, InvertedPolarTransform both apply `get_rorigin()`/`get_rsign()` when `use_rmin` is true."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_polar.py uses @image_comparison baseline images (baselines not included among visible files) and @check_figures_equal tests."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reports the bug reproduces on saving PNG but not PDF, and not when saving interactively via the UI — an inconsistency across backends is the distinguishing symptom."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only one file is touched by the patch (lib/matplotlib/projections/polar.py) and only one statement is added (`self._unstale_viewLim()`), so the patch commits to exactly one behavioral requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PolarAxes.draw reads `self._realViewLim` (a TransformedBbox over `self.viewLim`) and `self._originViewLim` (a LockableBbox over `self.viewLim`) directly, bypassing the `viewLim` property getter, which is itself the other place `_unstale_viewLim` is invoked; hence the explicit call is needed before those reads."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`_AxesBase.draw` (lib/matplotlib/axes/_base.py) calls `self._unstale_viewLim()` near its start, but `PolarAxes.draw` only delegates to it at the end (`Axes.draw(self, renderer, *args, **kwargs)`), after the polar-specific geometry has already been derived from the limits."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`_unstale_viewLim` acts on the x/y share-group siblings of the axes, not only on the axes itself; the patch does not change that scope."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the same file, `_ThetaShift.get_matrix`, `RadialLocator.__call__`, `PolarTransform.transform_non_affine` and `InvertedPolarTransform.transform_non_affine` also consume `get_rorigin()`/`get_rsign()`/view limits, but these are not modified by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible test `test_polar_invertedylim_rorigin` builds its axes by plotting, then `margins(0)` and `set_rorigin(3)` without calling `set_rlim`, and comments that viewlims must be correctly unstaled before drawing; this is consistent with the added call."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch does not change `draw`'s signature, the `@cbook._delete_parameter(\"3.3\", ...)` decorators, or the return value (it returns None as before)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: gave up after exhausting its exploration budget without concluding (21 tool calls made)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: NO GENUINE BEHAVIORAL WITNESS COULD BE EXECUTED — the run_test environment cannot import matplotlib at all, so R1's \"drawn output\" semantics are not reachable.\n\nEvidence gathered by executing diagnostics via run_test against both revisions:\n- `/workspace` is the matplotlib source checkout (3.3-era: lib/matplotlib/projections/polar.py, src/*.cpp, extern/agg24-svn, no build products).\n- Python is 3.8. numpy 1.24.4 is installed (pip list), but `import matplotlib` fails: first `ModuleNotFoundError: pyparsing` (needed by matplotlib/rcsetup.py -> fontconfig_pattern.py), and there is NO pyparsing anywhere on the filesystem.\n- Watching the whole filesystem for the compiled extensions matplotlib requires (`ft2font*.so`, `_path*.so`, `_backend_agg*.so`, ...) returns ZERO hits, and there is no built/installed matplotlib in site-packages. So `matplotlib.figure`, `matplotlib.path`, `matplotlib.patches`, the Agg backend, and therefore any `fig.canvas.draw()` capable of exercising `PolarAxes.draw`'s Wedge/spine/yaxis_text_transform geometry are all unreachable.\n- I attempted the only workaround (injecting a stub `pyparsing` module into sys.modules and adding /workspace/lib to sys.path): import progressed from rcsetup into fontconfig_pattern but then hit pyparsing parser semantics, and would still be blocked by the absent C extensions. This route is not viable.\n\nI also confirmed the visible test material (lib/matplotlib/tests/test_polar.py) only pins the bug down through @image_comparison baselines (baselines not shipped) and unrelated assertions; it does not give a reuseable behavioral assertion for R1, consistent with the earlier S_vis and Oracle findings.\n\nThe only execution-confirmed gold-PASS/buggy-FAIL discriminator I could build is necessarily NON-BEHAVIORAL (a source/AST inspection of PolarAxes.draw asserting `self._unstale_viewLim()` is its first statement and precedes the first `_realViewLim` read). Exact results: gold -> PASSED; buggy -> FAILED ('First statement of PolarAxes.draw is not a bare call: Assign(... np.rad2deg(self._realViewLim.intervalx) ...)'). I am deliberately NOT submitting this as a genuine witness because it merely re-derives the presence of the patch text rather than asserting the drawn geometry the requirement is about, and R1 is explicitly a behavioral requirement about Wedge center/theta1/theta2/radius/width, spine visibility/transforms and yaxis_text_transform being computed from the unstaled limits.\n\nTo build a real behavioral witness someone would need an environment where matplotlib actually imports and renders (pyparsing + compiled extensions present); then a suitable test would, e.g., leave autoscaling pending (e.g. `ax.plot(theta, r)` with `ax.set_rorigin(2)` and no intervening get_xlim/get_ylim), call `fig.canvas.draw()`, and assert that `ax.patch.get_width()`/`get_theta1()`/`get_theta2()`/`get_radius()` and `ax._yaxis_text_transform` agree with the post-draw `ax.get_xlim()`/`ax.get_ylim()`/`ax.get_rmin()`/`ax.get_rmax()` — my hand-analysis of such a scenario (plot r in [0.5,3] plus set_rorigin(2)) indicates gold yields width ~ radius while buggy yields a negative/stale width (rsign computed from the pre-autoscale viewLim), which would discriminate; but this could not be executed here, so it is unverified and therefore not submitted."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (matplotlib.projections.polar.PolarAxes.draw) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: NO GENUINE BEHAVIORAL WITNESS COULD BE EXECUTED — the run_test environment cannot import matplotlib at all, so R1's \"drawn output\" semantics are not reachable.\n\nEvidence gathered by executing diagnostics via run_test against both revisions:\n- `/workspace` is the matplotlib source checkout (3.3-era: lib/matplotlib/projections/polar.py, src/*.cpp, extern/agg24-svn, no build products).\n- Python is 3.8. numpy 1.24.4 is installed (pip list), but `import matplotlib` fails: first `ModuleNotFoundError: pyparsing` (needed by matplotlib/rcsetup.py -> fontconfig_pattern.py), and there is NO pyparsing anywhere on the filesystem.\n- Watching the whole filesystem for the compiled extensions matplotlib requires (`ft2font*.so`, `_path*.so`, `_backend_agg*.so`, ...) returns ZERO hits, and there is no built/installed matplotlib in site-packages. So `matplotlib.figure`, `matplotlib.path`, `matplotlib.patches`, the Agg backend, and therefore any `fig.canvas.draw()` capable of exercising `PolarAxes.draw`'s Wedge/spine/yaxis_text_transform geometry are all unreachable.\n- I attempted the only workaround (injecting a stub `pyparsing` module into sys.modules and adding /workspace/lib to sys.path): import progressed from rcsetup into fontconfig_pattern but then hit pyparsing parser semantics, and would still be blocked by the absent C extensions. This route is not viable.\n\nI also confirmed the visible test material (lib/matplotlib/tests/test_polar.py) only pins the bug down through @image_comparison baselines (baselines not shipped) and unrelated assertions; it does not give a reuseable behavioral assertion for R1, consistent with the earlier S_vis and Oracle findings.\n\nThe only execution-confirmed gold-PASS/buggy-FAIL discriminator I could build is necessarily NON-BEHAVIORAL (a source/AST inspection of PolarAxes.draw asserting `self._unstale_viewLim()` is its first statement and precedes the first `_realViewLim` read). Exact results: gold -> PASSED; buggy -> FAILED ('First statement of PolarAxes.draw is not a bare call: Assign(... np.rad2deg(self._realViewLim.intervalx) ...)'). I am deliberately NOT submitting this as a genuine witness because it merely re-derives the presence of the patch text rather than asserting the drawn geometry the requirement is about, and R1 is explicitly a behavioral requirement about Wedge center/theta1/theta2/radius/width, spine visibility/transforms and yaxis_text_transform being computed from the unstaled limits.\n\nTo build a real behavioral witness someone would need an environment where matplotlib actually imports and renders (pyparsing + compiled extensions present); then a suitable test would, e.g., leave autoscaling pending (e.g. `ax.plot(theta, r)` with `ax.set_rorigin(2)` and no intervening get_xlim/get_ylim), call `fig.canvas.draw()`, and assert that `ax.patch.get_width()`/`get_theta1()`/`get_theta2()`/`get_radius()` and `ax._yaxis_text_transform` agree with the post-draw `ax.get_xlim()`/`ax.get_ylim()`/`ax.get_rmin()`/`ax.get_rmax()` — my hand-analysis of such a scenario (plot r in [0.5,3] plus set_rorigin(2)) indicates gold yields width ~ radius while buggy yields a negative/stale width (rsign computed from the pre-autoscale viewLim), which would discriminate; but this could not be executed here, so it is unverified and therefore not submitted.",
+    "confidence": "Medium"
+  }
+}

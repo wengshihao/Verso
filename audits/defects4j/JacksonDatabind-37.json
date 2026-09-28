@@ -1,0 +1,86 @@
+{
+  "task_id": "JacksonDatabind-37",
+  "status": "ok",
+  "duration_seconds": 436.5358258240012,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-37",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Deserializing the JSON string \"{'schemas': [{'name': 'FoodMart'}]}\" into JsonRoot must complete without throwing — i.e., a List<JsonSchema> element whose JSON object lacks the polymorphic \"type\" property must be resolved to JsonSchema's defaultImpl JsonMapSchema rather than failing.",
+        "subject": "com.fasterxml.jackson.databind.deser (defaultImpl polymorphic resolution of List<JsonSchema> in JsonRoot)",
+        "hunk_ids": [],
+        "cited_from": "test: final String json = aposToQuotes(\"{'schemas': [{\\n\" + \"  'name': 'FoodMart'\\n\" + \"]}\\n\"); mapper.readValue(json, JsonRoot.class); -- with class JsonRoot { public final List<JsonSchema> schemas = new ArrayList<JsonSchema>(); } and on JsonSchema: @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = \"type\", defaultImpl = JsonMapSchema.class)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Narrowing a SimpleType (via its _narrow(Class<?> subclass) method) into one of its raw class's subclasses produces a new SimpleType for the subclass whose super-class reference (the value surfaced through getSuperClass()) is the original SimpleType from which the narrowing was performed, so that the pre-narrowing type and its generic bindings remain reachable as the immediate super-class of the narrowed type — instead of the narrowed type carrying over the original type's own super-class (or losing super-class info).",
+        "subject": "com.fasterxml.jackson.databind.type.SimpleType._narrow (and JavaType.getSuperClass of the resulting type)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 concerns JSON deserialization polymorphic resolution (List<JsonSchema> with @JsonTypeInfo defaultImpl), in the databind.deser subsystem, which is entirely unrelated to the SimpleType._narrow/getSuperClass type-system behavior described in S_impl. Nothing in the visible evidence pins down how narrowing a SimpleType to a subclass should set its super-class reference."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to build an execution-confirmed witness for R1 (SimpleType.narrowing into a raw subtype must yield a type whose getSuperClass() is the original SimpleType) and iterated using run_test against both gold and buggy.\n\nPath analysis of the actual change (H0): only the `_superClass` argument in `SimpleType._narrow(Class<?>)` changes from `_superClass` (the receiver's own stored superclass) to `this` (the receiver being narrowed). `_narrow` is `protected`, and the only production callers are Jackson-internal narrowing code paths (TypeFactory special-type construction / polymorphic defaultImpl deserialization). No code path that re-resolves a subtype through the full `TypeFactory` ever reaches `_narrow`'s difference, because introspection rebuilds the subtype from scratch with the correct superclass regardless of the flag value.\n\nConcrete attempts:\n1. Direct protected access is impossible: the run_test harness injects my method verbatim into a fixed wrapper class VersoWitnessCandidate (confirmed by the \"illegal start of type\" compile error when I added `package com.fasterxml.jackson.databind.type;` — the harness prepends nothing and drops my text into a method body). VersoWitnessCandidate is not in `com.fasterxml.jackson.databind.type` and does not extend SimpleType, and I cannot change its declaration, so `_narrow` (protected) and the protected SimpleType constructors are unreachable from any isolated method.\n2. Public refinement routes are byte-identical on buggy vs gold: `TypeFactory.constructSpecializedType` for Number->Integer (and Oracle's AbstractList->ArrayList) gives identical getSuperClass()/identity results on both revisions. I verified on gold that narrowed.getSuperClass() == the exact Number type and it holds identically on buggy, confirming these public routes rebuild the type outside `_narrow` and therefore cannot expose R1.\n3. Reproducing the only real-world trigger (polymorphic @JsonTypeInfo + defaultImpl narrowing, e.g. Objecid1083) requires statically nested annotated classes (abstract base naming concrete subtypes in @JsonSubTypes and defaultImpl). Method-local class declarations cannot forward-reference not-yet-declared local classes (no Java allows it), which is exactly what such an annotated hierarchy needs (subtype listed in the base's annotation). I tried the natural local-class encoding and it failed to compile with \"cannot find symbol\". Because the candidate method lives inside a fixed harness wrapper class, I also cannot declare static nested member classes, so this real path is unreproducible in the standalone single-method harness.\n\nThe R1 assertion semantics are observably only produced by the protected internal path (or the class-hierarchy-dependent deserialization path); neither is expressible inside an isolated test method that cannot change package, cannot extend SimpleType, and cannot declare forward-referencing nested annotated classes. I exhausted reasonable routes without a discriminating, execution-confirmed test, consistent with the Oracle Search Agent's earlier findings."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible material is only two files: src/main/java/com/fasterxml/jackson/databind/type/SimpleType.java and the test src/test/java/com/fasterxml/jackson/databind/objectid/Objecid1083Test.java. The issue report body was not fetchable, so only the test and sources serve as visible spec."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue 1083's fix reportedly touches com.fasterxml.jackson.databind.type.SimpleType (per the visible-description note), though the test itself only exercises defaultImpl polymorphic resolution via ObjectMapper/type deserialization."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test contains no explicit assertion — it is a 'must not throw on readValue' style test; a failure would surface as an exception."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 only changes the _superClass argument passed to the SimpleType copy-constructor inside _narrow(Class<?>): from the receiver's own _superClass to `this` (the original SimpleType instance being narrowed); the _superInterfaces, _bindings, handlers carry over unchanged. The early-return branch `if (_class == subclass) return this;` is untouched by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_narrow is protected; it is invoked internally during type specialization/narrowing (e.g., from TypeFactory special-type construction), so the observable surface is the resulting JavaType's super-class chain rather than _narrow as a direct callable API."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The golden comment notes narrowing should really 're-resolve' the type, indicating this patch only corrects the super-class linkage rather than performing a full re-resolution."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the entire oracle test corpus for any test that genuinely asserts the R1 behavior — that a SimpleType narrowed into a subclass of its raw class produces a new SimpleType whose getSuperClass() is the pre-narrowing base SimpleType (so pre-narrowing type/bindings stay reachable as the immediate super class).\n\nSurvey performed: I read every type-focused test (TestJavaType, TestTypeFactory, testCollectionTypesRefined/testMapTypesRefined, JavaType76Test, RecursiveType938Test, PolymorphicList036Test, TestTypeResolution, TestTypeBindings, TestGenericsBounded, TestGenericFieldInSubtype, TestLocalType609, TypeAliasesTest, etc.) plus the polymorphic/jsontype and objectid default-impl tests (TestPolymorphicWithDefaultImpl, WrapperObjectWithObjectIdTest, Objecid1083Test, ObjectId* tests). None of these make any assertion about the super-class reference of a type produced by SimpleType._narrow; TestTypeFactory even has a commented-out super-class assertion describing how refinement today intentionally does NOT preserve that structure.\n\nThe only oracle test that provokes the buggy code (per the failing list) is Objecid1083Test::testSimple. It does not assert R1's super-class relationship at all: it is a plain \"must-not-throw on readValue\" polymorphic with-defaultImpl deserialization test (no assertion on getSuperClass()/narrowing, no explicit check whatsoever). Moreover it structurally depends on static nested annotated classes (JsonSchema/JsonMapSchema/JsonRoot) and the BaseMapTest helper aposToQuotes, none of which exist in the standalone single-method compile harness, so I could not faithfully reconstruct and run it through run_test. My own public-API reproductions of related refinement paths (TypeFactory.constructSpecializedType over Number->Integer and AbstractList->ArrayList) returned byte-identical behavior on buggy vs gold, confirming those public routes bypass SimpleType._narrow and cannot expose R1, and that the buggy/gold divergence only appears inside the Objecid default-impl internal code path which is not reproducible standalone here.\n\nBecause no oracle test's assertion directly matches the specific R1 claim, and the single failing candidate is unverifiable and does not literally test the super-class semantics, I found no acceptable witness and could not execution-confirm one even against the provided buggy/gold pair. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: I attempted to build an execution-confirmed witness for R1 (SimpleType.narrowing into a raw subtype must yield a type whose getSuperClass() is the original SimpleType) and iterated using run_test against both gold and buggy.\n\nPath analysis of the actual change (H0): only the `_superClass` argument in `SimpleType._narrow(Class<?>)` changes from `_superClass` (the receiver's own stored superclass) to `this` (the receiver being narrowed). `_narrow` is `protected`, and the only production callers are Jackson-internal narrowing code paths (TypeFactory special-type construction / polymorphic defaultImpl deserialization). No code path that re-resolves a subtype through the full `TypeFactory` ever reaches `_narrow`'s difference, because introspection rebuilds the subtype from scratch with the correct superclass regardless of the flag value.\n\nConcrete attempts:\n1. Direct protected access is impossible: the run_test harness injects my method verbatim into a fixed wrapper class VersoWitnessCandidate (confirmed by the \"illegal start of type\" compile error when I added `package com.fasterxml.jackson.databind.type;` — the harness prepends nothing and drops my text into a method body). VersoWitnessCandidate is not in `com.fasterxml.jackson.databind.type` and does not extend SimpleType, and I cannot change its declaration, so `_narrow` (protected) and the protected SimpleType constructors are unreachable from any isolated method.\n2. Public refinement routes are byte-identical on buggy vs gold: `TypeFactory.constructSpecializedType` for Number->Integer (and Oracle's AbstractList->ArrayList) gives identical getSuperClass()/identity results on both revisions. I verified on gold that narrowed.getSuperClass() == the exact Number type and it holds identically on buggy, confirming these public routes rebuild the type outside `_narrow` and therefore cannot expose R1.\n3. Reproducing the only real-world trigger (polymorphic @JsonTypeInfo + defaultImpl narrowing, e.g. Objecid1083) requires statically nested annotated classes (abstract base naming concrete subtypes in @JsonSubTypes and defaultImpl). Method-local class declarations cannot forward-reference not-yet-declared local classes (no Java allows it), which is exactly what such an annotated hierarchy needs (subtype listed in the base's annotation). I tried the natural local-class encoding and it failed to compile with \"cannot find symbol\". Because the candidate method lives inside a fixed harness wrapper class, I also cannot declare static nested member classes, so this real path is unreproducible in the standalone single-method harness.\n\nThe R1 assertion semantics are observably only produced by the protected internal path (or the class-hierarchy-dependent deserialization path); neither is expressible inside an isolated test method that cannot change package, cannot extend SimpleType, and cannot declare forward-referencing nested annotated classes. I exhausted reasonable routes without a discriminating, execution-confirmed test, consistent with the Oracle Search Agent's earlier findings."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (com.fasterxml.jackson.databind.type.SimpleType._narrow (and JavaType.getSuperClass of the resulting type)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to build an execution-confirmed witness for R1 (SimpleType.narrowing into a raw subtype must yield a type whose getSuperClass() is the original SimpleType) and iterated using run_test against both gold and buggy.\n\nPath analysis of the actual change (H0): only the `_superClass` argument in `SimpleType._narrow(Class<?>)` changes from `_superClass` (the receiver's own stored superclass) to `this` (the receiver being narrowed). `_narrow` is `protected`, and the only production callers are Jackson-internal narrowing code paths (TypeFactory special-type construction / polymorphic defaultImpl deserialization). No code path that re-resolves a subtype through the full `TypeFactory` ever reaches `_narrow`'s difference, because introspection rebuilds the subtype from scratch with the correct superclass regardless of the flag value.\n\nConcrete attempts:\n1. Direct protected access is impossible: the run_test harness injects my method verbatim into a fixed wrapper class VersoWitnessCandidate (confirmed by the \"illegal start of type\" compile error when I added `package com.fasterxml.jackson.databind.type;` — the harness prepends nothing and drops my text into a method body). VersoWitnessCandidate is not in `com.fasterxml.jackson.databind.type` and does not extend SimpleType, and I cannot change its declaration, so `_narrow` (protected) and the protected SimpleType constructors are unreachable from any isolated method.\n2. Public refinement routes are byte-identical on buggy vs gold: `TypeFactory.constructSpecializedType` for Number->Integer (and Oracle's AbstractList->ArrayList) gives identical getSuperClass()/identity results on both revisions. I verified on gold that narrowed.getSuperClass() == the exact Number type and it holds identically on buggy, confirming these public routes rebuild the type outside `_narrow` and therefore cannot expose R1.\n3. Reproducing the only real-world trigger (polymorphic @JsonTypeInfo + defaultImpl narrowing, e.g. Objecid1083) requires statically nested annotated classes (abstract base naming concrete subtypes in @JsonSubTypes and defaultImpl). Method-local class declarations cannot forward-reference not-yet-declared local classes (no Java allows it), which is exactly what such an annotated hierarchy needs (subtype listed in the base's annotation). I tried the natural local-class encoding and it failed to compile with \"cannot find symbol\". Because the candidate method lives inside a fixed harness wrapper class, I also cannot declare static nested member classes, so this real path is unreproducible in the standalone single-method harness.\n\nThe R1 assertion semantics are observably only produced by the protected internal path (or the class-hierarchy-dependent deserialization path); neither is expressible inside an isolated test method that cannot change package, cannot extend SimpleType, and cannot declare forward-referencing nested annotated classes. I exhausted reasonable routes without a discriminating, execution-confirmed test, consistent with the Oracle Search Agent's earlier findings.",
+    "confidence": "Medium"
+  }
+}

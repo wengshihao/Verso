@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-16100",
+  "status": "ok",
+  "duration_seconds": 71.81552266702056,
+  "llm_calls": 13,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16100",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The data-changing list_editable processing performed in ModelAdmin.changelist_view (the request.path where 'cl.list_editable and \"_save\" in request.POST' and formset.is_valid(), which loops over the changed forms calling save_model/save_related/log_change for each) executes inside a database transaction, so that if an error is raised partway through editing the batch of rows, the already-saved earlier rows in that same request are rolled back rather than left partially committed.",
+        "subject": "ModelAdmin.changelist_view",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"It seems that changelist_view in Django admin is missing a transaction. Since the view may change data in database, it should be wrapped in a transaction to prevent unexpected states in case of errors.\" Code in django/contrib/admin/options.py model confirms the analogous transaction-wrapped handlers: 'def changeform_view(self, request, object_id=None, form_url=\"\", extra_context=None):\n    with transaction.atomic(using=router.db_for_write(self.model)):\n        return self._changeform_view(request, object_id, form_url, extra_context)' and 'def delete_view(...):\n    with transaction.atomic(using=router.db_for_write(self.model)):\n        return self._delete_view(...)', while changelist_view's POST branch saves each changed form (\"self.save_model(request, obj, form, change=True)\") unguarded by any such transaction."
+      },
+      {
+        "id": "R2",
+        "statement": "The transaction wrapping for changelist_view's data changes runs on the database connection used for writing the model (router.db_for_write(self.model)) — matching the pattern used by changeform_view and delete_view.",
+        "subject": "ModelAdmin.changelist_view",
+        "hunk_ids": [],
+        "cited_from": "The two already-transaction-wrapped admin handlers both use exactly \"transaction.atomic(using=router.db_for_write(self.model))\": changeform_view and delete_view in django/contrib/admin/options.py."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In the changelist_view bulk-edit (list_editable '_save') POST handling, the per-form persistence work for all changed forms in the valid formset (save_form/save_model/save_related/log_change) is performed inside a single atomic transaction on the model's write database, so that the entire batch of saves and their admin LogEntry writes either all commit together or, if any step raises, all are rolled back as one unit.",
+        "subject": "django.contrib.admin.options.ModelAdmin.changelist_view (list_editable bulk-edit '_save' POST path)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 states that the list_editable changed-form processing (looping save_model/save_related/log_change) executes inside a database transaction such that an error rolls back earlier rows in the same request, and S_vis R2 pins the transaction to the model's write database (router.db_for_write(self.model)). Together these pin down the single atomic transaction on the write DB wrapping the whole batch, matching S_impl R1's batch-commit-or-rollback behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code lives in django/contrib/admin/options.py, class ModelAdmin (lines defining changelist_view, changeform_view, delete_view). It imports `from django.db import models, router, transaction` already, so transaction/atomic are available."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "changelist_view's bulk-edit path is only reachable for POSTs when the model admin has list_editable set and the request includes '_save'; it iterates over formset.forms and for each changed form calls save_form, save_model, save_related, then log_change (incrementing changecount), then issues one success message and redirects."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "changeform_view and delete_view follow a refactor pattern where the csrf-protected public method wraps the real work in `transaction.atomic(...)` and delegates to a private `_changeform_view`/_delete_view; changelist_view has not been refactored this way, so the fix (per the issue) presumably applies the same atomic wrapper around the whole view or around the save loop."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the affected list_editable POST path are in tests/admin_changelist/tests.py (e.g. test_multiuser_edit, test_class_changelist_view_list_editable... and the SwallowAdmin in tests/admin_changelist/admin.py with list_editable=['load','speed']); the buggy tree contains no test asserting rollback semantics yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/admin_changelist/tests.py has a test that indexes specific captured SQL queries (test_changelist_view_list_editable_changed_objects_uses_filter uses context.captured_queries[4]), so adding transaction wrapping will add SAVEPOINT/BEGIN queries and that test's expectations may shift with the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The transaction wrapper added in H0 encloses only the save loop (inside the `if formset.is_valid():` block), not the `changecount` success-message/message_user or the redirect at the end of that branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only introduces an extra level of indentation plus the `with transaction.atomic(using=router.db_for_write(self.model)):` line; no other logic in the bulk-edit path is altered."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This follows the same atomic pattern already present in changeform_view (and delete_view) on the same class; transaction and router are already imported at module top level."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

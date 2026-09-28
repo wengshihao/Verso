@@ -1,0 +1,153 @@
+{
+  "task_id": "pandas__35",
+  "status": "ok",
+  "duration_seconds": 1334.6697067089844,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "pandas__35",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a MultiIndex constructed as `pd.MultiIndex.from_arrays([idx._get_level_values(level) for level in range(idx.nlevels)])` where `idx` is a MultiIndex built from a PeriodIndex, evaluating `all(x.is_monotonic for x in idx2.levels)` must return True rather than raising an error.",
+        "subject": "pandas.MultiIndex.from_arrays / MultiIndex.levels / Index.is_monotonic",
+        "hunk_ids": [],
+        "cited_from": "idx = pd.MultiIndex.from_arrays([pd.PeriodIndex([pd.Period(\"2019Q1\"), pd.Period(\"2019Q2\")], name='b')])\nidx2 = pd.MultiIndex.from_arrays([idx._get_level_values(level) for level in range(idx.nlevels)])\nall(x.is_monotonic for x in idx2.levels) # raises an error\n...\n#### Expected Output\n\nThe above should return True."
+      },
+      {
+        "id": "R2",
+        "statement": "The PeriodIndex held by a MultiIndex level must remain strongly referenced (not be collected such that the PeriodEngine's weakref resolves to None) so that operations on that level (e.g. `is_monotonic`) do not receive None from the weakref.",
+        "subject": "pandas.core.indexes.period.PeriodIndex._engine / weakref",
+        "hunk_ids": [],
+        "cited_from": "The weakly referenced PeriodIndex er dropped before intended, so the ``PeriodEngine`` gets a ``None`` instead of the PeriodIndex. (issue) ... `period = weakref.ref(self)` in `PeriodIndex._engine`"
+      },
+      {
+        "id": "R3",
+        "statement": "`MultiIndex.get_level_values(level)` returns the level values such that a PeriodIndex level's `is_monotonic` attribute is accessible and correct.",
+        "subject": "pandas.MultiIndex.get_level_values",
+        "hunk_ids": [],
+        "cited_from": "test_get_level_values: `result = idx.get_level_values(0)`; `tm.assert_index_equal(result, expected)`; and issue's use of `idx._get_level_values(level) for level in range(idx.nlevels)`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "PeriodIndex._engine resolves its values from the index's underlying PeriodArray (self._values) rather than from the PeriodIndex object itself, so that the engine's value getter yields a PeriodArray (which exposes .view('i8') and .freq) instead of a PeriodIndex.",
+        "subject": "PeriodIndex._engine",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Engine-backed behavior on a PeriodIndex whose _engine has been shared via a cache-copying shallow copy (e.g. a MultiIndex level returned by get_level_values, or any index produced by PeriodIndex._shallow_copy(values=None)) remains correct — is_monotonic / is_monotonic_increasing, is_unique, membership (__contains__), get_loc and get_indexer do not raise (in particular no AttributeError from a dead weakref / None) and give the same results as for an index with its own unshared engine, even after the PeriodIndex instance that originally created the engine is no longer referenced.",
+        "subject": "PeriodIndex engine-backed operations (is_monotonic, is_unique, __contains__, get_loc, get_indexer)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis describes the symptom (dead weakref/None) and the failing is_monotonic-on-levels behavior, but never pins down the fix mechanism that PeriodIndex._engine resolves values from self._values/PeriodArray so the getter yields a PeriodArray exposing .view('i8') and .freq. The specific implementation change is not entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R2 pins the core weakref-death cause (PeriodIndex must stay strongly referenced so engine operations don't get None) and R1/R3 confirm is_monotonic on a MultiIndex level returning True instead of raising. However S_vis does not pin the full enumerated operation set (is_unique, __contains__, get_loc, get_indexer), the 'same results as an unshared engine' equivalence, nor the cache-copying shallow-copy sharing mechanism, so entailment is only partial."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_get_level_values_when_periods",
+      "test_source": "import pandas as pd\n\ndef test_get_level_values_when_periods():\n    # GH33131; xref GH32669.\n    # A MultiIndex built from a PeriodIndex must yield PeriodIndex levels\n    # that still expose a working engine (freq/monotonicity).\n    idx = pd.MultiIndex.from_arrays(\n        [pd.period_range(\"2019-01-01\", periods=3, freq=\"D\")]\n    )\n    idx2 = idx\n    while isinstance(idx2, pd.MultiIndex):\n        idx2 = idx2._get_level_values(0)\n    assert all(x.is_monotonic for x in idx.levels)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AttributeError: 'NoneType' object has no attribute 'view' at pandas/_libs/index.pyx:499 in PeriodEngine._get_index_values)",
+      "explanation": "R1 says PeriodIndex._engine must resolve its values from the underlying PeriodArray (self._values, reachable via `.view('i8')`/`.freq`) rather than from the PeriodIndex object the weakref previously bound. The oracle's failing test `pandas/tests/indexes/multi/test_get_level_values.py::test_get_level_values_when_periods` exercises exactly this: it builds a MultiIndex from a PeriodIndex, walks `_get_level_values` (which routes through PeriodIndex._shallow_copy/_simple_new and reuses the cached engine), then asserts `all(x.is_monotonic for x in idx.levels)`. On the buggy program the cached engine's `vgetter()` returns None and `PeriodEngine._get_index_values` raises AttributeError: 'NoneType' object has no attribute 'view' (pandas/_libs/index.pyx:499) — i.e. resolvable only if the engine's value getter yields a PeriodArray. On gold it passes. I searched every oracle file the tool exposes (all multi/* test files, period/*, indexes/test_engines.py, datetimelike.py, conftest files) and the only home for this period-levels assertion is that get_level_values test, whose visible copy does not contain the period case — so the behavior it enforces is not established by visible content. Confirmed by execution: my standalone reconstruction PASSES on gold and FAILS on buggy with the exact R1 failure mode."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two visible files: pandas/tests/indexes/multi/test_get_level_values.py and pandas/core/indexes/period.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "period.py: PeriodIndex._engine is a @cache_readonly that stores `period = weakref.ref(self)` and passes it to `self._engine_type(period, len(self))`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "period.py: PeriodIndex._simple_new does `result._cache = {}` and `result._reset_identity()`; PeriodIndex._shallow_copy copies self._cache when values is None."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test file tests get_level_values for MultiIndex including boxed datetime64, categorical, all-NA, int-with-NA, and datetime cases; it does not contain a PeriodIndex level test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's reproduction uses the private `_get_level_values` within from_arrays, which may hit _shallow_copy paths retaining the weakref cache."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch is a single hunk in pandas/core/indexes/period.py changing only the weakref target inside the @cache_readonly PeriodIndex._engine: `weakref.ref(self)` -> `weakref.ref(self._values)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The engine constructor `self._engine_type(period, len(self))` passes the weakref as the `vgetter` argument to libindex.PeriodEngine (pandas/_libs/index.pyx); IndexEngine calls `vgetter()` to obtain values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PeriodEngine._get_index_values does `super().vgetter().view('i8')` and PeriodEngine.get_indexer / get_pad_indexer / get_backfill_indexer / get_indexer_non_unique use `super().vgetter().freq`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "libindex.PeriodEngine subclasses Int64Engine, which subclasses IndexEngine."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PeriodArray (pandas/core/arrays/period.py) exposes `.freq` (property returning dtype.freq) and inherits `view(dtype)` from DatetimeLikeArrayMixin, whose `view('i8')` returns `self._data.view('i8')` (an int64 ndarray)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Index.view('i8') on a PeriodIndex routes to `self._data.view('i8')` (string arg has no `_typ` attribute), so it does not itself create a shallow copy."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PeriodIndex._shallow_copy (period.py) copies `self._cache` when `values is None` and reuses `self._data` as values; PeriodIndex._simple_new sets `result._cache = {}`. This is the route by which one PeriodIndex can share another's cached `_engine`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold test added in pandas/tests/indexes/multi/test_get_level_values.py is `test_get_level_values_when_periods` (referencing GH33131 / GH32669); it builds a MultiIndex from an array containing a PeriodIndex, re-builds via `_get_level_values` for each level, and asserts `all(x.is_monotonic for x in idx2.levels)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Other Index subclasses (e.g. base Index._engine, numeric Int64Index) bind a callable returning the target values (lambda / _get_engine_target), not the Index object; the pre-patch PeriodIndex bound a weakref to the index itself, which is the sole deviation this patch removes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No public API signature, return type, error message, or new method is introduced by the patch; the change is entirely within the internals of the engine construction."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (PeriodIndex._engine): PeriodIndex._engine resolves its values from the index's underlying PeriodArray (self._values) rather than from the PeriodIndex object itself, so that the engine's value getter yields a PeriodArray (which exposes .view('i8') and .freq) instead of a PeriodIndex. — not entailed by S_vis (S_vis describes the symptom (dead weakref/None) and the failing is_monotonic-on-levels behavior, but never pins down the fix mechanism that PeriodIndex._engine resolves values from self._values/PeriodArray so the getter yields a PeriodArray exposing .view('i8') and .freq. The specific implementation change is not entailed.); confirmed by a oracle witness: R1 says PeriodIndex._engine must resolve its values from the underlying PeriodArray (self._values, reachable via `.view('i8')`/`.freq`) rather than from the PeriodIndex object the weakref previously bound. The oracle's failing test `pandas/tests/indexes/multi/test_get_level_values.py::test_get_level_values_when_periods` exercises exactly this: it builds a MultiIndex from a PeriodIndex, walks `_get_level_values` (which routes through PeriodIndex._shallow_copy/_simple_new and reuses the cached engine), then asserts `all(x.is_monotonic for x in idx.levels)`. On the buggy program the cached engine's `vgetter()` returns None and `PeriodEngine._get_index_values` raises AttributeError: 'NoneType' object has no attribute 'view' (pandas/_libs/index.pyx:499) — i.e. resolvable only if the engine's value getter yields a PeriodArray. On gold it passes. I searched every oracle file the tool exposes (all multi/* test files, period/*, indexes/test_engines.py, datetimelike.py, conftest files) and the only home for this period-levels assertion is that get_level_values test, whose visible copy does not contain the period case — so the behavior it enforces is not established by visible content. Confirmed by execution: my standalone reconstruction PASSES on gold and FAILS on buggy with the exact R1 failure mode.",
+    "confidence": "High"
+  }
+}

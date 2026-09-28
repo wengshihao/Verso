@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-14802",
+  "status": "ok",
+  "duration_seconds": 352.76678666693624,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14802",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The base cache backend (django.core.cache.backends.base.BaseCache) exposes a method named `make_and_validate_key(self, key, version=None)` that, given a key and an optional version, computes the prefixed key via `self.make_key(key, version=version)`, runs `self.validate_key(key)` on that computed key (so version prefixing/escaping rules and any backend-overridden validate_key apply), and returns the computed, validated key.",
+        "subject": "BaseCache.make_and_validate_key",
+        "hunk_ids": [],
+        "cited_from": "Following from this thread the following pattern is repeated a lot in the cache backends:\n\t\tkey = self.make_key(key, version=version)\n\t\tself.validate_key(key)\nWe can define a helper function on the base cache backend that can be used to avoid repetitiveness and help ensure that we consistently call .validate_key() after .make_key():\n\tdef make_and_validate_key(self, key, version=None):\n\t\tkey = self.make_key(key, version=version)\n\t\tself.validate_key(key)\n\t\treturn key"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "BaseCache.make_and_validate_key(key, version=None) is a public instance method that returns the fully-made cache key — the same value make_key(key, version=version) returns (key_func applied to key via the cache's key_prefix and resolved version) — and, before returning, performs the same key-validity check that individual cache operations perform on it (validate_key on the made key).",
+        "subject": "BaseCache.make_and_validate_key",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Every concrete cache-operation entry point across the db, dummy, filebased, locmem, and memcached backends (add/get/set/touch/delete/delete_many/has_key/incr/get_many/set_many and DatabaseCache.get_many key mapping) continues to produce a made key and subject that made key to the backend's key-validity check before performing the operation — the same observable warning/error behavior on invalid keys, now routed through make_and_validate_key.",
+        "subject": "BaseCache subclasses key-validation on cache operations",
+        "hunk_ids": [
+          "H0",
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6",
+          "H7",
+          "H8",
+          "H9",
+          "H10",
+          "H11",
+          "H12",
+          "H13",
+          "H14",
+          "H15",
+          "H16",
+          "H17",
+          "H18",
+          "H19"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The DatabaseCache.get_many operation validates (and warns on) the *made* cache key for each requested key rather than the raw user-supplied key, making its validation consistent with the other cache operations that validate the made key.",
+        "subject": "DatabaseCache.get_many",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 and its citation spell out make_and_validate_key exactly: compute key via make_key(key, version), run validate_key on that made key, and return it — the identical behavior R1 describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only describes the existence/behavior of the make_and_validate_key helper itself; nothing in it indicates that concrete operations across the db/dummy/filebased/locmem/memcached backends were rerouted through this helper. No visible evidence pins down this per-operation behavior."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains no mention of DatabaseCache.get_many or any change to which key (made vs raw) it validates, so this specific behavior is not supported by any visible information."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_db_get_many_warns_on_made_key",
+      "test_source": "import warnings\n\nimport django\nfrom django.conf import settings\n\nsettings.configure(\n    DATABASES={\n        'default': {\n            'ENGINE': 'django.db.backends.sqlite3',\n            'NAME': ':memory:',\n        }\n    },\n    USE_TZ=True,\n    INSTALLED_APPS=[],\n    MIDDLEWARE=[],\n    SECRET_KEY='x',\n)\ndjango.setup()\n\nfrom django.core.cache.backends.db import DatabaseCache\nfrom django.core.cache.backends.base import CacheKeyWarning\n\nHUGEPREFIX = 'x' * 300\n\n\ndef test_db_get_many_warns_on_made_key():\n    cache = DatabaseCache('does_not_exist_table', {'KEY_PREFIX': HUGEPREFIX})\n    with warnings.catch_warnings(record=True) as caught:\n        warnings.simplefilter('always')\n        try:\n            cache.get_many(['a'])\n        except Exception:\n            pass\n    # made key overflows 250 so get_many must raise/warn on it\n    assert any(issubclass(w.category, CacheKeyWarning) for w in caught)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert False: no CacheKeyWarning recorded)",
+      "explanation": "R2 is a behavior-preserving refactor to route every concrete cache operation's key-processing through the new BaseCache.make_and_validate_key helper. For every backend except DatabaseCache.get_many, the pre-fix code already did make_key() then validate_key(made_key), i.e. identically to the helper, so those are not observable. The genuinely changed, observable behavior is exactly the case R2 flags: DatabaseCache.get_many previously validated the RAW input key and separately made it, whereas gold validates the MADE key through make_and_validate_key. This matters only when prefixing/versioning pushes the made key past MEMCACHE_MAX_KEY_LENGTH (or into a forbidden character) while the raw key stays valid. My witness drives DatabaseCache.get_many with a short raw key ('a') but a 300-char KEY_PREFIX so the made key ('xxx...:1:a') is >250 chars while the raw key is valid. On gold, make_and_validate_key emits a CacheKeyWarning for the overflowing made key (assertion passes); on buggy, only the raw short key is validated so no CacheKeyWarning is emitted and the test fails. It genuinely corresponds to the target requirement's \"DatabaseCache.get_many key mapping ... subject[s] that made key to ... key-validity check.\" The visible invalid-key tests (tests/cache/tests.py _perform_invalid_key_test etc.) use an identity key_func where made == raw and therefore cannot exercise the raw-vs-made distinction, and no other file pins down this large-prefix made-key-overflow scenario, so this is not redundant. Both runs confirmed by the tool: gold PASSED, buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Cache backends live in django/core/cache/backends/ (base.py, db.py, filebased.py, locmem.py, memcached.py, dummy.py). BaseCache (base.py) already defines `make_key`, `validate_key`, and a virtual `add`/`get`/`set`/... interface; subclasses that implement the verbs currently repeat the two-line pattern `key = self.make_key(key, version=version); self.validate_key(key)` (visible in db.py, filebased.py `_key_to_file`, locmem.py, memcached.py, dummy.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "validate_key behavior is backend-dependent via override: BaseCache.validate_key issues a CacheKeyWarning for keys non-portable to memcached, while the memcached backend (BaseMemcachedCache) overrides validate_key to raise InvalidCacheKey instead."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in tests/cache/tests.py (plus closeable_cache.py and liberal_backend.py fixtures). No disclosed test references a `make_and_validate_key` helper; existing tests only exercise the high-level verbs (get/set/add/incr/... ) and verify invalid-key warnings/errors are produced on those operations (`_perform_invalid_key_test`), i.e. the S_impl for this issue is expected to add its own coverage."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "This is a feature/refactoring request, not a behavioral bug: the concrete checkable claim comes from the issue's proposed helper snippet."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This is a behavior-preserving refactoring: the only genuinely new API is BaseCache.make_and_validate_key (added in base.py just after make_key); validate_key itself is only relocated within BaseCache (from between clear()/incr_version to just after make_key), not changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In BaseCache/non-memcached backends validate_key issues CacheKeyWarning via memcache_key_warnings, while BaseMemcachedCache overrides validate_key to raise InvalidCacheKey for the same conditions — make_and_validate_key dispatches to whichever override applies, so on memcached backends invalid made keys raise, else warn."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DatabaseCache.get_many is the one method whose validation target changed: previously it called self.validate_key on the raw key and separately made the key; now it validates the made key via make_and_validate_key."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "memcache_key_warnings triggers when the made key exceeds MEMCACHE_MAX_KEY_LENGTH (250) or contains chars with ord < 33 or == 127, so the distinction between validating raw vs made key in get_many matters only when prefixing/versioning pushes a key over the limit."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 is a behavior-preserving refactoring (introduce BaseCache.make_and_validate_key and route every cache-op through it); its only genuinely new observable behavior is the DatabaseCache.get_many case where the MADE key is invalid while the raw key is not. I examined every file in the cache test package. tests/cache/tests.py (all real test methods with assertions) is [VISIBLE], so none of its invalid-key tests (_perform_invalid_key_test / test_invalid_key_characters / test_invalid_key_length / BaseMemcachedTests._perform_invalid_key_test / CustomCacheKeyValidationTests) can serve as a witness regardless of relevance; moreover they use an identity key_func so made key == raw key and cannot test the made-vs-raw distinction central to R2. The only [HIDDEN] files (closeable_cache.py, liberal_backend.py) are fixture backend class definitions containing no assertions or operation tests and no exercise of make_and_validate_key. No [HIDDEN] oracle test tests the behavior R2 describes; therefore no witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (BaseCache subclasses key-validation on cache operations): Every concrete cache-operation entry point across the db, dummy, filebased, locmem, and memcached backends (add/get/set/touch/delete/delete_many/has_key/incr/get_many/set_many and DatabaseCache.get_many key mapping) continues to produce a made key and subject that made key to the backend's key-validity check before performing the operation — the same observable warning/error behavior on invalid keys, now routed through make_and_validate_key. — not entailed by S_vis (S_vis only describes the existence/behavior of the make_and_validate_key helper itself; nothing in it indicates that concrete operations across the db/dummy/filebased/locmem/memcached backends were rerouted through this helper. No visible evidence pins down this per-operation behavior.); confirmed by a synthesized witness: R2 is a behavior-preserving refactor to route every concrete cache operation's key-processing through the new BaseCache.make_and_validate_key helper. For every backend except DatabaseCache.get_many, the pre-fix code already did make_key() then validate_key(made_key), i.e. identically to the helper, so those are not observable. The genuinely changed, observable behavior is exactly the case R2 flags: DatabaseCache.get_many previously validated the RAW input key and separately made it, whereas gold validates the MADE key through make_and_validate_key. This matters only when prefixing/versioning pushes the made key past MEMCACHE_MAX_KEY_LENGTH (or into a forbidden character) while the raw key stays valid. My witness drives DatabaseCache.get_many with a short raw key ('a') but a 300-char KEY_PREFIX so the made key ('xxx...:1:a') is >250 chars while the raw key is valid. On gold, make_and_validate_key emits a CacheKeyWarning for the overflowing made key (assertion passes); on buggy, only the raw short key is validated so no CacheKeyWarning is emitted and the test fails. It genuinely corresponds to the target requirement's \"DatabaseCache.get_many key mapping ... subject[s] that made key to ... key-validity check.\" The visible invalid-key tests (tests/cache/tests.py _perform_invalid_key_test etc.) use an identity key_func where made == raw and therefore cannot exercise the raw-vs-made distinction, and no other file pins down this large-prefix made-key-overflow scenario, so this is not redundant. Both runs confirmed by the tool: gold PASSED, buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

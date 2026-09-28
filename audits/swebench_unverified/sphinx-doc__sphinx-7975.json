@@ -1,0 +1,107 @@
+{
+  "task_id": "sphinx-doc__sphinx-7975",
+  "status": "ok",
+  "duration_seconds": 447.7754229999846,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-7975",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a document whose index entries have leading characters that map to the non-letter 'Symbols' section heading (e.g. '@', '£' = U+00A3, '←' = U+2190, as well as the already-covered ASCII '&' and digit '9'), IndexEntries.create_index() must return exactly one group whose section key is _('Symbols'), never two separate groups both keyed 'Symbols' (e.g. one holding low-codepoint symbol entries sorted before the letters and another holding high-codepoint/Unicode symbol entries sorted after the letters), regardless of where those entries sort relative to Cp127/letter-prefixed entries.",
+        "subject": "sphinx.environment.adapters.indexentries.IndexEntries.create_index",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I get two sections called _Symbols_ in the HTML output, the first containing all _@_ entries before \"normal\" words and the second containing _£_ and _←_ entries after the \"normal\" words.\" Code (sphinx/environment/adapters/indexentries.py, keyfunc3): \"letter = unicodedata.normalize('NFD', k[0])[0].upper()\nif letter.isalpha() or letter == '_':\n    return letter\nelse:\n    # get all other symbols under one heading\n    return _('Symbols')\" followed by \"return [(key_, list(group)) for (key_, group) in groupby(newlist, keyfunc3)]\""
+      },
+      {
+        "id": "R2",
+        "statement": "The rendered genindex page (per basic/genindex.html, which emits '<h2 id=\"{{ key }}\">{{ key }}</h2>' per group and lists every group key in the top 'genindex-jumpbox' as '<a href=\"#{{ key }}\"><strong>{{ key }}</strong></a>') must not contain two 'Symbols' section headings with the same 'Symbols' anchor, nor list 'Symbols' twice in the top-of-page links; whenever the grouped index contains an entry whose section key is 'Symbols', exactly one such section heading/anchor and one such top link is produced.",
+        "subject": "sphinx claim genindex templates (basic/genindex.html) + IndexEntries.create_index grouping for HTML id/anchor uniqueness",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Both have the same anchor in HTML so the links at the top of the index page contain two _Symbols_ links, one before the letters and one after, but both lead to the first section.\" Template (sphinx/themes/basic/genindex.html): '<h2 id=\"{{ key }}\">{{ key }}</h2>' and '<div class=\"genindex-jumpbox\">{{% for key, dummy in genindexentries %}} <a href=\"#{{ key }}\"><strong>{{ key }}</strong></a>'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "IndexEntries.create_index orders the top-level entries so that every symbol entry (an entry whose NFD-normalized, lowercased key with any leading right-to-left mark stripped does not begin with an alphabetic character or '_', e.g. entries starting with '£', '←', '&', or '@') sorts before every entry beginning with an alphabetic character or '_', regardless of the symbol's Unicode code point; consequently the returned grouped index contains its symbol entries in a single contiguous symbol group (keyed _('Symbols')) that appears first, before the alphabetical groups, instead of allowing non-ASCII symbols to sort after the letter entries and thereby emit a second, non-adjacent Symbols section.",
+        "subject": "IndexEntries.create_index",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 guarantees at most one contiguous Symbols group, but it explicitly states this holds 'regardless of where those entries sort relative to... letter-prefixed entries', thereby disclaiming any commitment to the sort order. S_impl R1's central, distinctive claim — that every symbol entry sorts before every alphabetic/'_' entry and that the Symbols group consequently appears first before the alphabetical groups — is not pinned down by any S_vis entry; S_vis R2 only concerns HTML anchor uniqueness."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_symbols_single_group",
+      "test_source": "def test_symbols_single_group():\n    import sphinx.util  # bootstrap: fully load util/node module graph first\n\n    from sphinx.environment.adapters.indexentries import IndexEntries\n\n    class FakeDomain:\n        def __init__(self):\n            self.entries = {}\n    class FakeEnv:\n        def __init__(self):\n            self._d = FakeDomain()\n        def get_domain(self, name):\n            return self._d\n    class FakeBuilder:\n        def get_relative_uri(self, from_, to):\n            return 'index'\n\n    env = FakeEnv()\n    entries = env._d.entries\n    entries['index.rst'] = [\n        ('single', '&-symbol', '0', '', None),\n        ('single', 'Python', '1', '', None),\n        ('single', '\\u00a3-pound', '2', '', None),\n    ]\n    index = IndexEntries(env).create_index(FakeBuilder())\n    keys = [k for (k, _) in index]\n    assert keys[0] == 'Symbols'\n    assert keys.count('Symbols') == 1\n    assert len(index) == 2\n",
+      "gold_result": "PASSED (single leading Symbols group ['Symbols','P'])",
+      "buggy_result": "FAILED (Keys were ['Symbols','P','Symbols'] — a second, non-contiguous Symbols group appears after the 'P' letter group, i.e. assert count('Symbols')==1 fails with 2)",
+      "explanation": "Requirement R1 is about the sort helper `keyfunc` inside IndexEntries.create_index: symbol entries (whose NFD/lowercased key starts with a non-alphabetic, non-underscore char) must sort before all alphabetic/underscore entries, so the returned grouped index places all symbols into one contiguous, leading _('Symbols') group instead of letting a non-ASCII symbol (code point > 127, e.g. '£' U+00A3) sort after the chr(127)-prefixed letter entries and thereby produce a second, non-adjacent Symbols section. The visible oracle test test_create_single_index only ever exercises ASCII symbol entries ('&-symbol', '9-symbol', code points < 127) alongside letters, and those already sort before the chr(127)-prefixed letter entries even in the buggy code, so no visible assertion pins down R1's distinguishing scenario.\n\nMy witness directly feeds three `single` entries through `IndexEntries(...).create_index(...)` on minimal fake env/builder stubs (fake index domain holding the raw `(type, value, tid, main, index_key)` tuples and a fake builder whose get_relative_uri returns 'index'): an ASCII symbol '&-symbol', a letter entry 'Python', and a non-ASCII symbol '\\u00a3-pound'. On the fixed (gold) code the new (group, lckey) sort puts both symbols in group 0 ahead of letters, giving exactly the single contiguous leading ('Symbols', ...) group: keys == ['Symbols','P']. On the buggy code the old string sort leaves '&' (0x26 < chr127) before the letter entries yet '£' (0xA3 > chr127) after them, so groupby(keyfunc3) yields two non-adjacent Symbols groups: keys == ['Symbols','P','Symbols'] and assert count('Symbols')==1 fails. Execution confirmed: PASSED against gold, FAILED against buggy, both with this exact source string."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Code under test: sphinx/environment/adapters/indexentries.py (IndexEntries.create_index) — the sort key 'keyfunc' prepends chr(127) only to lowercased keys whose first char is 'isalpha' or startswith('_'); Unicode '£'(U+00A3,>127) and '←'(U+2190) are not alpha so they sort AFTER the chr(127)-prefixed letter entries, while ASCII symbols like '&' and '@' sort BEFORE, so groupby(newlist, keyfunc3) produces two non-adjacent '_(\"Symbols\")' runs -> duplicate Symbols sections."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Unit tests for this area: tests/test_environment_indexentries.py; test_create_single_index already pins that '&-symbol' and '9-symbol' sort into a single leading ('Symbols', ...) group."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "genindex is rendered from the grouped key list: sphinx/themes/basic/genindex.html emits <h2 id=\"{{key}}\"> per group and lists keys in genindex-jumpbox, which is how the duplicate 'Symbols' anchors/links in the issue arise."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No test root specific to issue #7975 exists yet in tests/roots; entries via index directive are parsed by the 'index' domain (sphinx/domains/index.py IndexDomain/IndexDirective)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Env collecting of index node entries has moved (deprecated sphinx/environment/collectors/indexentries.py collects into env.indexentries) with create_index reading domain.entries via sphinx.environment.adapters.indexentries.IndexEntries."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch touches only the nested sort helper keyfunc used for newlist = sorted(new.items(), key=keyfunc); it changes the sort key from a str lckey (with chr(127) prepended to letter/underscore entries) to a (group:int, lckey) tuple where symbols get group 0 and letters/underscores get group 1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 (comment removal/type-annotation change) and H1 (functional sort-key change) together constitute one logical behavior change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Downstream grouping (groupby by keyfunc3 into capital letters plus a _('Symbols') bucket) only relies on the orderings these sorted runs begin/end, so the fixed ordering yields exactly one leading Symbols group."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The within-letter/underscore relative ordering (deterministic tiebreak on the entry text) and RTL-mark stripping behavior are unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the oracle test suite for R1 (IndexEntries.create_index ordering symbol entries before all alphabetic/underscore entries, so NFD/lowercased keys beginning with non-ASCII symbols such as '£' / '←' / '@' form a single contiguous leading _('Symbols') group rather than a second non-adjacent Symbols section after the letters).\n\nThe full oracle test file that exercises this code path is tests/test_environment_indexentries.py, which read_test_file labels entirely [VISIBLE] (byte-for-byte the same material a repair system already sees). Its test_create_single_index (the only test listed as failing against the buggy program) asserts a leading single Symbols group — but its symbol entries ('&-symbol' and '9-symbol') are all ASCII (code points < 127). These already sort before the chr(127)-prefixed letter entries in the buggy sort, so the test does not exercise R1's distinguishing scenario (a non-ASCII symbol, e.g. '£' U+00A3 or '←' U+2190, whose character.isalpha() is False, sorting after letters and producing a second Symbols bucket). All other tests in that file, and the other visible functional tests (test_build_html.py genindex checks, test_intl.py test_html_index_entries) cover only ASCII letter/word entries and contain no assertion about symbol-vs-alphabetical contiguity for non-ASCII symbols.\n\nI browsed every oracle test file list entry and the relevant test roots (test-intl/index_entries.txt [HIDDEN], test-root/index.txt and objects.txt [HIDDEN] feed the genindex checks but contain no symbol-entry tokens either), and found no [HIDDEN] test that places a non-ASCII symbol entry in create_index/genindex and asserts it is grouped into the single leading Symbols group. Since every item relevant to R1 in the oracle is [VISIBLE] content (or only ASCII symbol entries), no assertion can serve as a Witness per the Verso rule that a witness must rest on [HIDDEN] content that visible information does not already establish. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (IndexEntries.create_index): IndexEntries.create_index orders the top-level entries so that every symbol entry (an entry whose NFD-normalized, lowercased key with any leading right-to-left mark stripped does not begin with an alphabetic character or '_', e.g. entries starting with '£', '←', '&', or '@') sorts before every entry beginning with an alphabetic character or '_', regardless of the symbol's Unicode code point; consequently the returned grouped index contains its symbol entries in a single contiguous symbol group (keyed _('Symbols')) that appears first, before the alphabetical groups, instead of allowing non-ASCII symbols to sort after the letter entries and thereby emit a second, non-adjacent Symbols section. — not entailed by S_vis (S_vis R1 guarantees at most one contiguous Symbols group, but it explicitly states this holds 'regardless of where those entries sort relative to... letter-prefixed entries', thereby disclaiming any commitment to the sort order. S_impl R1's central, distinctive claim — that every symbol entry sorts before every alphabetic/'_' entry and that the Symbols group consequently appears first before the alphabetical groups — is not pinned down by any S_vis entry; S_vis R2 only concerns HTML anchor uniqueness.); confirmed by a synthesized witness: Requirement R1 is about the sort helper `keyfunc` inside IndexEntries.create_index: symbol entries (whose NFD/lowercased key starts with a non-alphabetic, non-underscore char) must sort before all alphabetic/underscore entries, so the returned grouped index places all symbols into one contiguous, leading _('Symbols') group instead of letting a non-ASCII symbol (code point > 127, e.g. '£' U+00A3) sort after the chr(127)-prefixed letter entries and thereby produce a second, non-adjacent Symbols section. The visible oracle test test_create_single_index only ever exercises ASCII symbol entries ('&-symbol', '9-symbol', code points < 127) alongside letters, and those already sort before the chr(127)-prefixed letter entries even in the buggy code, so no visible assertion pins down R1's distinguishing scenario.\n\nMy witness directly feeds three `single` entries through `IndexEntries(...).create_index(...)` on minimal fake env/builder stubs (fake index domain holding the raw `(type, value, tid, main, index_key)` tuples and a fake builder whose get_relative_uri returns 'index'): an ASCII symbol '&-symbol', a letter entry 'Python', and a non-ASCII symbol '\\u00a3-pound'. On the fixed (gold) code the new (group, lckey) sort puts both symbols in group 0 ahead of letters, giving exactly the single contiguous leading ('Symbols', ...) group: keys == ['Symbols','P']. On the buggy code the old string sort leaves '&' (0x26 < chr127) before the letter entries yet '£' (0xA3 > chr127) after them, so groupby(keyfunc3) yields two non-adjacent Symbols groups: keys == ['Symbols','P','Symbols'] and assert count('Symbols')==1 fails. Execution confirmed: PASSED against gold, FAILED against buggy, both with this exact source string.",
+    "confidence": "Medium"
+  }
+}

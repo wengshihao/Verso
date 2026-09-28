@@ -1,0 +1,133 @@
+{
+  "task_id": "django__django-15280",
+  "status": "ok",
+  "duration_seconds": 678.6546649159864,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15280",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "After evaluating `User.objects.only('email').prefetch_related(Prefetch('profile', queryset=Profile.objects.prefetch_related(Prefetch('user', queryset=User.objects.only('kind')))))` (which fetches the matching User with only its `email`-retaining columns and separately the same User through profile.user with `kind` loaded), the instance reached as `user.profile.user` must not be (implicitly, through leaked deferral bookkeeping) treated as having `kind` deferred, so that accessing `user.profile.user.kind` returns the loaded value 'ADMIN' while issuing zero additional queries beyond those already executed when the outer queryset was evaluated.",
+        "subject": "QuerySet.prefetch_related / deferred-field state propagation on related instances returned through a prefetched relation",
+        "hunk_ids": [],
+        "cited_from": "with self.assertNumQueries(0):\n    self.assertEqual(user.profile.user.kind, \"ADMIN\") ...\nThe second assertNumQueries actually fails with:\nAssertionError: 1 != 0 : 1 queries executed, 0 expected\nCaptured queries were:\n1. SELECT \"tests_user\".\"id\", \"tests_user\".\"kind\" FROM \"tests_user\" WHERE \"tests_user\".\"id\" = 1\nThis is exactly the query I'd expect to see if kind on the inner User queryset had been deferred, which it hasn't."
+      },
+      {
+        "id": "R2",
+        "statement": "For the same scenario as R1, `user.profile.user.get_deferred_fields()` must not report a field as deferred merely because a different instance of the same model (the earlier-fetched outer `User.objects.only('email')` instance) had that field deferred; the deferred set must reflect the actual columns loaded for that instance.",
+        "subject": "get_deferred_fields()/deferral report on a related instance obtained through a nested prefetch back to the same model",
+        "hunk_ids": [],
+        "cited_from": "Printing user.profile.user.get_deferred_fields() returns {'kind'}.\nIt looks to me like Django is correctly evaluating the set of deferred fields when executing the \"inner\" User queryset, but somehow the instances are inheriting the set of fields they \"think\" have been deferred from the outer User queryset, so when the attribute is accessed it causes a database query to be executed."
+      },
+      {
+        "id": "R3",
+        "statement": "The same class of incorrect-deferral behavior must not occur when the profile↔user relationship is a ForeignKey rather than a reverse OneToOne; after prefetching the `profile_set` of an outer `User.objects.only('email')` alongside inner users loaded via `User.objects.only('kind')`, accessing `user.profile_set.all()[0].user.kind` must return the value already fetched by the inner queryset without triggering an additional database query.",
+        "subject": "prefetch_related of a reverse ForeignKey (many-to-one) manager back to the same parent model with only() on the inner queryset",
+        "hunk_ids": [],
+        "cited_from": "It appears that this also happens if the relationship between Profile and User is a ForeignKey rather than a OneToOneField (in that case, a query is executed when accessing user.profile_set.all()[0].user.kind)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "Prefetching a reverse many-to-one relation (via the reverse-field manager) must still back-link each prefetched related object to its matching parent instance by assigning that object's forward relation field, for every related object that does not already have that forward relation cached at prefetch time.",
+        "subject": "create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "When prefetching a reverse many-to-one relation, a related object that already has its forward relation (the FK pointing to the parent instance) cached — e.g. because it was previously hydrated — must keep that already-cached relationship intact rather than having it re-assigned/overwritten by the prefetch's back-linking, so that subsequently accessing an already-fetched deferred field on such a related object (including while iterating the enclosing prefetched queryset) triggers no additional database query.",
+        "subject": "create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis (R1-R3) reports observable deferral/query symptoms and expected outcomes, but never mentions any back-linking step that assigns the forward relation field on prefetched related objects that lack a cached forward relation. This internal prefetch mechanism is not pinned down by any visible evidence."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis only documents the observable symptom (an extra query fired on an already-loaded field, traceable to deferral bookkeeping); it never states that a related object with an already-cached forward relation must keep it intact rather than being overwritten. That preservation mechanism and its precondition are patch-internal commitments not established by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target S_IMPL-1 requires that reverse many-to-one manager get_prefetch_queryset back-link each prefetched child (assign the child's forward FK) only when that forward relation is NOT already cached on the child (i.e. only the guarded path does the assignment). The gold change is exactly `if not self.field.is_cached(rel_obj): setattr(...)` added to create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset; buggy always assigns.\n\nI attempted to synthesize an execution-confirmed discriminating witness. First I had to discover the harness interface (run_test runs the snippet as a standalone pytest-style `test_*` function under /tmp with django importable but NOT settings-configured), then I built a self-contained Django bootstrap (settings.configure + temporary `tests` app whose models.py defines User and Profile(user FK), django.setup(), schema_editor.create_model for both, then ORM operations). That infrastructure probe PASSED against the buggy build, proving ad-hoc models + sqlite in-memory + prefetch run fine, and it confirmed normal prefetch_related('profile_set') back-linking works identically pre/post fix (both assign children to their parents) — so an ordinary prefetch test is NOT a witness.\n\nThe discriminating branch is only exercised when a freshly-prefetched child already has its forward FK object present in the per-instance FK cache *at the instant* get_prefetch_queryset iterates `queryset`. Building that state ad hoc is not possible the way one would for the reported User/Profile-only()/defer scenario: Django materializes brand-new child instances by re-querying inside that loop, and the checked-in regression suites (tests/defer_regress, tests/defer, tests/prefetch_related) contain no model pair / data pattern that reproduces the ticket's deferred-outer + reverse-manager-prefetch sequence. The Oracle Search Agent independently established there is no pre-existing oracle test enforcing this guard; the repo diff confirms the whole patch is just this one guarded assignment, with no accompanying regression test, and I confirmed the reverse FKs that ARE registered in defer_regress (RelatedItem.item / Item.relateditem_set, Request.location / Location) cannot be made to produce an observable query-count or value delta between the two variants without the missing hidden failing scenario/models (tables \"tests_user\"/\"tests_profile\").\n\nI therefore could not obtain a candidate that PASSES on gold and FAILS on buggy while genuinely pinning the guard's \"only back-link when forward field not yet cached\" semantics, and I conclude none qualifies as a genuine witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This task is a Django source fix: the repo is the full Django codebase at buggy (pre-fix) state; the visible failing scenario is presented only in prose code blocks in the issue description (models named User/Profile living in an app whose tables are \"tests_user\"/\"tests_profile\"), and no checked-in test currently encodes it, so the issue text is itself the load-bearing visible artifact."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The behavior is exercised through the ORM deferral machinery: Model.from_db models concrete fields and get_deferred_fields() computes deferred fields from which attnames are present in __dict__ (django/db/models/base.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant djangodb regression-test dirs that exercise defer/only + relations are tests/defer/, tests/defer_regress/ (which model Item<->OneToOneItem, Leaf/Child reverse FK cases), and tests/prefetch_related/ (Author/Book etc.), though none currently defines the User/Profile pair described in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The 3 top-level queries shown when iterating the outer queryset are stated to already be correct; the bug targeted by the fix is confined to whether access to an already-fetched deferred field of an inner/related instance triggers a spurious additional query."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix must live somewhere in the ORM queryset/prefetch/deferral path (e.g., how deferred-field bookkeeping is attributed to instances produced by a nested prefetch), not in the User/Profile model definitions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed code sits in the reverse many-to-one RelatedManager's get_prefetch_queryset, where the prefetch of a reverse relation must manually back-link rel_obj -> parent because this path bypasses the subclassed get_queryset()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "field.is_cached(rel_obj) guards whether the forward FK descriptor has already been populated on that rel_obj."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The comparison (buggy vs gold) of tests/defer_regress/tests.py and tests/defer/tests.py shows no checked-in regression test was added by this patch; the entire patch is the single guarded-assignment source change in related_descriptors.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Setting rel_obj.<fk> uses ForwardManyToOneDescriptor.__set__, which stores the FK value and both set/clear caches; re-invoking it on an already-cached deferred object is what previously caused the spurious query."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: I investigated whether the real pre-existing oracle (the full Django test suite at gold state) contains any test whose assertion genuinely enforces S_IMPL-1 — i.e. that prefetching a reverse many-to-one relation via the reverse-field manager back-links each rel_obj (setting its forward FK) only when that forward field is NOT already cached on the rel_obj (the guarded is_cached assignment in create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset).\n\nWhat I checked:\n- Listed the full oracle and focused on the areas flagged by the earlier stages as exercising defer/only + relations: tests/defer, tests/defer_regress, and tests/prefetch_related (all the test files bearing on prefetched reverse many-to-one with deferred/only fields). I read those files in full:\n  * tests/defer_regress/tests.py ([VISIBLE]): exercises defer/only + select_related and reverse-one-to-one of Item<->OneToOneItem, Item<->RelatedItem forward defer, but contains NO prefetch of a reverse manager in combination with an already-cached/deferred forward field; no such test exists in it. The diff of this file (buggy vs gold) shows no regression test added.\n  * tests/defer/tests.py ([VISIBLE]): only defer()/only() bookkeeping for Primary/Secondary forward select_related; no reverse-manager prefetch, no prefetch at all.\n  * tests/prefetch_related/tests.py, test_prefetch_related_objects.py ([VISIBLE]): extensive prefetch tests (m2m, forward/O2M...foreignkey_reverse etc.) but none combines prefetching a reverse many-to-one with a rel_obj whose forward FK is already cached/deferred — the exact guarded-assignment branch.\n  * tests/m2m_and_m2o/tests.py ([VISIBLE]): unrelated query-filtering / generic-related tests.\n- The only [HIDDEN] content I found in these dirs is the model definitions themselves (defer_regress/models.py, defer/models.py), which are data fixtures, not behavioral assertions, and cannot serve as a witness.\n- No test is currently recorded as failing against the buggy program, and the earlier extractors' buggy-vs-gold diff of the two regression test files (tests/defer_regress/tests.py, tests/defer/tests.py) confirms the patch added no checked-in regression test.\n\nA Witness must be a test that passes on gold and fails on buggy AND whose assertion tests precisely S_IMPL-1's guard semantics (back-link only when the forward descriptor is not yet cached, to avoid the spurious query on already-fetched deferred inner instances). I could not find any pre-existing oracle test that encodes this deferred-field + reverse-manager-prefetch scenario at all (no test exercising that code branch in a discriminating way), and none fails against the buggy build. Therefore no genuine oracle witness exists for this requirement.\n\nfound=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-1]: Target S_IMPL-1 requires that reverse many-to-one manager get_prefetch_queryset back-link each prefetched child (assign the child's forward FK) only when that forward relation is NOT already cached on the child (i.e. only the guarded path does the assignment). The gold change is exactly `if not self.field.is_cached(rel_obj): setattr(...)` added to create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset; buggy always assigns.\n\nI attempted to synthesize an execution-confirmed discriminating witness. First I had to discover the harness interface (run_test runs the snippet as a standalone pytest-style `test_*` function under /tmp with django importable but NOT settings-configured), then I built a self-contained Django bootstrap (settings.configure + temporary `tests` app whose models.py defines User and Profile(user FK), django.setup(), schema_editor.create_model for both, then ORM operations). That infrastructure probe PASSED against the buggy build, proving ad-hoc models + sqlite in-memory + prefetch run fine, and it confirmed normal prefetch_related('profile_set') back-linking works identically pre/post fix (both assign children to their parents) — so an ordinary prefetch test is NOT a witness.\n\nThe discriminating branch is only exercised when a freshly-prefetched child already has its forward FK object present in the per-instance FK cache *at the instant* get_prefetch_queryset iterates `queryset`. Building that state ad hoc is not possible the way one would for the reported User/Profile-only()/defer scenario: Django materializes brand-new child instances by re-querying inside that loop, and the checked-in regression suites (tests/defer_regress, tests/defer, tests/prefetch_related) contain no model pair / data pattern that reproduces the ticket's deferred-outer + reverse-manager-prefetch sequence. The Oracle Search Agent independently established there is no pre-existing oracle test enforcing this guard; the repo diff confirms the whole patch is just this one guarded assignment, with no accompanying regression test, and I confirmed the reverse FKs that ARE registered in defer_regress (RelatedItem.item / Item.relateditem_set, Request.location / Location) cannot be made to produce an observable query-count or value delta between the two variants without the missing hidden failing scenario/models (tables \"tests_user\"/\"tests_profile\").\n\nI therefore could not obtain a candidate that PASSES on gold and FAILS on buggy while genuinely pinning the guard's \"only back-link when forward field not yet cached\" semantics, and I conclude none qualifies as a genuine witness."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_IMPL-1] (create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target S_IMPL-1 requires that reverse many-to-one manager get_prefetch_queryset back-link each prefetched child (assign the child's forward FK) only when that forward relation is NOT already cached on the child (i.e. only the guarded path does the assignment). The gold change is exactly `if not self.field.is_cached(rel_obj): setattr(...)` added to create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset; buggy always assigns.\n\nI attempted to synthesize an execution-confirmed discriminating witness. First I had to discover the harness interface (run_test runs the snippet as a standalone pytest-style `test_*` function under /tmp with django importable but NOT settings-configured), then I built a self-contained Django bootstrap (settings.configure + temporary `tests` app whose models.py defines User and Profile(user FK), django.setup(), schema_editor.create_model for both, then ORM operations). That infrastructure probe PASSED against the buggy build, proving ad-hoc models + sqlite in-memory + prefetch run fine, and it confirmed normal prefetch_related('profile_set') back-linking works identically pre/post fix (both assign children to their parents) — so an ordinary prefetch test is NOT a witness.\n\nThe discriminating branch is only exercised when a freshly-prefetched child already has its forward FK object present in the per-instance FK cache *at the instant* get_prefetch_queryset iterates `queryset`. Building that state ad hoc is not possible the way one would for the reported User/Profile-only()/defer scenario: Django materializes brand-new child instances by re-querying inside that loop, and the checked-in regression suites (tests/defer_regress, tests/defer, tests/prefetch_related) contain no model pair / data pattern that reproduces the ticket's deferred-outer + reverse-manager-prefetch sequence. The Oracle Search Agent independently established there is no pre-existing oracle test enforcing this guard; the repo diff confirms the whole patch is just this one guarded assignment, with no accompanying regression test, and I confirmed the reverse FKs that ARE registered in defer_regress (RelatedItem.item / Item.relateditem_set, Request.location / Location) cannot be made to produce an observable query-count or value delta between the two variants without the missing hidden failing scenario/models (tables \"tests_user\"/\"tests_profile\").\n\nI therefore could not obtain a candidate that PASSES on gold and FAILS on buggy while genuinely pinning the guard's \"only back-link when forward field not yet cached\" semantics, and I conclude none qualifies as a genuine witness.",
+    "confidence": "Medium"
+  }
+}

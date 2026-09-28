@@ -1,0 +1,118 @@
+{
+  "task_id": "Gson-1",
+  "status": "ok",
+  "duration_seconds": 251.2036260320001,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "Gson-1",
+    "s_vis": [
+      {
+        "id": "r1",
+        "statement": "When resolving the generic type of a field declared in a super-class with type parameters, Gson must account for type arguments actually bound by the concrete subclass chain — e.g. the field `someField` of declared type `T` inside `Foo<T>` must be treated as having type `Integer` when the object being handled is a `Bar` whose parameterized super-type is `Foo<Integer>` — rather than only resolving type variables whose values come from a directly-parameterized parent type.",
+        "subject": "TypeInfoFactory.getTypeInfoForField / getActualType",
+        "hunk_ids": [],
+        "cited_from": "public class Foo<T> {\n  private final T someField;\n  ...\n}\n\npublic class Bar extends Foo<Integer> {\n  public Bar(Integer i) {\n    super(i);\n  }\n}\n\nGson gson = new Gson();\nBar bar1 = new Bar(1);\nString json = gson.toJson(bar1);   // Fails\nBar bar2 = gson.fromJson(\"{\\\"someField\\\":1\", Bar.class);    // Fails\n\nassertEquals(bar1, bar2);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "G1-R1",
+        "statement": "When a field's generic type is a TypeVariable whose declaring generic type appears among the generic superclass declarations reachable from a non-ParameterizedType parent type (e.g. a raw Class), getTypeInfoForField no longer throws UnsupportedOperationException; it returns the actual type argument bound for that TypeVariable along the generic superclass (e.g. a type variable declared on a superclass whose subclass binds it to a concrete type resolves to that concrete type).",
+        "subject": "TypeInfoFactory.getTypeInfoForField / getActualType",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "G1-R2",
+        "statement": "Type resolution for such a TypeVariable recurses through multiple levels of the generic superclass hierarchy (not just the immediate superclass), so that a type variable whose bound value is defined on a more distant ancestor is still resolved to the concrete actual type argument declared at that ancestor level.",
+        "subject": "TypeInfoFactory.getTypeInfoForField / getActualType",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "G1-R3",
+        "statement": "When the type argument reached for the TypeVariable via the superclass hierarchy is itself still a TypeVariable (i.e. bound to another unresolved type variable), resolution continues producing the value until a concrete, non-TypeVariable actual type is reached, and it is that fully-resolved type that getTypeInfoForField returns as the actual type.",
+        "subject": "TypeInfoFactory.getTypeInfoForField / getActualType",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "G1-R1",
+        "entailed": "true",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "r1 directly pins down the scenario: a field of type T declared on superclass Foo<T>, resolved for object Bar (a raw Class, non-ParameterizedType) whose parameterized super-type is Foo<Integer>, must be treated as Integer — returning the type argument bound along the generic superclass chain rather than failing. This is precisely G1-R1's behavior."
+      },
+      {
+        "requirement_id": "G1-R2",
+        "entailed": "false",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "r1 only demonstrates a single-level binding (Bar extends Foo<Integer>); it provides no evidence or description of resolving through multiple levels of the generic superclass hierarchy or type variables bound on a more distant ancestor."
+      },
+      {
+        "requirement_id": "G1-R3",
+        "entailed": "false",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "r1 shows only a direct binding to the concrete type Integer in one hop. It says nothing about the case where the reached type argument is itself still a TypeVariable and resolution must continue through further levels until a concrete non-TypeVariable type is reached."
+      }
+    ],
+    "target_requirement_id": "G1-R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target G1-R2 requires exercising the NEW hierarchy-recursion path added to TypeInfoFactory.getActualType / extractTypeForHierarchy: resolving a field whose generic type is a TypeVariable by walking MULTIPLE generic-superclass levels from a raw (non-ParameterizedType) parent. Because the buggy code contains neither the new do-while branch nor the extractTypeForHierarchy helper, ANY such invocation from a raw Class parent throws UnsupportedOperationException on buggy and resolves on gold — so directionality is not the problem.\n\nThe obstruction is the candidate harness itself combined with what code can actually drive this path. I empirically confirmed (via run_test) that the harness preserves ONLY the @Test method text and discards all class-scope declarations I supply: when I prepended `static class Inner { static final int VAL=7; }` to a valid method, the resulting compile failed with \"cannot find symbol ... Inner\", proving class-level helpers are stripped. Only code inside the single method body survives (local classes inside a method ARE preserved, verified). But Java forbids generic local classes, and this code path fundamentally requires a *generic declaring class* whose field is typed by its own TypeVariable (e.g. `class Ancestor<S,T>{ S s; T t; }`), reachable as a ParameterizedType through ≥2 superclass edges from a raw subclass — a structure that cannot be expressed with the method-body-only content the harness accepts.\n\nThe functional test that exercises this raw-parent path, TypeVariableTest.testSingle (Bar extends Foo<String,Integer> deserialized via Bar.class), is the single failing-on-buggy test and is [VISIBLE], so re-asserting it (or any cosmetically-rewritten variant of it) is explicitly worthless for Witness purposes — no hidden oracle assertion enforces this recursion behavior (confirmed by the Oracle Search Agent's full enumeration). I attempted several method-only formulations and each is blocked by the harness's inability to carry a generic-typed declaring class chain, so no non-visible, independently-verifiable witness for G1-R2 can be produced in this environment."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The direct-lookup path (parentType instanceof ParameterizedType, matching the field TypeVariable against rawParentClass's own type parameters) is unchanged by this patch and predates it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new branch is only reached when parentType is NOT a ParameterizedType (e.g. a raw Class), since a ParameterizedType parent is handled by the earlier branch first."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch introduces a new private helper extractTypeForHierarchy(Type, TypeVariable) that computes the raw class of the parent (Class or ParameterizedType), looks at getGenericSuperclass(), and recurses when the immediate superclass's raw type is not the type variable's generic declaration."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When hierarchy resolution finds nothing (null), getActualType still falls through to the pre-existing UnsupportedOperationException with the 'Expecting parameterized type...' message."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Do-while loop in H0 drives the TypeVariable-unwinding (G1-R3); the recursion stop condition / eventual concrete-type return are governed by whether extractTypeForHierarchy yields a concrete actual type argument."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [G1-R2]: Target G1-R2 concerns the patch's NEW hierarchy-recursion path in TypeInfoFactory.getTypeInfoForField/getActualType (extractTypeForHierarchy): resolving a field TypeVariable by walking MULTIPLE levels of the generic superclass hierarchy when the parent type passed in is not a ParameterizedType (a raw Class). A witness must (a) fail against the buggy program and (b) be drawn from [HIDDEN] oracle content.\n\nI enumerated the full oracle and examined the relevant candidates. The single test reported as failing against the buggy program is `TypeVariableTest::testSingle` (Bar extends Foo<String,Integer> deserialized via Bar.class); it does exercise the new raw-parent hierarchy path, but that file is labeled [VISIBLE], so per the rules it is ineligible as a witness regardless of how well it matches. The only [HIDDEN] file touching this code, TypeInfoFactoryTest, resolves fields whose declaring class is a single-level parent such that the passed OBJ_TYPE is already a ParameterizedType (ObjectWithDifferentFields<Integer>) — those all take the pre-existing direct-lookup branch (unchanged by the patch) and no test involves a multi-level generic-superclass chain, so none of them assert the recursion behavior in G1-R2. I also reviewed the remaining plausibly relevant hidden functional suites (ParameterizedTypesTest, InheritanceTest, ObjectTest, NullObjectAndFieldTest, MapTest, CollectionTest, InstanceCreatorTest) and found no hidden test that walks multiple generic superclass levels to resolve a field TypeVariable from a raw parent.\n\nSince failing-on-buggy is a necessary condition for any witness and the only failing test is the [VISIBLE] testSingle — no [HIDDEN] assertion is being enforced that a repair system had not already seen for this behavior — no valid witness exists in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [G1-R2]: Target G1-R2 requires exercising the NEW hierarchy-recursion path added to TypeInfoFactory.getActualType / extractTypeForHierarchy: resolving a field whose generic type is a TypeVariable by walking MULTIPLE generic-superclass levels from a raw (non-ParameterizedType) parent. Because the buggy code contains neither the new do-while branch nor the extractTypeForHierarchy helper, ANY such invocation from a raw Class parent throws UnsupportedOperationException on buggy and resolves on gold — so directionality is not the problem.\n\nThe obstruction is the candidate harness itself combined with what code can actually drive this path. I empirically confirmed (via run_test) that the harness preserves ONLY the @Test method text and discards all class-scope declarations I supply: when I prepended `static class Inner { static final int VAL=7; }` to a valid method, the resulting compile failed with \"cannot find symbol ... Inner\", proving class-level helpers are stripped. Only code inside the single method body survives (local classes inside a method ARE preserved, verified). But Java forbids generic local classes, and this code path fundamentally requires a *generic declaring class* whose field is typed by its own TypeVariable (e.g. `class Ancestor<S,T>{ S s; T t; }`), reachable as a ParameterizedType through ≥2 superclass edges from a raw subclass — a structure that cannot be expressed with the method-body-only content the harness accepts.\n\nThe functional test that exercises this raw-parent path, TypeVariableTest.testSingle (Bar extends Foo<String,Integer> deserialized via Bar.class), is the single failing-on-buggy test and is [VISIBLE], so re-asserting it (or any cosmetically-rewritten variant of it) is explicitly worthless for Witness purposes — no hidden oracle assertion enforces this recursion behavior (confirmed by the Oracle Search Agent's full enumeration). I attempted several method-only formulations and each is blocked by the harness's inability to carry a generic-typed declaring class chain, so no non-visible, independently-verifiable witness for G1-R2 can be produced in this environment."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[G1-R2] (TypeInfoFactory.getTypeInfoForField / getActualType) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target G1-R2 requires exercising the NEW hierarchy-recursion path added to TypeInfoFactory.getActualType / extractTypeForHierarchy: resolving a field whose generic type is a TypeVariable by walking MULTIPLE generic-superclass levels from a raw (non-ParameterizedType) parent. Because the buggy code contains neither the new do-while branch nor the extractTypeForHierarchy helper, ANY such invocation from a raw Class parent throws UnsupportedOperationException on buggy and resolves on gold — so directionality is not the problem.\n\nThe obstruction is the candidate harness itself combined with what code can actually drive this path. I empirically confirmed (via run_test) that the harness preserves ONLY the @Test method text and discards all class-scope declarations I supply: when I prepended `static class Inner { static final int VAL=7; }` to a valid method, the resulting compile failed with \"cannot find symbol ... Inner\", proving class-level helpers are stripped. Only code inside the single method body survives (local classes inside a method ARE preserved, verified). But Java forbids generic local classes, and this code path fundamentally requires a *generic declaring class* whose field is typed by its own TypeVariable (e.g. `class Ancestor<S,T>{ S s; T t; }`), reachable as a ParameterizedType through ≥2 superclass edges from a raw subclass — a structure that cannot be expressed with the method-body-only content the harness accepts.\n\nThe functional test that exercises this raw-parent path, TypeVariableTest.testSingle (Bar extends Foo<String,Integer> deserialized via Bar.class), is the single failing-on-buggy test and is [VISIBLE], so re-asserting it (or any cosmetically-rewritten variant of it) is explicitly worthless for Witness purposes — no hidden oracle assertion enforces this recursion behavior (confirmed by the Oracle Search Agent's full enumeration). I attempted several method-only formulations and each is blocked by the harness's inability to carry a generic-typed declaring class chain, so no non-visible, independently-verifiable witness for G1-R2 can be produced in this environment.",
+    "confidence": "Medium"
+  }
+}

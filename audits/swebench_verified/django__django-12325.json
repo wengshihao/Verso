@@ -1,0 +1,103 @@
+{
+  "task_id": "django__django-12325",
+  "status": "ok",
+  "duration_seconds": 486.5461376250023,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12325",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a concrete model subclass (multi-table inheritance) declares an explicit OneToOne parent-link field to its concrete parent (the auto-generated-ptr-named field with parent_link=True, e.g. `document_ptr = models.OneToOneField(Document, ..., parent_link=True, related_name='+')`) together with a second, non-parent-link OneToOneField pointing at the same parent model (e.g. `origin = models.OneToOneField(Document, related_name='picking', ...)`), the model definition MUST be accepted — i.e. must NOT raise `django.core.exceptions.ImproperlyConfigured` with a message like 'Add parent_link=True to appname.Picking.origin.' — regardless of the declaration order of the two fields; the parent_link=True field must be selected as the parent's pointer/primary key.",
+        "subject": "django.db.models.base.ModelBase/Options MTI parent-link selection (models with multiple OneToOneFields to the same concrete parent)",
+        "hunk_ids": [],
+        "cited_from": "Failing order from the issue: \"class Picking(Document): document_ptr = models.OneToOneField(Document, on_delete=models.CASCADE, parent_link=True, related_name='+')\n\torigin = models.OneToOneField(Document, related_name='picking', on_delete=models.PROTECT)\nproduces django.core.exceptions.ImproperlyConfigured: Add parent_link=True to appname.Picking.origin.\"; Working order: \"class Picking(Document): origin = models.OneToOneField(Document, related_name='picking', on_delete=models.PROTECT)\n\tdocument_ptr = models.OneToOneField(Document, on_delete=models.CASCADE, parent_link=True, related_name='+')\nWorks\"; and the reporter's closing complaint: \"First issue is that order seems to matter? ... we have explicit parent_link marker\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When gathering the inheritance link to a concrete parent during multi-table-inheritance setup, only OneToOneField instances whose remote_field.parent_link is True are considered as candidate parent links; an ordinary OneToOneField (remote_field.parent_link False) whose target is that same concrete ancestor is not used as the inheritance link. As a result, a model that declares both a parent_link=True OneToOneField to its concrete ancestor and an additional ordinary OneToOneField to that same ancestor uses the genuine parent_link field irrespective of which is declared first/last, instead of the last-declared field winning.",
+        "subject": "django.db.models.base.ModelBase.__new__ (MTI parent-link selection)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During model setup for a subclass with parents but no declared explicit primary key, promoting the selected parent field to be the model's primary key no longer raises ImproperlyConfigured('Add parent_link=True to <field>.') when that field's remote_field.parent_link is not True.",
+        "subject": "django.db.models.options.Options._prepare (pk promotion of parent link)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The visible issue explicitly demonstrates both field declaration orders and requires the parent_link=True field to be selected as the pointer either way, directly pinning down that an ordinary OneToOne to the same ancestor is not used as the inheritance link and that order cannot make the last-declared field win."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis establishes the outer symptom (the model must be accepted without the 'Add parent_link=True' ImproperlyConfigured), but it does not pin down that this is achieved by relaxing pk promotion of a non-parent-link field in Options._prepare; R1's selection change alone would satisfy the visible requirement, so the internal pk-promotion path is not visibly warranted."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r2_no_improperly_configured",
+      "test_source": "import django\nfrom django.conf import settings\n\nsettings.configure(\n    INSTALLED_APPS=['django.contrib.contenttypes'],\n    DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n    SECRET_KEY='x',\n)\ndjango.setup()\n\nfrom django.db import models\n\n\ndef test_r2_no_improperly_configured():\n    class Doc(models.Model):\n        name = models.CharField(max_length=10)\n        class Meta:\n            app_label = 'model_inheritance'\n\n    class Sub(Doc):\n        other = models.OneToOneField(Doc, models.CASCADE)\n        class Meta:\n            app_label = 'model_inheritance'\n\n    # The model must be setup successfully (no ImproperlyConfigured), and\n    # its primary key must be the genuine parent_link pointer field.\n    assert Sub._meta.pk.name == 'doc_ptr'\n    assert Sub._meta.pk.remote_field.parent_link is True\n    assert 'other' in {f.name for f in Sub._meta.local_fields}\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — django.core.exceptions.ImproperlyConfigured: Add parent_link=True to model_inheritance.Sub.other. raised from django/db/models/options.py Options._prepare (line ~256)",
+      "explanation": "Target R2 concerns Options._prepare's pk promotion path: a subclass that has parents and no explicitly declared primary key, where the parent field that gets selected for pk promotion has remote_field.parent_link != True, must no longer raise ImproperlyConfigured('Add parent_link=True to <field>.') (the guard removed by fix H2). My witness defines an MTI concrete model chain: `Sub(Doc)` has no declared explicit pk and declares a local OneToOneField `other` pointing to the same concrete parent model `Doc` but without parent_link=True. At class-creation time in the pre-fix program this field is (mis)selected as the parent link for Doc, lands in `_meta.parents`, and `Options._prepare` then promotes it to the model pk and — because `other.remote_field.parent_link` is False — raises ImproperlyConfigured('Add parent_link=True to model_inheritance.Sub.other.') (confirmed failure, exactly hitting line ~256 in options.py). Under the fixed program model setup succeeds: pk becomes the genuine auto-created `doc_ptr` parent link with remote_field.parent_link True while `other` remains a normal local one-to-one field, so the assert passes (confirmed PASS). This exercises precisely the requirement's relaxed strictness check in Options._prepare in a scenario the oracle's existing visible tests (single-parent-link MTI models) never construct, and the failure/pass direction is gold-passes / buggy-fails."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in MTI (multi-table inheritance) setup: in django/db/models/base.py ModelBase.__new__ builds `parent_links` by iterating every local OneToOneField and keying it by the remote concrete model (`parent_links[make_model_tuple(related)] = field`), so when two OneToOneFields target the same parent the last-processed one overwrites the earlier one; later this chosen field is assigned to `_meta.parents[concrete_base]`. In django/db/models/options.py Options._prepare, when no auto pk exists, `field = next(iter(self.parents.values()))` is promoted to primary_key and then `if not field.remote_field.parent_link: raise ImproperlyConfigured('Add parent_link=True to %s.' % field)` — hence if the non-parent-link field wins the last-wins overwrite the model is rejected even though an explicit parent_link=True field exists."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Field list order dictating which OneToOne wins is by creation order within the model body (document_ptr declared first loses because `origin` later overwrites the dict entry); declaring `origin` first and `document_ptr` second makes the parent_link field win, which is why the reporter observes order-dependence."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing MTI examples in tests are not conclusive for this scenario: tests/one_to_one/models.py Restaurant/ManualPrimaryKey etc. use auto-created or a single parent link; no visible test reproduces two OneToOneFields to the same concrete parent."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 is pure cleanup: it removes the now-unused `ImproperlyConfigured` import from django/db/models/options.py after the exception-raising block was deleted in H2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After H0, Options.parents is only ever populated via model-metaclass code paths that select genuine parent_link fields, so in principle R2's guard (removed in H2) could no longer trigger for the standard MTI scenario; R2 remains an independently observable relaxation of a strictness check at Options._prepare."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Options._prepare in the parents branch still promotes the first parent (next(iter(self.parents.values()))) to primary key via setup_pk when self.pk is None; only the ImproperlyConfigured guard was removed, not the promotion logic."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the oracle test/model files that could plausibly reproduce the R2 scenario: model_inheritance/{models,tests,test_abstract_inheritance}.py, model_inheritance_regress/{models,tests}.py, one_to_one/{models,tests}.py, model_meta/{models,tests}.py, model_options, model_regress/models.py, and proxy_model_inheritance. \n\nR2 requires a subclass with parents but no explicit primary key in which the parent field selected for pk-promotion in Options._prepare has remote_field.parent_link != True (the two-OneToOneFields-to-the-same-concrete-parent case described in the notebook, where Options._prepare would previously raise ImproperlyConfigured('Add parent_link=True to %s.' % field)). \n\nNone of these files defines such a model: the MTI models here (Restaurant/Place, ParkingLot with an explicit parent_link/pk, ParkingLot3/4, Child(FirstParent,SecondParent), Congressman(Person,Politician), etc.) use a single parent link, an explicit non-pointer primary_key, or multiple parents pointing at *distinct* concrete models with genuine parent_link=True fields. There is no assertion that constructs a model reaching the removed guard, and no assertion about pk promotion of a non-parent-link field succeeding. \n\nConsistent with this, the benchmark records \"(none recorded)\" tests failing against the buggy program — which is a necessary precondition for any R2 witness. Since the specific promoted-parent-link-without-parent_link code path is not exercised anywhere in the oracle, no assertion qualifies as a Witness for R2, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.models.options.Options._prepare (pk promotion of parent link)): During model setup for a subclass with parents but no declared explicit primary key, promoting the selected parent field to be the model's primary key no longer raises ImproperlyConfigured('Add parent_link=True to <field>.') when that field's remote_field.parent_link is not True. — not entailed by S_vis (S_vis establishes the outer symptom (the model must be accepted without the 'Add parent_link=True' ImproperlyConfigured), but it does not pin down that this is achieved by relaxing pk promotion of a non-parent-link field in Options._prepare; R1's selection change alone would satisfy the visible requirement, so the internal pk-promotion path is not visibly warranted.); confirmed by a synthesized witness: Target R2 concerns Options._prepare's pk promotion path: a subclass that has parents and no explicitly declared primary key, where the parent field that gets selected for pk promotion has remote_field.parent_link != True, must no longer raise ImproperlyConfigured('Add parent_link=True to <field>.') (the guard removed by fix H2). My witness defines an MTI concrete model chain: `Sub(Doc)` has no declared explicit pk and declares a local OneToOneField `other` pointing to the same concrete parent model `Doc` but without parent_link=True. At class-creation time in the pre-fix program this field is (mis)selected as the parent link for Doc, lands in `_meta.parents`, and `Options._prepare` then promotes it to the model pk and — because `other.remote_field.parent_link` is False — raises ImproperlyConfigured('Add parent_link=True to model_inheritance.Sub.other.') (confirmed failure, exactly hitting line ~256 in options.py). Under the fixed program model setup succeeds: pk becomes the genuine auto-created `doc_ptr` parent link with remote_field.parent_link True while `other` remains a normal local one-to-one field, so the assert passes (confirmed PASS). This exercises precisely the requirement's relaxed strictness check in Options._prepare in a scenario the oracle's existing visible tests (single-parent-link MTI models) never construct, and the failure/pass direction is gold-passes / buggy-fails.",
+    "confidence": "Medium"
+  }
+}

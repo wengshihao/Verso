@@ -1,0 +1,111 @@
+{
+  "task_id": "sympy__sympy-19495",
+  "status": "ok",
+  "duration_seconds": 411.5532925419975,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-19495",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "For cs = ConditionSet(x, Contains(y, Interval(-1,1)), ImageSet(Lambda(n, 2*n*pi + asin(y)), S.Integers)), cs.subs(y, Rational(1,3)) must return the plain substituted ImageSet {2*pi*n + asin(1/3) | n in Integers} — i.e. the same result as cs.xreplace({y: Rational(1,3)}) — and must NOT return a ConditionSet keyed/re-constructed around the concrete substituted value 1/3 (as happened in Out[75]).",
+        "subject": "ConditionSet._eval_subs / ConditionSet.subs",
+        "hunk_ids": [],
+        "cited_from": "In[74]: ConditionSet(x, Contains(y, Interval(-1,1)), _); In[75]: _.subs(y, Rational(1,3)); Out[75]: {1/3 | 1/3 ∊ {2⋅π⋅n + asin(1/3) | n ∊ ℤ} ∧ (1/3 ∈ {2⋅π⋅n + asin(1/3) | n ∊ ℤ})}; In[78]: _74.xreplace({y: Rational(1,3)}); Out[78]: {2⋅π⋅n + asin(1/3) | n ∊ ℤ}; In[80]: _74.subs({y: Rational(1,3)}, simultaneous=True); Out[80]: {2⋅π⋅n + asin(1/3) | n ∊ ℤ}. The issue text: \"a plain `subs` gives a strange result (`Out[75]`). It's as if the bound variable `x` of the ConditionSet were mistaken for a `y`.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For a substitution of the form ConditionSet(sym, condition, base_set).subs(old, new) where old is a free symbol different from the ConditionSet's dummy sym (so the substituted symbol appears in both the condition and the base_set) and where replacing old by new in the condition causes the condition to evaluate to S.true, the result is the substituted base set base_set.subs(old, new) (i.e., the ConditionSet collapses to just that substituted base set), rather than a newly fabricated ConditionSet bound to the substituted value new. Assumptions on the dummy sym are not consulted to filter whether sym actually belongs to the base.",
+        "subject": "ConditionSet._eval_subs",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When substituting a free symbol (old unequal to the dummy sym) whose substituted condition does not evaluate to S.true, the returned CondinionSet is constructed from the substituted condition and substituted base set using the ConditionSet's normal constructor semantics (self.func(self.sym, cond, base)), with the dummy symbol sym left unchanged.",
+        "subject": "ConditionSet._eval_subs",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] pins down exactly this: cs.subs(y,1/3) with y a free symbol (≠ dummy x) whose substituted condition Contains(1/3, Interval(-1,1)) evaluates to S.true must return the substituted base set ImageSet (matching xreplace), not a re-constructed ConditionSet. This is the collapse-to-substituted-base behavior R1 describes, so the essential scenario is entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] only addresses the branch where substituting into the condition makes it S.true (collapse to substituted base run). It says nothing about how a ConditionSet should be re-constructed via self.func(self.sym, cond, base) when the substituted condition does not reduce to S.true, so that behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R2 concerns the ConditionSet._eval_subs free-symbol-substitution path (old != self.sym) in which the substituted condition does NOT evaluate to S.true, asserting the result is built from the substituted condition and base via self.func(self.sym, cond, base) with sym unchanged.\n\nReading both revisions side by side confirms this specific path was NOT changed by the patch. Gold's else-branch is: cond = self.condition.subs(old,new); base = self.base_set.subs(old,new); return self.func(self.sym, cond, base). Buggy's identical code falls through to the same statements whenever old != self.sym (the old==sym block always returns), differing from gold only in that buggy additionally special-cases 'if cond is S.true' — a distinct branch that R2 explicitly EXCLUDES (R2 requires the condition to remain non-true). The entire behavioral delta between buggy and gold lives in that S.true sub-case (which maps to an R1-style requirement), so R2 has no gold-vs-buggy delta.\n\nI empirically verified this by running multiple R2 input configurations (free symbol y substituted in ConditionSet(x, x<y, base) with an ImageSet/Interval base, substituted with a symbolic value y->q and with a non-Symbol Rational y->1/3) against BOTH buggy and gold. Every one PASSED identically on both, returning ConditionSet(x, <substituted non-true cond>, <substituted base>) with sym == x unchanged — proving buggy already implements R2 correctly and exactly as gold does. Moreover, the closest visible oracle assertions (test_subs_CondSet in test_conditionset.py, e.g. ConditionSet(x, x<y, {y,z}).subs(y,w)) already describe precisely this correct non-true path, so no hidden-fact assertion over R2 can discriminate. Since found requires a test that passes on gold and fails on buggy, and no such test exists over R2's semantics (behavioral equivalence on that branch), found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in ConditionSet._eval_subs in sympy/sets/conditionset.py; the failing path is the `old != sym` branch where condition.subs evaluates to S.true: the code then does `return self.func(new, Contains(new, base), base)`, which with a non-Symbol `new` (a Rational) fabricates a ConditionSet bound to that value."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "When the substituted base is a FiniteSet this same S.true branch happens to collapse correctly through ConditionSet.__new__'s FiniteSet handling, which is why solveset_real(Abs(x)-y,x).subs(y, Rational(1,3)) works, whereas the same construction with an ImageSet base misbehaves."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ConditionSet.subs on the bound dummy symbol vs. substitution of a free symbol appearing in both condition and an ImageSet base_set are distinct code paths; existing tests in sympy/sets/tests/test_conditionset.py (test_subs_CondSet) cover the former but not the free-symbol-in-ImageSet-base case."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ImageSet substitution itself works as intended (In[87]/In[88] show imageset.subs renames correctly), so the defect is specifically in the ConditionSet wrapper's handling of substitution of a parameter that occurs in both its condition and its ImageSet base_set."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunky H0, H1, H2 are documentation/formatting-only edits to the class docstring (removing a duplicated 'Notes ====' heading, fixing the wording 'and appears' to 'appears', adding a blank line before the closing docstring). No behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The substantive edit is H3: in ConditionSet._eval_subs' non-dummy (old != self.sym) substitution branch, the prior special case `if cond is S.true: return ConditionSet(new, Contains(new, base), base)` was removed. Now that branch uniformly returns self.func(self.sym, cond, base); a condition that becomes S.true then collapses via ConditionSet.__new__'s existing `elif condition is S.true: return base_set` handling."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Per S_vis notes, the buggy S.true branch collapsed correctly when the substituted base was a FiniteSet (through __new__'s FiniteSet handling) but misbehaved for an ImageSet base with a non-Symbol (Rational) substituted value, which is the case the patch addresses."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The git diff shows the else-branch body plus a new explanatory comment ('...assumptions are ignored.') and the new else: keyword were added, wrapping previously-unconditional statements."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 requires a test whose assertion exercises the ConditionSet._eval_subs free-symbol-substitution path (old != self.sym) in which the substituted condition does NOT evaluate to S.true, and verifies the result is built via self.func(self.sym, cond, base) preserving sym.\n\nInvestigation: Per the S_impl extractor notebook, the patch (hunk H3) only removed the special case `if cond is S.true: return ConditionSet(new, Contains(new, base), base)` inside the non-dummy branch; every documented behavioral indicator (S_vis, S_impl) places the actual bug solely in that S.true sub-case (an ImageSet base with a non-Symbol/Rational substituted value). The non-true sub-path described by R2 was NOT retouched by the patch.\n\nI mechanically confirmed this by running direct R2 scenarios (free symbol y substituted in a ConditionSet(x, x<y, ImageSet(Lambda(n, n*pi+y), Integers)) with y->1 and y->Rational(1,3), i.e. substituted conditions x<1 and x<1/3 that remain non-true) against BOTH gold and buggy. Both produced the identical correct, expected result ConditionSet(x, <sub-cond>, substituted imageset) with sym x unchanged — PASSED on gold AND on buggy. Because buggy already handles the non-true branch correctly and identically to gold, there is no behavioral delta on R2 to detect, so no test (in [VISIBLE] content or any hypothetical [HIDDEN] content) can pass on gold and fail on buggy specifically over R2's semantics. The genuine buggy/gold delta (S.true + ImageSet base) is a distinct requirement (R1-style), not R2.\n\nI also inspected the relevant oracle files (test_conditionset.py, test_fancysets.py, test_solveset.py) — all are labeled [VISIBLE], and their free-symbol ConditionSet-subs assertions (e.g. test_subs_CondSet's ConditionSet(x,x<y,s).subs(y,w) checks) describe exactly this already-correct non-true path; hence even the closest visible assertions could not serve as witnesses (both [VISIBLE] and behaviorally non-discriminating). No currently-failing tests are recorded against buggy, consistent with R2 having no oracle witness.\n\nConclusion: found=false — the oracle contains no witness for R2, because its behavior is not something the patch actually changes from the buggy state."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target R2 concerns the ConditionSet._eval_subs free-symbol-substitution path (old != self.sym) in which the substituted condition does NOT evaluate to S.true, asserting the result is built from the substituted condition and base via self.func(self.sym, cond, base) with sym unchanged.\n\nReading both revisions side by side confirms this specific path was NOT changed by the patch. Gold's else-branch is: cond = self.condition.subs(old,new); base = self.base_set.subs(old,new); return self.func(self.sym, cond, base). Buggy's identical code falls through to the same statements whenever old != self.sym (the old==sym block always returns), differing from gold only in that buggy additionally special-cases 'if cond is S.true' — a distinct branch that R2 explicitly EXCLUDES (R2 requires the condition to remain non-true). The entire behavioral delta between buggy and gold lives in that S.true sub-case (which maps to an R1-style requirement), so R2 has no gold-vs-buggy delta.\n\nI empirically verified this by running multiple R2 input configurations (free symbol y substituted in ConditionSet(x, x<y, base) with an ImageSet/Interval base, substituted with a symbolic value y->q and with a non-Symbol Rational y->1/3) against BOTH buggy and gold. Every one PASSED identically on both, returning ConditionSet(x, <substituted non-true cond>, <substituted base>) with sym == x unchanged — proving buggy already implements R2 correctly and exactly as gold does. Moreover, the closest visible oracle assertions (test_subs_CondSet in test_conditionset.py, e.g. ConditionSet(x, x<y, {y,z}).subs(y,w)) already describe precisely this correct non-true path, so no hidden-fact assertion over R2 can discriminate. Since found requires a test that passes on gold and fails on buggy, and no such test exists over R2's semantics (behavioral equivalence on that branch), found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (ConditionSet._eval_subs) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R2 concerns the ConditionSet._eval_subs free-symbol-substitution path (old != self.sym) in which the substituted condition does NOT evaluate to S.true, asserting the result is built from the substituted condition and base via self.func(self.sym, cond, base) with sym unchanged.\n\nReading both revisions side by side confirms this specific path was NOT changed by the patch. Gold's else-branch is: cond = self.condition.subs(old,new); base = self.base_set.subs(old,new); return self.func(self.sym, cond, base). Buggy's identical code falls through to the same statements whenever old != self.sym (the old==sym block always returns), differing from gold only in that buggy additionally special-cases 'if cond is S.true' — a distinct branch that R2 explicitly EXCLUDES (R2 requires the condition to remain non-true). The entire behavioral delta between buggy and gold lives in that S.true sub-case (which maps to an R1-style requirement), so R2 has no gold-vs-buggy delta.\n\nI empirically verified this by running multiple R2 input configurations (free symbol y substituted in ConditionSet(x, x<y, base) with an ImageSet/Interval base, substituted with a symbolic value y->q and with a non-Symbol Rational y->1/3) against BOTH buggy and gold. Every one PASSED identically on both, returning ConditionSet(x, <substituted non-true cond>, <substituted base>) with sym == x unchanged — proving buggy already implements R2 correctly and exactly as gold does. Moreover, the closest visible oracle assertions (test_subs_CondSet in test_conditionset.py, e.g. ConditionSet(x, x<y, {y,z}).subs(y,w)) already describe precisely this correct non-true path, so no hidden-fact assertion over R2 can discriminate. Since found requires a test that passes on gold and fails on buggy, and no such test exists over R2's semantics (behavioral equivalence on that branch), found=false.",
+    "confidence": "Medium"
+  }
+}

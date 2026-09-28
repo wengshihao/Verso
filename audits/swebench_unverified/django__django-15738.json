@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-15738",
+  "status": "ok",
+  "duration_seconds": 1200.8391071669757,
+  "llm_calls": 35,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15738",
+    "s_vis": [
+      {
+        "id": "REQ1",
+        "statement": "Given a model Authors carrying `project_data_set = model.ForeignKey(ProjectDataSet, on_delete=models.PROTECT)` with `Meta.unique_together = (('project_data_set','state','start_date'),)`, changing it so that `project_data_set = models.ManyToManyField(ProjectDataSet)` AND `unique_together` no longer names the field (removal is required because the resulting many-to-many field cannot be part of unique_together) must be achievable as ONE auto-generated migration whose `migrate` succeeds without raising `ValueError: Found wrong number (0) of constraints for app_authors(project_data_set, state, start_date)` — including when applied to a freshly created, empty database (so the user does not have to split the change into a delete-unique_together-migrate then field-change-migrate sequence of two migrations).",
+        "subject": "MigrationAutodetector operation ordering: converting a unique_together-member FK field into a plain ManyToManyField while removing that unique_together entry, in one makemigrations+migrate cycle",
+        "hunk_ids": [],
+        "cited_from": "\"class Authors(models.Model):\\n\\tproject_data_set = models.ForeignKey(\\n\\t\\tProjectDataSet,\\n\\t\\ton_delete=models.PROTECT\\n\\t)\\n\\tstate = models.IntegerField()\\n\\tstart_date = models.DateField()\\n\\tclass Meta:\\n\\t\\t unique_together = (('project_data_set', 'state', 'start_date'),)\" ... \"when i want to change field project_data_set in Authors model from foreign key field to many to many field I must delete a unique_together, cause it can't be on many to many field.\\nThen my model should be like:\\nclass Authors(models.Model):\\n\\tproject_data_set = models.ManyToManyField(\\n\\t\\tProjectDataSet,\\n\\t)\" ... \"I have error:\\nValueError: Found wrong number (0) of constraints for app_authors(project_data_set, state, start_date)\" ... \"The database is on production, so I can't delete previous initial migrations, and this error isn't depending on database, cause I delete it and error is still the same.\" ... \"My solve is to first delete unique_together, then do a makemigrations and then migrate. After that change the field from foreign key to many to many field, then do a makemigrations and then migrate.\\nBut in this way I have 2 migrations instead of one.\""
+      },
+      {
+        "id": "REQ2",
+        "statement": "When Django applies a migration that removes the `unique_together = (('project_data_set','state','start_date'),)` constraint from Authors (in the combined field-conversion scenario), the process that drops that unique constraint must still find the constraint it is deleting — it must not only find the wrong number (0) of DB constraints for columns (project_data_set, state, start_date) on the app_authors table and abort with a ValueError.",
+        "subject": "SchemaEditor.alter_unique_together / _delete_composed_index resolution of the unique constraint over (project_data_set, state, start_date)",
+        "hunk_ids": [],
+        "cited_from": "\"ValueError: Found wrong number (0) of constraints for app_authors(project_data_set, state, start_date)\" (reproduced in source at django/db/backends/base/schema.py `_delete_composed_index`, invoked from `alter_unique_together`, which raises when len(constraint_names) != 1)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the autodetector generates an AddField for a field on an app/model and the same-change computation also removes a field of that identical name from that model (so the field name must be dropped then re-created, e.g. a ForeignKey/concrete field being replaced by a plain ManyToManyField), the resulting set of migration operations orders the re-adding AddField strictly after the matching RemoveField of that field name — never before it — so a single combined migration can apply both without relying on incidental list order.",
+        "subject": "MigrationAutodetector changes() — generated migration operations for adding a field on app/model",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Every AddField operation generated through _generate_added_field (a genuinely new field or the add-half of a field-type replacement) is authored such that it runs only after any removal of the same app/model/field-name tuple; for a field name with no corresponding removal in the change graph this dependency imposes no extra ordering.",
+        "subject": "MigrationAutodetector._generate_added_field — the auto-dependency set of every emitted AddField",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "REQ1 establishes the desired outcome (the FK→M2M-without-unique_together change must be achievable as one auto-generated migration that applies cleanly) and the scenario (same-name field reused), which plausibly demands AddField-after-RemoveField ordering. But S_vis never states any ordering rule for generated operations or mentions relying on operation order; its cited evidence is a user issue and the outcome rather than the internal changes() ordering, so it does not pin down this specific mechanism."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "REQ1 and REQ2 concern the external single-migration outcome and SchemaEditor constraint resolution respectively; neither mentions autodetector operation ordering. Whether 'one auto-generated migration works' requires R2's auto-dependency mechanism is plausible but the visible info contains nothing about dependency sets of emitted AddFields, so the specific mechanism is not actually pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness",
+      "test_source": "def test_witness():\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=[\n                \"django.contrib.contenttypes\",\n                \"django.contrib.auth\",\n            ],\n            DATABASES={},\n            SECRET_KEY=\"x\",\n        )\n    django.setup()\n    from django.db import models\n    from django.db.migrations.autodetector import MigrationAutodetector\n    from django.db.migrations.questioner import MigrationQuestioner\n    from django.db.migrations.state import ModelState, ProjectState\n\n    def make(ms_list):\n        ps = ProjectState()\n        for ms in ms_list:\n            ps.add_model(ms.clone())\n        return ps\n\n    publisher = ModelState(\n        \"testapp\", \"Publisher\", [(\"id\", models.AutoField(primary_key=True))]\n    )\n    author_before = ModelState(\n        \"testapp\",\n        \"Author\",\n        [\n            (\"id\", models.AutoField(primary_key=True)),\n            (\"pubs\", models.ForeignKey(\"testapp.Publisher\", models.CASCADE)),\n        ],\n        options={\"unique_together\": {(\"pubs\",)}},\n    )\n    author_after = ModelState(\n        \"testapp\",\n        \"Author\",\n        [\n            (\"id\", models.AutoField(primary_key=True)),\n            (\"pubs\", models.ManyToManyField(\"testapp.Publisher\")),\n        ],\n    )\n    before = make([publisher, author_before])\n    after = make([publisher, author_after])\n    changes = MigrationAutodetector(\n        before, after, MigrationQuestioner()\n    )._detect_changes()\n    ops = [\n        o\n        for mig in changes.get(\"testapp\", [])\n        for o in mig.operations\n    ]\n    types = [o.__class__.__name__ for o in ops]\n    rm = next(i for i, t in enumerate(types) if t == \"RemoveField\")\n    add = next(i for i, t in enumerate(types) if t == \"AddField\")\n    # The re-added ManyToManyField ('pubs') must appear strictly after the\n    # matching RemoveField so a combined migration can drop then recreate it.\n    assert rm < add, types\n    assert ops[rm].name == \"pubs\" and ops[add].name == \"pubs\"",
+      "gold_result": "PASSED — autodetector emissions are [AlterUniqueTogether, RemoveField, AddField]; RemoveField('pubs') strictly precedes AddField('pubs').",
+      "buggy_result": "FAILED (StopIteration / AssertionError) — autodetector emitted only [AlterUniqueTogether]: the RemoveField+AddField replacement pair is absent, so no RemoveField/AddField ordering guarantee holds.",
+      "explanation": "R1 states that when the autodetector emits an AddField for a field-name that a same-change computation also removes (FK/concrete field replaced by a plain ManyToManyField on the same app/model/name), a combined migration must order the re-adding AddField strictly after the matching RemoveField — a guarantee wired in gold's fixed _generate_added_field, which seeds `dependencies = [(app_label, model_name, field_name, False)]` so the AddField depends on that same-named removal.\n\nI constructed a scenario exercising exactly the reported interplay: Author.pubs goes from ForeignKey->Publisher (and is part of the unique_together ('pubs',)) to a plain ManyToManyField->Publisher while unique_together is dropped. Probing the visible code/models, on GOLD the autodetector yields the correct sequence ['AlterUniqueTogether','RemoveField','AddField'] (RemoveField 'pubs' strictly before AddField 'pubs'), and the test PASSES. On the BUGGY (pre-fix) build the identical source yields only ['AlterUniqueTogether'] — the Remove/Add replacement pair is entirely absent (fails via a StopIteration looking for a RemoveField), so the migration no longer contains and correctly orders the drop-then-re-add of 'pubs'. Both runs were executed with the identical test source (PASS gold / FAIL buggy), so the direction (gold passes, buggy fails) is empirically confirmed.\n\nThis is not a re-wording of a visible assertion: the existing visible autodetector tests either drop a field from a unique_together without re-adding it as an M2M of the same name (test_foo_together_remove_fk) or convert a field to/from an m2m without a concurrent unique_together removal on that same field (test_concrete_field_changed_to_many_to_many / test_many_to_many_changed_to_concrete_field). My scenario (FK -> M2M on the very field-name that was part of the being-dropped unique_together) is the combined configuration whose correct Remove-then-Add ordering depends specifically on the self-removal dependency added by the fix, so it discriminates gold from buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible repo is the full Django source tree (working state prior to this fix); the reported bug lives in the migrations machinery, not in any app code shipped here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The exact error message `ValueError: Found wrong number (%s) of constraints for %s(%s)` is raised in django/db/backends/base/schema.py in BaseDatabaseSchemaEditor._delete_composed_index (called from alter_unique_together when dropping a removed unique_together tuple). It triggers when DB constraint introspection finds != 1 matching constraint over the columns."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Mechanism relevant to the fix: FK → plain ManyToManyField on the same model+field name is handled by the autodetector/schema as RemoveField (drops the FK column) plus AddField (creates only an auto through-table, no column on the model). If the column is gone before the AlterUniqueTogether drop runs, the DB no longer exposes project_data_set as a column and introspection reports 0 constraints, producing the reported ValueError. A successful combined single migration therefore needs unique_together/index_together removals ordered relative to the field operations so the dropping finds the constraint while the column still exists."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Precedent tests already assert the analogous ordering for a plain field removal: tests/migrations/test_autodetector.py test_foo_together_remove_fk expects operations [AlterUniqueTogether, AlterIndexTogether, RemoveField], with comment 'Removed fields will be removed after updating index/unique_together.', and test_concrete_field_changed_to_many_to_many shows FK/field→M2M is emitted as RemoveField/AddField ops rather than a single AlterField."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The autodetector tests (tests/migrations/test_autodetector.py) and state tests (tests/migrations/test_state.py) are where any regression test for this ticket would most plausibly be added; no existing test references a 'project_data_set' model name or ticket number."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only edits django/db/migrations/autodetector.py in MigrationAutodetector._generate_added_field: the local `dependencies` list is initialized with [(app_label, model_name, field_name, False)] — the tuple that check_dependency() matches against a RemoveField of the same app/model/name — instead of starting empty."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "R1 and R2 describe the same underlying effect at the level of generated-operation ordering vs. the declaration on the emitted AddField; they are kept because they are independently observable (R1 via the operation sequence the autodetector yields, R2 only when the internal-to-external dependency forces re-adding after removal)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_generate_added_field is reached both from generate_added_fields() (for genuinely new fields) and from generate_altered_fields()'s else-branch (FK/concrete <-> M2M type changes emitted as a RemoveField+AddField pair on the same field name)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The reported bug (ValueError from BaseDatabaseSchemaEditor._delete_composed_index while dropping a removed unique_together tuple) is upstream of this method's dependency bookkeeping; the notes from earlier stages attribute the crash to the FK column becoming unavailable to the constraint-drop before the drop executes."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1 is about MigrationAutodetector.changes() producing a RemoveField-then-AddField ordering for the FK/concrete-field-replaced-by-ManyToMany scenario, guaranteed by the dependency bookkeeping added to _generate_added_field. I searched the migration oracle test tree for any test that asserts this ordering from autodetected changes.\n\nFINDINGS:\n- No test is recorded as currently failing against the buggy program (\"none recorded\"), which is already a red flag since any witness must both pass on gold and fail on buggy.\n- The only file that exercises MigrationAutodetector.changes() ordering for exactly this scenario is tests/migrations/test_autodetector.py (e.g. test_concrete_field_changed_to_many_to_many, test_many_to_many_changed_to_concrete_field, test_foo_together_remove_fk, etc.). That entire file is labeled [VISIBLE], so per the witness rules none of its assertions can ever serve as a Witness regardless of how well they match R1 - a Witness must rest on [HIDDEN] content, and these assertions are drawn from content the repair machinery already saw.\n- I also read the other candidate migration/schema test files (tests/migrations/test_state.py, test_operations.py, test_commands.py, and tests/schema/tests.py); all are labeled [VISIBLE] and none assert the R1 autodetector op-ordering requirement (they concern per-operation DB state/DDL execution rather than the generated operation sequence R1 describes).\n- No [HIDDEN] test file exercising this autodetector ordering behavior exists in the oracle.\n\nCONCLUSION: There is no HIDDEN oracle test that genuinely tests R1 (an autodetector sequencing assertion orthogonal to currently-passing visible content). Nothing in the oracle qualifies as a witness for R1, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (MigrationAutodetector changes() — generated migration operations for adding a field on app/model): When the autodetector generates an AddField for a field on an app/model and the same-change computation also removes a field of that identical name from that model (so the field name must be dropped then re-created, e.g. a ForeignKey/concrete field being replaced by a plain ManyToManyField), the resulting set of migration operations orders the re-adding AddField strictly after the matching RemoveField of that field name — never before it — so a single combined migration can apply both without relying on incidental list order. — not entailed by S_vis (REQ1 establishes the desired outcome (the FK→M2M-without-unique_together change must be achievable as one auto-generated migration that applies cleanly) and the scenario (same-name field reused), which plausibly demands AddField-after-RemoveField ordering. But S_vis never states any ordering rule for generated operations or mentions relying on operation order; its cited evidence is a user issue and the outcome rather than the internal changes() ordering, so it does not pin down this specific mechanism.); confirmed by a synthesized witness: R1 states that when the autodetector emits an AddField for a field-name that a same-change computation also removes (FK/concrete field replaced by a plain ManyToManyField on the same app/model/name), a combined migration must order the re-adding AddField strictly after the matching RemoveField — a guarantee wired in gold's fixed _generate_added_field, which seeds `dependencies = [(app_label, model_name, field_name, False)]` so the AddField depends on that same-named removal.\n\nI constructed a scenario exercising exactly the reported interplay: Author.pubs goes from ForeignKey->Publisher (and is part of the unique_together ('pubs',)) to a plain ManyToManyField->Publisher while unique_together is dropped. Probing the visible code/models, on GOLD the autodetector yields the correct sequence ['AlterUniqueTogether','RemoveField','AddField'] (RemoveField 'pubs' strictly before AddField 'pubs'), and the test PASSES. On the BUGGY (pre-fix) build the identical source yields only ['AlterUniqueTogether'] — the Remove/Add replacement pair is entirely absent (fails via a StopIteration looking for a RemoveField), so the migration no longer contains and correctly orders the drop-then-re-add of 'pubs'. Both runs were executed with the identical test source (PASS gold / FAIL buggy), so the direction (gold passes, buggy fails) is empirically confirmed.\n\nThis is not a re-wording of a visible assertion: the existing visible autodetector tests either drop a field from a unique_together without re-adding it as an M2M of the same name (test_foo_together_remove_fk) or convert a field to/from an m2m without a concurrent unique_together removal on that same field (test_concrete_field_changed_to_many_to_many / test_many_to_many_changed_to_concrete_field). My scenario (FK -> M2M on the very field-name that was part of the being-dropped unique_together) is the combined configuration whose correct Remove-then-Add ordering depends specifically on the self-removal dependency added by the fix, so it discriminates gold from buggy.",
+    "confidence": "Medium"
+  }
+}

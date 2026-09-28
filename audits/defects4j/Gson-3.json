@@ -1,0 +1,116 @@
+{
+  "task_id": "Gson-3",
+  "status": "ok",
+  "duration_seconds": null,
+  "llm_calls": null,
+  "error": null,
+  "record": {
+    "task_id": "Gson-3",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Gson deserialization into a ConcurrentNavigableMap interface type (e.g. ConcurrentNavigableMap<Integer, String>) must not throw IllegalArgumentException and must produce a working map that holds the JSON contents: parsing \"{\"123\":\"456\"}\" yields a map of size 1 that containsKey(123) and get(123) == \"456\", which serializes back to \"{\"123\":\"456\"}\".",
+        "subject": "ConstructorConstructor.newDefaultImplementationConstructor / MapTypeAdapter construction for ConcurrentNavigableMap raw type",
+        "hunk_ids": [],
+        "cited_from": "testConcurrentNavigableMap: \"Type typeOfMap = new TypeToken<ConcurrentNavigableMap<Integer, String>>() {}.getType(); ConcurrentNavigableMap<Integer, String> map = gson.fromJson(\"{\\\"123\\\":\\\"456\\\"}\", typeOfMap); assertEquals(1, map.size()); assertTrue(map.containsKey(123)); assertEquals(\"456\", map.get(123)); String json = gson.toJson(map); assertEquals(\"{\\\"123\\\":\\\"456\\\"}\", json);\" — and issue text: \"Desirialize from json string ... Original state is expected. IllegalArgumentException is thrown\" and \"Gson works only with class type field such as ConcurrentSkipListMap. Good programming style is using interface type such as ConcurrentNavigableMap.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When constructing a default instance for a Map whose raw type is the ConcurrentNavigableMap interface (a SortedMap subtype), Gson must yield a concrete ConcurrentNavigableMap implementation instance (so deserializing into a POJO field declared with the interface type such as ConcurrentNavigableMap must not throw an argument-type-mismatch IllegalArgumentException during field assignment).",
+        "subject": "ConstructorConstructor.newDefaultImplementationConstructor raw-type dispatch for ConcurrentNavigableMap",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"1. Create POJO with filled ConcurrentNavigableMap field 2. Sirialize to json string 3. Desirialize from json string ... What is the expected output? What do you see instead? Original state is expected. IllegalArgumentException is thrown\" and the visible dispatch in ConstructorConstructor.java: \"if (Map.class.isAssignableFrom(rawType)) { if (SortedMap.class.isAssignableFrom(rawType)) { return ... new TreeMap<Object, Object>(); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-1",
+        "statement": "For a Map type whose raw class is assignable to java.util.concurrent.ConcurrentNavigableMap (and which lacks an accessible no-arg constructor, reaching the default-implementation path), the ObjectConstructor's construct() returns a java.util.concurrent.ConcurrentSkipListMap instance (rather than TreeMap or any non-concurrent map), even though such a raw type is also assignable to SortedMap and ConcurrentMap.",
+        "subject": "com.google.gson.internal.ConstructorConstructor.newDefaultImplementationConstructor(map default construction)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMP-2",
+        "statement": "For a Map type whose raw class is assignable to java.util.concurrent.ConcurrentMap but NOT to java.util.concurrent.ConcurrentNavigableMap (e.g., the ConcurrentMap interface), the ObjectConstructor's construct() returns a java.util.concurrent.ConcurrentHashMap instance.",
+        "subject": "com.google.gson.internal.ConstructorConstructor.newDefaultImplementationConstructor(map default construction)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 requires no IllegalArgumentException and a working map for ConcurrentNavigableMap deserialization, and R2 requires a concrete ConcurrentNavigableMap implementation instance (not the TreeMap returned by the visible SortedMap bug path); the issue text even names ConcurrentSkipListMap as the expected working type. This pins down returning a ConcurrentSkipListMap rather than a TreeMap or non-concurrent map."
+      },
+      {
+        "requirement_id": "SIMP-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 and R2 concern only the ConcurrentNavigableMap case; neither mentions ConcurrentMap or ConcurrentHashMap or the dispatch branch where a map is assignable to ConcurrentMap but not ConcurrentNavigableMap, so S_vis gives no basis for the concrete ConcurrentHashMap return behavior described."
+      }
+    ],
+    "target_requirement_id": "SIMP-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "defaultConcurrentMapIsConcurrentHashMap",
+      "test_source": "import org.junit.Test;\nimport java.util.concurrent.ConcurrentMap;\nimport java.util.concurrent.ConcurrentHashMap;\nimport com.google.gson.Gson;\nimport com.google.gson.reflect.TypeToken;\nimport static org.junit.Assert.assertTrue;\n\n  @Test public void defaultConcurrentMapIsConcurrentHashMap() throws Exception {\n    Gson gson = new Gson();\n    TypeToken<ConcurrentMap<Integer, String>> type =\n        new TypeToken<ConcurrentMap<Integer, String>>() {};\n    ConcurrentMap<Integer, String> map =\n        gson.fromJson(\"{\\\"123\\\":\\\"456\\\"}\", type.getType());\n    assertTrue(map instanceof ConcurrentHashMap);\n  }",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (java.lang.ClassCastException: class java.util.LinkedHashMap cannot be cast to class java.util.concurrent.ConcurrentMap)",
+      "explanation": "Target SIMP-2 requires that for a Map whose raw type is assignable to java.util.concurrent.ConcurrentMap but NOT to ConcurrentNavigableMap (here the ConcurrentMap interface with an Integer/String parameterization), the default ObjectConstructor's construct() must yield a java.util.concurrent.ConcurrentHashMap instance. Gold ConstructorConstructor.java has the ConcurrentMap branch (after the ConcurrentNavigableMap branch) returning new ConcurrentHashMap; buggy has no concurrent branches, so ConcurrentMap (an interface with no no-arg constructor) falls through to the parameterized-type branch and returns a LinkedHashMap (its cache-adapter path even fails the ConcurrentMap cast). My test deserializes JSON into a ConcurrentMap<Integer,String> and asserts the resulting runtime instance IS a ConcurrentHashMap. This discriminates gold (ConcurrentHashMap) from buggy (LinkedHashMap). It is genuinely distinct from the visible testConcurrentMap in MapTest, which only asserts Map-interface semantics (containsKey/get/serialization) that a LinkedHashMap also satisfies and thus passes on BOTH versions without pinning the concrete default type; no visible/hidden test asserts the concrete ConcurrentHashMap type for ConcurrentMap construction, so no visible assertion already enforces SIMP-2. Confirmed by direct execution: gold PASSED, buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The only production file present is gson/src/main/java/com/google/gson/internal/ConstructorConstructor.java; the only test file is gson/src/test/java/com/google/gson/functional/MapTest.java. Both files already appear to contain post-root-cause states (testConcurrentNavigableMap and testConcurrentSkipListMap are present in MapTest), but ConstructorConstructor.java currently has no special-case branch for concurrent map types, so TreeMap still falls out of the SortedMap-assignable branch for ConcurrentNavigableMap."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ConstructorConstructor.newDefaultImplementationConstructor only special-cases SortedSet/EnumSet/Set/Queue for collections and SortedMap vs non-SortedMap (with a parameterized-non-String-key branch) for maps; there is no branch distinguishing ConcurrentMap/ConcurrentNavigableMap beyond those."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ConcurrentNavigableMap extends NavigableMap which extends SortedMap, so under the current dispatch SortedMap.class.isAssignableFrom(ConcurrentNavigableMap.class) is true and the returned default is a java.util.TreeMap (non-concurrent)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue is tracked as google-gson issue 624, reproduced against Gson 2.3.1 on Java 8 / Windows 7, reported 29 Jan 2015 by dkhomya...@gmail.com."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds imports of the four java.util.concurrent types and contributes no behavior of its own; all observable behavior is introduced by H1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new ConcurrentNavigableMap and ConcurrentMap branches are placed ahead of the pre-existing SortedMap branch; because ConcurrentNavigableMap is both a SortedMap and a ConcurrentMap, branch ordering is what routes it to ConcurrentSkipListMap."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "These map-default branches in newDefaultImplementationConstructor are reached only via ConstructorConstructor.get() when newDefaultConstructor finds no no-arg constructor (i.e. raw types that are interfaces/abstract); concrete classes like ConcurrentSkipListMap/ConcurrentHashMap with public no-arg constructors are normally handled earlier by reflection."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-2]: The target requirement SIMP-2 concerns the decision in ConstructorConstructor.newDefaultImplementationConstructor to return a java.util.concurrent.ConcurrentHashMap instance when constructing a map whose raw type is ConcurrentMap (but not ConcurrentNavigableMap). The only tests in the oracle that exercise concurrent-map default construction are testConcurrentMap and testConcurrentNavigableMap in gson/src/test/java/com/google/gson/functional/MapTest.java. I read that entire file: it is labeled [VISIBLE] (content already seen — it even already contains the post-fix tests testConcurrentNavigableMap/testConcurrentSkipListMap embedded in the visible MapTest). Per the oracle rules, a Witness may only rest on [HIDDEN] assertions; content drawn from [VISIBLE] material can never serve as a witness, regardless of how well it matches the requirement. I additionally surveyed the other map/collection/reflection-oriented oracle files (DefaultMapJsonSerializerTest, CollectionTest, DefaultTypeAdaptersTest, MapAsArrayTypeAdapterTest, ObjectTest, MoreSpecificTypeSerializationTest, ConcurrencyTest, TypeVariableTest, UncategorizedTest, ParameterizedTypesTest, InstanceCreatorTest, InterfaceTest, RawSerializationTest, InheritanceTest) and found no [HIDDEN] test anywhere that asserts the ConcurrentMap→ConcurrentHashMap default construction (or tests ConcurrentMap/ConcurrentNavigableMap type instantiation at all). Consequently the oracle contains no [HIDDEN] test that genuinely enforces SIMP-2's behavior, so no witness exists (found=false)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMP-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMP-2] (com.google.gson.internal.ConstructorConstructor.newDefaultImplementationConstructor(map default construction)): For a Map type whose raw class is assignable to java.util.concurrent.ConcurrentMap but NOT to java.util.concurrent.ConcurrentNavigableMap (e.g., the ConcurrentMap interface), the ObjectConstructor's construct() returns a java.util.concurrent.ConcurrentHashMap instance. — not entailed by S_vis (R1 and R2 concern only the ConcurrentNavigableMap case; neither mentions ConcurrentMap or ConcurrentHashMap or the dispatch branch where a map is assignable to ConcurrentMap but not ConcurrentNavigableMap, so S_vis gives no basis for the concrete ConcurrentHashMap return behavior described.); confirmed by a synthesized witness: Target SIMP-2 requires that for a Map whose raw type is assignable to java.util.concurrent.ConcurrentMap but NOT to ConcurrentNavigableMap (here the ConcurrentMap interface with an Integer/String parameterization), the default ObjectConstructor's construct() must yield a java.util.concurrent.ConcurrentHashMap instance. Gold ConstructorConstructor.java has the ConcurrentMap branch (after the ConcurrentNavigableMap branch) returning new ConcurrentHashMap; buggy has no concurrent branches, so ConcurrentMap (an interface with no no-arg constructor) falls through to the parameterized-type branch and returns a LinkedHashMap (its cache-adapter path even fails the ConcurrentMap cast). My test deserializes JSON into a ConcurrentMap<Integer,String> and asserts the resulting runtime instance IS a ConcurrentHashMap. This discriminates gold (ConcurrentHashMap) from buggy (LinkedHashMap). It is genuinely distinct from the visible testConcurrentMap in MapTest, which only asserts Map-interface semantics (containsKey/get/serialization) that a LinkedHashMap also satisfies and thus passes on BOTH versions without pinning the concrete default type; no visible/hidden test asserts the concrete ConcurrentHashMap type for ConcurrentMap construction, so no visible assertion already enforces SIMP-2. Confirmed by direct execution: gold PASSED, buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "task_id": "JacksonXml-5",
+  "status": "ok",
+  "duration_seconds": 170.70351874300013,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "JacksonXml-5",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Serializing an instance of a class annotated with @JacksonXmlRootElement(localName=\"...\") through an XmlMapper that honors annotations (annotations enabled) produces XML whose root element name is that annotated localName — even when a no-annotations copy of the mapper was created/used beforehand.",
+        "subject": "XmlMapper.serializeValue / XmlSerializerProvider root-name lookup",
+        "hunk_ids": [],
+        "cited_from": "testCopyWith in MapperCopyTest.java: \"String xml1 = xmlMapper.writeValueAsString(new Pojo282()); ... if (!xml1.contains(\"AnnotatedName\")) { fail(\"Should use name 'AnnotatedName', xml = \"+xml1); }\"; class declaration \"@JacksonXmlRootElement(localName = \"AnnotatedName\") static class Pojo282\". Issue expectation: \"the second print statement should use the annotation's localName\" (\"<myname/>\") rather than the class name."
+      },
+      {
+        "id": "R2",
+        "statement": "Serializing an instance of a @JacksonXmlRootElement-annotated class through an XmlMapper obtained as a copy of an annotations-using XmlMapper with MapperFeature.USE_ANNOTATIONS (and FAIL_ON_EMPTY_BEANS) disabled produces a root element that uses the class name, NOT the annotation's localName.",
+        "subject": "XmlMapper.copy() with MapperFeature.USE_ANNOTATIONS disabled / root-name lookup",
+        "hunk_ids": [],
+        "cited_from": "testCopyWith in MapperCopyTest.java: \"final ObjectMapper xmlMapperNoAnno = xmlMapper.copy().disable(MapperFeature.USE_ANNOTATIONS).disable(SerializationFeature.FAIL_ON_EMPTY_BEANS); ... if (!xml2.contains(\"Pojo282\") || xml2.contains(\"AnnotatedName\")) { fail(\"Should NOT use name 'AnnotatedName' but 'Pojo282', xml = \"+xml1); }\""
+      },
+      {
+        "id": "R3",
+        "statement": "Calling copy() on an XmlMapper returns a distinct XmlMapper instance that is not the same object as its source, and whose configuration (serialization feature flags, generator/parser features, XML text-element name) equals the source mapper's at copy time.",
+        "subject": "XmlMapper.copy() must produce an independent mapper (not same instance)",
+        "hunk_ids": [],
+        "cited_from": "testMapperCopy in MapperCopyTest.java: \"XmlMapper mapper2 = mapper1.copy(); assertNotSame(mapper1, mapper2); ... assertEquals(xf1.getXMLTextElementName(), xf2.getXMLTextElementName()); ... assertEquals(\"serialization features did not get copied\", sc1.getSerializationFeatures(), sc2.getSerializationFeatures());\""
+      },
+      {
+        "id": "R4",
+        "statement": "Calling copy() on a DefaultSerializerProvider that is an XmlSerializerProvider returns a distinct provider instance that is not the same object.",
+        "subject": "XmlSerializerProvider .copy() must return a distinct provider",
+        "hunk_ids": [],
+        "cited_from": "testSerializerProviderCopy in MapperCopyTest.java: \"DefaultSerializerProvider copy = provider.copy(); assertNotSame(provider, copy);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "The XmlSerializerProvider obtained from XmlSerializerProvider.copy() (via the @since 2.8.9 protected copy constructor) uses a fresh, independent XmlRootNameLookup that is decoupled from the source provider's lookup cache, so that when serializeValue resolves a root name for a serialized type (when no explicit root name is configured) it reflects only the current provider/config and is not contaminated by a root name previously cached under a differently-configured mapper or source provider (e.g. serializing a @JacksonXmlRootElement-annotated type first with annotations enabled and then the same type through a copy with annotations disabled yields the class-derived root name on the copy, not the annotation's cached name).",
+        "subject": "XmlSerializerProvider.copy()/protected constructor root-name lookup decoupling, XmlMapper.copy serialization",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis (R2) pins down the observable outcome — a copy with USE_ANNOTATIONS disabled yields the class-derived root name rather than the previously produced annotated name — which matches the illustrative scenario of S_impl. However, S_impl's core commitment is a specific mechanism (fresh independent XmlRootNameLookup constructed in XmlSerializerProvider.copy() via the protected copy constructor, decoupled from the source cache); no S_vis entry mentions a root-name lookup cache, contamination, or re-creation of that lookup, and R3/R4 only assert generic instance-distinctness. The visible tests specify expected outputs but do not force the specific decoupling implementation, so coverage is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R1 asks for a concrete executable assertion that XmlSerializerProvider.copy() (via mapper.copy()) installs a fresh, decoupled XmlRootNameLookup so a root name cached under a differently-configured source doesn't contaminate serializeValue's re-resolution.\n\nI built the obvious candidate (annotated @JacksonXmlRootElement(localName=\"AnnotatedName\") type; serialize on the source to prime the lookup, then mapper.copy() with USE_ANNOTATIONS+FAIL_ON_EMPTY_BEANS disabled, assert the copy emits the class-derived name). It confirms the mechanism cleanly: PASSED on gold, FAILED on buggy (buggy emits <AnnotatedName>). I also probed the reverse direction (source with annotations disabled, copy that re-enables) but it is not cleanly expressible with the available API and still reduces to the same single cache-contamination fact.\n\nHowever, this discriminator is byte-for-byte the same behavioral observation already pinned by the [VISIBLE] MapperCopyTest.testCopyWith (dataformat-xml#282): it uses the identical fixture class name, identical config toggles, and the same expectation -- only my Pojo282/local-name literals differ. Per the witness rules this relabeling of an already-visible assertion is worthless; a genuine Witness must rest on facts that were actually hidden.\n\nThe mechanism R1 describes has only one observable consequence: a root name cached on the source provider (only achievable via the @JacksonXmlRootElement/annotations path, since ROOT_NAME config overrides are resolved in _rootNameFromConfig() before the lookup ever runs) re-resolves on a differently-configured copy. Every possible concrete input therefore reduces to the same contamination scenario already published in the visible MapperCopyTest, so no genuinely distinct hidden assertion exists for R1. The Oracle Search Agent reached the same conclusion (no HIDDEN test covers it). I therefore report found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "All visible files: main source src/main/java/com/fasterxml/jackson/dataformat/xml/ser/XmlSerializerProvider.java; tests src/test/java/com/fasterxml/jackson/dataformat/xml/MapperCopyTest.java and XmlTestBase.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "XmlSerializerProvider.copy() returns new XmlSerializerProvider(this) via the @since 2.8.9 protected constructor; its comment references [dataformat-xml#282] and notes that the root name lookup should NOT be copied (yet the code assigns _rootNameLookup = src._rootNameLookup), i.e. the fix targets how the copied provider shares _rootNameLookup across differently-configured mappers."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test class MapperCopyTest extends XmlTestBase (a junit3 TestCase); newMapper() = new XmlMapper()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Pojo282 (the #282 fixture) carries public field a = 3 so FAIL_ON_EMPTY_BEANS disabling matters only for the no-annotation copy."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "R3 and R4 constrain pre-existing copy behavior that the #282 fix path (the provider copy constructor) must not regress."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Root-name selection in serializeValue goes through _rootNameFromConfig() then _rootNameLookup.findRootName(cls/_type, _config)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch touches only the @since 2.8.9 protected copy constructor XmlSerializerProvider(XmlSerializerProvider), which is invoked by copy() (and inherited copy paths); the 3-arg constructor (src, config, f) used by createInstance still shares src._rootNameLookup and is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "That same 3-arg constructor's comment [dataformat-xml#282] also claims root-name lookup should not be copied, yet retains the shared assignment; only the copy() path was fixed in this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "XmlSerializerProvider.copy() returns new XmlSerializerProvider(this), so the observable effect of H0 flows through any mapper.copy() that re-instantiates its provider via copy()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Root-name selection order in serializeValue is: _rootNameFromConfig() first, then _rootNameLookup.findRootName(cls/rootType, _config)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "testCopyWith() (dataformat-xml#282) checks that copy().disable(USE_ANNOTATIONS).disable(FAIL_ON_EMPTY_BEANS) serializes the @JacksonXmlRootElement(localName='AnnotatedName') Pojo282 to 'Pojo282' (class-derived) while the original serializes to 'AnnotatedName'."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The only test in the entire oracle that exercises R1's distinctive behavior — XmlSerializerProvider.copy()/mapper.copy() yielding an independent XmlRootNameLookup so serializeValue root-name lookup isn't contaminated by a cached name from a differently-configured source — is MapperCopyTest.testCopyWith (the #282 regression test). It serializes the @JacksonXmlRootElement(localName=\"AnnotatedName\") Pojo282 with the original mapper, then the same type through a copy with USE_ANNOTATIONS disabled, and asserts the copy emits the class-derived 'Pojo282' rather than the cached 'AnnotatedName'.\n\nHowever, MapperCopyTest.java is labeled [VISIBLE] (its content is byte-for-byte the material a repair system already saw). Per the rules a Witness must rest on assertions that were actually hidden, and a [VISIBLE]-drawn assertion can never qualify. I inspected the relevant candidate [HIDDEN] files (RootNameTest, TestSerialization, TestSerializerCustom, TestJDKSerializability, plus the broader ser/misc set), and none of them tests the copy/provider-decoupling root-name behavior R1 describes — they use a single mapper or JDK-serialization roundtrips and never toggle annotations across a mapper.copy() while re-resolving a root name. Since no [HIDDEN] test covers R1, no genuine witness exists; the sole matching test is visible, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: R1 asks for a concrete executable assertion that XmlSerializerProvider.copy() (via mapper.copy()) installs a fresh, decoupled XmlRootNameLookup so a root name cached under a differently-configured source doesn't contaminate serializeValue's re-resolution.\n\nI built the obvious candidate (annotated @JacksonXmlRootElement(localName=\"AnnotatedName\") type; serialize on the source to prime the lookup, then mapper.copy() with USE_ANNOTATIONS+FAIL_ON_EMPTY_BEANS disabled, assert the copy emits the class-derived name). It confirms the mechanism cleanly: PASSED on gold, FAILED on buggy (buggy emits <AnnotatedName>). I also probed the reverse direction (source with annotations disabled, copy that re-enables) but it is not cleanly expressible with the available API and still reduces to the same single cache-contamination fact.\n\nHowever, this discriminator is byte-for-byte the same behavioral observation already pinned by the [VISIBLE] MapperCopyTest.testCopyWith (dataformat-xml#282): it uses the identical fixture class name, identical config toggles, and the same expectation -- only my Pojo282/local-name literals differ. Per the witness rules this relabeling of an already-visible assertion is worthless; a genuine Witness must rest on facts that were actually hidden.\n\nThe mechanism R1 describes has only one observable consequence: a root name cached on the source provider (only achievable via the @JacksonXmlRootElement/annotations path, since ROOT_NAME config overrides are resolved in _rootNameFromConfig() before the lookup ever runs) re-resolves on a differently-configured copy. Every possible concrete input therefore reduces to the same contamination scenario already published in the visible MapperCopyTest, so no genuinely distinct hidden assertion exists for R1. The Oracle Search Agent reached the same conclusion (no HIDDEN test covers it). I therefore report found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (XmlSerializerProvider.copy()/protected constructor root-name lookup decoupling, XmlMapper.copy serialization) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R1 asks for a concrete executable assertion that XmlSerializerProvider.copy() (via mapper.copy()) installs a fresh, decoupled XmlRootNameLookup so a root name cached under a differently-configured source doesn't contaminate serializeValue's re-resolution.\n\nI built the obvious candidate (annotated @JacksonXmlRootElement(localName=\"AnnotatedName\") type; serialize on the source to prime the lookup, then mapper.copy() with USE_ANNOTATIONS+FAIL_ON_EMPTY_BEANS disabled, assert the copy emits the class-derived name). It confirms the mechanism cleanly: PASSED on gold, FAILED on buggy (buggy emits <AnnotatedName>). I also probed the reverse direction (source with annotations disabled, copy that re-enables) but it is not cleanly expressible with the available API and still reduces to the same single cache-contamination fact.\n\nHowever, this discriminator is byte-for-byte the same behavioral observation already pinned by the [VISIBLE] MapperCopyTest.testCopyWith (dataformat-xml#282): it uses the identical fixture class name, identical config toggles, and the same expectation -- only my Pojo282/local-name literals differ. Per the witness rules this relabeling of an already-visible assertion is worthless; a genuine Witness must rest on facts that were actually hidden.\n\nThe mechanism R1 describes has only one observable consequence: a root name cached on the source provider (only achievable via the @JacksonXmlRootElement/annotations path, since ROOT_NAME config overrides are resolved in _rootNameFromConfig() before the lookup ever runs) re-resolves on a differently-configured copy. Every possible concrete input therefore reduces to the same contamination scenario already published in the visible MapperCopyTest, so no genuinely distinct hidden assertion exists for R1. The Oracle Search Agent reached the same conclusion (no HIDDEN test covers it). I therefore report found=false.",
+    "confidence": "Medium"
+  }
+}

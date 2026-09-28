@@ -1,0 +1,82 @@
+{
+  "task_id": "pydata__xarray-6721",
+  "status": "ok",
+  "duration_seconds": 206.78231737494934,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-6721",
+    "s_vis": [
+      {
+        "id": "S-VIS-1",
+        "statement": "Computing the chunk sizes of a Dataset (via Dataset.chunks and Dataset.chunksizes, which delegate to common.get_chunksizes) must not force the underlying data of a lazily-loaded, non-dask backend array to be materialized/loaded into memory. In the reported scenario this means: for ds = xr.open_dataset(url, engine='zarr') opened without dask chunking (data wrapped as a lazy ExplicitlyIndexed backend array rather than a dask array), evaluating ds.chunks (or accessing the chunk information for any variable) must return without triggering a full read of the zarr/remote array, instead inspecting chunk information that is already available without loading the data.",
+        "subject": "xarray.core.common.get_chunksizes / Dataset.chunks / Dataset.chunksizes",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Accessing chunks on zarr backed xarray seems to load entire array into memory\"; example: \"ds = xr.open_dataset(url, engine='zarr') # note that ds is not chunked but still uses lazy loading\nds.chunks\"; expectation: \"According to @rabernat accessing the chunks attribute should simply inspect the `encoding` attribute on the underlying DataArrays.\"; traceback shows the load occurring at \"if hasattr(v.data, \"chunks\"):\" -> \"Variable.values -> return _as_array_or_item(self._data)\" -> \"data = np.asarray(data)\" -> \"ZarrArrayWrapper.__getitem__(self, key): return array[key.tuple]\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "Computing the chunk-size mapping of an object (Dataset.chunks, Dataset.chunksizes, DataArray.chunksizes, i.e. anything routed through common.get_chunksizes) no longer materializes/loads the data of a variable whose underlying backing array (_data) is not a duck array. In the buggy version, get_chunksizes probed `hasattr(v.data, 'chunks')`, and for a lazily-loaded variable (e.g. a zarr/netCDF array stored as an indexing wrapper without dask, where Variable.data falls back to Variable.values), that probe coerced the variable to a plain numpy array and read its data; after the fix, chunk-size inspection examines only the raw backing `_data` and so leaves such lazily-loaded variables un-loaded (e.g. they keep `_in_memory == False`, no data I/O is triggered), while still reporting chunks only when an underlying array genuinely exposes chunking.",
+        "subject": "xarray.core.common.get_chunksizes (and Dataset.chunks / Dataset.chunksizes / DataArray.chunksizes)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "true",
+        "checked_ids": [
+          "S-VIS-1"
+        ],
+        "rationale": "S-VIS-1 (with citation) directly documents the exact bug scenario REQ1 addresses — accessing ds.chunks on a lazily-loaded zarr dataset forces materialization — and its traceback identifies the load occurring at `hasattr(v.data, 'chunks')` -> Variable.values -> ZarrArrayWrapper.__getitem__, i.e. the precisely described fallback from v.data to .values. The visible expectation that chunk inspection must not force data I/O pins down REQ1's central no-materialization behavior for all chunk access routed through get_chunksizes."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant code path: Dataset.chunks and Dataset.chunksizes (xarray/core/dataset.py) both call get_chunksizes(self.variables.values()); DataArray.chunksizes likewise calls get_chunksizes over its variable+coords."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "common.get_chunksizes checks `if hasattr(v.data, 'chunks')`, and Variable.data (xarray/core/variable.py) returns `self.values` for any _data that is not a duck array, which runs np.asarray and fully materializes a lazily-indexed zarr array."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ZarrStore.open_store_variable (xarray/backends/zarr.py) wraps data in indexing.LazilyIndexedArray(ZarrArrayWrapper) when opened without dask chunks, and puts the zarr chunk sizes into the variable's encoding dict under keys 'chunks' and 'preferred_chunks'; Variable.chunksizes currently only reports data-backed chunks via `hasattr(self._data, \"chunks\")` and returns {} otherwise."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests exercising lazy zarr opening without data access live in test_backends (e.g. test_auto_chunk / test_manual_chunk with open_kwargs chunks=None/{} asserting `v._in_memory == (k in actual.dims)`); test_dataset.py has test_dask_is_lazy for InaccessibleArray-backed data."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "common.get_chunksizes iterates the given variables and gates on whether the backing array exposes a `.chunks` attribute. Variable.data returns `self._data` only when `_data` is a duck array (has `__array_function__`/`__array_ufunc__`); for the xarray indexing wrappers (LazilyIndexedArray, MemoryCachedArray, CopyOnWriteArray, various adapters) which are not duck arrays it instead returns `self.values` = `np.asarray(self._data)`, fully reading the wrapped array. The hunk switches the probe from `v.data` to `v._data` so the check no longer forces that conversion."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The Dataset.chunks / Dataset.chunksizes and DataArray.chunksizes properties are all routed through common.get_chunksizes on the object's variables, so they share this code path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Variable.chunksizes internally gates on `hasattr(self._data, 'chunks')` too, and other xarray code (e.g. printing, lazy selection/concat, chunk-related helpers) may reach get_chunksizes indirectly."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

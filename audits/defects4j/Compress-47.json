@@ -1,0 +1,127 @@
+{
+  "task_id": "Compress-47",
+  "status": "ok",
+  "duration_seconds": 193.97700850399997,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Compress-47",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When ZipArchiveInputStream encounters an entry whose compression method is one that requires a known compressed size to set up its decompressor via current.in (BZIP2, UNSHRINKING, IMPLODING) and whose compressed size is ArchiveEntry.SIZE_UNKNOWN, the decoding path must not proceed to a state where a later read() dereferences a null current.in; it should fail early with a useful error message.",
+        "subject": "ZipArchiveInputStream#getNextZipEntry / read",
+        "hunk_ids": [],
+        "cited_from": "\"if (current.entry.getCompressedSize() != ArchiveEntry.SIZE_UNKNOWN) { ... current.in = new UnshrinkingInputStream(...) ... } else if (current.entry.getMethod() == ZipMethod.IMPLODING.getCode()) { ... current.in = new ExplodingInputStream(...) ... } else if (current.entry.getMethod() == ZipMethod.BZIP2.getCode()) { current.in = new BZip2CompressorInputStream(...) } } ... never sets current.in if the compressed size is unknown which probably leads to a NullPointerException in read later. We should fail early with a useful error message instead.\""
+      },
+      {
+        "id": "R2",
+        "statement": "canReadEntryData(entry) must report an entry as unreadable (return the method-inappropriate/false result for BZIP2, versus true for DEFLATED and ENHANCED_DEFLATED) when only the method and no data have been read — i.e. when the compressed size is not known, methods BZIP2 (and any that require known compressed size) are unsupported while DEFLATED and ENHANCED_DEFLATED remain supported.",
+        "subject": "ZipArchiveInputStream#canReadEntryData",
+        "hunk_ids": [],
+        "cited_from": "\"e.setMethod(ZipMethod.DEFLATED.getCode()); assertTrue(zis.canReadEntryData(e)); e.setMethod(ZipMethod.ENHANCED_DEFLATED.getCode()); assertTrue(zis.canReadEntryData(e)); e.setMethod(ZipMethod.BZIP2.getCode()); assertFalse(zis.canReadEntryData(e));\" (test properlyMarksEntriesAsUnreadableIfUncompressedSizeIsUnknown)"
+      },
+      {
+        "id": "R3",
+        "statement": "Reading existing entries whose compression methods require a known compressed size and whose sizes are known must continue to decompress to their correct content: an UNSHRINKING entry decodes to the original file bytes and a BZIP2-compressed entry decodes to its expected byte sequence.",
+        "subject": "ZipArchiveInputStream (read of BZIP2/UNSHRINKING entries)",
+        "hunk_ids": [],
+        "cited_from": "testUnshrinkEntry: \"assertArrayEquals(IOUtils.toByteArray(original), IOUtils.toByteArray(in))\" for SHRUNK.ZIP entries; testUnzipBZip2CompressedEntry: \"assertEquals(42, ze.getSize()); ... assertArrayEquals(expected, IOUtils.toByteArray(in));\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ZipArchiveInputStream.canReadEntryData returns false for a ZipArchiveEntry whose compressed size is ArchiveEntry.SIZE_UNKNOWN, unless the entry's compression method tolerates an unknown size, i.e. it is DEFLATED, ENHANCED_DEFLATED, or STORED fired only when the entry uses a data descriptor and allowStoredEntriesWithDataDescriptor is enabled (all other methods with an unknown compressed size now yield false).",
+        "subject": "ZipArchiveInputStream.canReadEntryData(ArchiveEntry)",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "ZipArchiveInputStream.read(byte[],int,int) throws an UnsupportedZipFeatureException carrying Feature.UNKNOWN_COMPRESSED_SIZE when the current entry's compressed size is ArchiveEntry.SIZE_UNKNOWN and its compression method does not tolerate an unknown size (that is, the method is not DEFLATED, not ENHANCED_DEFLATED, and not STORED with a data descriptor while allowStoredEntriesWithDataDescriptor is enabled), in which case it refuses to read rather than returning decompressed data.",
+        "subject": "ZipArchiveInputStream.read(byte[],int,int)",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R2",
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis R2's test pins that canReadEntryData returns true for DEFLATED/ENHANCED_DEFLATED and false for BZIP2 (methods requiring known compressed size) when the size is unknown, which anchors the core 'false unless tolerant' rule. However, S_vis gives no evidence about the STORED-with-data-descriptor + allowStoredEntriesWithDataDescriptor tolerance branch that S_impl R1 codifies, so the full exact behavior is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1's citation supports failing early (rather than null-dereferencing current.in) when a requiring-known-size method (BZIP2/UNSHRINKING/IMPLODING) has an UNKNOWN compressed size during the read/decode path. But S_vis never names UnsupportedZipFeatureException with Feature.UNKNOWN_COMPRESSED_SIZE nor the DEFLATED/ENHANCED_DEFLATED/STORED tolerance carve-outs for read, so the specific behavior the patch commits to is only loosely entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "unknownCompressedSizeStoredEntryIsUnreadable",
+      "test_source": "    @Test\n    public void unknownCompressedSizeStoredEntryIsUnreadable() throws Exception {\n        try (org.apache.commons.compress.archivers.zip.ZipArchiveInputStream zis =\n                new org.apache.commons.compress.archivers.zip.ZipArchiveInputStream(\n                    new java.io.ByteArrayInputStream(new byte[0]))) {\n            org.apache.commons.compress.archivers.zip.ZipArchiveEntry e =\n                new org.apache.commons.compress.archivers.zip.ZipArchiveEntry(\"test\");\n            e.setMethod(java.util.zip.ZipEntry.STORED);\n            org.junit.Assert.assertFalse(zis.canReadEntryData(e));\n        }\n    }",
+      "gold_result": "PASSED (assertFalse holds: canReadEntryData returned false for STORED entry with unknown compressed size and no data descriptor)",
+      "buggy_result": "FAILED (assertFalse violated: canReadEntryData returned true on the pre-fix code)",
+      "explanation": "R1 states ZipArchiveInputStream.canReadEntryData must return false for an entry whose compressed size is SIZE_UNKNOWN unless the method tolerates unknown size — i.e. it is DEFLATED, ENHANCED_DEFLATED, or STORED-but-only-when-it-uses-a-data-descriptor-and allowStoredEntriesWithDataDescriptor-is-enabled. The fix adds the new supportsCompressedSizeFor conjunct.\n\nThe existing visible test (properlyMarksEntriesAsUnreadableIfUncompressedSizeIsUnknown) only exercises DEFLATED, ENHANCED_DEFLATED and BZIP2. It never covers the STORED-without-data-descriptor-and-unknown-size path, so it does not pin down that scenario.\n\nMy witness constructs a plain ZipArchiveInputStream and a plain ZipArchiveEntry with method = STORED and never sets its compressed size (which therefore stays ArchiveEntry.SIZE_UNKNOWN) and with no data descriptor general-purpose flag. Under the buggy code the result of canReadEntryData is true: ZipUtil.canHandleEntryData is true (method is supported / not encrypted) and supportsDataDescriptorFor is true because the entry does not use a data descriptor. Under the gold code it is false, because supportsCompressedSizeFor is false (STORED is only exempted when it also uses a data descriptor and allowStoredEntriesWithDataDescriptor is on — neither holds here).\n\nExecution confirmed: assertFalse(canReadEntryData(e)) PASSES on gold (canReadEntryData returns false) and FAILS on buggy (canReadEntryData returns true). This discriminates the two program versions on a scenario genuinely distinct from the already-visible coverage."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible source (src/main) diverges slightly from the issue's quoted code: the class doc notes ZipArchiveInputStream 'may return unknown sizes' and the current getNextZipEntry already adds an else-if special case setting current.in for ENHANCED_DEFLATED when compressed size is SIZE_UNKNOWN (m == ZipMethod.ENHANCED_DEFLATED) — DEFLATED/STORED reads via readDeflated/readStored do not use current.in, so only UNSHRINKING/IMPLODING/BZIP2/ENHANCED_DEFLATED hit current.in.read in read()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are only the two main sources and the one test class; it imports utils/helpers (UnshrinkingInputStream, ExplodingInputStream, BZip2CompressorInputStream, Deflate64CompressorInputStream, ZipUtil, ArchiveEntry) not among visible files, and the tests depend on binary test resources (SHRUNK.ZIP, bzip2-zip.zip, etc.) also not visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test properlyMarksEntriesAsUnreadableIfUncompressedSizeIsUnknown constructs a ZipArchiveEntry with no size set (so compressed size defaults to unknown) and only varies the method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds a private helper supportsCompressedSizeFor(ZipArchiveEntry) that returns true iff compressedSize != ArchiveEntry.SIZE_UNKNOWN, or method is DEFLATED, or method is ENHANCED_DEFLATED, or (entry usesDataDescriptor() && allowStoredEntriesWithDataDescriptor && method is STORED)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ZipArchiveInputStream.allowStoredEntriesWithDataDescriptor defaults to false (only enabled through the 4-arg constructor)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For entries parsed from an actual stream, an unknown compressed size arises when the entry has a data descriptor (sizes are left at SIZE_UNKNOWN in processZip64Extra). DEFLATED is read via readDeflated and ENHANCED_DEFLATED gets current.in = Deflate64CompressorInputStream in getNextZipEntry when compressed size is unknown."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "canReadEntryData/read already rejected STORED-with-data-descriptor when allowStoredEntriesWithDataDescriptor is false via the pre-existing supportsDataDescriptorFor check, so the new compressed-size conjunct only acts as the deciding factor for other method/size combinations."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns ZipArchiveInputStream.canReadEntryData(ZipArchiveEntry) returning false whenever an entry's compressed size is ArchiveEntry.SIZE_UNKNOWN, unless the method is DEFLATED, ENHANCED_DEFLATED, or (STORED + data descriptor + allowStoredEntriesWithDataDescriptor enabled).\n\nThe only test in the entire oracle that exercises this exact behavior is `properlyMarksEntriesAsUnreadableIfUncompressedSizeIsUnknown`, which constructs a ZipArchiveEntry without a size (compressed size defaults to unknown), places it in a ZipArchiveInputStream over an empty ByteArrayInputStream, and asserts canReadEntryData is true for DEFLATED / ENHANCED_DEFLATED and false for BZIP2. That test lives in `org.apache.commons.compress.archivers.zip.ZipArchiveInputStreamTest`, which is labeled [VISIBLE], and [VISIBLE] content can never serve as a Witness for a requirement because it was never hidden.\n\nI audited the remaining oracle test files (many are [HIDDEN]) for anything testing the same behavior: EncryptedArchiveTest, ExplodeSupportTest, Maven221MultiVolumeTest, UTF8ZipFilesTest, ZipTestCase, JarTestCase, ChangeSetTestCase, ArchiveReadTest, IOMethodsTest, ChainingTestCase, ArchiveStreamFactoryTest, DetectArchiverTestCase, LongPathTest and the zip subpackage tests. The only other canReadEntryData assertions found are in ZipTestCase (testSupportedCompressionMethod / testSkipEntryWithUnsupportedCompressionMethod), which read a real moby.zip entry whose compressed size is known and use the TOKENIZATION method — i.e., they verify the unsupported-compression-method rule, not the SIZE_UNKNOWN rule R1 describes. No [HIDDEN] test constructs a SIZE_UNKNOWN-compressed-size entry (or reads a data-descriptor STORED entry with allowStoredEntriesWithDataDescriptor) and asserts the ZipArchiveInputStream.canReadEntryData outcome spelled out in R1.\n\nSince every oracle test genuinely covering R1 is [VISIBLE] content and no [HIDDEN] test covers R1, no valid witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ZipArchiveInputStream.canReadEntryData(ArchiveEntry)): ZipArchiveInputStream.canReadEntryData returns false for a ZipArchiveEntry whose compressed size is ArchiveEntry.SIZE_UNKNOWN, unless the entry's compression method tolerates an unknown size, i.e. it is DEFLATED, ENHANCED_DEFLATED, or STORED fired only when the entry uses a data descriptor and allowStoredEntriesWithDataDescriptor is enabled (all other methods with an unknown compressed size now yield false). — not entailed by S_vis (S_vis R2's test pins that canReadEntryData returns true for DEFLATED/ENHANCED_DEFLATED and false for BZIP2 (methods requiring known compressed size) when the size is unknown, which anchors the core 'false unless tolerant' rule. However, S_vis gives no evidence about the STORED-with-data-descriptor + allowStoredEntriesWithDataDescriptor tolerance branch that S_impl R1 codifies, so the full exact behavior is not pinned down.); confirmed by a synthesized witness: R1 states ZipArchiveInputStream.canReadEntryData must return false for an entry whose compressed size is SIZE_UNKNOWN unless the method tolerates unknown size — i.e. it is DEFLATED, ENHANCED_DEFLATED, or STORED-but-only-when-it-uses-a-data-descriptor-and allowStoredEntriesWithDataDescriptor-is-enabled. The fix adds the new supportsCompressedSizeFor conjunct.\n\nThe existing visible test (properlyMarksEntriesAsUnreadableIfUncompressedSizeIsUnknown) only exercises DEFLATED, ENHANCED_DEFLATED and BZIP2. It never covers the STORED-without-data-descriptor-and-unknown-size path, so it does not pin down that scenario.\n\nMy witness constructs a plain ZipArchiveInputStream and a plain ZipArchiveEntry with method = STORED and never sets its compressed size (which therefore stays ArchiveEntry.SIZE_UNKNOWN) and with no data descriptor general-purpose flag. Under the buggy code the result of canReadEntryData is true: ZipUtil.canHandleEntryData is true (method is supported / not encrypted) and supportsDataDescriptorFor is true because the entry does not use a data descriptor. Under the gold code it is false, because supportsCompressedSizeFor is false (STORED is only exempted when it also uses a data descriptor and allowStoredEntriesWithDataDescriptor is on — neither holds here).\n\nExecution confirmed: assertFalse(canReadEntryData(e)) PASSES on gold (canReadEntryData returns false) and FAILS on buggy (canReadEntryData returns true). This discriminates the two program versions on a scenario genuinely distinct from the already-visible coverage.",
+    "confidence": "Medium"
+  }
+}

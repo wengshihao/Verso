@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-13112",
+  "status": "ok",
+  "duration_seconds": 604.9288107500179,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13112",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When an installed app has a mixed-case app name/label (e.g. name='DJ_RegLogin' registered in INSTALLED_APPS via DJ_RegLoginConfig) and it defines a ForeignKey that refers to another model within that same app, running the migration system (makemigrations producing/loading migration state and migrate applying it) must not raise a ValueError complaining that a corresponding all-lowercase app label is not installed; the relation must be resolved against the actually-installed app label.",
+        "subject": "Migration system (makemigrations/migrate) handling of FK model references for apps whose name/label contains uppercase letters (e.g. 'DJ_RegLogin')",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"ValueError: The field DJ_RegLogin.Content.category was declared with a lazy reference to 'dj_reglogin.category', but app 'dj_reglogin' isn't installed.\" ... models.py: \"category = models.ForeignKey(Category, on_delete=models.CASCADE)\" ... apps.py: \"class DJ_RegLoginConfig(AppConfig): name = 'DJ_RegLogin'\" ... INSTALLED_APPS lists \"'DJ_RegLogin'\". Note the lazy reference 'dj_reglogin.category' (all lowercased) conflicts with the installed app whose label is the mixed-case 'DJ_RegLogin'; code that produces this lowercased form lives in django.db.models.fields.related.ForeignObject.deconstruct which emits `kwargs['to'] = self.remote_field.model.lower()` for string references."
+      },
+      {
+        "id": "2",
+        "statement": "Deconstruction/serialization of a related field pointing to a model in a mixed-case app must preserve the casing that matches the installed app label, so that ForeignKey references (unlike the observed behavior where deconstruct yields all-lowercase 'app_label.model') round-trip: a 'to' reference to 'DJ_RegLogin.Category' must not be rewritten into a form ('dj_reglogin.category') that fails to find the 'DJ_RegLogin' app when the migration is read back/re-rendered.",
+        "subject": "django.db.models.fields.related.ForeignObject.deconstruct / ManyToManyField.deconstruct app-label casing for cross-model to= references",
+        "hunk_ids": [],
+        "cited_from": "In django/db/models/fields/related.py (ForeignObject.deconstruct): \"if isinstance(self.remote_field.model, str): kwargs['to'] = self.remote_field.model.lower()\"; contrast ManyToManyField.deconstruct which emits \"kwargs['to'] = \"%s.%s\" % (self.remote_field.model._meta.app_label, self.remote_field.model._meta.object_name)\". Combined with issue report stating the failure happens only for an app named with mixed case, indicating a lowercasing step turns the valid label into the not-installed lowercased one."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ForeignObject.deconstruct() (and hence ForeignKey/OneToOneField deconstruction via super().deconstruct()) sets the returned reconstruction keyword 'to' to a dotted reference '<app_label>.<model_name_lower>' when the field's target model is given as a string of the qualified form 'app_label.ModelName': the portion after the last '.' is lowercased while the leading app-label segment retains its original casing (instead of the entire dotted string being lowercased).",
+        "subject": "django.db.models.fields.related.ForeignObject.deconstruct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "ForeignObject.deconstruct() continues to set kwargs['to'] to the lowercased whole string when the field's target model is given as a bare (non-dotted, i.e. model-name-only) string; this behavior is unchanged by splitting/partial-lowercasing.",
+        "subject": "django.db.models.fields.related.ForeignObject.deconstruct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis [2] explicitly states a 'to' reference to 'DJ_RegLogin.Category' must not be rewritten into 'dj_reglogin.category' (keeping the installed mixed-case app label while the model segment is lowercased), which is exactly the partial-lowercasing behavior R1 describes; S_vis [1] reinforces that the relation must resolve against the actually-installed mixed-case app."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "All visible evidence concerns dotted qualified references ('app_label.model') inside a mixed-case app; nothing in S_vis states or implies that deconstruction of a bare (non-dotted) target string continues to set kwargs['to'] to the whole lowercased string after the fix, so this specific unchanged-behavior claim is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target requirement R2 asserts behavior of ForeignObject.deconstruct() that is UNCHANGED between the buggy (pre-fix) and gold (post-fix) programs: when remote_field.model is a bare (model-name-only, non-dotted) string, kwargs['to'] is set to the whole string lowercased.\n\nI read the actual gold and buggy code. Gold: `if '.' in self.remote_field.model: split and rejoin with only model_name lowercased; else: kwargs['to']=model.lower()`. Buggy: unconditionally `kwargs['to']=self.remote_field.model.lower()`. On the bare (non-dotted) path both set exactly `str.lower()` of the full string — byte-for-byte identical semantics.\n\nI empirically confirmed this by running an R2-targeting test (a mixed-case bare ForeignKey string 'MiXeDCaSeModel' asserting kwargs['to']=='mixedcasemodel', i.e. the whole string lowercased). The run against gold returned PASSED and the identical run against buggy also returned PASSED (both cases set up django.setup() first so models loaded). The behavior does not discriminate.\n\nAny genuine witness must FAIL against the buggy program. But every assertion that genuinely targets R2's bare-string deconstruct semantics passes under both buggy and gold. The only observable difference between the two versions lives on the DOTTED string-target path (whole '.lower()' vs. split-and-preserve-app-label-case: buggy 'dotted.Label' -> 'dotted.label' vs gold 'dotted.label' only differs via the app-label case) — that is the R1 split/partial-lowercase change, not R2's unchanged bare-string behavior. I therefore also verified earlier (in the notebook exchange) that a dotted mixed-case target distinguishes the versions, but that asserts R1, not R2.\n\nBecause R2 is genuinely an unchanged behavior and the Witness contract requires a program-discriminating assertion, no test can serve as a witness for R2. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Migration crash sources: makemigrations builds both from_migration state and current-app state through ProjectState.from_apps / loader.project_state then renders them (django/core/management/commands/makemigrations.py); rendering a state that leaves a pending lazy model reference raises ValueError in django/db/migrations/state.py StateApps.__init__ via _check_lazy_references (django/core/checks/model_checks.py), which produces exactly: \"The field %(field)s was declared with a lazy reference to '%(model)s', but app '%s' ... isn't installed.\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AppConfig.__init__ derives label = app_name.rpartition('.')[2] with case preserved, so app name 'DJ_RegLogin' yields label 'DJ_RegLogin'; Model app_label comes from that config label (Options/ModelMeta paths do not lowercase app_label)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Related-field string refs to a model in the SAME app as the referring model get scoped by that model's _meta.app_label in resolve_relation('app_label.ModelName'); the bug surfaces when deconstruction lowercases that whole dotted string, which then cannot re-match the mixed-case installed label during migration write/read round-trip."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant test scaffolding for case-sensitive migration handling exists at tests/migrations/test_fake_initial_case_insensitive/ (comparing differently-cased db names/tables during makemigrations initial detection)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patched code lives in ForeignObject.deconstruct(), which is invoked by ForeignKey.deconstruct() and OneToOneField.deconstruct() through super(); the returned 'to' string feeds makemigrations serialization."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ManyToManyField.deconstruct() is separate code: for string targets it emits self.remote_field.model unchanged (not lowercased at all), so it is unaffected by this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For model-class targets (non-string), ForeignObject.deconstruct() uses self.remote_field.model._meta.label_lower (fully lowercased full dotted label), also unchanged by this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is triggered only for string targets already containing a '.', i.e. already explicitly qualified with an app label."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 is a claim about behavior that is UNCHANGED between the buggy (pre-fix) and gold (post-fix) programs: when ForeignObject.deconstruct() has a bare (model-name-only, non-dotted) string target, kwargs['to'] is set to the whole string lowercased. A genuine witness must PASS on gold AND FAIL on buggy while asserting precisely this R2 behavior.\n\nI directly probed both programs. For a bare uppercase string target ('TargetUpper'), both gold and buggy deconstruct to kwargs['to'] == 'targetupper' (a run of that assertion PASSED against gold and PASSED against buggy). The behavior is byte-for-byte identical on the non-dotted code path — as R2 itself states (\"this behavior is unchanged\").\n\nThe only behavioral difference between buggy and gold is on the DOTTED string-target path (whole-string \".lower()\" vs. splitting and preserving the app-label's case, e.g. 'DJRegLogin.CustomAuthUsr' -> buggy 'djreglogin.customauthusr' vs gold 'DJRegLogin.customauthusr'). That difference is R1 territory (splitting/partial-lowercasing), NOT the bare-string path R2 describes; and indeed I confirmed no such difference exists on the bare path.\n\nBecause a Witness must FAIL against the buggy program, and every test whose assertion genuinely targets R2 (bare-string deconstruct lowercasing) behaves identically under buggy and gold, no oracle test can serve as a Witness for R2. Tests that fail on buggy (e.g. the dotted-case deconstruct assertion) test the R1 split/lowercase change, not R2's unchanged bare-string behavior. I checked field_deconstruction/deconstruct-related and case-sensitivity migration material; the bare-string semantics are stable across versions, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target requirement R2 asserts behavior of ForeignObject.deconstruct() that is UNCHANGED between the buggy (pre-fix) and gold (post-fix) programs: when remote_field.model is a bare (model-name-only, non-dotted) string, kwargs['to'] is set to the whole string lowercased.\n\nI read the actual gold and buggy code. Gold: `if '.' in self.remote_field.model: split and rejoin with only model_name lowercased; else: kwargs['to']=model.lower()`. Buggy: unconditionally `kwargs['to']=self.remote_field.model.lower()`. On the bare (non-dotted) path both set exactly `str.lower()` of the full string — byte-for-byte identical semantics.\n\nI empirically confirmed this by running an R2-targeting test (a mixed-case bare ForeignKey string 'MiXeDCaSeModel' asserting kwargs['to']=='mixedcasemodel', i.e. the whole string lowercased). The run against gold returned PASSED and the identical run against buggy also returned PASSED (both cases set up django.setup() first so models loaded). The behavior does not discriminate.\n\nAny genuine witness must FAIL against the buggy program. But every assertion that genuinely targets R2's bare-string deconstruct semantics passes under both buggy and gold. The only observable difference between the two versions lives on the DOTTED string-target path (whole '.lower()' vs. split-and-preserve-app-label-case: buggy 'dotted.Label' -> 'dotted.label' vs gold 'dotted.label' only differs via the app-label case) — that is the R1 split/partial-lowercase change, not R2's unchanged bare-string behavior. I therefore also verified earlier (in the notebook exchange) that a dotted mixed-case target distinguishes the versions, but that asserts R1, not R2.\n\nBecause R2 is genuinely an unchanged behavior and the Witness contract requires a program-discriminating assertion, no test can serve as a witness for R2. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (django.db.models.fields.related.ForeignObject.deconstruct) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target requirement R2 asserts behavior of ForeignObject.deconstruct() that is UNCHANGED between the buggy (pre-fix) and gold (post-fix) programs: when remote_field.model is a bare (model-name-only, non-dotted) string, kwargs['to'] is set to the whole string lowercased.\n\nI read the actual gold and buggy code. Gold: `if '.' in self.remote_field.model: split and rejoin with only model_name lowercased; else: kwargs['to']=model.lower()`. Buggy: unconditionally `kwargs['to']=self.remote_field.model.lower()`. On the bare (non-dotted) path both set exactly `str.lower()` of the full string — byte-for-byte identical semantics.\n\nI empirically confirmed this by running an R2-targeting test (a mixed-case bare ForeignKey string 'MiXeDCaSeModel' asserting kwargs['to']=='mixedcasemodel', i.e. the whole string lowercased). The run against gold returned PASSED and the identical run against buggy also returned PASSED (both cases set up django.setup() first so models loaded). The behavior does not discriminate.\n\nAny genuine witness must FAIL against the buggy program. But every assertion that genuinely targets R2's bare-string deconstruct semantics passes under both buggy and gold. The only observable difference between the two versions lives on the DOTTED string-target path (whole '.lower()' vs. split-and-preserve-app-label-case: buggy 'dotted.Label' -> 'dotted.label' vs gold 'dotted.label' only differs via the app-label case) — that is the R1 split/partial-lowercase change, not R2's unchanged bare-string behavior. I therefore also verified earlier (in the notebook exchange) that a dotted mixed-case target distinguishes the versions, but that asserts R1, not R2.\n\nBecause R2 is genuinely an unchanged behavior and the Witness contract requires a program-discriminating assertion, no test can serve as a witness for R2. found=false.",
+    "confidence": "Medium"
+  }
+}

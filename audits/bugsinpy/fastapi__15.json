@@ -1,0 +1,160 @@
+{
+  "task_id": "fastapi__15",
+  "status": "ok",
+  "duration_seconds": 408.2551725000376,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "fastapi__15",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "APIRouter supports registering a websocket route via the `@router.websocket_route(path)` decorator, mirroring FastAPI's `@app.websocket_route(path)` so that an async endpoint defined under it is registered on the router.",
+        "subject": "fastapi.routing.APIRouter.websocket_route",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Websocket routes appear to only work on the main FastAPI object, not on APIRouter objects.\" Reproduction step 2: `# other.py\\nfrom fastapi import APIRouter\\nrouter = APIRouter()\\n\\n@router.websocket_route(\"/routerhello\")\\nasync def hello(websocket):` contrasted with working step 1: `@app.websocket_route(\"/hello\")`. Expected behavior: \"I expect a websocket route to work on both a FastAPI and APIRouter object.\""
+      },
+      {
+        "id": "S2",
+        "statement": "A websocket route registered on an APIRouter becomes reachable on the app after `app.include_router(router)` — the websocket handshake succeeds (no 403) and the endpoint function runs, rather than the connection being rejected.",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"When the same function is copied from a FastAPI object to an APIRouter object instead of working properly it just throws a 403.\" Reproduction: `# main.py\\nfrom fastapi import FastAPI\\nimport other\\napp = FastAPI()\\napp.include_router(other.router)`. Visible code shows `include_router` only has branches `if isinstance(route, APIRoute):` and `elif isinstance(route, routing.Route):`, with no branch handling websocket routes."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When APIRouter.include_router is called on a router that contains a WebSocketRoute, include_router adds a corresponding websocket route to the including router instead of silently skipping that route (so the websocket endpoint becomes reachable through the parent router).",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The path of a copied websocket route is the concatenation of the include_router prefix and the original route's path (prefix + route.path).",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The copied websocket route preserves the original route's endpoint callable and its name.",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "The websocket route added by include_router is registered as a websocket route (via the router's add_websocket_route capability), so it is served over the websocket protocol rather than as an HTTP API route; the existing handling of non-websocket routes (APIRoute and plain routing.Route) is unchanged.",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S2 explicitly shows include_router only handles APIRoute and routing.Route branches with no websocket handling, and the issue is precisely that include_router fails to make a router's websocket route reachable (403). This pins down that include_router must add the websocket route instead of skipping it."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Neither S_vis entry mentions path concatenation of prefix + route.path for copied routes; the visible evidence concerns only whether websocket routes are handled at all."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Nothing in S_vis specifies that the copied websocket route preserves the endpoint callable and name."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S2 shows the existing APIRoute/routing.Route branches (implying non-websocket handling stays), and the overall goal implies the websocket route must be served over websocket, but S_vis does not pin down the specific mechanism of the router's add_websocket_route capability, so this is only partially/ambiguously covered."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_include_router_websocket_prefix",
+      "test_source": "import fastapi\nfrom fastapi import routing\nfrom starlette import routing as starlette_routing\n\ndef test_include_router_websocket_prefix():\n    router = fastapi.routing.APIRouter()\n\n    async def ws_endpoint(websocket):\n        await websocket.accept()\n        await websocket.send_text(\"hello\")\n        await websocket.close()\n\n    router.add_websocket_route(\"/ws\", ws_endpoint)\n    app = fastapi.routing.APIRouter()\n    app.include_router(router, prefix=\"/api/v1\")\n    assert len(app.routes) == 1\n    route = app.routes[0]\n    assert route.path == \"/api/v1/ws\"\n    assert isinstance(route, starlette_routing.WebSocketRoute)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert 0 == 1 at len(app.routes): the websocket route is not copied at all, so its prefixed path never gets created)",
+      "explanation": "R2 states that include_router must copy a websocket route with path = prefix + route.path. The test builds an APIRouter with a websocket route \"/ws\", includes it into another APIRouter with prefix \"/api/v1\", and asserts the single resulting route is a WebSocketRoute whose .path is exactly \"/api/v1/ws\". On gold the new elif branch calls add_websocket_route(prefix + route.path, ...) so the assertion holds. On buggy that branch is absent; the websocket route is not added to the including router (routes stays empty), so the prefix+path concatenation never happens and the test fails at len(app.routes)==1. This asserts the exact behavior of R2 rather than merely touching co-located code. Only fastapi/routing.py is visible and no test files are disclosed, so this websocket/prefix scenario is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only `fastapi/routing.py` is visible in this task; the FastAPI application class itself (and any websocket-route code on it) is not shown."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the visible file, `APIRouter` defines `add_api_route`, `api_route`, the standard HTTP method decorators (get/put/post/delete/options/head/patch/trace), and `include_router`, but no websocket-related method."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`APIRouter.include_router` iterates `router.routes` and handles only `APIRoute` (via `add_api_route`) and `routing.Route` (via `add_route`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`APIRoute` subclasses `starlette.routing.Route`; `APIRouter` subclasses `starlette.routing.Router`; starlette's router provides `websocket_route`/`add_websocket_route` and `WebSocketRoute` is a `routing.Route` subclass in starlette."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No test files are disclosed in the visible material; the only visible artifact besides routing.py is the issue text itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "starlette is an installed dependency, not present in this repo tree; its routing.py could not be read directly, so the Route/WebSocketRoute hierarchy and add_websocket_route availability are taken from the earlier-stage notes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new branch is placed after the isinstance(route, routing.Route) branch in include_router; since WebSocketRoute is a routing.Route subclass in the underlying starlette version, the websocket case would otherwise have been caught by the plain-Route branch (or skipped), which is what the new branch alters."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only fastapi/routing.py is modified by this patch; the APIRouter gains no new public websocket decorator method (no websocket_route equivalent), only include_router gains websocket handling."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "APIRouter subclasses starlette.routing.Router, so add_websocket_route is inherited rather than defined in fastapi/routing.py."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 concerns the path computed for a *websocket route* copied by APIRouter.include_router (prefix + route.path). I enumerated the entire oracle via list_test_files and read every plausibly relevant file (test_application.py, tests/main.py, pending_tests/main.py, test_include_route.py, test_extra_routes.py, test_starlette_exception.py, test_datastructures.py, test_tutorial/test_sub_applications, test_bigger_applications, test_events, test_application_configuration, test_dependencies, test_security, test_sql_databases, etc.). None of them define or test any websocket route, and none exercise include_router with a websocket route or assert a websocket path/URL. The two tests named as currently failing (tests/test_ws_router.py::test_router and ::test_prefix_router) belong to a file that is NOT part of this oracle: reading tests/test_ws_router.py returns \"No such oracle test file\". The visible fastapi/routing.py patch adds a websocket branch to include_router, but the oracle contains no test that asserts the websocket route path equals prefix + route.path. Therefore no oracle test can serve as a Witness for R2 (nothing tests the same behavior, and all websocket-specific coverage lives outside the oracle suite)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (fastapi.routing.APIRouter.include_router): The path of a copied websocket route is the concatenation of the include_router prefix and the original route's path (prefix + route.path). — not entailed by S_vis (Neither S_vis entry mentions path concatenation of prefix + route.path for copied routes; the visible evidence concerns only whether websocket routes are handled at all.); confirmed by a synthesized witness: R2 states that include_router must copy a websocket route with path = prefix + route.path. The test builds an APIRouter with a websocket route \"/ws\", includes it into another APIRouter with prefix \"/api/v1\", and asserts the single resulting route is a WebSocketRoute whose .path is exactly \"/api/v1/ws\". On gold the new elif branch calls add_websocket_route(prefix + route.path, ...) so the assertion holds. On buggy that branch is absent; the websocket route is not added to the including router (routes stays empty), so the prefix+path concatenation never happens and the test fails at len(app.routes)==1. This asserts the exact behavior of R2 rather than merely touching co-located code. Only fastapi/routing.py is visible and no test files are disclosed, so this websocket/prefix scenario is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

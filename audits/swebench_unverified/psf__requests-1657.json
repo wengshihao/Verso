@@ -1,0 +1,141 @@
+{
+  "task_id": "psf__requests-1657",
+  "status": "ok",
+  "duration_seconds": 275.76056283304933,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-1657",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a Session prepares a Request and both the session (self.hooks) and the request (request.hooks) carry hooks registered under the same event name (e.g. 'response'), the merged hooks dictionary passed into the PreparedRequest must keep BOTH the session's hook(s) and the request's hook(s) for that event, so that dispatch_hook will later invoke all of them — the request's hook list must not overwrite and discard the session's hook list for that event.",
+        "subject": "Session.prepare_request hooks merge (merge_setting for 'hooks' in requests/sessions.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Request hooks are being [merged](https://github.com/kennethreitz/requests/blob/master/requests/sessions.py#L264) with session hooks; since both hook dicts have a list as the value, one simply overwrites the other.\" sessions.py: \"hooks=merge_setting(request.hooks, self.hooks),\" with merged_setting.update(to_key_val_list(request_setting)) inside merge_setting."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "merge_hooks(request_hooks, session_hooks) returns request_hooks unchanged as the merged result whenever session_hooks is None or session_hooks has an empty list ('[]') for the 'response' event.",
+        "subject": "requests.sessions.merge_hooks",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "merge_hooks(request_hooks, session_hooks) returns session_hooks unchanged as the merged result whenever request_hooks is None or request_hooks has an empty list ('[]') for the 'response' event.",
+        "subject": "requests.sessions.merge_hooks",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When neither argument is None and the 'response' list of both hook dicts is non-empty, merge_hooks merges request_hooks and session_hooks per merge_setting semantics: the result is the session hooks dict overlaid by the request hooks values per event key, so for any shared event the request's value (e.g. its 'response' hook list) replaces the session's.",
+        "subject": "requests.sessions.merge_hooks",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "Session.prepare_request builds the PreparedRequest's hooks via a merge that preserves the Session's registered hooks rather than overwriting them when the Request carries no effective hooks of its own (i.e. a Request created without explicit hooks, whose hooks dict holds an empty 'response' list): the resulting PreparedRequest's 'response' hooks still contain the Session's 'response' hooks instead of being wiped out by the empty request hook list.",
+        "subject": "requests.sessions.Session.prepare_request",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The visible evidence concerns the collision of two populated hook lists (both must be kept), and says nothing about merge_hooks' None/empty-session guard returning request_hooks unchanged. No support for that specific edge behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "Visible info is entirely about the both-present hook collision and never specifies a merge_hooks None/empty-request guard that returns the session hooks unchanged outright. Not grounded."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R3 asserts the request's value replaces the session's for a shared event — exactly the one-overwrites-the-other behavior the visible issue identifies as the bug and that S_vis states must NOT happen (session hooks must be kept). Directly contradicted, not entailed."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The intent that Session hooks survive the merge aligns with the visible evidence's core concern, but S_vis only describes the collision of two populated lists; it never mentions the specific scenario of a Request created without explicit hooks whose empty 'response' list must not wipe the Session's hooks. Not fully pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_merge_hooks_returns_request_unchanged_when_no_session_hooks",
+      "test_source": "def test_merge_hooks_returns_request_unchanged_when_no_session_hooks():\n    from requests.sessions import merge_hooks\n    request_hooks = {'response': [lambda r: r]}\n    # session_hooks has empty list for 'response'\n    s1 = merge_hooks(request_hooks, {'response': []})\n    assert s1 is request_hooks\n    assert s1['response'] == [request_hooks['response'][0]]\n    # session_hooks is None\n    s2 = merge_hooks(request_hooks, None)\n    assert s2 is request_hooks",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (ImportError: cannot import name 'merge_hooks' from 'requests.sessions')",
+      "explanation": "Requirement R1 states that `merge_hooks(request_hooks, session_hooks)` returns `request_hooks` unchanged when `session_hooks` is `None` or `session_hooks['response'] == []`. The gold (fixed) revision introduces the module-level `merge_hooks` helper with exactly that special-casing logic and additionally wires it into `Session.prepare_request` (`hooks=merge_hooks(request.hooks, self.hooks)`), whereas the buggy pre-fix revision has no `merge_hooks` symbol at all and still calls `merge_setting` for hooks. My witness imports `merge_hooks` from `requests.sessions` and asserts that both listed degenerate conditions (`session_hooks` = `{'response': []}` and `session_hooks` = `None`) return the exact same `request_hooks` object unchanged (identity check `is` guarantees the gold code path `return request_hooks` rather than a rebuilt value). Against the buggy program this test fails with ImportError because no `merge_hooks` exists, i.e. the buggy program does not behave according to R1; against the gold program it passes. I inspected gold/buggy sessions.py, hooks.py, and the visible test_requests.py: none of the visible tests call `merge_hooks`, and the two hook tests (test_prepared_request_hook, test_hook_receives_request_arguments) only set hooks on the Request object and never exercise the session_hooks-empty preservation scenario, so this assertion is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug location: requests/sessions.py Session.prepare_request calls hooks=merge_setting(request.hooks, self.hooks); merge_setting does merged_setting = dict_class(to_key_val_list(session_setting)); merged_setting.update(to_key_val_list(request_setting)) so for each event name (e.g. 'response') the request's list value replaces the session's list value."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Hooks design: default_hooks() in requests/hooks.py returns {event: []} for each HOOKS entry; values are always lists, and dispatch_hook iterates a list of hooks per event. requests/models.py RequestHooksMixin.register_hook appends/extends into these lists so multiple hooks per event accumulate by design."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test combines both a Session hook and a per-request hook on the same event; visible hook tests (test_prepared_request_hook, test_hook_receives_request_arguments) set hooks only on the request, so the bug checkable requirement comes from the issue report text plus the merge/dispatch design."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A Session does not inherit RequestHooksMixin; its hooks dict is populated directly (e.g. s.hooks['response'].append(fn))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only hook event defined is 'response' (requests/hooks.py HOOKS=['response']); the new merge_hooks special-cases only the 'response' key, and the empty-response condition arises because Request.__init__ seeds self.hooks with default_hooks() == {'response': []} before registering any explicitly passed hooks, so a Request built without hooks carries {'response': []}."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Session neither inherits RequestHooksMixin nor exposes register_hook, so Session-level hooks are populated directly on self.hooks['response']."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "merge_hooks is a new module-level helper; its fall-through path delegates to the pre-existing merge_setting."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The real oracle consists of a single file, test_requests.py, which read_test_file labels entirely [VISIBLE]. By the task rules, [VISIBLE] assertions can never serve as a Witness for R1, because that behavior is presumed already known to the repair system. Moreover, inspection shows that none of the visible tests actually exercise the merge_hooks(request_hooks, session_hooks) scenario R1 describes: the only hook tests (test_hook_receives_request_arguments and test_prepared_request_hook) set hooks solely on the Request object and never register a Session-level hook that would need to be merged against the Request's default {'response': []}. The one test that would genuinely match the R1 area — test_session_hooks_are_used_with_no_request_hooks, which appears in the list of tests currently failing against the buggy program — is NOT present in the readable [VISIBLE] oracle content; it lives in hidden content I cannot access and therefore cannot read its assertions, extract a standalone test method, or confirm it by running it against gold and buggy. Since no [HIDDEN] assertion relevant to R1 is available to me, I cannot build the execution-confirmed witness required for found=true."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (requests.sessions.merge_hooks): merge_hooks(request_hooks, session_hooks) returns request_hooks unchanged as the merged result whenever session_hooks is None or session_hooks has an empty list ('[]') for the 'response' event. — not entailed by S_vis (The visible evidence concerns the collision of two populated hook lists (both must be kept), and says nothing about merge_hooks' None/empty-session guard returning request_hooks unchanged. No support for that specific edge behavior.); confirmed by a synthesized witness: Requirement R1 states that `merge_hooks(request_hooks, session_hooks)` returns `request_hooks` unchanged when `session_hooks` is `None` or `session_hooks['response'] == []`. The gold (fixed) revision introduces the module-level `merge_hooks` helper with exactly that special-casing logic and additionally wires it into `Session.prepare_request` (`hooks=merge_hooks(request.hooks, self.hooks)`), whereas the buggy pre-fix revision has no `merge_hooks` symbol at all and still calls `merge_setting` for hooks. My witness imports `merge_hooks` from `requests.sessions` and asserts that both listed degenerate conditions (`session_hooks` = `{'response': []}` and `session_hooks` = `None`) return the exact same `request_hooks` object unchanged (identity check `is` guarantees the gold code path `return request_hooks` rather than a rebuilt value). Against the buggy program this test fails with ImportError because no `merge_hooks` exists, i.e. the buggy program does not behave according to R1; against the gold program it passes. I inspected gold/buggy sessions.py, hooks.py, and the visible test_requests.py: none of the visible tests call `merge_hooks`, and the two hook tests (test_prepared_request_hook, test_hook_receives_request_arguments) only set hooks on the Request object and never exercise the session_hooks-empty preservation scenario, so this assertion is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

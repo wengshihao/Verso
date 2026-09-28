@@ -1,0 +1,102 @@
+{
+  "task_id": "Compress-7",
+  "status": "ok",
+  "duration_seconds": 142.33411844100192,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Compress-7",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "parseName(buffer, offset, length) must correctly resolve tar entry names that contain characters whose bytes lie outside the range 0-127 (high bit set), returning the proper name rather than a corrupted one such as the example below where the surrounding text segments get altered (e.g. 'HECKMODUL' becomes substituted for 'LALALA±±±...'; 'DOERN' for 'MOE').",
+        "subject": "TarUtils.parseName",
+        "hunk_ids": [],
+        "cited_from": "if a tarfile contains files with special characters, the names of the tar entries are wrong.\nexample:\ncorrect name: 0302-0601-3±±±F06±W220±ZB±LALALA±±±±±±±±±±CAN±±DC±±±04±060302±MOE.model\nname resolved by TarUtils.parseName: 0302-0101-3ﾱﾱﾱF06ﾱW220ﾱZBﾱHECKMODULﾱﾱﾱﾱﾱﾱﾱﾱﾱﾱECEﾱﾱDCﾱﾱﾱ07ﾱ060302ﾱDOERN.model\n\nplease use:\nresult.append(new String(new byte[] { buffer[i] }));\ninstead of:\nresult.append((char) buffer[i]);\nto solve this encoding problem."
+      },
+      {
+        "id": "2",
+        "statement": "A name containing characters outside the range 0-127 must survive the formatNameBytes -> parseName round-trip unaltered; specifically round-tripping \"0302-0601-3±±±F06±W220±ZB±LALALA±±±±±±±±±±CAN±±DC±±±04±060302±MOE.model\" via checkName (which formats each char into a byte buffer then asserts parseName equals the original string) must yield the equal string, per the COMPRESS-114 test already present in the suite.",
+        "subject": "TarUtils.parseName (via formatNameBytes -> parseName round-trip)",
+        "hunk_ids": [],
+        "cited_from": "// COMPRESS-114\ncheckName(\"0302-0601-3±±±F06±W220±ZB±LALALA±±±±±±±±±±CAN±±DC±±±04±060302±MOE.model\");\n...\nprivate void checkName(String string) {\n    byte buff[] = new byte[100];\n    int len = TarUtils.formatNameBytes(string, buff, 0, buff.length);\n    assertEquals(string, TarUtils.parseName(buff, 0, len));\n}"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "TarUtils.parseName decodes each byte of the name field (up to the first NUL, or the end of the length-limited span) by appending to the result the character whose code point equals the byte's unsigned value (b & 0xFF), so that bytes with the high bit set (0x80 through 0xFF) produce characters U+0080 through U+00FF rather than being sign-extended (buggy version produced code points 0xFF80..0xFFFF for those bytes); ASCII bytes are unaffected.",
+        "subject": "TarUtils.parseName(byte[] buffer, int offset, int length)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis-1/S_vis-2 firmly establish that parseName corrupts high-bit bytes via sign-extension and that names with characters >U+007F must resolve correctly (confirmed by the round-trip test in S_vis-2). However, S_impl-1 commits to an exact per-byte unsigned decoding mechanism (b & 0xFF → U+0080..U+00FF), whereas the cited issue's own proposed fix uses charset-based decoding (new String(new byte[]{buffer[i]})), which is not guaranteed to coincide with that mapping for every byte 0x80..0xFF; the visible evidence pins the bug and concrete behaviors but not that precise universal mechanism."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "parseNameDecodesHighBitAsUnsigned",
+      "test_source": "    @Test\n    public void parseNameDecodesHighBitAsUnsigned() throws Exception {\n        byte[] buf = new byte[1];\n        buf[0] = (byte) 0xFF;\n        assertEquals(\"\\u00FF\", org.apache.commons.compress.archivers.tar.TarUtils.parseName(buf, 0, 1));\n    }",
+      "gold_result": "PASSED — gold parseName masks the byte with (b & 0xFF), so (byte)0xFF → U+00FF.",
+      "buggy_result": "FAILED — buggy parseName does (char)buffer[i], sign-extending (byte)0xFF to U+FFFF (observed '\\uFFFF' vs expected '\\u00FF').",
+      "explanation": "S_impl-1 requires parseName to decode each byte of the name field as unsigned (b & 0xFF), so a byte with the high bit set (0x80–0xFF) yields U+0080..U+00FF instead of the sign-extended U+FF80..U+FFFF that the buggy '(char)buffer[i]' produces. The visible TarUtilsTest only ever sends parseName bytes produced by formatNameBytes in a round-trip (ASCII testName; and checkName in testRoundTripNames whose only non-ASCII char is '±' = U+00B1, low byte 0xB1) — it never directly decodes an arbitrary high-bit byte such as 0xFF through parseName with a specific resulting character asserted. My witness feeds a named-array with the single raw byte 0xFF (no NUL so parsing runs to the end) and asserts parseName returns exactly '\\u00FF' (decimal 255). This input/output pair is not pinned by any visible content. Execution-confirmed: PASSED against gold (mask yields U+00FF) and FAILED against buggy (sign-extension yields U+FFFF), so it is a genuine discriminating witness for this specific requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: src/main/java/org/apache/commons/compress/archivers/tar/TarUtils.java and src/test/java/org/apache/commons/compress/archivers/tar/TarUtilsTest.java (JUnit 3 via junit.framework.TestCase)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy line is in TarUtils.parseName: 'result.append((char) buffer[i]);' — widening a signed byte to char sign-extends, corrupting bytes >= 0x80."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "formatNameBytes currently maps each name char to a single byte via '(byte) name.charAt(i)', truncating each char to its low byte."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test suite already contains a COMPRESS-114 round-trip check in testRoundTripNames via the private checkName helper, which would fail under the current buggy parseName for the '±'-containing name."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TarUtils is an @Immutable utility class with a package-private no-arg constructor; it also provides parse/format helpers for octal numbers, checksums (parseOctal, formatUnsignedOctalString, formatOctalBytes, formatLongOctalBytes, formatCheckSumOctalBytes, computeCheckSum) whose behavior is otherwise covered by separate passing tests (testParseOctal, testRoundTripOctal, testTrailers, testNegative, testOverflow)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Known limitation: the suggested fix (decoding each byte separately with the default charset) may not itself round-trip a UTF-8 multi-byte name, but I record only what the visible issue and test require, not the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TarUtils is an @Immutable utility class (private constructor) providing static parse/format helpers plus computeCheckSum; only parseName is changed by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "formatNameBytes (unchanged) stores the low byte of each name char ((byte) name.charAt(i)); with parseName now masking to unsigned, any char in U+0000–U+00FF round-trips through formatNameBytes then parseName (e.g. U+00B1 '±'), matching the COMPRESS-114 scenario."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: The target requirement S_impl-1 is specifically about TarUtils.parseName decoding each name byte with the high bit set (0x80–0xFF) as unsigned, producing U+0080–U+00FF rather than sign-extended U+FF80–U+FFFF.\n\nI enumerated and read every oracle test file:\n- TarUtilsTest.java — [VISIBLE]. Contains the only genuine match: testRoundTripNames -> checkName, which round-trips a '±'-containing (U+00B1) name through formatNameBytes + parseName. This directly exercises the unsigned-byte decoding of parseName (the buggy (char)buffer[i] sign-extension corrupts it; the gold unsigned (b & 0xFF) round-trips it), and it is the failing test the task itself flags. But this file is labeled [VISIBLE], so its assertions can never serve as a Witness — visible content already establishes that behavior.\n- TarArchiveEntryTest.java — [HIDDEN], but only exercises ASCII names (\"/\", \"foo.txt\", \"bar.txt\", \"baz.txt\", \"dummy\"/file-root cases) and entry size; no byte >= 0x80 flows through parseName, so it does not test this requirement.\n- TarTestCase.java — [HIDDEN], tests tar archive create/unarchive and directory/file entries with ASCII names (including the long-name test whose 99 bytes are all ASCII); none exercise high-bit decode semantics.\n- ChangeSetTestCase.java — [HIDDEN], uses ASCII names (\"test.txt\", \"bla/test.txt\", etc.) through various archive round trips; no high-bit name bytes.\n- ArchiveOutputStreamTest.java — [HIDDEN], only entry name \"dummy\"; unrelated.\n- IOMethodsTest.java — [HIDDEN], exercises file data writes/reads with the entry name \"dummy\" (ASCII); it compares byte contents, never parseName decode of a high-bit byte.\n\nNon-failing list is complete. No HIDDEN (oracle-generated) test asserts parseName's unsigned decoding of bytes >= 0x80. The one relevant test (testRoundTripNames) is confined to [VISIBLE] content and therefore rejected under the witness rules. I therefore submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-1] (TarUtils.parseName(byte[] buffer, int offset, int length)): TarUtils.parseName decodes each byte of the name field (up to the first NUL, or the end of the length-limited span) by appending to the result the character whose code point equals the byte's unsigned value (b & 0xFF), so that bytes with the high bit set (0x80 through 0xFF) produce characters U+0080 through U+00FF rather than being sign-extended (buggy version produced code points 0xFF80..0xFFFF for those bytes); ASCII bytes are unaffected. — not entailed by S_vis (S_vis-1/S_vis-2 firmly establish that parseName corrupts high-bit bytes via sign-extension and that names with characters >U+007F must resolve correctly (confirmed by the round-trip test in S_vis-2). However, S_impl-1 commits to an exact per-byte unsigned decoding mechanism (b & 0xFF → U+0080..U+00FF), whereas the cited issue's own proposed fix uses charset-based decoding (new String(new byte[]{buffer[i]})), which is not guaranteed to coincide with that mapping for every byte 0x80..0xFF; the visible evidence pins the bug and concrete behaviors but not that precise universal mechanism.); confirmed by a synthesized witness: S_impl-1 requires parseName to decode each byte of the name field as unsigned (b & 0xFF), so a byte with the high bit set (0x80–0xFF) yields U+0080..U+00FF instead of the sign-extended U+FF80..U+FFFF that the buggy '(char)buffer[i]' produces. The visible TarUtilsTest only ever sends parseName bytes produced by formatNameBytes in a round-trip (ASCII testName; and checkName in testRoundTripNames whose only non-ASCII char is '±' = U+00B1, low byte 0xB1) — it never directly decodes an arbitrary high-bit byte such as 0xFF through parseName with a specific resulting character asserted. My witness feeds a named-array with the single raw byte 0xFF (no NUL so parsing runs to the end) and asserts parseName returns exactly '\\u00FF' (decimal 255). This input/output pair is not pinned by any visible content. Execution-confirmed: PASSED against gold (mask yields U+00FF) and FAILED against buggy (sign-extension yields U+FFFF), so it is a genuine discriminating witness for this specific requirement.",
+    "confidence": "Medium"
+  }
+}

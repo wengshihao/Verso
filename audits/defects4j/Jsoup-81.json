@@ -1,0 +1,107 @@
+{
+  "task_id": "Jsoup-81",
+  "status": "ok",
+  "duration_seconds": 132.404717892,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-81",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When Jsoup.parse(InputStream, null, baseUri) (i.e. parseInputStream with charsetName == null) receives bytes of an XHTML document that are actually encoded as iso-8859-1 and whose first line is the XML declaration `<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>`, the encoding declared in that XML declaration must be honored (the bytes re-decoded with iso-8859-1) so that the resulting document's body text preserves the non-ASCII characters — producing `Hellö Wörld!`, not the mojibake `Hell� W�rld!`.",
+        "subject": "DataUtil.parseInputStream / Jsoup.parse(InputStream, charsetName, baseUri) XML-declaration charset detection",
+        "hunk_ids": [],
+        "cited_from": "Issue code: `String encoding = \"iso-8859-1\"; InputStream soup = new ByteArrayInputStream(( \"<?xml version=\\\"1.0\\\" encoding=\\\"\" + encoding + \"\\\"?>\" + ... \"<html ...>Hellö Wörld!</html>\" ).getBytes(encoding)); System.out.println(Jsoup.parse(soup, null, \"\"));` — expected output body `Hellö Wörld!`, actual `Hell� W�rld!`.  Test: `@Test public void supportsXmlCharsetDeclaration() ... Document doc = Jsoup.parse(soup, null, \"\"); assertEquals(\"Hellö Wörld!\", doc.body().text());`"
+      },
+      {
+        "id": "R2",
+        "statement": "The encoding declared in the XML declaration (looked up only after no meta charset is found) must be treated as a usable/valid charset and, when it differs from the default (UTF-8), must trigger a re-decode of the stream rather than keeping the UTF-8-decoded parse — i.e. the branch that sets charsetName and sets doc = null for re-parsing must also be reached for an encoding found in a leading `<?xml ...?>` declaration.",
+        "subject": "DataUtil.parseInputStream XML-declaration node is XmlDeclaration with name 'xml' and encoding attr re-decode path",
+        "hunk_ids": [],
+        "cited_from": "DataUtil.java: `// look for <?xml encoding='ISO-8859-1'?> if (foundCharset == null && doc.childNodeSize() > 0) { Node first = doc.childNode(0); XmlDeclaration decl = null; if (first instanceof XmlDeclaration) decl = (XmlDeclaration) first; ... foundCharset = decl.attr(\"encoding\"); } foundCharset = validateCharset(foundCharset); if (foundCharset != null && !foundCharset.equalsIgnoreCase(defaultCharset)) { // need to re-decode ... foundCharset = foundCharset.trim().replaceAll(\"[\\\"']\", \"\"); charsetName = foundCharset; doc = null; }`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_R1",
+        "statement": "When DataUtil.parseInputStream is given a null charset, finds no BOM and no <meta> charset, and the first child node of the resulting first-pass UTF-8-parsed document is a Comment whose data constitutes an XML declaration (i.e. it passes Comment.isXmlDeclaration) that names 'xml' and carries an 'encoding' attribute — the situation arising when the HTML parser tokenizes a leading <?xml version=\"...\" encoding=\"X\"?> prolog as a Comment rather than directly as an XmlDeclaration — the foundCharset is set from that declaration's encoding attribute, so the full stream is re-decoded using charset X (mirroring the behavior already present when that first child is a genuine XmlDeclaration). Observable upshot: e.g. Jsoup.parse(stream of bytes in iso-8859-1 beginning with <?xml version=\"1.0\" encoding=\"iso-8859-1\"?>, null, uri) yields a Document whose text content is decoded with iso-8859-1 rather than the default charset.",
+        "subject": "DataUtil.parseInputStream charset detection from a Comment-form XML declaration in the leading node",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl_R1's core behavior is charset extraction when the first child node is a Comment that passes Comment.isXmlDeclaration (the case where the HTML parser tokenizes an <?xml?> prolog as a Comment). Neither S_vis entry mentions any Comment-form/isXmlDeclaration path; R1 only states the observable iso-8859-1 decoding result, and R2's cited DataUtil code explicitly handles only the genuine XmlDeclaration node (if first instanceof XmlDeclaration). S_vis pins down the XmlDeclaration-detection result but not the distinct Comment-form mechanism S_impl_R1 commits to."
+      }
+    ],
+    "target_requirement_id": "S_impl_R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    String encoding = \"windows-1252\";\n    java.io.InputStream soup = new java.io.ByteArrayInputStream((\n        \"<?xml version=\\\"1.0\\\" encoding=\\\"windows-1252\\\"?>\" +\n        \"<html><body>Hellé Wörld!</body></html>\"\n    ).getBytes(encoding));\n    org.jsoup.nodes.Document doc = org.jsoup.Jsoup.parse(soup, null, \"\");\n    org.junit.Assert.assertEquals(\"Hellé Wörld!\", doc.body().text());\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - expected:<Hell[é Wö]rld!> but was:<Hell[� W�]rld!> (body text decoded as UTF-8 because foundCharset not sniffed from the Comment-form XML declaration)",
+      "explanation": "The witness drives DataUtil.parseInputStream (via Jsoup.parse(stream, null, \"\")) with charsetName=null, no BOM, no <meta> charset, and a leading <?xml version=\"1.0\" encoding=\"windows-1252\"?> prolog. Under the HTML parser that prolog is tokenized as a Comment (whose data is an isXmlDeclaration), so only the bug-fix H1 branch (introducing the Comment → asXmlDeclaration path) can sniff foundCharset=\"windows-1252\" and re-decode the whole stream in windows-1252. Gold (H1 present) passes: doc.body().text() equals \"Hellé Wörld!\". Buggy (pre-fix, Comment branch absent) leaves charsetName null so the stream keeps its first-pass UTF-8 decode, mangling the 0xE9/0xF6 bytes to U+FFFD replacement chars, so doc.body().text() is \"Hell� W�rld!\" — FAILING the assertion. The choice of windows-1252 and simplified HTML (no XHTML DOCTYPE/xmlns wrapper, different content text) makes this a distinct input from the visible iso-8859-1 supportsXmlCharsetDeclaration test, so a repair that merely hard-codes the visible iso-8859-1 case in the specific visible string form would not pass it; it genuinely generalizes the charset-detection requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Source is a single production file: src/main/java/org/jsoup/helper/DataUtil.java; its entry method DataUtil.parseInputStream(InputStream, String charsetName, String baseUri, Parser) is invoked by Jsoup.parse(InputStream, charsetName, baseUri)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "When charsetName is null the code decodes the first up-to-5KB as UTF-8 to sniff a charset from (a) a BOM, (b) <meta http-equiv/charset> tags, and (c) as last resort an <?xml encoding=...?> declaration whose node must be an XmlDeclaration named 'xml' (html parser may instead yield a Comment for '<?xml ...?>')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in src/test/java/org/jsoup/helper/DataUtilTest.java; the failing regression scenario is captured by `supportsXmlCharsetDeclaration`, which parses with Jsoup.parse(soup, null, \"\") and asserts doc.body().text() == \"Hellö Wörld!\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's actual (buggy) repro builds the encoding stringically as `<?xml version=\\\"1.0\\\" encoding=\\\"\" + encoding + \"\\\"?>` with encoding=\"iso-8859-1\"; the test hardcodes the literal \"iso-8859-1\" in both the declaration and the getBytes() charset."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other tests in DataUtilTest cover meta-charset sniffing, quoted meta charsets, BOM handling, and getCharsetFromContentType parsing — none of which directly target the XML-declaration bug."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is only an import addition (org.jsoup.nodes.Comment) enabling the new code in H1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Root cause context: the HTML parser (Parser.htmlParser, used by Jsoup.parse(stream,...)) tokenizes an XML prolog <?xml ...?> into a Comment node (data beginning with '?'); only the XML parser yields a direct XmlDeclaration. Hence the pre-fix code's sole instanceof XmlDeclaration branch never saw the prolog under the HTML parser."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Comment.isXmlDeclaration() returns true when the comment data starts with '?' or '!'; Comment.asXmlDeclaration() re-parses the wrapped declaration with the XML parser to produce an XmlDeclaration whose name/attributes are then read."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing XmlDeclaration-only branch (first instanceof XmlDeclaration) and the new comment branch both funnel into the same downstream check (decl.name().equalsIgnoreCase(\"xml\") then decl.attr(\"encoding\")); only the new pathway is behavior added here."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_R1]: I checked every test file in the real oracle. The only regression scenario directly exercising S_impl_R1 — the case where DataUtil.parseInputStream, given null charset, no BOM and no meta charset, re-decodes the stream based on the encoding attribute of a leading <?xml ... encoding=\"X\"?> prolog that the HTML parser tokenizes as a Comment (the situation captured by Jsoup.parse(...\".getBytes(iso-8859-1)...) yielding \"Hellö Wörld!\") — is `DataUtilTest.supportsXmlCharsetDeclaration`. However, that file (src/test/java/org/jsoup/helper/DataUtilTest.java) is labeled [VISIBLE], and per the auditor's rule a witness may only rest on [HIDDEN] assertions. An assertion drawn from [VISIBLE] content can never serve as a witness, since it was never hidden from a repair system.\n\nI examined every other oracle test file for a hidden test that genuinely (not merely coincidentally-co-located) tests the same Comment-declaration charset-detection path:\n- DataUtilTest.java ([VISIBLE]): contains the one truly relevant test, supportsXmlCharsetDeclaration; disqualified as visible.\n- XmlTreeBuilderTest.java ([HIDDEN]): testDetectCharsetEncodingDeclaration uses Parser.xmlParser(), so the prolog there is produced as a genuine XmlDeclaration child node — the pre-existing (already-working) XmlDeclaration branch, not the new Comment-based branch this requirement adds. It also parses a file with an explicit charset sniff expecting ISO-8859-1; this does not exercise the buggy comment path and is not among the failing tests.\n- HtmlParserTest.java ([HIDDEN]): handlesXmlDeclarationAsBogusComment verifies that an HTML parse of a string renders <?xml ...?> as a bogus comment — it tests HTML tokenizer behavior, not DataUtil.parseInputStream charset re-decoding from that comment; not failing and unrelated to the requirement's observable behavior.\n- DocumentTest, ConnectTest, W3CDomTest, ParseTest ([HIDDEN]): all concern meta-element charset updates, meta charset sniffing, HTTP connection, or W3C DOM conversion — none observe charset re-decoding arising from a leading Comment-form XML declaration in parseInputStream.\n\nConsequently the oracle contains no [HIDDEN] assertion that enforces the behavior described in S_impl_R1, so no genuine witness is available."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_R1] (DataUtil.parseInputStream charset detection from a Comment-form XML declaration in the leading node): When DataUtil.parseInputStream is given a null charset, finds no BOM and no <meta> charset, and the first child node of the resulting first-pass UTF-8-parsed document is a Comment whose data constitutes an XML declaration (i.e. it passes Comment.isXmlDeclaration) that names 'xml' and carries an 'encoding' attribute — the situation arising when the HTML parser tokenizes a leading <?xml version=\"...\" encoding=\"X\"?> prolog as a Comment rather than directly as an XmlDeclaration — the foundCharset is set from that declaration's encoding attribute, so the full stream is re-decoded using charset X (mirroring the behavior already present when that first child is a genuine XmlDeclaration). Observable upshot: e.g. Jsoup.parse(stream of bytes in iso-8859-1 beginning with <?xml version=\"1.0\" encoding=\"iso-8859-1\"?>, null, uri) yields a Document whose text content is decoded with iso-8859-1 rather than the default charset. — not entailed by S_vis (S_impl_R1's core behavior is charset extraction when the first child node is a Comment that passes Comment.isXmlDeclaration (the case where the HTML parser tokenizes an <?xml?> prolog as a Comment). Neither S_vis entry mentions any Comment-form/isXmlDeclaration path; R1 only states the observable iso-8859-1 decoding result, and R2's cited DataUtil code explicitly handles only the genuine XmlDeclaration node (if first instanceof XmlDeclaration). S_vis pins down the XmlDeclaration-detection result but not the distinct Comment-form mechanism S_impl_R1 commits to.); confirmed by a synthesized witness: The witness drives DataUtil.parseInputStream (via Jsoup.parse(stream, null, \"\")) with charsetName=null, no BOM, no <meta> charset, and a leading <?xml version=\"1.0\" encoding=\"windows-1252\"?> prolog. Under the HTML parser that prolog is tokenized as a Comment (whose data is an isXmlDeclaration), so only the bug-fix H1 branch (introducing the Comment → asXmlDeclaration path) can sniff foundCharset=\"windows-1252\" and re-decode the whole stream in windows-1252. Gold (H1 present) passes: doc.body().text() equals \"Hellé Wörld!\". Buggy (pre-fix, Comment branch absent) leaves charsetName null so the stream keeps its first-pass UTF-8 decode, mangling the 0xE9/0xF6 bytes to U+FFFD replacement chars, so doc.body().text() is \"Hell� W�rld!\" — FAILING the assertion. The choice of windows-1252 and simplified HTML (no XHTML DOCTYPE/xmlns wrapper, different content text) makes this a distinct input from the visible iso-8859-1 supportsXmlCharsetDeclaration test, so a repair that merely hard-codes the visible iso-8859-1 case in the specific visible string form would not pass it; it genuinely generalizes the charset-detection requirement.",
+    "confidence": "Medium"
+  }
+}

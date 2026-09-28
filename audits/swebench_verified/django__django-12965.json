@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-12965",
+  "status": "ok",
+  "duration_seconds": 511.37573920807336,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12965",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Deleting every row of a model via a whole-table fast delete (e.g. Model.objects.all().delete() on a model whose deletion touches only its own single table, with no filter or join requiring any other table) must generate / execute a plain \"DELETE FROM <table>\" statement — it must NOT be rewritten into the self-referencing form \"DELETE FROM <table> WHERE <table>.<pk> IN (SELECT <table>.<pk> FROM <table>)\".",
+        "subject": "Model.objects.all().delete() SQL generation / SQLDeleteCompiler fast-delete (single-alias) branch",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Django 3.0 generates this SQL:\nDELETE FROM `testapp_alphabet`\nDjango 3.1 generates this SQL:\nDELETE FROM `testapp_alphabet` WHERE `testapp_alphabet`.`id` IN (SELECT `testapp_alphabet`.`id` FROM `testapp_alphabet`)\" plus \"Since there's no alias on the subquery, there's no way to lock it.\" and \"But I think we shouldn't change the SQL here.\""
+      },
+      {
+        "id": "S2",
+        "statement": "The plain-single-table DELETE form must remain reserved for queries whose filter condition involves only the being-deleted table's own columns; a fast delete whose filtered QuerySet semantics genuinely require a second (self or foreign) table reference (e.g. deleting objects matched through a joined/related/annotated condition) must retain its existing correct one-query fast-delete behavior rather than have delete() degraded to a form that issues the wrong target rows.",
+        "subject": "SQLDeleteCompiler.as_sql multi-alias branch / QuerySet.fast delete with joined or filtered conditions",
+        "hunk_ids": [],
+        "cited_from": "compiler.py SQLDeleteCompiler: \"if self.single_alias: return self._as_sql(self.query)\" ... else builds \"outerq = Query(self.query.model); outerq.where = self.query.where_class(); outerq.add_q(Q(pk__in=innerq)); return self._as_sql(outerq)\"; and tests/delete_regress/tests.py Ticket19102Tests: \"The deletion should be done as 'fast-path' deletion (that is, just one query for the .delete() call).\" with each assertion \"with self.assertNumQueries(1)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "SQLDeleteCompiler.single_alias returns True for a delete whose query references only its model's base table (exactly one alias has a nonzero refcount once the base table is ensured present), even when the base-table alias's stored alias_refcount would otherwise be zero because all query-time references had been released; only when additional join aliases are also active does single_alias evaluate to False.",
+        "subject": "django.db.models.sql.compiler.SQLDeleteCompiler.single_alias",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a whole-table mass delete over a single model, e.g. Model.objects.all().delete() with no remaining join references, SQLDeleteCompiler.as_sql() produces the plain single-table SQL 'DELETE FROM <table> [WHERE ...]' (no self-referencing 'DELETE FROM ... WHERE <pk> IN (SELECT <pk> FROM <same table>)' subquery), because single_alias is now True in that scenario.",
+        "subject": "django.db.models.sql.compiler.SQLDeleteCompiler.as_sql",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1/S2 confirm the desired SQL outcome (plain DELETE for a whole-table single-model delete, preserved fast-delete) and that as_sql routes on single_alias, which implies single_alias should be True in the base-table-only case. However R1's specific mechanism — that single_alias returns True even when the base-table alias's stored alias_refcount is zero because query-time references were released and the alias is ensured present — is an internal implementation detail of the patch that no visible evidence describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1 explicitly states the plain 'DELETE FROM <table>' must be generated and must NOT be rewritten into the self-referencing 'WHERE pk IN (SELECT...)' form for a whole-table single-model delete, which is exactly R2's behavior; S2 corroborates that the fast-delete routing on single_alias retains the one-query plain form."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_whole_table_delete_is_single_alias_plain_delete",
+      "test_source": "\nimport django\nfrom django.conf import settings\n\nsettings.configure(\n    DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n    INSTALLED_APPS=['django.contrib.contenttypes', 'tests.delete'],\n    DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n)\ndjango.setup()\n\nfrom django.db import connection, models as djmodels\nfrom django.db.models.sql.compiler import SQLDeleteCompiler\nfrom django.db.models.sql.subqueries import DeleteQuery\nfrom tests.delete.models import Base\n\ndef test_whole_table_delete_is_single_alias_plain_delete():\n    # A query for deleting the *entire* contents of a model table contains\n    # no join aliases of its own; the base table is only materialised inside\n    # SQLDeleteCompiler.single_alias (R1: ensure base table is in aliases).\n    query = DeleteQuery(Base)\n    compiler = SQLDeleteCompiler(query, connection, 'default')\n    # R1: exactly one alias (the base table) has a nonzero refcount once the\n    # base table has been ensured present, so single_alias must be True even\n    # though the query started out with the base alias at zero/absent.\n    assert compiler.single_alias is True\n    sql, params = compiler.as_sql()\n    # It must emit a plain DELETE FROM <table> for the whole-table delete\n    # rather than a self-referencing subquery (DELETE ... WHERE pk IN\n    # (SELECT pk FROM same-table)).\n    assert sql.count('SELECT') == 0\n    assert sql.startswith(\"DELETE FROM\")\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "R1 is the SQLDeleteCompiler.single_alias fix: a whole-model (no-join) DELETE query must still report single_alias=True -- and thus emit plain `DELETE FROM <table>` rather than a self-referencing `DELETE ... WHERE pk IN (SELECT pk FROM same-table)` subquery -- even though before the fix the base-table alias had zero/absent refcount because no query-time reference was active. The gold implementation calls self.query.get_initial_alias() inside single_alias so the base table always counts.\n\nThe visible oracles (S1/S2 = tests/delete/tests.py and tests/delete_regress/tests.py) only assert query counts or surviving/removed row counts; none inspects the DELETE SQL shape or the single_alias boolean, so both pass on buggy and gold. There is no visible assertion that captures the plain-vs-subquery DELETE form (confirmed by Oracle Search Agent).\n\nI built a witness that constructs a DeleteQuery over the whole contents of a table (tests.delete.models.Base), the exact fast-delete scenario, and asserts (a) SQLDeleteCompiler.single_alias is True and (b) the compiled DELETE contains no SELECT (plain `DELETE FROM table`, no pk__IN subquery). Execution: PASSED on gold (single_alias True, plain DELETE) and FAILED on buggy (single_alias False — the compiler would take the subquery branch; assertion `single_alias is True` failed). This discriminates the two programs and no visible test pins down the same fact."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue reports a Django 3.0 -> 3.1 regression: Model.objects.all().delete() changed from plain `DELETE FROM <table>` to a whole-table self-referencing `DELETE FROM ... WHERE pk IN (SELECT pk FROM <same table>)` subquery, breaking MySQL `LOCK TABLES` usage and hurting performance (cited benchmark: ~0.2s vs ~7.5s deleting 100k rows on MariaDB/InnoDB)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The SQL generation lives in django/db/models/sql/compiler.py class SQLDeleteCompiler; as_sql() chooses between a plain single-alias `_as_sql(self.query)` DELETE and a subquery-wrapped path (clone query, select pk, `Q(pk__in=innerq)`) based on the cached single_alias property = whether exactly one alias has a nonzero alias_refcount."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The delete paths reach this compiler via QuerySet.delete() -> Collector (fast_deletes -> _raw_delete) in django/db/models/query.py and django/db/models/deletion.py; note for whole-table single-model fast deletes the existing Django test suite (tests/delete/tests.py, e.g. test_fast_delete_large_batch/test_large_delete) counts only queries, so they would not by themselves fail on the subquery-form regression."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/delete_regress/tests.py Ticket19102Tests asserts that fast deletes over join/annotate/distinct/extra/select_related/defer conditions must still be one query and delete only the intended rows (correct multi-alias handling is load-bearing, not to be collapsed into a plain DELETE)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo does not contain a test that inspects the exact generated DELETE SQL shape for whole-table deletes, so the primary S_vis evidence for the required plain-DELETE form is the issue report itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SQLDeleteCompiler.single_alias is a @cached_property consulted by as_sql() to choose between _as_sql(self.query) (plain DELETE, when True) and the subquery-wrapped pk__in path (when False)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.get_initial_alias() (in query.py) increments the base-table alias's refcount when alias_map is non-empty, else joins a BaseTable; it is what the patch prepends inside single_alias so the base table always counts as an active alias."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Multi-alias correct behavior (join/annotate/distinct/etc. deletes must remain single-query and delete only intended rows via the subquery path) is preserved because get_initial_alias only forces the base-table alias; any real second join alias still leaves more than one nonzero-refcount alias so single_alias stays False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The regression scenario is when filters/intermediate query processing leaves the base table's alias present in alias_map/alias_refcount but with a zero refcount, so the pre-fix sum of nonzero-refcount aliases was 0 (not 1) and as_sql wrongly took the subquery path even for a plain whole-table delete."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: No oracle test genuinely exercises R1's behavior (SQLDeleteCompiler.single_alias returning True for a delete whose query references only its base table even when the base alias has a zero stored refcount, in order to emit a plain DELETE rather than a self-referencing pk__IN subquery). \n\nChecks performed: (1) tests/delete/tests.py [VISIBLE] — the delete paths it covers (whole-table fast deletes in test_fast_delete_large_batch/test_large_delete and filtered deletes) only assert on number of queries or resulting row counts; both remain correct under the pre-fix subquery form, and none inspects the generated DELETE SQL, so none discriminates gold from buggy. (2) tests/delete_regress/tests.py [VISIBLE] — Ticket19102Tests target the OPPOSITE branch (single_alias must be False for real multi-join deletes, going through the subquery path) so they pass on both buggy and gold, and likewise only assert query counts; DeleteLockingTest concerns a separate concurrent-delete feature. (3) tests/queries/test_query.py [VISIBLE] — query-building unit tests, no delete SQL inspection. (4) tests/delete/models.py and tests/delete_regress/models.py are [HIDDEN] but are pure model definitions with no test assertions, so they cannot be witnesses. \n\nThe gold-vs-buggy difference for R1 exists exclusively in the SQL shape of a whole-table delete under the released-base-alias condition; the only change is subquery-form vs plain DELETE, with identical rows deleted and identical query counts. The oracle contains no assertion on the generated DELETE statement shape for whole-table deletes (consistent with the earlier-extractor note that the repo has no such test). No tests are even recorded as currently failing against the buggy program. Therefore no test qualifies as a witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.sql.compiler.SQLDeleteCompiler.single_alias): SQLDeleteCompiler.single_alias returns True for a delete whose query references only its model's base table (exactly one alias has a nonzero refcount once the base table is ensured present), even when the base-table alias's stored alias_refcount would otherwise be zero because all query-time references had been released; only when additional join aliases are also active does single_alias evaluate to False. — not entailed by S_vis (S1/S2 confirm the desired SQL outcome (plain DELETE for a whole-table single-model delete, preserved fast-delete) and that as_sql routes on single_alias, which implies single_alias should be True in the base-table-only case. However R1's specific mechanism — that single_alias returns True even when the base-table alias's stored alias_refcount is zero because query-time references were released and the alias is ensured present — is an internal implementation detail of the patch that no visible evidence describes.); confirmed by a synthesized witness: R1 is the SQLDeleteCompiler.single_alias fix: a whole-model (no-join) DELETE query must still report single_alias=True -- and thus emit plain `DELETE FROM <table>` rather than a self-referencing `DELETE ... WHERE pk IN (SELECT pk FROM same-table)` subquery -- even though before the fix the base-table alias had zero/absent refcount because no query-time reference was active. The gold implementation calls self.query.get_initial_alias() inside single_alias so the base table always counts.\n\nThe visible oracles (S1/S2 = tests/delete/tests.py and tests/delete_regress/tests.py) only assert query counts or surviving/removed row counts; none inspects the DELETE SQL shape or the single_alias boolean, so both pass on buggy and gold. There is no visible assertion that captures the plain-vs-subquery DELETE form (confirmed by Oracle Search Agent).\n\nI built a witness that constructs a DeleteQuery over the whole contents of a table (tests.delete.models.Base), the exact fast-delete scenario, and asserts (a) SQLDeleteCompiler.single_alias is True and (b) the compiled DELETE contains no SELECT (plain `DELETE FROM table`, no pk__IN subquery). Execution: PASSED on gold (single_alias True, plain DELETE) and FAILED on buggy (single_alias False — the compiler would take the subquery branch; assertion `single_alias is True` failed). This discriminates the two programs and no visible test pins down the same fact.",
+    "confidence": "Medium"
+  }
+}

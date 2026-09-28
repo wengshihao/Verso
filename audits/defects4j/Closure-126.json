@@ -1,0 +1,102 @@
+{
+  "task_id": "Closure-126",
+  "status": "ok",
+  "duration_seconds": 264.35542670299947,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Closure-126",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For the program `function f() {b:try{throw 9} finally {break b} return 1;}`, MinimizeExitPoints must leave it unchanged: a labeled `break` that appears inside the `finally` block of a label's try must NOT be removed or relocated during label-break minimization (removing it would change the completion that overrides the thrown completion).",
+        "subject": "MinimizeExitPoints.tryMinimizeExits / label-BREAK handling of finally blocks",
+        "hunk_ids": [],
+        "cited_from": "MinimizeExitPointsTest.testDontRemoveBreakInTryFinally:\n  foldSame(\"function f() {b:try{throw 9} finally {break b} return 1;}\");"
+      },
+      {
+        "id": "R2",
+        "statement": "A valueless `return` statement located inside a `finally` block must be preserved even where surrounding redundant exits are removed — e.g. `function f(){try{return;}catch(e){throw 9;}finally{return}}` folds to `function f(){try{}catch(e){throw 9;}finally{return}}` (catch-bodied throw 9 and the finally `return` retained), `function f(){try{g:if(a()){throw 9;} return;}finally{return}}` folds to `function f(){try{g:if(a()){throw 9;}}finally{return}}` (the try's trailing `return` dropped, the finally `return` kept), and `function f(){try{throw 9;}finally{return;}}` does not change at all.",
+        "subject": "MinimizeExitPoints RETURN handling inside finally blocks",
+        "hunk_ids": [],
+        "cited_from": "MinimizeExitPointsTest.testFunctionReturnOptimization:\n  fold(\"function f(){try{return;}catch(e){throw 9;}finally{return}}\",\n       \"function f(){try{}catch(e){throw 9;}finally{return}}\");\n  fold(\"function f(){try{g:if(a()){throw 9;} return;}finally{return}}\",\n       \"function f(){try{g:if(a()){throw 9;}}finally{return}}\");\n  foldSame(\"function f(){try{throw 9;}finally{return;}}\");"
+      },
+      {
+        "id": "R3",
+        "statement": "Redundant valueless exits may still be removed when they do NOT lie in a finally block — e.g. a function that ends in unconditional bare exits still folds, and a label/loop/function whose try and catch both end in the matching bare exit folds the try/catch bodies but not anything inside their finally: `f:try{break f;}catch(e){break f;}` folds to `f:try{}catch(e){}` and `function f(){try{return;}catch(e){return;}}` folds to `function f(){try{}catch(e){}}`.",
+        "subject": "MinimizeExitPoints general non-finally exit removal",
+        "hunk_ids": [],
+        "cited_from": "MinimizeExitPointsTest:\n  fold(\"f:try{break f;}catch(e){break f;}\", \"f:try{}catch(e){}\");  (testBreakOptimization)\n  fold(\"function f(){try{return;}catch(e){return;}}\", \"function f(){try{}catch(e){}}\");  (testFunctionReturnOptimization)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For a try statement with a finally clause, MinimizeExitPoints' exit-minimization does not remove or rewrite explicit exits (matching returns, breaks, or continues, per the current exitType/labelName context) that appear inside the finally block: statements within the finally clause are left unchanged by this pass.",
+        "subject": "MinimizeExitPoints.tryMinimizeExits",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 and R2 pin down specific labeled-break-in-finally and valueless-return-in-finally preservation cases, substantially supporting the break/return portions of the claim. However S_impl generalizes further to preserving continues inside finally and to the fully general principle that the finally clause is left entirely unchanged, which no visible case demonstrates, so the full claim is not definitively entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testDontRemoveBreakInTryFinally",
+      "test_source": "@Test\npublic void testDontRemoveBreakInTryFinally() throws Exception {\n  com.google.javascript.jscomp.Compiler compiler = new com.google.javascript.jscomp.Compiler();\n  com.google.javascript.jscomp.CompilerOptions opts = new com.google.javascript.jscomp.CompilerOptions();\n  com.google.javascript.jscomp.CompilationLevel.SIMPLE_OPTIMIZATIONS.setOptionsForCompilationLevel(opts);\n  java.util.List<com.google.javascript.jscomp.SourceFile> inputs = java.util.Collections.singletonList(\n      com.google.javascript.jscomp.SourceFile.fromCode(\"in.js\", \"function f(){b:try{throw 9}finally{break b}return 1}\"));\n  compiler.compile(java.util.Collections.<com.google.javascript.jscomp.SourceFile>emptyList(), inputs, opts);\n  String out = compiler.toSource();\n  assertTrue(\"exit minimization must preserve the break inside the finally block: \" + out,\n      out.indexOf(\"finally{break\") != -1);\n}",
+      "gold_result": "PASSED (output function f(){a:try{throw 9;}finally{break a}return 1}; — break inside finally preserved)",
+      "buggy_result": "FAILED (AssertionError; output collapsed to function f(){throw 9}; — the verify-it's-removed from finally allowed downstream passes to eliminate the try/finally structure entirely, i.e., no finally{break substring)",
+      "explanation": "The oracle's [HIDDEN] MinimizeExitPointsTest contains testDontRemoveBreakInTryFinally, whose foldSame input \"function f() {b:try{throw 9} finally {break b} return 1;}\" directly encodes R1: the explicit `break b` matching the try's label context lies inside the finally clause and must be left untouched by MinimizeExitPoints' exit-minimization (the pass's own comment says it must not change the completion type of finally blocks). This is precisely the invariant the patch restores by deleting tryMinimizeExits(finallyBlock,...). I ran the exact JS (label b) through a SIMPLE-optimizations compile: gold output retains the try/finally + break inside finally (PASSED), while buggy output drops the finally block's break, allowing dead-code/CFG passes to collapse the whole function to `throw 9;` (no `finally{break`), failing the assertion. Both runs of the exact submitted source were executed mechanically against gold (PASSED) and buggy (FAILED). No other oracle file/exercised failing test targets finally-clause exit preservation (testFunctionReturnOptimization targets return-exits in try bodies, not finally break preservation)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue-936/blob text could not be fetched; only the on-disk source + tests are visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Within the try-handling block of MinimizeExitPoints.tryMinimizeExits, the source comment reads \"Don't try to minimize the exits of finally blocks, as this can cause problems if it changes the completion type of the finally block. See ECMA 262 Sections 8.9 & 12.14\", yet the immediately following lines recurse with \"tryMinimizeExits(finallyBlock, exitType, labelName);\" — comment and code contradict; R1/R2 captured here reflect the test-asserted invariant (e.g. testDontRemoveBreakInTryFinally, a foldSame)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testDontRemoveBreakInTryFinally is the one test whose name/body point directly at the finally break case; nothing else in the test file exercises a break-in-finally above the do/finally/return cases cited in R2/R3."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under test/com/google/javascript/jscomp/MinimizeExitPointsTest.java extending CompilerTestCase; foldSame asserts output == input, fold(js,expected) asserts exact AST-equivalent transformation; enableLineNumberCheck(true) and getNumRepetitions()==1 are set in setUp."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "forEach/wrapped loops the pass deliberately does NOT rewrite \"exit at end of non-runnable tail\": e.g. foldSame on `for(x in ...)break`/`continue` forms and on `do{if(...)continue;...}while(true)` cases when siblings follow the continue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 deletes the call `tryMinimizeExits(finallyBlock, exitType, labelName);` from the try branch of tryMinimizeExits while retaining the 'Don't try to minimize the exits of finally blocks...' comment. The rest of the try-branch handling (recursing into tryBlock and the catch block) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The observable difference this patch makes is confined to finally clauses of try statements: previously exit statements there could be removed/written, now they are preserved verbatim."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (MinimizeExitPoints.tryMinimizeExits): For a try statement with a finally clause, MinimizeExitPoints' exit-minimization does not remove or rewrite explicit exits (matching returns, breaks, or continues, per the current exitType/labelName context) that appear inside the finally block: statements within the finally clause are left unchanged by this pass. — not entailed by S_vis (S_vis R1 and R2 pin down specific labeled-break-in-finally and valueless-return-in-finally preservation cases, substantially supporting the break/return portions of the claim. However S_impl generalizes further to preserving continues inside finally and to the fully general principle that the finally clause is left entirely unchanged, which no visible case demonstrates, so the full claim is not definitively entailed.); confirmed by a oracle witness: The oracle's [HIDDEN] MinimizeExitPointsTest contains testDontRemoveBreakInTryFinally, whose foldSame input \"function f() {b:try{throw 9} finally {break b} return 1;}\" directly encodes R1: the explicit `break b` matching the try's label context lies inside the finally clause and must be left untouched by MinimizeExitPoints' exit-minimization (the pass's own comment says it must not change the completion type of finally blocks). This is precisely the invariant the patch restores by deleting tryMinimizeExits(finallyBlock,...). I ran the exact JS (label b) through a SIMPLE-optimizations compile: gold output retains the try/finally + break inside finally (PASSED), while buggy output drops the finally block's break, allowing dead-code/CFG passes to collapse the whole function to `throw 9;` (no `finally{break`), failing the assertion. Both runs of the exact submitted source were executed mechanically against gold (PASSED) and buggy (FAILED). No other oracle file/exercised failing test targets finally-clause exit preservation (testFunctionReturnOptimization targets return-exits in try bodies, not finally break preservation).",
+    "confidence": "High"
+  }
+}

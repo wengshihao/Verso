@@ -1,0 +1,138 @@
+{
+  "task_id": "JacksonDatabind-61",
+  "status": "ok",
+  "duration_seconds": 334.3359634449989,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-61",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Under an ObjectMapper whose default typing is a custom resolver built from StdTypeResolverBuilder.init(JsonTypeInfo.Id.CLASS, null).inclusion(JsonTypeInfo.As.PROPERTY).typeProperty(\"__t\"), serializing and then deserializing (into java.util.Map) a Map containing a boxed-Long value (\"longInMap\"=2L) and a Data bean with a public primitive long field key (=1L) as another value must not throw a JsonMappingException/IllegalArgumentException, and must yield a non-null map containing both entries (size 2).",
+        "subject": "StdTypeResolverBuilder default-typing round trip of a bean with a primitive long field",
+        "hunk_ids": [],
+        "cited_from": "DefaultTypingWithPrimitivesTest#testDefaultTypingWithLong: \"Data data = new Data(); data.key = 1L; Map<String, Object> mapData = new HashMap<String, Object>(); mapData.put(\\\"longInMap\\\", 2L); mapData.put(\\\"longAsField\\\", data); ... String json = mapper.writeValueAsString(mapData); Map<?,?> result = mapper.readValue(json, Map.class); assertNotNull(result); assertEquals(2, result.size());\" with \"static class Data { public long key; }\""
+      },
+      {
+        "id": "R2",
+        "statement": "Default type info must still be attached to (and preserved across a round trip for) a boxed Long stored as a collection/Map value (declared as Object), so such values deserialize back as Long rather than being coerced to another numeric type.",
+        "subject": "std/default typing still applied to Object-typed collection values holding a boxed Long",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"mapData.put(\\\"longInMap\\\", 2L); ... while also trying to preserve the types of values in collections (\\\"longInMap\\\" in the above example must stay a Long object).\" and serialization output \"\\\"longInMap\\\" : [ \\\"java.lang.Long\\\", 2 ]\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ObjectMapper.DefaultTypeResolverBuilder.useForType(JavaType) returns false when the given type is a Java primitive (t.isPrimitive()), for every DefaultTyping applicability mode, so that default typing is not applied to properties whose declared type is a primitive.",
+        "subject": "ObjectMapper.DefaultTypeResolverBuilder.useForType",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "StdTypeResolverBuilder.buildTypeSerializer(SerializationConfig, JavaType, Collection) returns null (no type serializer / no type wrapping) when the given baseType is a Java primitive (baseType.isPrimitive()), for any configured _idType other than JsonTypeInfo.Id.NONE, regardless of inclusion mode or other settings.",
+        "subject": "StdTypeResolverBuilder.buildTypeSerializer",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "StdTypeResolverBuilder.buildTypeDeserializer(DeserializationConfig, JavaType, Collection) returns null (no type deserializer / no expectation of embedded type info) when the given baseType is a Java primitive (baseType.isPrimitive()), for any configured _idType other than JsonTypeInfo.Id.NONE, regardless of inclusion mode, default-impl or other settings.",
+        "subject": "StdTypeResolverBuilder.buildTypeDeserializer",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis confirms the goal that a primitive-declared long inside a default-typed structure must not be wrapped/typed (round trip must not throw), which is behaviorally compatible with useForType returning false for primitives. But S_vis never identifies this specific internal applicability gate or its return contract, so whether the patch must implement the guard at useForType (vs. in the serializer/deserializer plumbing) is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible no-throw, size-2 round trip implies that no type serializer should be produced that would wrap a primitive-typed value such as the Data bean's `long key`; this is consistent with buildTypeSerializer returning null for primitives. However, S_vis only describes observable behavior and does not specify this method's per-primitive null contract across modes/inclusions, so exact entailment is ambiguous."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis requires that deserializing a default-typed structure containing a primitive-field bean must not throw, consistent with buildTypeDeserializer skipping primitive baseType. Yet the visible info never describes how type-info expectations are constructed or that a null type-deserializer for primitives is the required mechanism, leaving the specific method behavior ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R1 concerns ObjectMapper.DefaultTypeResolverBuilder.useForType(JavaType) returning false for Java primitive types in every DefaultTyping mode (the H0 guard 'if (t.isPrimitive()) return false;' added before the switch).\n\nI empirically confirmed this guard is behaviorally inert:\n1. Direct unit invocation of useForType with every Java primitive (boolean..double) against every DefaultTyping mode PASSES identically on BOTH buggy and gold. That is, even on the buggy revision useForType already returns false for every primitive type in every mode (e.g. long.class is final/concrete for NON_FINAL; java-lang-object and non-concrete checks exclude primitives in the other modes). So there is no input that produces a different result between the two revisions at the useForType level.\n2. Round-trip probes through the ObjectMapper DefaultTypeResolverBuilder path (enableDefaultTyping NON_FINAL / NON_CONCRETE_AND_ARRAYS, including a Data{long key} bean and int[] array stored in a Map) produced byte-identical serialization on buggy and gold — primitive-typed fields/contents were not type-wrapped in either.\n3. The only gold-vs-buggy observable divergence I found (a primitive long field inside a default-typed bean serializing as [\"java.lang.Long\",42] on buggy vs 42 on gold) is reached through StdTypeResolverBuilder.buildTypeSerializer/buildTypeDeserializer used directly as the default typer (the exact approach of the [VISIBLE] DefaultTypingWithPrimitivesTest.testDefaultTypingWithLong). That difference is entirely attributable to the H1/H2 guards inside StdTypeResolverBuilder, not to R1's useForType guard, and reproduces a visible surface already crafted by the existing oracle test.\n\nBecause the H0/useForType guard produces no observable gold-vs-buggy difference for any primitive input or round-trip scenario, no execution-confirmed witness for the R1-specific behavior of useForType can be produced; I report not found after confirming this both directly and via end-to-end scenarios."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: src/main/java/.../ObjectMapper.java, src/main/java/.../jsontype/impl/StdTypeResolverBuilder.java, src/test/java/.../jsontype/DefaultTypingWithPrimitivesTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug's trigger is in type info (de)serializer construction: StdTypeResolverBuilder.buildTypeSerializer/buildTypeDeserializer already carry comments \"As per [databind#1395] better prevent use for primitives\" (after the _idType==NONE check) but contain no numeric guard for a primitive baseType, so a primitive field such as long key still gets type-wrapped (JSON \"key\" : [ \"java.lang.Long\", 1 ]) and deserialization later fails with \"Class java.lang.Long not subtype of [simple type, class long]\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ObjectMapper.DefaultTypeResolverBuilder.useForType also has comment \"[databind#1395], need to skip primitive types\" though no code change is apparent there."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report is based on Jackson 2.8.3 and references upstream GitHub issue #1395; the reporter notes that changing the Data field from long to int avoided the exception for them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testDefaultTypingWithLong does not assert the runtime class of the deserialized \"longInMap\" value (only map size), so preserving Long type (R2) is grounded in the issue narrative, not the test assertions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DefaultTypeResolverBuilder (in ObjectMapper) overrides buildTypeSerializer/buildTypeDeserializer to delegate to super only when useForType(baseType) returns true; the H0 guard therefore normally short-circuits primitives before H1/H2 are reached on this path, but H1/H2 also protect direct StdTypeResolverBuilder usage (e.g. explicit @JsonTypeInfo configuration) where useForType is not involved."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "All three guarded return points (useForType=false, buildTypeSerializer/buildTypeDeserializer returning null) are prior to any subclass/primitive-disabled conditions; _idType==NONE returns null in StdTypeResolverBuilder before the new primitive guard, so the primitive guard is only reachable when _idType != NONE."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible test testDefaultTypingWithLong asserts only map size (not the runtime class of the primitive-typed value), so round-trip pass/fail is the only strictly test-observable proxy for R1-R3."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 asserts the specific behavior that ObjectMapper.DefaultTypeResolverBuilder.useForType returns false for Java primitive types in every DefaultTyping applicability mode (databind#1395). A witness for this must come from [HIDDEN] oracle test content.\n\nI reviewed the complete oracle jsontype test folder and the top-level suite. The only oracle test that exercises the \"#1395: primitives must not get type wrapped under default typing\" scenario is testDefaultTypingWithLong in src/test/java/.../jsontype/DefaultTypingWithPrimitivesTest.java. That entire file is labeled [VISIBLE], so none of its assertions can serve as a Witness (visible content can never qualify).\n\nAll other default-typing/primitives-related tests in the jsontype folder (TestDefaultForScalars, TestScalars, TestNoTypeInfo, TestDefaultForMaps, TestDefaultForObject, TypeRefinementForMapTest, TestPropertyTypeInfo, TestTypedContainerSerialization, etc.) are [HIDDEN] but exercise different behaviors: boxed scalars stored in Object fields/arrays (typing of Long kept as a wrapper type — which is actually the OPPOSITE of R1's primitive-scenario), map-key refinements for #1384, @JsonTypeInfo(Id.NONE) markers, and array/list content. None declares a POJO property or map value whose type is a Java primitive (long/int/...) and verifies default typing is NOT applied to it.\n\nBecause the only oracle test matching R1's scenario is [VISIBLE] (so it cannot be a witness) and no [HIDDEN] test genuinely enforces the primitive-skipping behavior, no execution-confirmed witness derived from hidden content can be produced. I confirmed the reported failing test is the sole relevant one and that it resides in visible content, so report not found."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Target R1 concerns ObjectMapper.DefaultTypeResolverBuilder.useForType(JavaType) returning false for Java primitive types in every DefaultTyping mode (the H0 guard 'if (t.isPrimitive()) return false;' added before the switch).\n\nI empirically confirmed this guard is behaviorally inert:\n1. Direct unit invocation of useForType with every Java primitive (boolean..double) against every DefaultTyping mode PASSES identically on BOTH buggy and gold. That is, even on the buggy revision useForType already returns false for every primitive type in every mode (e.g. long.class is final/concrete for NON_FINAL; java-lang-object and non-concrete checks exclude primitives in the other modes). So there is no input that produces a different result between the two revisions at the useForType level.\n2. Round-trip probes through the ObjectMapper DefaultTypeResolverBuilder path (enableDefaultTyping NON_FINAL / NON_CONCRETE_AND_ARRAYS, including a Data{long key} bean and int[] array stored in a Map) produced byte-identical serialization on buggy and gold — primitive-typed fields/contents were not type-wrapped in either.\n3. The only gold-vs-buggy observable divergence I found (a primitive long field inside a default-typed bean serializing as [\"java.lang.Long\",42] on buggy vs 42 on gold) is reached through StdTypeResolverBuilder.buildTypeSerializer/buildTypeDeserializer used directly as the default typer (the exact approach of the [VISIBLE] DefaultTypingWithPrimitivesTest.testDefaultTypingWithLong). That difference is entirely attributable to the H1/H2 guards inside StdTypeResolverBuilder, not to R1's useForType guard, and reproduces a visible surface already crafted by the existing oracle test.\n\nBecause the H0/useForType guard produces no observable gold-vs-buggy difference for any primitive input or round-trip scenario, no execution-confirmed witness for the R1-specific behavior of useForType can be produced; I report not found after confirming this both directly and via end-to-end scenarios."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (ObjectMapper.DefaultTypeResolverBuilder.useForType) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R1 concerns ObjectMapper.DefaultTypeResolverBuilder.useForType(JavaType) returning false for Java primitive types in every DefaultTyping mode (the H0 guard 'if (t.isPrimitive()) return false;' added before the switch).\n\nI empirically confirmed this guard is behaviorally inert:\n1. Direct unit invocation of useForType with every Java primitive (boolean..double) against every DefaultTyping mode PASSES identically on BOTH buggy and gold. That is, even on the buggy revision useForType already returns false for every primitive type in every mode (e.g. long.class is final/concrete for NON_FINAL; java-lang-object and non-concrete checks exclude primitives in the other modes). So there is no input that produces a different result between the two revisions at the useForType level.\n2. Round-trip probes through the ObjectMapper DefaultTypeResolverBuilder path (enableDefaultTyping NON_FINAL / NON_CONCRETE_AND_ARRAYS, including a Data{long key} bean and int[] array stored in a Map) produced byte-identical serialization on buggy and gold — primitive-typed fields/contents were not type-wrapped in either.\n3. The only gold-vs-buggy observable divergence I found (a primitive long field inside a default-typed bean serializing as [\"java.lang.Long\",42] on buggy vs 42 on gold) is reached through StdTypeResolverBuilder.buildTypeSerializer/buildTypeDeserializer used directly as the default typer (the exact approach of the [VISIBLE] DefaultTypingWithPrimitivesTest.testDefaultTypingWithLong). That difference is entirely attributable to the H1/H2 guards inside StdTypeResolverBuilder, not to R1's useForType guard, and reproduces a visible surface already crafted by the existing oracle test.\n\nBecause the H0/useForType guard produces no observable gold-vs-buggy difference for any primitive input or round-trip scenario, no execution-confirmed witness for the R1-specific behavior of useForType can be produced; I report not found after confirming this both directly and via end-to-end scenarios.",
+    "confidence": "Medium"
+  }
+}

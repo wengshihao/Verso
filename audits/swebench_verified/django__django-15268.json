@@ -1,0 +1,91 @@
+{
+  "task_id": "django__django-15268",
+  "status": "ok",
+  "duration_seconds": 210.29915199999232,
+  "llm_calls": 13,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15268",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "MigrationOptimizer.optimize() applied to the four-operation sequence [AlterUniqueTogether(name='mymodel', unique_together=set()), AlterIndexTogether(name='mymodel', index_together=set()), AlterUniqueTogether(name='mymodel', unique_together={('col',)}), AlterIndexTogether(name='mymodel', index_together={('col',)})] must reduce it to exactly the two-operation sequence [AlterUniqueTogether(name='mymodel', unique_together={('col',)}), AlterIndexTogether(name='mymodel', index_together={('col',)})] — i.e. the two intermediate \"remove constraint\" operations are collapsed/absorbed so only one operation per constraint type on 'mymodel' remains.",
+        "subject": "django.db.migrations.optimizer.MigrationOptimizer.reduce (AlterUniqueTogether/AlterIndexTogether on same model across a different-type AlterTogether operation)",
+        "hunk_ids": [],
+        "cited_from": "operations = [\\n\t migrations.AlterUniqueTogether(\\n\t\t name='mymodel',\\n\t\t unique_together=set(),\\n\t ),\\n\t migrations.AlterIndexTogether(\\n\t\t name='mymodel',\\n\t\t index_together=set(),\\n\t ),\\n\t migrations.AlterUniqueTogether(\\n\t\t name='mymodel',\\n\t\t unique_together={(\"col\",)},\\n\t ),\\n\t migrations.AlterIndexTogether(\\n\t\t name='mymodel',\\n\t\t index_together={(\"col\",)},\\n\t ),\\n ]\\nshould be optimized to\\n operations = [\\n\t migrations.AlterUniqueTogether(\\n\t\t name='mymodel',\\n\t\t unique_together={(\"col\",)},\\n\t ),\\n\t migrations.AlterIndexTogether(\\n\t\t name='mymodel',\\n\t\t index_together={(\"col\",)},\\n\t ),\\n ]\\nSo that we don't do two operations on each constraint, but only one."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For an operation S of an AlterTogetherOptionOperation subclass (AlterUniqueTogether or AlterIndexTogether) and a following same-model operation O of the other concrete AlterTogetherOption subclass (e.g. S=AlterUniqueTogether, O=AlterIndexTogether, both on the same model), S.reduce(O, app_label) now returns True (i.e. S can be optimized across O and no longer blocks the optimizer from reordering/folding past it), whereas before it returned False because O references S's model. The two different together-option kinds on one model are thereby treated as mutually crossable for optimization purposes.",
+        "subject": "django.db.migrations.operations.models.AlterTogetherOptionOperation.can_reduce_through / ModelOperation.reduce",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1"
+        ],
+        "rationale": "S1 requires the interleaved four-op AlterUniqueTogether/AlterIndexTogether sequence to collapse to the two add-ops, which is only achievable if the optimizer treats the two different together-option kinds on the same model as crossable and folds/skips past one another during reduce. That observable reduction pins down R1's claimed crossability of different AlterTogetherOption subclasses on one model."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source: django/db/migrations/operations/models.py defines AlterUniqueTogether and AlterIndexTogether (both subclass AlterTogetherOptionOperation -> ModelOptionOperation), and django/db/migrations/optimizer.py holds MigrationOptimizer.optimize/optimize_inner; the autodetector runs the optimizer at the end via _optimize_migrations()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AlterTogetherOptionOperation.reduce inherits from ModelOptionOperation.reduce, which folds two adjacent same-type, same-model AlterFooTogether into just the second; a different-type AlterTogether op on the same model currently blocks left-reduction because ModelOperation.reduce treats it via references_model of the shared model."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The autodetector emits the two-remove-then-two-add pattern in generate_*_altered_foo_together (AlterUniqueTogether/AlterIndexTogether with removal_value empty first, then the add values), confirmed by existing autodetector tests such as test_foo_together_ordering, test_remove_field_and_foo_together, test_rename_field_and_foo_together which assert the full four-op list (these would need updating if the reduction becomes possible)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing optimizer tests tests/migrations/test_optimizer.py (e.g. test_alter_alter_unique_model, test_alter_alter_index_model) already cover the adjacent same-type collapse case; the new behavior in this issue is about the interleaved case where the AlterUniqueTogether and AlterIndexTogether removal ops precede the AlterUniqueTogether and AlterIndexTogether add ops."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a behavior-preserving refactor: it extracts the existing 'not operation.references_model(self.name, app_label)' check from ModelOperation.reduce into a new overridable can_reduce_through method that reduce delegates to. On its own it changes no observable behavior; its purpose is to introduce the override seam that H1 exploits."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 adds the AlterTogetherOptionOperation.can_reduce_through override which ORs the inherited default (not references_model) with the new clause: isinstance(operation, AlterTogetherOptionOperation) and type(operation) is not type(self)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The newly-enabled clause matters only when the two together-options reference the same model and are of different concrete types (AlterUniqueTogether vs AlterIndexTogether); for different-type ops on different models the inherited default already allowed crossing, and for same-type same-model ops folding already occurred via ModelOptionOperation.reduce returning [operation] (a list, not True)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The override is symmetric: because it checks type(operation) is not type(self) without restricting which concrete subtype self is, both an AlterUniqueTogether crossing an AlterIndexTogether and vice versa are enabled."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Tracing through MigrationOptimizer, this makes the interleaved four-op autodetector pattern [AlterUniqueTogether(remove), AlterIndexTogether(remove), AlterUniqueTogether(add), AlterIndexTogether(add)] on one model collapse to the two final add ops, whereas before the removals could not be optimized out."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "task_id": "django__django-13837",
+  "status": "ok",
+  "duration_seconds": 261.6003720839508,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13837",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "get_child_arguments() must detect that Python was launched with `-m pkg` for an arbitrary package (not only django) by using the `__main__.__spec__.parent` (the module entry-point's spec parent), rather than comparing the path of sys.argv[0] against django.__main__.__file__ (which relies on __file__ being set), so that when the process was started as `python -m pkg_other_than_django runserver` it returns child arguments that re-invoke the interpreter with `['-m', pkg_other_than_django]` plus the remaining `sys.argv[1:]`, thereby enabling autoreload for such Django-based command-line utilities.",
+        "subject": "django.utils.autoreload.get_child_arguments",
+        "hunk_ids": [],
+        "cited_from": "Ticket title/description: \"Allow autoreloading of `python -m pkg_other_than_django runserver`\". \"The fix ... is to use Python's documented way of determining if -m was used in get_child_arguments: ... Therefore Python was started with -m pkg if and only if __main__.__spec__.parent == \\\"pkg\\\"\". \"has the side benefit of avoiding use of __file__.\""
+      },
+      {
+        "id": "R2",
+        "statement": "The existing `python -m django runserver` case must keep producing child arguments of the form `[sys.executable, '-W<warnopt>...' , '-m', 'django'] + sys.argv[1:]` (i.e., restart with `-m django`), matching the current behavior asserted by the visible tests.",
+        "subject": "django.utils.autoreload.get_child_arguments",
+        "hunk_ids": [],
+        "cited_from": "tests/utils_tests/test_autoreload.py, TestChildArguments.test_run_as_module: \"@mock.patch('sys.argv', [django.__main__.__file__, 'runserver'])\" then \"self.assertEqual(autoreload.get_child_arguments(), [sys.executable, '-m', 'django', 'runserver'])\". Also RestartWithReloaderTests.test_python_m_django: \"self.assertEqual(mock_call.call_args[0][0], [self.executable, '-Wall', '-m', 'django'] + argv[1:])\"; and runserver semantics \"python -m django check / runserver\" in django/__main__.py docstring: \"Example: python -m django check\""
+      },
+      {
+        "id": "R3",
+        "statement": "The autoreload detection logic must not depend on the presence of the `__file__` attribute of the launching module/its `__main__` module (which is not set in all Python environments), since the intended spec-based detection is guaranteed to work as long as Python obeys its own documentation.",
+        "subject": "django.utils.autoreload",
+        "hunk_ids": [],
+        "cited_from": "\"Currently it detects only when ... and only in Python environments in which __file__ is set on modules, which is not true of all Python environments.\" ... \"Following this algorithm is guaranteed to work as long as Python obeys its own documentation, and has the side benefit of avoiding use of __file__.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the server/process was started with the Python `-m` option such that `__main__.__spec__` is not None and its `parent` attribute is truthy, get_child_arguments() returns the list [sys.executable] followed by one '-W%s' entry per entry in sys.warnoptions (in order), followed by ['-m', <value of __main__.__spec__.parent>], followed by sys.argv[1:]; i.e. the run-as-module child re-invocation is reconstructed from __main__.__spec__.parent rather than being restricted to the hard-coded package 'django'.",
+        "subject": "django/utils/autoreload.py::get_child_arguments",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When `__main__.__spec__` is None or its `parent` is falsy (i.e. the process was not launched as a package via `-m`), get_child_arguments() does not add any ['-m', ...] entry and instead falls through to script-path handling: it returns [str(<sys.argv[0] with .exe suffix>)] + sys.argv[1:] if that .exe exists, [sys.executable] + warning options + [str(<sys.argv[0] with '-script.py' suffix>)] + sys.argv[1:] if that script exists, appends full sys.argv (including argv[0]) when sys.argv[0] exists, and raises RuntimeError('Script %s does not exist.' % sys.argv[0]) when sys.argv[0] does not exist.",
+        "subject": "django/utils/autoreload.py::get_child_arguments",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 pins the generalization from hard-coded 'django' to __main__.__spec__.parent with ['-m', parent] + sys.argv[1:], and S_vis R2 (plus its cited tests asserting [executable, '-W...', '-m', 'django'] + argv[1:]) pins the leading executable-plus-warnoptions structure and ordering. Together they entail the full list structure in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the S_vis statements describe the fallback path taken when __main__.__spec__ is None/falsy (the .exe/-script.py suffix checks, appending full sys.argv, or the RuntimeError('Script %s does not exist.')). S_vis covers only the -m pkg and django cases, so nothing visible leads to this specific script-handling behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r2_spec_none_avoids_m",
+      "test_source": "import sys\nimport __main__\nimport django.__main__\nfrom django.utils import autoreload\n\n\ndef test_r2_spec_none_avoids_m():\n    orig_spec = getattr(__main__, '__spec__', None)\n    orig_argv = sys.argv\n    orig_warn = sys.warnoptions\n    try:\n        # Force the not-launched-with -m condition: __spec__ is None.\n        __main__.__spec__ = None\n        sys.argv = [django.__main__.__file__, 'runserver']\n        sys.warnoptions = ['all']\n        result = autoreload.get_child_arguments()\n        assert result == [sys.executable, '-Wall', django.__main__.__file__, 'runserver'], result\n    finally:\n        __main__.__spec__ = orig_spec\n        sys.argv = orig_argv\n        sys.warnoptions = orig_warn\n",
+      "gold_result": "PASSED — gold (fix) keys off __main__.__spec__: with __spec__=None it takes the non-module branch; since django/__main__.py exists it falls to the full-argv append and returns [<python>, '-Wall', '/testbed/django/__main__.py', 'runserver'] (no '-m' entry), matching R2.",
+      "buggy_result": "FAILED — buggy (pre-fix) uses path comparison py_script == django_main_path: even though __main__.__spec__ is None, because sys.argv[0] equals django/__main__.py it wrongly takes the '-m django' module branch and returns [<python>, '-Wall', '-m', 'django', 'runserver']. Assertion that no '-m' is present fails.",
+      "explanation": "R2 is the non-module fallthrough behavior of django/utils/autoreload.py::get_child_arguments() when __main__.__spec__ is None or its parent is falsy (process not launched via python -m pkg). The fix replaces the old path-comparison detector (Path(sys.argv[0]) == Path(django.__main__.__file__)) with a __spec__-based one (imports __main__ and checks __main__.__spec__ is not None and __main__.__spec__.parent). To expose the discriminating delta on R2's side, my witness constructs the exact R2 precondition: it forces __main__.__spec__ = None (an input state no visible test ever sets) while setting sys.argv[0] to django/__main__.py (a real, existing file). Under the fixed code this no longer counts as '-m django': get_child_arguments() skips the ['-m', ...] append and falls through to script-path handling, and because sys.argv[0] exists it appends full sys.argv → [exe, -Wall, django/__main__.py, runserver], which the test asserts (PASSED on gold). The buggy code still classifies argv[0]==django/__main__.py as '-m django' regardless of __spec__, so it returns [exe, -Wall, -m, django, runserver] — the assertion fails (FAILED on buggy). This scenario/assertion is genuinely new: the visible test_run_as_module only exercises the ambient spec.parent=='django' case where buggy and gold agree on '-m django'; nothing visible forces the not-launched-via -m case with sys.argv[0] set to the django __main__ file, so the no-'-m'/non-module outcome is not pinned by any visible assertion. Execution confirmed both directions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The affected function is utils/autoreload.py::get_child_arguments(); it currently imports django.__main__ and compares Path(sys.argv[0]) == Path(django.__main__.__file__) to decide to add ['-m', 'django']."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests exercising this behavior live in tests/utils_tests/test_autoreload.py under class TestChildArguments (test_run_as_module, test_warnoptions, test_exe_fallback, test_entrypoint_fallback, test_raises_runtimeerror) and class RestartWithReloaderTests (test_manage_py, test_python_m_django)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test already encodes the new non-django `-m pkg` behavior; it is described only in the issue text. The expected generalized output shape (add ['-m', <parent-of-__main__.__spec__>]) is inferred from the issue's stated algorithm."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note django/__main__.py is a plain module that delegates __main__ handling to django.core.management.execute_from_command_line(), quoted here for context about what executing the django package means."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_child_arguments() no longer imports django.__main__ or compares sys.argv[0] against django.__main__.__file__; instead it imports __main__ and keys off __main__.__spec__ being set with a truthy .parent (set when launched via `-m`)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the returned '-m' target is __main__.__spec__.parent rather than the hard-coded 'django', run-as-module reload now also works for non-Django packages launched with `python -m <pkg>`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In run-as-module mode the returned args append sys.argv[1:] (dropping argv[0]); the args structure and Windows exe/-script.py fallback and RuntimeError path in the non-module branch are unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The signature/return type stays a plain list of strings."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 concerns django/utils/autoreload.py::get_child_arguments() behavior in the non-module (\"script-path handling\") branch — i.e. when `__main__.__spec__` is None or its `.parent` is falsy, no `['-m', ...]` entry is prepended, and instead the function falls through to the `.exe`/`-script.py`/full-argv/RuntimeError paths.\n\nI searched the oracle for any test exercising get_child_arguments. The only relevant file is tests/utils_tests/test_autoreload.py (class TestChildArguments: test_run_as_module, test_warnoptions, test_exe_fallback, test_entrypoint_fallback, test_raises_runtimeerror; plus the run-time behaviour exercised indirectly in RestartWithReloaderTests.test_manage_py / test_python_m_django). Reading it shows the ENTIRE file is labeled [VISIBLE]. The one other autoreload test file, tests/template_tests/test_autoreloader.py, only tests django.template.autoreload (watch_dir/reset_loaders/template_changed) and is unrelated to get_child_arguments; it is also [VISIBLE]. No other oracle file exercises this function.\n\nPer the task rules, a Witness may only rest on [HIDDEN] assertions. Everything in the oracle covering R2's non-module fallthrough paths is [VISIBLE], so none of these visible assertions can serve as a witness regardless of how well they match R2. Additionally, R2's subject matter (the `.exe` fallback, `-script.py` fallback, full-argv append, and RuntimeError path in the non-module branch) is behavior that is explicitly noted as unchanged by this patch, so there is no gold-vs-buggy discriminating test for R2 available. Since I found no [HIDDEN] content that both matches R2 and discriminates buggy vs gold, I submit found=false (no genuine execution-confirmed witness exists)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django/utils/autoreload.py::get_child_arguments): When `__main__.__spec__` is None or its `parent` is falsy (i.e. the process was not launched as a package via `-m`), get_child_arguments() does not add any ['-m', ...] entry and instead falls through to script-path handling: it returns [str(<sys.argv[0] with .exe suffix>)] + sys.argv[1:] if that .exe exists, [sys.executable] + warning options + [str(<sys.argv[0] with '-script.py' suffix>)] + sys.argv[1:] if that script exists, appends full sys.argv (including argv[0]) when sys.argv[0] exists, and raises RuntimeError('Script %s does not exist.' % sys.argv[0]) when sys.argv[0] does not exist. — not entailed by S_vis (None of the S_vis statements describe the fallback path taken when __main__.__spec__ is None/falsy (the .exe/-script.py suffix checks, appending full sys.argv, or the RuntimeError('Script %s does not exist.')). S_vis covers only the -m pkg and django cases, so nothing visible leads to this specific script-handling behavior.); confirmed by a synthesized witness: R2 is the non-module fallthrough behavior of django/utils/autoreload.py::get_child_arguments() when __main__.__spec__ is None or its parent is falsy (process not launched via python -m pkg). The fix replaces the old path-comparison detector (Path(sys.argv[0]) == Path(django.__main__.__file__)) with a __spec__-based one (imports __main__ and checks __main__.__spec__ is not None and __main__.__spec__.parent). To expose the discriminating delta on R2's side, my witness constructs the exact R2 precondition: it forces __main__.__spec__ = None (an input state no visible test ever sets) while setting sys.argv[0] to django/__main__.py (a real, existing file). Under the fixed code this no longer counts as '-m django': get_child_arguments() skips the ['-m', ...] append and falls through to script-path handling, and because sys.argv[0] exists it appends full sys.argv → [exe, -Wall, django/__main__.py, runserver], which the test asserts (PASSED on gold). The buggy code still classifies argv[0]==django/__main__.py as '-m django' regardless of __spec__, so it returns [exe, -Wall, -m, django, runserver] — the assertion fails (FAILED on buggy). This scenario/assertion is genuinely new: the visible test_run_as_module only exercises the ambient spec.parent=='django' case where buggy and gold agree on '-m django'; nothing visible forces the not-launched-via -m case with sys.argv[0] set to the django __main__ file, so the no-'-m'/non-module outcome is not pinned by any visible assertion. Execution confirmed both directions.",
+    "confidence": "Medium"
+  }
+}

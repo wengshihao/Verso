@@ -1,0 +1,103 @@
+{
+  "task_id": "django__django-12663",
+  "status": "ok",
+  "duration_seconds": 995.232171916985,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12663",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Applying a QuerySet.filter(...) whose keyword RHS value is a django.utils.functional.SimpleLazyObject (constructed e.g. as SimpleLazyObject(lambda: User.objects.create_user('testuser'))) — where the filter targets an annotation whose output is produced through nested Subquery/OuterRef expressions on the outer query — must not raise a TypeError from the annotation's output_field.get_prep_value()/get_prep_lookup() path; the lazy-wrapped value must be resolved so the query can be built instead of the raw SimpleLazyObject reaching Field.get_prep_value (e.g. IntegerField.get_prep_value -> int(value)).",
+        "subject": "django.db.models.sql.query.Query.build_filter / Lookup rhs value preparation for filter kwargs",
+        "hunk_ids": [],
+        "cited_from": "Issue repro: user = SimpleLazyObject(lambda: User.objects.create_user('testuser')); A.objects.annotate(owner_user=Subquery(owner_user)).filter(owner_user=user). Traceback bottom frame: \"File .../django/db/models/fields/__init__.py\", line 968, in get_prep_value: return int(value) TypeError: int() argument must be a string, a bytes-like object or a number, not 'SimpleLazyObject'. Issue: \"Prior to 35431298226165986ad07e91f9d3aca721ff38ec it was possible to use a SimpleLazyObject in a queryset as demonstrated below. This new behavior appears to be a regression.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Query.output_field, when len(self.select) == 1 and the single select expression exposes a 'target' attribute that is truthy (e.g. a Col selecting a concrete column), returns that element's 'target' field rather than the element's own 'field'/output field.",
+        "subject": "django.db.models.sql.query.Query.output_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Query.output_field, when len(self.select) == 1 and the single select expression has no 'target' attribute (or its 'target' is falsy), returns that element's 'field' (output field), preserving the pre-change behavior as the fallback path.",
+        "subject": "django.db.models.sql.query.Query.output_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis describes only how a SimpleLazyObject filter RHS must be resolved to avoid a TypeError during query building. It says nothing about Query.output_field preferring a select element's 'target' attribute over its own field, so it cannot pin down this specific behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains no requirement about Query.output_field's fallback path returning the element's own 'field' when 'target' is absent/falsy. That internal branch logic is not described by any visible information in S_vis."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_gold_output_field_uses_single_select_target",
+      "test_source": "import os, django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DEBUG=False,\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=[\n            'django.contrib.contenttypes',\n            'django.contrib.auth',\n            'tests.expressions',\n        ],\n        USE_TZ=True,\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\n    django.setup()\n\nfrom django.test import SimpleTestCase\nfrom django.db.models import Subquery\nfrom tests.expressions.models import Company\n\nclass W(SimpleTestCase):\n    def test_gold_output_field_uses_single_select_target(self):\n        inner = Company.objects.values('ceo')\n        self.assertEqual(len(inner.query.select), 1)\n        self.assertTrue(inner.query.select[0].target)\n        self.assertIsNot(inner.query.select[0].target, inner.query.select[0].field)\n        # A single-column select over the FK 'ceo' must resolve\n        # Subquery.output_field (== Query.output_field) to that\n        # selected col's exposed 'target' field (the FK itself), NOT to\n        # the col's own output field (the referenced model pk).\n        self.assertIs(Subquery(inner).output_field, inner.query.select[0].target)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: <AutoField: id> is not <ForeignKey: ceo>)",
+      "explanation": "The gold-only branch of Query.output_field (django/db/models/sql/query.py) is:\n  if len(self.select)==1: return getattr(select,'target',None) or select.field\nThe distinguishing scenario is a single-select Query whose sole Col exposes a truthy 'target' that differs from its own output '.field'. I confirmed empirically (running the candidate against the real repo) that `Company.objects.values('ceo')` produces exactly that: query.select == [ Col(expressions_company, Company.ceo) ] with col.target == ForeignKey 'ceo' while col.field(output_field) == AutoField 'id' (Employee.pk). Under gold, Query.output_field returns col.target (the ForeignKey ceo); under buggy it returns col.field (AutoField id).\n\nThe test asserts on Subquery(inner).output_field, which Subquery._resolve_output_field() delegates to self.query.output_field, so it directly exercises the R1 branch. On gold this equal to select[0].target and PASSES; on buggy it equals AutoField id (the col's own field) and FAILS. No pre-existing visible test pins this target-vs-own-field choice for a single FK-backed select (the large visible Subquery corpus uses Cols where target==field, or else never asserts the reported output type), so the test is a genuine discriminating witness rather than a restatement of known visible behavior. Confirmed via run_test: gold PASSED, buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible material is the full pre-fix Django source repository plus the issue description (no addenda commit present)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/utils/functional.py, SimpleLazyObject subclasses LazyObject, NOT Promise; only lazy()/lazy(func, *resultclasses) produces Promise subclasses. Field.get_prep_value() (django/db/models/fields/__init__.py) resolves promises only via 'if isinstance(value, Promise): value = value._proxy____cast()', so a SimpleLazyObject reaching it is passed through raw into e.g. int(value) and raises TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The lookups path involved is Lookup.__init__ -> Lookup.get_prep_lookup() (django/db/models/lookups.py), which returns self.rhs unchanged if it has resolve_expression and otherwise calls lhs.output_field.get_prep_value(self.rhs). The value goes through Query.build_filter which calls self.resolve_lookup_value(value, ...) (django/db/models/sql/query.py), which only resolves values exposing resolve_expression."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A regression test for this scenario would live in the tests/ tree (e.g. under expressions/annotations query tests); the provided issue TestCase defines models A/B/C and BugTestCase.test_bug exercising auth User, OuterRef, Subquery, and SimpleLazyObject."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.output_field is surfaced to expression rows via Subquery._resolve_output_field() (django/db/models/expressions.py), which returns self.query.output_field; so a Subquery wrapping a single-Column select now inherits the Col's target-column type. The change only affects the len(self.select)==1 branch; the elif-annotation_select==1 branch is untouched by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For a Col, BaseExpression.field returns output_field which is normally set equal to target in Field.get_col unless an explicit output_field was supplied; hence Col.field can differ from Col.target, which is what getattr(select,'target',...) now distinguishes between."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires that Query.output_field, in the len(self.select)==1 branch where the sole select expression exposes a truthy 'target', return that target's output field rather than the expression's own field/output_field. In practice this behavioral distinction is only observable when the chosen select expression's .field/.output_field differs from .target — and, as the S_impl notes point out, for a plain Col these normally coincide unless an explicit output_field was supplied. A witness therefore needs a [HIDDEN] regression test that actually forces target != output_field through a Subquery/single-column select and asserts the resulting (gold) output field type.\n\nI enumerated the entire oracle test corpus and read every relevant candidate file for this behavior (tests/expressions/tests.py, tests/expressions/test_queryset_values.py, tests/annotations/tests.py, tests/aggregation/tests.py, tests/queries/tests.py, tests/queries/test_query.py, tests/queries/test_qs_combinators.py, tests/lookup/test_lookups.py, tests/model_fields/test_promises.py, tests/expressions/test_deprecation.py). In every case read_test_file labeled the content [VISIBLE] — byte-for-byte identical to the pre-fix material a repair agent would already have seen. The many visible Subquery/OuterRef tests (e.g. test_subquery, test_in_subquery, test_aggregation_subquery_annotation*, and the several .values(...) subquery tests) all use Cols where .target and .output_field coincide, so none actually distinguishes R1's target-vs-own-field semantics, and by construction none of them can serve as a witness because they are [VISIBLE] content (they can never be a hidden assertion the oracle enforces beyond what a repair system already knew). The failure list against the buggy program is empty, consistent with the gold fix not being witnessed by any individual pre-existing (visible) test for this narrow sub-behavior.\n\nNo [HIDDEN] test file or [HIDDEN] assertion matching R1's specific target/output_field distinction exists in the oracle, so no genuine witness can be built; this is an expected found=false outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.sql.query.Query.output_field): Query.output_field, when len(self.select) == 1 and the single select expression exposes a 'target' attribute that is truthy (e.g. a Col selecting a concrete column), returns that element's 'target' field rather than the element's own 'field'/output field. — not entailed by S_vis (S_vis describes only how a SimpleLazyObject filter RHS must be resolved to avoid a TypeError during query building. It says nothing about Query.output_field preferring a select element's 'target' attribute over its own field, so it cannot pin down this specific behavior.); confirmed by a synthesized witness: The gold-only branch of Query.output_field (django/db/models/sql/query.py) is:\n  if len(self.select)==1: return getattr(select,'target',None) or select.field\nThe distinguishing scenario is a single-select Query whose sole Col exposes a truthy 'target' that differs from its own output '.field'. I confirmed empirically (running the candidate against the real repo) that `Company.objects.values('ceo')` produces exactly that: query.select == [ Col(expressions_company, Company.ceo) ] with col.target == ForeignKey 'ceo' while col.field(output_field) == AutoField 'id' (Employee.pk). Under gold, Query.output_field returns col.target (the ForeignKey ceo); under buggy it returns col.field (AutoField id).\n\nThe test asserts on Subquery(inner).output_field, which Subquery._resolve_output_field() delegates to self.query.output_field, so it directly exercises the R1 branch. On gold this equal to select[0].target and PASSES; on buggy it equals AutoField id (the col's own field) and FAILS. No pre-existing visible test pins this target-vs-own-field choice for a single FK-backed select (the large visible Subquery corpus uses Cols where target==field, or else never asserts the reported output type), so the test is a genuine discriminating witness rather than a restatement of known visible behavior. Confirmed via run_test: gold PASSED, buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "task_id": "matplotlib__matplotlib-26011",
+  "status": "ok",
+  "duration_seconds": 690.1385226249695,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-26011",
+    "s_vis": [
+      {
+        "id": "req-1",
+        "statement": "Setting an Axes' view limits via set_xlim/set_ylim with default emit=True (routing to xaxis/_set_lim or yaxis/_set_lim) updates that Axes' own view interval and emits its own 'xlim_changed'/'ylim_changed' callback, while propagating the same normalized limits to every sibling Axes that shares the axis (those siblings' set-lim calls happen with emit=False and do not, in the current code, themselves fire their own *lim_changed callbacks).",
+        "subject": "Axis._set_lim / Axes.set_xlim / Axes.set_ylim shared-axes propagation",
+        "hunk_ids": [],
+        "cited_from": "lib/matplotlib/axis.py Axis._set_lim: 'self.axes.callbacks.process(f\"{name}lim_changed\", self.axes) ... for other in self._get_shared_axes(): if other is not self.axes: other._axis_map[name]._set_lim(v0, v1, emit=False, auto=auto)'"
+      },
+      {
+        "id": "req-2",
+        "statement": "When an Axes' x-limit change is induced through a shared (sharex=) axis by a sibling Axes, the shared/follower Axes' registered 'xlim_changed' callbacks should also be triggered (matching the change the follower actually undergoes), not only the originating Axes' callbacks.",
+        "subject": "Axes xlim_changed callbacks on shared (sharex) axes",
+        "hunk_ids": [],
+        "cited_from": "Issue report: 'its registered \"xlim_changed\" callbacks does not get called when the change is induced by a shared axis (via sharex=)' ... 'It seems like one would at least want to trigger the xlim_changed callbacks as they would be intended to react to any change in axis limits.'"
+      },
+      {
+        "id": "req-3",
+        "statement": "The fix must not infinitely recurse across the shared-axes group when propagating an axis-limit change and firing its changed callbacks (the issue notes that re-enabling emit on the sibling calls introduces recursion).",
+        "subject": "Axis._set_lim shared-axes callback propagation (no recursion)",
+        "hunk_ids": [],
+        "cited_from": "Issue report Edit: 'Setting emit=True seems to introduce a recursion issue'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Axis._set_lim (the helper behind Axes.set_xlim/set_ylim/set_zlim) applies a limit change with emit=True on an Axes that shares its {name} axis with sibling Axes, each sibling Axes in the shared group (other than the origin's own axes) has its own '{name}lim_changed' event fired through its own callback registry (with that sibling Axes as the callback argument), in addition to the origin firing its own '{name}lim_changed'.",
+        "subject": "Axes.set_xlim/set_ylim/set_zlim shared-axis propagation via Axis._set_lim",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a shared sibling Axes's limit is updated as part of propagating an emitted limit change, that update is applied non-recursively (the sibling _set_lim is invoked with emit=False) and the sibling's own '{name}lim_changed' event is then fired at most once per originating change, so the event does not cascade or get re-emitted again through the shared-axis group.",
+        "subject": "Axes.set_xlim/set_ylim/set_zlim shared-axis propagation via Axis._set_lim (recursion/duplicate emission)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "req-1",
+          "req-2",
+          "req-3"
+        ],
+        "rationale": "S_vis req-2 directly states that follower/shared Axes' {name}lim_changed callbacks should be triggered (matching the change the follower undergoes), not only the origin's, and req-1's cited code shows the generic {name}lim_changed firing pattern with the axes instance as callback argument across the shared-axes group. Together these pin down that each sibling fires its own {name}lim_changed in addition to the origin."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "req-1",
+          "req-2",
+          "req-3"
+        ],
+        "rationale": "S_vis shows sibling _set_lim updates are non-recursive (emit=False in req-1's code) and req-3 warns re-enabling emit causes recursion, supporting the no-cascade intent. However, S_vis does not pin down the exact mechanism guaranteeing the sibling's own {name}lim_changed is fired at most once per originating change while its _set_lim stays emit=False (manual post-fire vs. dedup guard), so R2's precise behavior is genuinely unpinned."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r2_shared_sibling_lim_changed_at_most_once",
+      "test_source": "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n\ndef test_r2_shared_sibling_lim_changed_at_most_once():\n    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)\n    n1 = [0]\n    n2 = [0]\n    ax1.callbacks.connect('xlim_changed', lambda ax: n1.__setitem__(0, n1[0] + 1))\n    ax2.callbacks.connect('xlim_changed', lambda ax: n2.__setitem__(0, n2[0] + 1))\n    ax1.set_xlim(0, 10)\n    # The originating axes fires exactly once (no recursion back into itself),\n    # and the shared sibling's own xlim_changed must also fire exactly once\n    # (the sibling _set_lim is emit=False, non-recursive, and the event is then\n    # emitted explicitly at most once per originating change -- not cascaded).\n    assert n1[0] == 1\n    assert n2[0] == 1\n",
+      "gold_result": "PASSED: gold correctly fires origin xlim_changed once and sibling xlim_changed once (both at-most/at-least once per originating change, non-recursive).",
+      "buggy_result": "FAILED: buggy fires origin xlim_changed once but never fires the shared sibling's xlim_changed (sibling _set_lim runs emit=False with no subsequent process of {name}lim_changed); assert n2[0]==1 fails (n2==0).",
+      "explanation": "Target R2 states that when Axes.set_*lim propagates an emitted limit change to a shared sibling, (a) the sibling's Axis._set_lim is applied non-recursively (emit=False) and (b) the sibling's own '{name}lim_changed' event is then fired at most once per originating change, without cascading/re-emitting through the group. My witness creates two subplots sharing their x-axis and registers an xlim_changed callback on BOTH the origin (ax1) and the shared sibling (ax2). Calling ax1.set_xlim(0,10) must notify the origin exactly once (proving no recursion back into the origin after propagation) and must notify the shared sibling exactly once. This discriminates exactly the change in the fix: the gold _set_lim adds `if emit: other.callbacks.process('xlim_changed', other)` after the sibling's emit=False _set_lim, so counters are n1=1, n2=1 (test PASSED on gold). In the buggy version the sibling _set_lim is run emit=False but the sibling's callback is never process()ed, so n2 stays 0 and `assert n2[0] == 1` fails (PASSED-only-on-gold / FAILED-on-buggy confirmed by execution with the exact same source against both revisions). The `assert n1[0]==1 and n2[0]==1` also couples the \"at most once / no cascade\" property: a naive fix that just re-emitted would drive counts above one and likewise fail. I reviewed lib/matplotlib/tests/test_axes.py (the plausible visible home of any shared-x regression): its shared-axis tests only check limit, scale, and value propagation -- none assert that a shared Axes sibling's lim_changed callback is dispatched exactly once per originating change -- so this observable is not already pinned down by visible oracle content and is a genuinely discriminating witness for R2."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Axes.set_xlim/set_ylim in lib/matplotlib/axes/_base.py delegate straight to self.xaxis._set_lim/self.yaxis._set_lim (lib/matplotlib/axis.py); the axis limit/changed-callback and shared-axes propagation logic all lives in Axis._set_lim (and, by symmetry, applies to the 'z' name used in the same method)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_AxesBase.__clear re-creates self.callbacks (a cbook.CallbackRegistry on the Axes) with signals=['xlim_changed','ylim_changed','zlim_changed'], i.e. xlim_changed/ylim_changed registrations live on the Axes, not the Axis. Axis._set_lim fires axes.callbacks.process(f'{name}lim_changed', self.axes)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the current buggy code, when Axes A (emit=True) shares its axis with sibling B, A fires its own xlim_changed, then calls B's axis._set_lim(v0, v1, emit=False, auto) — never firing B's xlim_changed. This matches the issue-reported defect."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction in the report is sharex/shared-x-axis; the x and y code paths are structurally identical via Axis._set_lim, so a fix affecting the shared-axis callback emission applies to both xlim_changed and ylim_changed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue also remarks that naively flipping sibling calls to emit=True would recurse, and suggests moving the callback outside the 'if emit:' guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "patch affects lib/matplotlib/axis.py Axis._set_lim; structurally identical for x/y/z axis 'name'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "the loop restructuring (skip self via continue vs surrounding 'if other is not self.axes') is behaviorally equivalent and not independently observable; the actual change is the added explicit sibling '{name}lim_changed' emission."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "sibling draw_idle gating (other.figure != self.figure) is unchanged by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "lim_changed callbacks for xlim/ylim/zlim are registered on the Axes object (Axes.callbacks), and emitted siblings here are Axes objects returned by _get_shared_axes(), hence other.callbacks is the correct registry surface."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the oracle for a test that genuinely enforces requirement R2 — that when a shared sibling Axes's limit is updated during propagation of an emitted limit change, the sibling's _set_lim is applied with emit=False and the sibling's own '{name}lim_changed' event is fired at most once (no cascade/re-emission through the group).\n\nWhat I checked:\n- I enumerated the oracle's files (which are dominated by baseline images) and read the Python test modules most plausibly housing such an Axes/axis/sharing/callback regression: lib/matplotlib/tests/test_axes.py, test_artist.py, test_figure.py, test_subplots.py, test_pyplot.py, and the 3D counterpart mpl_toolkits/mplot3d/tests/test_axes3d.py. All of these are labeled [VISIBLE] (content identical to what a repair system already sees), and none of their assertions exercise shared-axis sibling '{name}lim_changed' dispatch at-most-once / non-recursively. The hidden lib/matplotlib/tests/conftest.py is only a fixture re-export and contains no test.\n- Per the rules, an assertion drawn from [VISIBLE] content can never be a Witness, and no [HIDDEN] test asserting R2 was present to build one from.\n\nI additionally mechanically confirmed (using an independently-constructed probe, for my own confidence only) that the requirement corresponds to a real bug/gold difference: against buggy, ax1.set_xlim(0,10) on sharex axes fires the origin's xlim_changed twice while the sibling's callback is never fired (FAILED); against gold both fire exactly once (PASSED). So an R2-style probe can be written — but such a probe is my own construction and is not an assertion that exists in any [HIDDEN] oracle file, so it cannot qualify as a Witness.\n\nConclusion: the real matplotlib oracle does not carry hidden tests enforcing R2 beyond the visible suite content (which cannot serve). Therefore no genuine witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (Axes.set_xlim/set_ylim/set_zlim shared-axis propagation via Axis._set_lim (recursion/duplicate emission)): When a shared sibling Axes's limit is updated as part of propagating an emitted limit change, that update is applied non-recursively (the sibling _set_lim is invoked with emit=False) and the sibling's own '{name}lim_changed' event is then fired at most once per originating change, so the event does not cascade or get re-emitted again through the shared-axis group. — not entailed by S_vis (S_vis shows sibling _set_lim updates are non-recursive (emit=False in req-1's code) and req-3 warns re-enabling emit causes recursion, supporting the no-cascade intent. However, S_vis does not pin down the exact mechanism guaranteeing the sibling's own {name}lim_changed is fired at most once per originating change while its _set_lim stays emit=False (manual post-fire vs. dedup guard), so R2's precise behavior is genuinely unpinned.); confirmed by a synthesized witness: Target R2 states that when Axes.set_*lim propagates an emitted limit change to a shared sibling, (a) the sibling's Axis._set_lim is applied non-recursively (emit=False) and (b) the sibling's own '{name}lim_changed' event is then fired at most once per originating change, without cascading/re-emitting through the group. My witness creates two subplots sharing their x-axis and registers an xlim_changed callback on BOTH the origin (ax1) and the shared sibling (ax2). Calling ax1.set_xlim(0,10) must notify the origin exactly once (proving no recursion back into the origin after propagation) and must notify the shared sibling exactly once. This discriminates exactly the change in the fix: the gold _set_lim adds `if emit: other.callbacks.process('xlim_changed', other)` after the sibling's emit=False _set_lim, so counters are n1=1, n2=1 (test PASSED on gold). In the buggy version the sibling _set_lim is run emit=False but the sibling's callback is never process()ed, so n2 stays 0 and `assert n2[0] == 1` fails (PASSED-only-on-gold / FAILED-on-buggy confirmed by execution with the exact same source against both revisions). The `assert n1[0]==1 and n2[0]==1` also couples the \"at most once / no cascade\" property: a naive fix that just re-emitted would drive counts above one and likewise fail. I reviewed lib/matplotlib/tests/test_axes.py (the plausible visible home of any shared-x regression): its shared-axis tests only check limit, scale, and value propagation -- none assert that a shared Axes sibling's lim_changed callback is dispatched exactly once per originating change -- so this observable is not already pinned down by visible oracle content and is a genuinely discriminating witness for R2.",
+    "confidence": "Medium"
+  }
+}

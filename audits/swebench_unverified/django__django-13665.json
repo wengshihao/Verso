@@ -1,0 +1,90 @@
+{
+  "task_id": "django__django-13665",
+  "status": "ok",
+  "duration_seconds": 106.13119949994143,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13665",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "serialize_db_to_string() must serialize ALL rows of every (migrated, non-proxy, router-allowed) model into the initial test-database serialized contents, including rows that a model's custom default manager would hide from its get_queryset() — so that records only reachable via an unfiltered manager (e.g. rows created by a migration's RunPython/loaddata, hidden because the default manager filters, for instance `.exclude(pk=1)`) are preserved and can be restored by TransactionTestCase with serialized_rollback=True.",
+        "subject": "BaseDatabaseCreation.serialize_db_to_string (django.db.backends.base.creation)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Then TestService will fail as serialize_db_to_string by default use _default_manager that is CustomManagerThatFillterOutSomeRecords.\" with the model \"objects = CustomManagerThatFillterOutSomeRecords()\" defined as \"class CustomManagerThatFillterOutSomeRecords(Manager): def get_queryset(self): return super().get_queryset().exclude(pk=1)\" and \"Assume we have a migration that creates few records of Service ... migrations.RunPython(load_fixtures, migrations.RunPython.noop)\". Source (creation.py): \"queryset = model._default_manager.using(self.connection.alias,).order_by(model._meta.pk.name)\" — using _default_manager (the filtering custom manager) instead of the unfiltered base manager."
+      },
+      {
+        "id": "R2",
+        "statement": "When serialized_rollback=True causes a database flush followed by deserialize_db_from_string() to re-populate the stored initial state, data that a custom default manager filters out yet that exists in the fully-migrated test database (e.g. Service records with pk=1 created via a data migration) must be present after the round-trip, so that the TransactionTestCase observes those records.",
+        "subject": "TransactionTestCase.serialized_rollback round-trip",
+        "hunk_ids": [],
+        "cited_from": "Issue scenario: \"class TestService(TransactionTestCase): ... serialized_rollback = True... Assume we have a migration that creates few records of Service. ... Then TestService will fail as serialize_db_to_string by default use _default_manager that is CustomManagerThatFillterOutSomeRecords.\" Code path (creation.py create_test_db): \"if serialize: self.connection._test_serialized_contents = self.serialize_db_to_string()\" and (testcases.py TransactionTestCase._fixture_setup): \"if self.serialized_rollback and hasattr(...): connections[db_name].creation.deserialize_db_from_string(connections[db_name]._test_serialized_contents)\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R0",
+        "statement": "BaseDatabaseCreation.serialize_db_to_string() serializes every instance present in the database for each migrated, serializable model, even when the model's default manager filters those instances out of its queryset (e.g., a default manager whose get_queryset() only returns a subset); the serialized output is not restricted by default-manager filtering.",
+        "subject": "django.db.backends.base.creation.BaseDatabaseCreation.serialize_db_to_string",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R0",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 directly pins down the requested behavior: serialize_db_to_string() must serialize ALL rows of every migrated model, including rows a custom default manager filters out of get_queryset(), so the serialized output is not restricted by default-manager filtering. The cited issue and the source comment confirm this concerns the _default_manager excluding pk=1 records that must still be serialized — exactly matching R0's specification of serialize_db_to_string(). R2 is less direct (round-trip restoration) but R1 alone decisively entails R0."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The test-runner serialization that backs TransactionTestCase.serialized_rollback lives in django/db/backends/base/creation.py: create_test_db() stores connection._test_serialized_contents = serialize_db_to_string() after running migrate; TransactionTestCase._fixture_setup() (django/test/testcases.py) then calls deserialize_db_from_string() to restore that state after a flush."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "serialize_db_to_string() iterates models of migrated apps and currently fetches via model._default_manager.using(alias).iterator(); model._default_manager is by default the first manager declared on a model (e.g. `objects`), which a user may subclass to override get_queryset() with filters (creation.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/db/models/options.py, Options.default_manager returns the first declared manager, whereas Options.base_manager falls back to a plain auto-created Manager() (unless Meta.base_manager_name overrides it). The issue asks the serialization to use the unfiltered base manager."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo contains tests whose models demonstrate a filtering default manager, e.g. tests/custom_managers/models.py RestrictedModel with objects=RestrictedManager() filtering is_public=True, and tests/custom_managers/tests.py tests around base_manager behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/migration_test_data_persistence (models.py has Book and Unmanaged) exercises the pattern of data loaded through a migration (0002_add_book.py's RunPython) being observable under TransactionTestCase with serialized_rollback=True, i.e. a good home for a regression test but currently has no model with a filtering default manager."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Change is in serialize_db_to_string(): which? The queryset used is switched from model._default_manager to model._base_manager while retaining the .using(alias).order_by(pk) wrapper. The ordering (.order_by(model._meta.pk.name)) and .using() and .iterator() behavior are unchanged; only the manager source differs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "All behavior is reached through BaseDatabaseCreation.serialize_db_to_string(), which is invoked during create_test_db() (serialize=True path) to populate connection._test_serialized_contents."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

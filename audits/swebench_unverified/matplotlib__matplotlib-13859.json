@@ -1,0 +1,103 @@
+{
+  "task_id": "matplotlib__matplotlib-13859",
+  "status": "ok",
+  "duration_seconds": 334.628770041978,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-13859",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "Saving (or inline-rendering) a figure whose physical size is zero in at least one dimension — e.g. created by `plt.subplots(1, 1, figsize=(3, 0))` followed by `plt.savefig('test.png')` on the Agg backend — must not fail by handing libpng a zero-width/zero-height PNG and surfacing 'RuntimeError: libpng signaled error'.",
+        "subject": "FigureCanvasAgg.print_png / matplotlib._png.write_png",
+        "hunk_ids": [],
+        "cited_from": "Code for reproduction: import matplotlib.pyplot as plt\\nplt.subplots(1, 1, figsize=(3, 0))\\nplt.savefig('test.png'); Actual outcome: RuntimeError: libpng signaled error"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "Figure(...) construction raises ValueError (with a message stating the size must be positive finite) when the figsize argument has any dimension that is non-finite or not strictly positive (i.e. zero or negative), so a figure whose width or height is 0 or negative is never successfully constructed.",
+        "subject": "matplotlib.figure.Figure.__init__ (figsize arg)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "Figure.set_size_inches(w, h) (whether w and h are given as two arguments, or w alone as a (w, h) tuple) raises ValueError (with a message stating the size must be positive finite) when either dimension is non-finite or not strictly positive (i.e. zero or negative), and in that case does not apply the size (leaves bbox_inches/resize unchanged).",
+        "subject": "matplotlib.figure.Figure.set_size_inches",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis describes a savepath/render failure on zero-dimension figures (and its reproduction constructs the fig with figsize=(3,0) successfully), but does not state that Figure(...) construction itself raises ValueError for non-positive/non-finite figsize. It says nothing pinning down the construction-time validation S1 commits to."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis concerns the save/render path avoiding a zero-size PNG handed to libpng, and says nothing about Figure.set_size_inches raising ValueError or leaving internal size/bbox state unchanged on invalid input. It does not pin down the set_size_inches validation behavior S2 commits to."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_invalid_figure_size",
+      "test_source": "import matplotlib.pyplot as plt\nimport pytest\n\n@pytest.mark.parametrize('figsize', [[0, 1], [-1, 1]])\ndef test_invalid_figure_size(figsize):\n    with pytest.raises(ValueError):\n        plt.figure(figsize=figsize)",
+      "gold_result": "PASSED — constructing Figure with figsize width 0 or -1 (height 1) raises ValueError; both parametrized cases pass on the fixed program.",
+      "buggy_result": "FAILED — on the buggy program plt.figure(figsize=[0, 1]) and plt.figure(figsize=[-1, 1]) do NOT raise ValueError (\"DID NOT RAISE\"), so the parametrized test fails for both cases [figsize0] and [figsize1].",
+      "explanation": "Requirement S1 says Figure.__init__(figsize) must raise ValueError when any figsize dimension is zero or negative (non-finite and >0 handled; the pre-existing NaN case was already covered and is not what this patch adds). The oracle's real test suite is reported as having test_figure.py::test_invalid_figure_size parametrized with the node-ids [0-1] and [-1-1] currently FAILING against the buggy program. In pytest a terminal id \"0-1\"/\"-1-1\" for a list argument is exactly the rendering of figsize=[0,1] and figsize=[-1,1] (zero-width / negative-width Construction), which is precisely the S1 behavior that visible content — whose plain test_invalid_figure_size only asserts the pre-existing np.nan finiteness ValueError — does NOT establish. As such the parametrized non-positive regression assertion is genuinely not-entailed-by-and-hidden-from visible information and is the oracle's witness for S1. I mechanically confirmed it: the parametrized test asserting `plt.figure(figsize=...) with a 0 or -1 width must raise ValueError` PASSES against the gold program and FAILS (\"DID NOT RAISE\") against the buggy program, for both cases [0,1] and [-1,1]. Both run results are consistent with the gold patch adding the rejection of non-positive figsize dimensions in Figure construction. (I also verified the same behavior holds for non-positive height, e.g. figsize=[1,0]/[1,-1].)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's repro uses figsize=(3, 0) which in matplotlib is (width, height) in inches, so this is a zero-HEIGHT (zero-area) figure; the headline phrase 'zero-width' is loose."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Save-to-PNG goes through lib/matplotlib/backends/backend_agg.py FigureCanvasAgg.print_png -> matplotlib._png.write_png (src/_png.cpp, C function Py_write_png), with the figure's pixel buffer derived from bbox size = figsize * dpi; a zero height gives a pixel buffer with a zero dimension, and libpng's IHDR rejects zero width/height, surfacing as the generic 'RuntimeError: libpng signaled error'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Figure creation only validates that figsize is finite (not np.isfinite -> ValueError in figure.py); there is NO visible check forbidding zero or negative figure dimensions, which is why a zero-area figure can reach the renderer/PNG path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The AGG C++ renderer stores width/height as unsigned int (src/_backend_agg.h) and numpy buffer shape is (height, width, channels); with height 0 the resulting numpy buffer would be (0, N, 4)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks live in lib/matplotlib/figure.py: H0 is in Figure.__init__ at the figsize validation (also reached through pyplot.figure), H1 is in Figure.set_size_inches which unpacks a (w, h) tuple when h is None so both call forms are validated."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing finiteness check is kept in both methods; the patch only adds rejection of non-positive (> 0) dimensions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "set_size_inches validates before assigning self.bbox_inches.p1 and before the forward resize path, so a rejected size leaves state unchanged and marks nothing stale."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (matplotlib.figure.Figure.__init__ (figsize arg)): Figure(...) construction raises ValueError (with a message stating the size must be positive finite) when the figsize argument has any dimension that is non-finite or not strictly positive (i.e. zero or negative), so a figure whose width or height is 0 or negative is never successfully constructed. — not entailed by S_vis (S_vis describes a savepath/render failure on zero-dimension figures (and its reproduction constructs the fig with figsize=(3,0) successfully), but does not state that Figure(...) construction itself raises ValueError for non-positive/non-finite figsize. It says nothing pinning down the construction-time validation S1 commits to.); confirmed by a oracle witness: Requirement S1 says Figure.__init__(figsize) must raise ValueError when any figsize dimension is zero or negative (non-finite and >0 handled; the pre-existing NaN case was already covered and is not what this patch adds). The oracle's real test suite is reported as having test_figure.py::test_invalid_figure_size parametrized with the node-ids [0-1] and [-1-1] currently FAILING against the buggy program. In pytest a terminal id \"0-1\"/\"-1-1\" for a list argument is exactly the rendering of figsize=[0,1] and figsize=[-1,1] (zero-width / negative-width Construction), which is precisely the S1 behavior that visible content — whose plain test_invalid_figure_size only asserts the pre-existing np.nan finiteness ValueError — does NOT establish. As such the parametrized non-positive regression assertion is genuinely not-entailed-by-and-hidden-from visible information and is the oracle's witness for S1. I mechanically confirmed it: the parametrized test asserting `plt.figure(figsize=...) with a 0 or -1 width must raise ValueError` PASSES against the gold program and FAILS (\"DID NOT RAISE\") against the buggy program, for both cases [0,1] and [-1,1]. Both run results are consistent with the gold patch adding the rejection of non-positive figsize dimensions in Figure construction. (I also verified the same behavior holds for non-positive height, e.g. figsize=[1,0]/[1,-1].)",
+    "confidence": "High"
+  }
+}

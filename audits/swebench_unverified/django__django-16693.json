@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-16693",
+  "status": "ok",
+  "duration_seconds": 779.2143954170169,
+  "llm_calls": 37,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16693",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a configured template context processor returns None (e.g. because the function's return statement was omitted), rendering a template with a RequestContext must no longer surface the cryptic low-level error (currently `updates.update(processor(self.request))` raising `TypeError: 'NoneType' object is not iterable`); instead it must fail with a clearer error message that identifies the offending context processor and the problem with its return value, analogous to Django's view message 'The view example.views.index didn't return an HttpResponse object. It returned None instead.'",
+        "subject": "django.template.context.RequestContext.bind_template",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"def data(request):\\n\\tdata = {\\\"something\\\": True}\" ... \"updates.update(processor(self.request))\\nTypeError: 'NoneType' object is not iterable\"; \"If a view returns the wrong type, Django raises a nice error message:\\nThe view example.views.index didn't return an HttpResponse object. It returned None instead.\\nI suggest we do the same for context processors.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Each template context processor is called with the HttpRequest and its return value is merged (via a dict update) into the context update dictionary that is stored at the placeholder context-processor layer for rendering; a context processor that returns a valid dictionary continues to contribute its items to the template context with later processors overriding earlier ones for colliding keys.",
+        "subject": "django.template.context.RequestContext.bind_template",
+        "hunk_ids": [],
+        "cited_from": "django/template/context.py: \"for processor in processors:\\n    updates.update(processor(self.request))\\nself.dicts[self._processors_index] = updates\"; docs/ref/templates/api.txt: \"context_processors is a list of dotted Python paths to callables that are used to populate the context when a template is rendered with a request. These callables take a request object as their argument and return a dict of items to be merged into the context.\" and \"if one processor adds a variable to the context and a second processor adds a variable with the same name, the second will override the first.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "When a context processor invoked during RequestContext.bind_template returns a value such that merging its contents into the accumulator dict (updates.update(context)) raises a TypeError (e.g. the processor returned a non-dictionary), bind_template raises a new TypeError whose message identifies the offending processor by its qualified name (__qualname__) and states that it did not return a dictionary.",
+        "subject": "RequestContext.bind_template",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "When bind_template raises the informative TypeError described above (after a context processor's result caused a TypeError during merging), the newly raised TypeError carries the original TypeError as its chained cause (__cause__), so both exceptions remain visible to the caller.",
+        "subject": "RequestContext.bind_template",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 (with its issue citation) explicitly demands that when a context processor's return causes the cryptic merge TypeError, rendering must instead fail with a clearer error identifying the offending processor and the problem with its return value, analogous to Django's view message; R2 pinpoints the merges. S1's informative TypeError naming the processor and stating it didn't return a dictionary is the direct realization of these visible requirements."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible evidence (issue report, existing context.py code, and docs) requires a clearer error message but never mentions preserving the original exception as a chained __cause__; the chaining detail is an implementation choice not committed to by any S_vis entry."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_context_processor_bad_return_keeps_cause",
+      "test_source": "def test_context_processor_bad_return_keeps_cause():\n    from django.template.context import RequestContext\n\n    class FakeEngine:\n        template_context_processors = ()\n\n    class FakeTemplate:\n        engine = FakeEngine()\n\n    def bad_processor(request):\n        return 42\n\n    ctx = RequestContext(request=None, processors=[bad_processor])\n    try:\n        with ctx.bind_template(FakeTemplate()):\n            pass\n    except TypeError as exc:\n        # The informative TypeError must carry the original TypeError\n        # (raised while merging) as its chained cause (__cause__).\n        assert isinstance(exc.__cause__, TypeError), exc.__cause__\n        return\n    raise AssertionError(\"bind_template did not raise TypeError\")\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError (examined TypeError had __cause__ = None because buggy propagates the raw merge TypeError unmodified)",
+      "explanation": "Target requirement [S2] specifies that in RequestContext.bind_template, when a context processor's result (a non-dict) makes the update merge raise a TypeError, gold wraps it into an informative TypeError chained `from e` — so the informative TypeError carries the original merge TypeError as its `__cause__`.\n\nI confirmed mechanically against the actual gold/buggy sources:\n- gold (context.py): `try: updates.update(context) except TypeError as e: raise TypeError(\"Context processor ... didn't return a dictionary.\") from e` — so the surfaced TypeError has `__cause__` = the original `TypeError(\"'int' object is not iterable\")`.\n- buggy (context.py): `updates.update(processor(self.request))` bare, so the original merge TypeError propagates unmodified with `__cause__ = None`.\n\nMy witness defines a context processor returning `42` (a non-dict), enters `RequestContext.bind_template` through a minimal FakeTemplate whose engine has no extra context processors, catches the raised TypeError, and asserts `isinstance(exc.__cause__, TypeError)`. Execution results: PASSED against gold (cause present) and FAILED against buggy (`__cause__ is None`), so it genuinely discriminates.\n\nThe visible surface cannot pin this: all RequestContext/context-processor test modules (RequestContextTests in tests/template_tests/test_context.py, tests/context_processors/, csrf/auth/django template backends, template_loader, test_client_regress ContextTests) contain only valid-dict processors, none returning a wrong type — so no visible test forces a non-dict merge TypeError or its chaining. Requirements R1/R2 (already checked) don't pin the __cause__ chain either. The discovered behavior (buggy __cause__ is None; gold __cause__ is a TypeError) is exactly the hidden fact underpinning [S2]."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix location is django/template/context.py in RequestContext.bind_template, which loops `for processor in processors: updates.update(processor(self.request))` and assigns the result to `self.dicts[self._processors_index]`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No existing test in the visible test suite (tests/template_tests/test_context.py RequestContextTests, tests/context_processors/) covers a context processor returning wrong type, so the exact wording of the improved error message is not pinned by visible tests — only the general desired behavior from the issue text is extractable."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reference message pattern for views lives in django/core/handlers/base.py check_response (\"The view %s.%s didn't return an HttpResponse object. It returned None instead.\"), which the issue asks to emulate for context processors."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/ref/templates/api.txt) define a context processor as returning 'a dictionary that gets added to the template context', and specify later processors override earlier ones for duplicate keys."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "RequestContext.__init__ pre-populates self.dicts[self._processors_index] with {} and bind_template later assigns self.dicts[self._processors_index] = updates (then resets it to {} on context exit); the patch only wraps the merge of each processor's result in a try/except TypeError, so behavior for processors returning valid dictionaries/mappings is unchanged by the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new message uses processor.__qualname__, so the identifier reported depends on how the processor callable is referenced (e.g. dotted path for a module-level function)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The detection relies on dict.update raising TypeError; update failures that raise a different exception type (e.g. ValueError for wrong-length sequences in some Python versions) would still propagate unmodified."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: Requirement [S2] is the chain-cause behavior inside RequestContext.bind_template: when a processor result makes dict.update raise TypeError, gold wraps it and re-raises an informative TypeError \"Context processor ... didn't return a dictionary.\" chained `from e` so the informative TypeError carries the original TypeError as `__cause__`.\n\nI confirmed mechanically that gold implements exactly this (message \"Context processor bad_processor didn't return a dictionary.\", __cause__ = TypeError(\"'int' object is not iterable\")) and that the buggy program instead just propagates the raw update TypeError (\"'int' object is not iterable\") with no wrapper at all, so the `__cause__` chaining is genuinely a gold-only, buggy-absent behavior.\n\nI audited the oracle for a pre-existing test that would witness this. All RequestContext/context-processor test containers were read and are fully [VISIBLE] with NO test that has a context processor return a non-dict / wrong type:\n- tests/template_tests/test_context.py (RequestContextTests) -> only include-only, stack-size, comparable, modify-and-render tests.\n- tests/context_processors/tests.py, tests/csrf_tests/test_context_processor.py, tests/auth_tests/test_context_processors.py -> only valid-dict processors (request/debug/auth/csrf), none returning a bad type.\n- tests/template_backends/test_django.py, template_loader, test_response etc. -> processors always produce valid dicts.\n- tests/test_client_regress/tests.py ContextTests -> special processor returns dicts.\n\nThe \"[HIDDEN]\" files found in this area (context_processors/models.py, template_tests/utils.py) are non-test helper content unrelated to this behavior.\n\nBecause the buggy program does not even produce the informative/chained TypeError, any real oracle test exercising a non-dict processor result would fail against buggy and therefore appear in the failing-test list, which is \"(none recorded)\". No such test exists in the oracle. An informative-message test also wouldn't exist since it is not part of pre-existing test content. I therefore find no [HIDDEN] assertion in the oracle that pins [S2]; a witness would have to be authored (not pre-existing), which is out of scope."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S2] (RequestContext.bind_template): When bind_template raises the informative TypeError described above (after a context processor's result caused a TypeError during merging), the newly raised TypeError carries the original TypeError as its chained cause (__cause__), so both exceptions remain visible to the caller. — not entailed by S_vis (The visible evidence (issue report, existing context.py code, and docs) requires a clearer error message but never mentions preserving the original exception as a chained __cause__; the chaining detail is an implementation choice not committed to by any S_vis entry.); confirmed by a synthesized witness: Target requirement [S2] specifies that in RequestContext.bind_template, when a context processor's result (a non-dict) makes the update merge raise a TypeError, gold wraps it into an informative TypeError chained `from e` — so the informative TypeError carries the original merge TypeError as its `__cause__`.\n\nI confirmed mechanically against the actual gold/buggy sources:\n- gold (context.py): `try: updates.update(context) except TypeError as e: raise TypeError(\"Context processor ... didn't return a dictionary.\") from e` — so the surfaced TypeError has `__cause__` = the original `TypeError(\"'int' object is not iterable\")`.\n- buggy (context.py): `updates.update(processor(self.request))` bare, so the original merge TypeError propagates unmodified with `__cause__ = None`.\n\nMy witness defines a context processor returning `42` (a non-dict), enters `RequestContext.bind_template` through a minimal FakeTemplate whose engine has no extra context processors, catches the raised TypeError, and asserts `isinstance(exc.__cause__, TypeError)`. Execution results: PASSED against gold (cause present) and FAILED against buggy (`__cause__ is None`), so it genuinely discriminates.\n\nThe visible surface cannot pin this: all RequestContext/context-processor test modules (RequestContextTests in tests/template_tests/test_context.py, tests/context_processors/, csrf/auth/django template backends, template_loader, test_client_regress ContextTests) contain only valid-dict processors, none returning a wrong type — so no visible test forces a non-dict merge TypeError or its chaining. Requirements R1/R2 (already checked) don't pin the __cause__ chain either. The discovered behavior (buggy __cause__ is None; gold __cause__ is a TypeError) is exactly the hidden fact underpinning [S2].",
+    "confidence": "Medium"
+  }
+}

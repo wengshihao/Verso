@@ -1,0 +1,124 @@
+{
+  "task_id": "Cli-25",
+  "status": "ok",
+  "duration_seconds": 246.32543102800014,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "Cli-25",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a HelpFormatter's configured width is smaller than the length of a single word in the text being wrapped (e.g. width 20 with the option description \"This is a looooong description\"), printHelp(\"app\", options) must complete by rendering the help text instead of looping forever / growing until an OutOfMemoryError is thrown; i.e., wrapping a word that does not fit on a line must not hang & crash.",
+        "subject": "HelpFormatter.printHelp(String, Options) / renderWrappedText wrapping when a word exceeds the configured width",
+        "hunk_ids": [],
+        "cited_from": "Issue:\n\"Options options = new Options();\noptions.addOption(\"h\", \"help\", false, \"This is a looooong description\");\n\nHelpFormatter formatter = new HelpFormatter();\nformatter.setWidth(20);\nformatter.printHelp(\"app\", options); // hang & crash\"\nand \"An helpful exception indicating the insufficient width would be more appropriate than an OutOfMemoryError.\"\n\nBugCLI162Test.testInfiniteLoop, same setup, ending with the comment \"// used to hang & crash\"."
+      },
+      {
+        "id": "R2",
+        "statement": "renderWrappedText (exercised through printHelp) must handle words that are longer than the available line width by breaking each such unspaced word into successive width-constrained chunk lines — not merely terminate — so that the rendered output matches the exact expected wrapped output asserted in BugCLI162Test.testLongLineChunking and testLongLineChunkingIndentIgnored (e.g. \"ReallyLongValuesThatAreLongerThanTheWidthOfTheColumns ... yous and also ... <no spaces ...>\" split so that lines never exceed the width-constrained content area).",
+        "subject": "HelpFormatter.renderWrappedText(StringBuffer,int,int,String) chunking of words longer than the line width",
+        "hunk_ids": [],
+        "cited_from": "BugCLI162Test.testLongLineChunking source text: \"This description has ReallyLongValuesThatAreLongerThanTheWidthOfTheColumns \" +\n\"and also other ReallyLongValuesThatAreHugerAndBiggerThanTheWidthOfTheColumnsBob, \" +\n\"yes. \" and expected (excerpt): \"...RealLongVal\\n                      uesThatAreLon\\n                      gerThanTheWid\\n                      thOfTheColumn\\n                      s and also\\n                      other\\n                      ReallyLongVal...\" ; BugCLI162Test.testLongLineChunkingIndentIgnored expected (excerpt) \"-x,--extralongarg\\n This description is\\n Long.\\n\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "When a text to be rendered (wrapped) over multiple lines requests a continuation indent nextLineTabStop that is greater than or equal to the total line width, the wrapping process always terminates and produces the full wrapped output, instead of entering the previously unbounded re-wrapping loop that hung indefinitely for inputs such as an option with a run-on description rendered under a narrow total width.",
+        "subject": "HelpFormatter.printHelp / printWrapped / renderWrappedText wrapping",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "When wrapped rendering reaches the second and subsequent lines of a text whose requested continuation indent nextLineTabStop is >= width, those continuation lines are rendered with exactly one leading space of indentation (the oversized desired tab stop being effectively collapsed to 1), rather than an indent of width-1 spaces.",
+        "subject": "HelpFormatter.renderWrappedText continuation-line indentation",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins down that wrapping of a word-longer-than-width under narrow width must complete rather than hang/OOM (R1, issue/testInfiniteLoop) and describes long-word chunking (R2), both in the same help-formatter wrapping domain. However, neither entry mentions the specific trigger S_IMPL-1 describes — continuation indent nextLineTabStop >= total width — so whether it honestly covers that exact termination case is ambiguous."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2's expected outputs show indented continuation lines in normal wrap contexts and R1 covers hang-avoidance, but neither S_vis entry describes the specific rule that when nextLineTabStop >= width the continuation indent is collapsed to exactly one leading space. The exact rendering-behavior in that edge case is not spelled out in the visible evidence."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "wrappedNarrowWidthClamping",
+      "test_source": "import org.apache.commons.cli.HelpFormatter;\nimport java.io.PrintWriter;\nimport java.io.StringWriter;\nimport static org.junit.Assert.*;\n    @Test public void t() throws Exception {\n        HelpFormatter hf = new HelpFormatter();\n        hf.setNewLine(\"\\n\");\n        StringWriter sw = new StringWriter();\n        hf.printWrapped(new PrintWriter(sw), 5, 5, \"aaa bbb ccc\");\n        sw.flush();\n        assertEquals(\"gold wrapped output\", \"aaa\\n bbb\\n ccc\\n\", sw.toString());\n    }",
+      "gold_result": "PASSED (built full wrapped output \"aaa\\n bbb\\n ccc\\n\")",
+      "buggy_result": "FAILED — ComparisonFailure: expected \"aaa\\n bbb\\n ccc\\n\" but buggy rendered \"aaa\\n    b\\n    b\\n    b\\n    c\\n...\" (pos-forced mid-word chunking \"    b\" because padding was width-1=4 instead of 1)",
+      "explanation": "Target S_IMPL-1 is the single changed line inside HelpFormatter.renderWrappedText: when the continuation indent nextLineTabStop >= the wrap width, gold clamps it to 1 while buggy clamps it to width-1. This clamp runs only on the multi-line wrap path (after a first wrap point) and controls the padding of all subsequent wrapped lines. I constructed a direct public-API call printWrapped(writer, width=5, nextLineTabStop=5, \"aaa bbb ccc\") so nextLineTabStop(=5) is >= width(=5), guaranteed to enter the patched clamp branch, and the text is long enough that it must wrap over several lines (findWrapPos != -1), so the clamp actually governs the re-wrap.\n\nGold (clamp->1): pads continuation lines with one space and cleanly yields \"aaa\\n bbb\\n ccc\\n\". Buggy (clamp->width-1=4): pads with four spaces, making the text \"    bbb ccc\", which trips the unchanged chunking guard ((text.length()>width) && (pos==nextLineTabStop-1) => pos forced to width) and mis-renders a mid-word break, producing the mangled \"    b / b / b / c / c...\" output. So on the very branch S_IMPL-1 edits, buggy neither produces the correct full wrapped output that gold guarantees (and for longer inputs enters the described unbounded loop) — the test passes on gold and fails on buggy with both terminating in this concrete instance.\n\nThis is a genuinely new scenario: the visible BugCLI162Test exercises the >=-width clamp only indirectly through printHelp(chained via Options with fixed descriptions and widths 20/22/35 with their own descPadding); no visible or hidden test calls printWrapped with width 5 / nextLineTabStop 5 / free-form text \"aaa bbb ccc\", so the outcome is not already pinned by any existing oracle. Execution-confirmed via run_test (gold PASSED, buggy FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live at src/test/org/apache/commons/cli/bug/BugCLI162Test.java (JUnit 3 TestCase) and exercise wrapping by calling public HelpFormatter.printHelp(...) / printWrapped; no Options/Option source files are in the repo, only the formatter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The wrapping engine is HelpFormatter.renderWrappedText (protected) plus findWrapPos; printHelp(String,Options) delegates to printHelp(PrintWriter,int,...) → printOptions / renderOptions / renderWrappedText."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "renderWrappedText already contains two partial guards: \"if (nextLineTabStop >= width) { nextLineTabStop = width - 1; }\" (comment '// stops infinite loop happening') and the chunking branch \"if ( (text.length() > width) && (pos == nextLineTabStop - 1) ) { pos = width; }\". The infinite loop arises in the while(true) re-wrap when pos makes no forward progress."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The printHelp(PrintWriter,...) overloads carry the javadoc \"@throws IllegalStateException if there is no room to print a line\", but no code path in the file actually throws it (the buggy behavior is an unbounded loop → OOM); treat that doc claim with caution."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BugCLI162Test has no assertion in testInfiniteLoop (it only must not hang), whereas testLongLineChunking and testLongLineChunkingIndentIgnored assert exact full rendered output strings including indent/padding of continued lines and chunked long words."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The entire developer patch is a single clamping-value change inside renderWrappedText (protected), reachable via the public printHelp(...)/printWrapped(...)/printOptions(...)/renderOptions chain."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The clamp only takes effect on the portion of the method after the first wrap point (positions pos != -1) and only when nextLineTabStop >= width; the value width-1 is replaced by 1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The chunking branch 'if ((text.length()>width) && (pos == nextLineTabStop-1)) { pos = width; }' in the re-wrap while(true) loop is unchanged by this patch; exact-output chunking tests (testLongLineChunking, testLongLineChunkingIndentIgnored) exercise paths that do not hit the >= width clamp."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "testInfiniteLoop (width 20, long option description) asserts nothing; it only must not hang, so the termination guarantee is what it observes."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: I read every file in the oracle (5 total): BugCLI162Test.java, HelpFormatterTest.java, ApplicationTest.java, BugsTest.java, BugCLI18Test.java.\n\nRequirement S_IMPL-1 concerns the renderWrappedText path where the continuation indent (nextLineTabStop) ends up >= total width, which with a true buggy build enters the unbounded re-wrap loop (hangs/OOM) and with the gold build terminates and emits the full wrapped chunked output. The only tests that exercise exactly this condition are in BugCLI162Test (testInfiniteLoop, testLongLineChunkingIndentIgnored — the reported failing test, testLongLineChunking), and that file is labeled [VISIBLE]. The pipeline rules state an assertion drawn from [VISIBLE] content can never serve as a Witness because it was never hidden; even though testLongLineChunkingIndentIgnored genuinely distinguishes gold from buggy on this exact behavior, it cannot be used.\n\nI searched the [HIDDEN] files for any test that would construct the nextLineTabStop>=width condition that gold-vs-buggy diverges on. All [HIDDEN] renderWrappedText/renderOptions/printHelp cases in HelpFormatterTest (testPrintWrapped widths 12/16/53 with indents 0/4/24, testPrintOptions widths 60/25 with computed indents well below width), ApplicationTest (testMan width 60), BugsTest (test13666 width default/generous), and BugCLI18Test (width 80) keep the continuation column strictly less than the render width, so the changed clamp branch (nextLineTabStop >= width) is never taken; on these inputs gold and buggy behave identically. None asserts the run-on-description-under-narrow-width termination/chunking output that S_IMPL-1 describes.\n\nI verified with the run harness (@Test-annotated JUnit3-translated methods) that the help-printing path completes against gold for a chunking scenario and that the harness propagates assertions correctly. Conclusion: no [HIDDEN] oracle test enforces requirement S_IMPL-1; the only enforcement lives in the [VISIBLE] BugCLI162Test, so no qualifying witness exists in the hidden test set."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-1] (HelpFormatter.printHelp / printWrapped / renderWrappedText wrapping): When a text to be rendered (wrapped) over multiple lines requests a continuation indent nextLineTabStop that is greater than or equal to the total line width, the wrapping process always terminates and produces the full wrapped output, instead of entering the previously unbounded re-wrapping loop that hung indefinitely for inputs such as an option with a run-on description rendered under a narrow total width. — not entailed by S_vis (S_vis pins down that wrapping of a word-longer-than-width under narrow width must complete rather than hang/OOM (R1, issue/testInfiniteLoop) and describes long-word chunking (R2), both in the same help-formatter wrapping domain. However, neither entry mentions the specific trigger S_IMPL-1 describes — continuation indent nextLineTabStop >= total width — so whether it honestly covers that exact termination case is ambiguous.); confirmed by a synthesized witness: Target S_IMPL-1 is the single changed line inside HelpFormatter.renderWrappedText: when the continuation indent nextLineTabStop >= the wrap width, gold clamps it to 1 while buggy clamps it to width-1. This clamp runs only on the multi-line wrap path (after a first wrap point) and controls the padding of all subsequent wrapped lines. I constructed a direct public-API call printWrapped(writer, width=5, nextLineTabStop=5, \"aaa bbb ccc\") so nextLineTabStop(=5) is >= width(=5), guaranteed to enter the patched clamp branch, and the text is long enough that it must wrap over several lines (findWrapPos != -1), so the clamp actually governs the re-wrap.\n\nGold (clamp->1): pads continuation lines with one space and cleanly yields \"aaa\\n bbb\\n ccc\\n\". Buggy (clamp->width-1=4): pads with four spaces, making the text \"    bbb ccc\", which trips the unchanged chunking guard ((text.length()>width) && (pos==nextLineTabStop-1) => pos forced to width) and mis-renders a mid-word break, producing the mangled \"    b / b / b / c / c...\" output. So on the very branch S_IMPL-1 edits, buggy neither produces the correct full wrapped output that gold guarantees (and for longer inputs enters the described unbounded loop) — the test passes on gold and fails on buggy with both terminating in this concrete instance.\n\nThis is a genuinely new scenario: the visible BugCLI162Test exercises the >=-width clamp only indirectly through printHelp(chained via Options with fixed descriptions and widths 20/22/35 with their own descPadding); no visible or hidden test calls printWrapped with width 5 / nextLineTabStop 5 / free-form text \"aaa bbb ccc\", so the outcome is not already pinned by any existing oracle. Execution-confirmed via run_test (gold PASSED, buggy FAILED).",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "task_id": "matplotlib__matplotlib-25311",
+  "status": "ok",
+  "duration_seconds": 553.3698161250213,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-25311",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A Figure containing a Legend for which ``legend.set_draggable(True)`` has been called (so that ``Legend._draggable`` is a ``DraggableLegend`` whose ``DraggableBase`` base stores ``canvas = ref_artist.figure.canvas`` and connected picklable callback ids) must still be serializable with ``pickle.dumps(fig)`` without raising a TypeError; i.e. the draggable state must not make the figure reference its GUI canvas during pickling.",
+        "subject": "Figure/Legend pickling with draggable legend",
+        "hunk_ids": [],
+        "cited_from": "Issue 'Bug summary': \"I am unable to pickle figure with draggable legend. Same error comes for draggable annotations.\" Code for reproduction: \"leg=ax.legend()\\nleg.set_draggable(True) #pickling works after removing this line\\n\\npickle.dumps(fig)\". Actual outcome: \"`TypeError: cannot pickle 'FigureCanvasQTAgg' object`\". Expected outcome: \"Pickling successful\". Mechanism source (legend.py): DrggableLegend -> DraggableOffsetBox -> DraggableBase.__init__ \"self.canvas = self.ref_artist.figure.canvas\" and \"self.cids = [self.canvas.callbacks._connect_picklable('pick_event', self.on_pick), self.canvas.callbacks._connect_picklable('button_release_event', self.on_release)]\"."
+      },
+      {
+        "id": "R2",
+        "statement": "A Figure containing an Annotation that has been made draggable (e.g. via ``Annotation.draggable(True)`` / ``_AnnotationBase.draggable``, so that its ``_draggable`` is a ``DraggableAnnotation``) must likewise be serializable with ``pickle.dumps(fig)`` without raising a TypeError from referencing the figure canvas.",
+        "subject": "Figure/Annotation pickling with draggable annotation",
+        "hunk_ids": [],
+        "cited_from": "Issue 'Bug summary': \"Same error comes for draggable annotations.\" and \"Actual outcome\": \"`TypeError: cannot pickle 'FigureCanvasQTAgg' object`\". Mechanism source (offsetbox.py): DraggableAnnotation(DraggableBase) constructed via text.py _AnnotationBase.draggable -> \"self._draggable = DraggableAnnotation(self, use_blit)\", and DraggableBase.__init__ sets \"self.canvas = self.ref_artist.figure.canvas\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "A DraggableBase instance (and its subclasses DraggableAnnotation/DraggableOffsetBox, as used e.g. by an enabled draggable annotation or draggable legend) no longer holds the figure canvas in its pickled instance state, so a Figure (or artist tree) containing such a draggable helper can be pickled and unpickled without error.",
+        "subject": "matplotlib.offsetbox.DraggableBase (picklability of draggable helpers)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a DraggableBase instance d, d.canvas returns the canvas of d.ref_artist.figure (i.e. d.ref_artist.figure.canvas), resolved dynamically at access time rather than captured once at construction, so that .canvas still evaluates correctly (resolving to the re-attached figure's canvas) after the helper has been unpickled and re-attached to a figure; reads of self.canvas used for supports_blit checks, callback (dis)connection and canvas redraw/blit continue to work.",
+        "subject": "matplotlib.offsetbox.DraggableBase.canvas",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 both require that a figure containing a draggable legend/annotation (whose DraggableBase captured self.canvas = ref_artist.figure.canvas) pickle without a TypeError and state that the draggable state must not make the figure reference its GUI canvas during pickling, which directly commits to DraggableBase no longer carrying the canvas reference in its pickled instance state."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only pins down that pickling must succeed and the canvas must not be referenced/captured during pickling; it says nothing about .canvas being resolved dynamically at access time via d.ref_artist.figure.canvas, nor about post-unpickle re-attachment semantics, so the specific dynamic-resolution design in S_impl R2 is not entailed."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_draggable_canvas_dynamic",
+      "test_source": "def test_draggable_canvas_dynamic():\n    import matplotlib\n    matplotlib.use(\"Agg\")\n    from matplotlib.figure import Figure\n    from matplotlib.backends.backend_agg import FigureCanvasAgg\n    from matplotlib.offsetbox import DraggableBase\n\n    class _Ref:\n        def __init__(self, fig):\n            self.figure = fig\n        def pickable(self):\n            return False\n        def set_picker(self, val):\n            self._picker = val\n\n    fig1 = Figure()\n    FigureCanvasAgg(fig1)\n    ref = _Ref(fig1)\n    d = DraggableBase(ref)\n    canvas1 = fig1.canvas\n    assert d.canvas is canvas1\n\n    # Re-attach the ref artist to a brand-new figure whose canvas differs.\n    fig2 = Figure()\n    FigureCanvasAgg(fig2)\n    ref.figure = fig2\n\n    assert d.canvas is fig2.canvas\n    assert d.canvas is not canvas1\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert d.canvas is fig2.canvas fails: d.canvas still resolves to fig1's stale canvas, not the re-attached fig2.canvas)",
+      "explanation": "R2 requires that for a DraggableBase instance d, d.canvas resolves dynamically (at access time) to d.ref_artist.figure.canvas rather than being an instance attribute captured once in __init__, so that after the helper's ref_artist is re-attached to a different figure, .canvas still returns the new figure's canvas. In gold, canvas is a class property recomputed from ref_artist.figure.canvas and the __init__ sets only an instance attribute in the buggy version (which stamps fig1's canvas). The test builds a real DraggableBase bound to a ref_artist on fig1 (verifying d.canvas is fig1.canvas), then re-attaches that ref_artist to a brand-new figure fig2 (with its own canvas) and asserts d.canvas now returns fig2.canvas (and no longer fig1.canvas). Gold PASSED (the property re-resolves to fig2.canvas); buggy FAILED because it keeps the frozen fig1 canvas as an instance attribute. This exercises the genuine dynamic-resolution semantics required by R2 and discriminates the two programs; no visible test (test_pickle, test_offsetbox, test_legend, etc.) asserts DraggableBase can dynamic canvas re-resolution, so it is not a reworded visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in the draggable-helpers API surface: matplotlib/offsetbox.py defines class DraggableBase whose __init__ stores `self.canvas = self.ref_artist.figure.canvas` and connects canvas callbacks to create self.cids; offsetbox.py DraggableAnnotation and DraggableOffsetBox extend it, and legend.py DraggableLegend extends DraggableOffsetBox."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Text.py `_AnnotationBase.draggable(state, use_blit=False)` lazily creates a DraggableAnnotation stored on `self._draggable`; Legend.set_draggable(state, use_blit=False, update='loc') stores a DraggableLegend on `self._draggable`, returning None when disabled."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Figure.__getstate__ (figure.py) pops 'canvas' to make figures re-attachable to a canvas, so a bare figure pickles; the failure arises only when an artist holds a _draggable helper that itself holds the canvas + connected callbacks, reachable through the figure's legend/annotation tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests reside under lib/matplotlib/tests; test_pickle.py exercises figure/axes pickling (test_simple, test_complete, test_no_pyplot, test_gcf, etc.) but no existing test covers pickling a figure whose legend/annotation is draggable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Canvas is now declared as a class-level property on DraggableBase (comment: 'A property, not an attribute, to maintain picklability.') that recomputes self.ref_artist.figure.canvas on every access."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "self._use_blit and self.cids in DraggableBase.__init__ still reference self.canvas; these internal reads keep working because the property is defined in the class body and resolves the referent artist's figure canvas at construct time."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DraggableAnnotation and DraggableOffsetBox inherit this canvas property and add no canvas attribute of their own."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The draggable helper holds the canvas only via the path from its ref_artist (legend/annotation) through that artist's figure, which a figure pickle handles through its own __getstate__/figure-tree serialization."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated the oracle for a test that genuinely asserts requirement R2: that for a DraggableBase instance, `.canvas` returns `ref_artist.figure.canvas`, resolved dynamically at access time (so it remains correct after the helper has been unpickled/re-attached to a new figure), rather than an instance attribute captured at construction.\n\nFiles inspected (all labeled [VISIBLE], so none can serve as a witness regardless of content):\n- lib/matplotlib/tests/test_pickle.py — contains the only currently-failing test (test_complete[png], a generic \"figure pickle round-trip then canvas.draw\" image-comparison), plus test_simple/test_unpickle_canvas etc. None of these creates a DraggableBase, calls set_draggable, or re-attaches a pickled helper to a different figure; I reproduced its figure round-trip sans-draggable and it passes on the buggy program, confirming it does not exercise the DraggableBase.canvas code path at all. Content is [VISIBLE].\n- lib/matplotlib/tests/test_offsetbox.py — imports Anchored* boxes but never uses DraggableBase/DraggableOffsetBox/DraggableAnnotation, and has no pickle/canvas-property assertions about draggables. [VISIBLE]\n- lib/matplotlib/tests/test_legend.py — test_get_set_draggable/test_legend_draggable toggle get_draggable on a legend but never check `.canvas`, never pickle, and never re-attach; no assertion on dynamic canvas resolution. [VISIBLE]\n- lib/matplotlib/tests/test_artist.py, test_text.py, test_widgets.py, test_colorbar.py — no DraggableBase.canvas resolution test. [VISIBLE]\n\nNone of the files returned a [HIDDEN] label, and none contains an assertion matching the R2 semantics (dynamic canvas resolution across unpickle/re-attach). A witness must rest on [HIDDEN] content per the task rules, and even on content grounds the only failing test (test_complete) does not test the requirement it is about: it merely smoke-tests that an ordinary (non-draggable) figure survives pickle→draw, with no DraggableBase present. Consequently no genuine, execution-confirmed witness for R2 exists in the oracle, so I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (matplotlib.offsetbox.DraggableBase.canvas): For a DraggableBase instance d, d.canvas returns the canvas of d.ref_artist.figure (i.e. d.ref_artist.figure.canvas), resolved dynamically at access time rather than captured once at construction, so that .canvas still evaluates correctly (resolving to the re-attached figure's canvas) after the helper has been unpickled and re-attached to a figure; reads of self.canvas used for supports_blit checks, callback (dis)connection and canvas redraw/blit continue to work. — not entailed by S_vis (S_vis only pins down that pickling must succeed and the canvas must not be referenced/captured during pickling; it says nothing about .canvas being resolved dynamically at access time via d.ref_artist.figure.canvas, nor about post-unpickle re-attachment semantics, so the specific dynamic-resolution design in S_impl R2 is not entailed.); confirmed by a synthesized witness: R2 requires that for a DraggableBase instance d, d.canvas resolves dynamically (at access time) to d.ref_artist.figure.canvas rather than being an instance attribute captured once in __init__, so that after the helper's ref_artist is re-attached to a different figure, .canvas still returns the new figure's canvas. In gold, canvas is a class property recomputed from ref_artist.figure.canvas and the __init__ sets only an instance attribute in the buggy version (which stamps fig1's canvas). The test builds a real DraggableBase bound to a ref_artist on fig1 (verifying d.canvas is fig1.canvas), then re-attaches that ref_artist to a brand-new figure fig2 (with its own canvas) and asserts d.canvas now returns fig2.canvas (and no longer fig1.canvas). Gold PASSED (the property re-resolves to fig2.canvas); buggy FAILED because it keeps the frozen fig1 canvas as an instance attribute. This exercises the genuine dynamic-resolution semantics required by R2 and discriminates the two programs; no visible test (test_pickle, test_offsetbox, test_legend, etc.) asserts DraggableBase can dynamic canvas re-resolution, so it is not a reworded visible assertion.",
+    "confidence": "Medium"
+  }
+}

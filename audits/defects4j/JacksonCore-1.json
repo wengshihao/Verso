@@ -1,0 +1,140 @@
+{
+  "task_id": "JacksonCore-1",
+  "status": "ok",
+  "duration_seconds": 166.2878957009998,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-1",
+    "s_vis": [
+      {
+        "id": "Svis-1",
+        "statement": "When JsonParser.Feature.ALLOW_NON_NUMERIC_NUMBERS is enabled and the parser is positioned on a NaN VALUE_NUMBER_FLOAT token, calling JsonParser.getDecimalValue() must throw NumberFormatException whose message contains the text \"can not be represented as BigDecimal\" (and must NOT throw a NullPointerException).",
+        "subject": "JsonParser.getDecimalValue",
+        "hunk_ids": [],
+        "cited_from": "Test _testAllowNaN in TestParserNonStandard.java: \"// [Issue#98]\ntry {\n    /*BigDecimal dec =*/ jp.getDecimalValue();\n    fail(\"Should fail when trying to access NaN as BigDecimal\");\n} catch (NumberFormatException e) {\n    e.printStackTrace();\n    verifyException(e, \"can not be represented as BigDecimal\");\n}\" — issued together with parse of document \"[ NaN]\" with ALLOW_NON_NUMERIC_NUMBERS enabled and prior assertions token VALUE_NUMBER_FLOAT, d.isNaN()==true, getText()==\"NaN\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "NumberInput.parseBigDecimal(String) with a non-empty String that new BigDecimal cannot represent (e.g. \"NaN\") does not throw the JDK's raw NumberFormatException from the constructor; instead it throws a NumberFormatException whose message is \"Value \\\"<the input string>\\\" can not be represented as BigDecimal\". Input that new BigDecimal can parse must still return the equivalent BigDecimal value.",
+        "subject": "NumberInput.parseBigDecimal(String)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "NumberInput.parseBigDecimal(char[], int offset, int len) on the subrange that new BigDecimal(char[],offset,len) cannot represent (e.g. a buffer containing \"NaN\") does not throw the JDK's raw NumberFormatException; instead it throws a NumberFormatException whose message is \"Value \\\"<the text from offset..offset+len>\\\" can not be represented as BigDecimal\". Subranges that new BigDecimal can parse must still return the equivalent BigDecimal value. (The char[] single-argument overload delegates to this method and inherits the behavior.)",
+        "subject": "NumberInput.parseBigDecimal(char[],int,int)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "TextBuffer.contentsAsDecimal() no longer throws a NullPointerException when the buffered contents are held without a pre-cut result array, an active shared input buffer, or an allocated current segment (e.g. cached as a _resultString); in that case it aggregates the buffered characters into an array and parses the whole text, so for numeric contents it still returns the equivalent BigDecimal, and for contents that are not a valid BigDecimal representation (e.g. the text \"NaN\") contentsAsDecimal() throws NumberFormatException rather than NPE.",
+        "subject": "TextBuffer.contentsAsDecimal()",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis-1"
+        ],
+        "rationale": "Svis-1 verifies at the JsonParser.getDecimalValue() API layer that NaN parsing yields an NFE (not NPE) whose message contains 'can not be represented as BigDecimal', consistent with part of R1's behavior. However it neither names the internal NumberInput.parseBigDecimal(String) helper nor pins the exact full message format (the 'Value \"<input>\"' prefix is only implied by a substring check) nor the success-path requirement of returning an equivalent BigDecimal."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis-1"
+        ],
+        "rationale": "Svis-1 shows the graceful-NFE-with-message observable outcome but only at the JsonParser layer via a substring containment check; it does not identify the internal NumberInput.parseBigDecimal(char[],int,int) overload, its offset/len subrange semantics, or the exact full composing message, nor verify the success path."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis-1"
+        ],
+        "rationale": "The visible test's 'should fail with NumberFormatException rather than NPE' does reflect the intent to avoid NPEs when reading NaN/numbers, which relates to part of R3. But Svis-1 reveals nothing about TextBuffer.contentsAsDecimal internals, result-string caching, shared-input-buffer, or segment aggregation scenarios, so the specific described behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@org.junit.Test\npublic void t() throws Exception {\n    try {\n        com.fasterxml.jackson.core.io.NumberInput.parseBigDecimal(\"NaN\");\n        org.junit.Assert.fail(\"Expected NumberFormatException\");\n    } catch (NumberFormatException e) {\n        org.junit.Assert.assertEquals(\"Value \\\"NaN\\\" can not be represented as BigDecimal\", e.getMessage());\n    }\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (buggy threw raw JDK NumberFormatException with message \"Character N is neither a decimal digit number, decimal point, nor \"e\" notation exponential mark.\")",
+      "explanation": "R1 targets NumberInput.parseBigDecimal(String): for a non-empty string that new BigDecimal cannot parse (e.g. \"NaN\") it must throw a NumberFormatException whose message is the normalized 'Value \"<input>\" can not be represented as BigDecimal' instead of the JDK's raw constructor error. Gold implements this by catching the JDK NumberFormatException and rethrowing _badBigDecimal(numStr); buggy just does `return new BigDecimal(numStr);` so it propagates the JDK's raw message.\n\nMy test directly calls NumberInput.parseBigDecimal(\"NaN\") and requires (a) that a NumberFormatException be thrown and (b) that its message be exactly the normalized form. Execution confirms discrimination: against gold it PASSED (NFE message equals 'Value \"NaN\" can not be represented as BigDecimal'); against buggy it FAILED because buggy surfaced the raw JDK message 'Character N is neither a decimal digit number, decimal point...'. \n\nI checked the visible material to avoid simply re-inventing a pinned assertion. The only visible behavior-matching test, TestParserNonStandard.testAllowNaN, exercises the normalized message only through the parser/integration path (jp.getDecimalValue() reaching parseBigDecimal via TextBuffer) and its assert (`verifyException(e, \"can not be represented as BigDecimal\")`) checks only substring 'can not be represented as BigDecimal', not the full normalized message, and never calls NumberInput.parseBigDecimal(String) directly with an unrepresentable literal. No visible content invokes the raw NumberInput.parseBigDecimal(String) method with \"NaN\" or checks the complete round-tripped message. My witness supplies that missing direct unit-level scenario for the exact method R1 names, confirming gold/buggy with real execution."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files are visible in this repository scope: src/main/java/com/fasterxml/jackson/core/io/NumberInput.java, src/main/java/com/fasterxml/jackson/core/util/TextBuffer.java, and src/test/java/com/fasterxml/jackson/core/json/TestParserNonStandard.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The ParserBase/_parseSlowFloatValue/_parseNumericValue classes from the reported stack trace are NOT visible in this scope; the constraint on getDecimalValue is inferred only from the visible test assertion."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test _testAllowNaN/_[_testAllowInf] live in TestParserNonStandard.java and run both in stream (createParserUsingStream) and reader (createParserUsingReader) modes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testAllowNaN asserts NaN is only accepted when ALLOW_NON_NUMERIC_NUMBERS is enabled (otherwise 'non-standard' JsonParseException); once enabled the parsed NaN token is VALUE_NUMBER_FLOAT, getDoubleValue()==NaN, getText()==\"NaN\", and then getDecimalValue() must throw NumberFormatException; skipping must also work (tokens advanced without access)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testAllowInf asserts Infinity variants (-INF,+INF,+Infinity,Infinity,-Infinity) parse as VALUE_NUMBER_FLOAT with positive/negative infinite doubles, but contains NO getDecimalValue access, so no requirement is asserted for infinities as BigDecimal."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Plausible root cause in visible code: TextBuffer.contentsAsDecimal() falls into the 'if (_segmentSize == 0) return NumberInput.parseBigDecimal(_currentSegment,...)' branch where _currentSegment is null when the NaN text has been stored as a _resultString (resultString branch), yielding the NPE; NumberInput.parseBigDecimal(char[],int,int) currently just constructs new BigDecimal."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test helper BaseTest/verifyException/assertToken are referenced but not present in this visible scope."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0/H1 do not by themselves decide whether NumberFormatException is thrown (JDK already throws NFE for invalid text); their committed observable change is the normalized message \"Value \\\"<text>\\\" can not be represented as BigDecimal\" produced by the newly added private NumberInput._badBigDecimal(String)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2's null-guards on _inputBuffer and _currentSegment reroute Buffer-with-only-_resultString contents (e.g. NaN text cached via resetWithString, where _resultArray==null, _inputStart==-1, _segmentSize==0 and _currentSegment==null) to the aggregation branch parseBigDecimal(contentsAsArray()); contentsAsArray()->buildResultArray() converts the cached _resultString to chars."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "NumberInput.parseBigDecimal(char[]) single-arg overload delegates to parseBigDecimal(char[],int,int)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The NaN-related flow: parser stores the non-standard NaN token text as a TextBuffer _resultString; access through getDecimalValue()/contentsAsDecimal triggers the buggy NPE before the fix."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 asserts that NumberInput.parseBigDecimal(String), for a non-empty String new BigDecimal cannot represent (e.g. \"NaN\"), throws a NumberFormatException whose message is 'Value \"<input>\" can not be represented as BigDecimal' rather than the JDK's raw constructor error, while valid input still returns the equivalent BigDecimal.\n\nI enumerated and read every test file in the oracle (all 42 files listed by list_test_files). The only test that fails against the buggy program is testAllowNaN in src/test/java/com/fasterxml/jackson/core/json/TestParserNonStandard.java. Inside it, the branch that parses a NaN token with ALLOW_NON_NUMERIC_NUMBERS and then calls jp.getDecimalValue() asserting an NFE with \"can not be represented as BigDecimal\" is indeed behaviorally aligned with R1 (the NaN text 'NaN' flows through getDecimalValue -> contentsAsDecimal -> NumberInput.parseBigDecimal). However, that entire file is labeled [VISIBLE], and an assertion drawn from [VISIBLE] content can never serve as a witness regardless of how well it matches r.\n\nThe direct unit-test home for NumberInput, src/test/java/com/fasterxml/jackson/core/main/TestNumberParsing.java, is [HIDDEN] — the only content-based hidden candidate location for a parseBigDecimal-specific assertion — but it contains NO parseBigDecimal test at all (only parseInt/parseLong/inLongRange coverage). No other [HIDDEN] file (TestNumericValues, TestJsonParser, TestNextXxx, TestValueConversions, TestTextBuffer, TestArrayParsing, TestParserWithObjects, etc.) invokes NumberInput.parseBigDecimal with an unrepresentable string or checks the normalized NFE message.\n\nSince the sole behavior-matching test lives in [VISIBLE] content and no genuinely [HIDDEN] oracle test enforces R1's observable behavior, I could not construct or identify a valid witness and report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (NumberInput.parseBigDecimal(String)): NumberInput.parseBigDecimal(String) with a non-empty String that new BigDecimal cannot represent (e.g. \"NaN\") does not throw the JDK's raw NumberFormatException from the constructor; instead it throws a NumberFormatException whose message is \"Value \\\"<the input string>\\\" can not be represented as BigDecimal\". Input that new BigDecimal can parse must still return the equivalent BigDecimal value. — not entailed by S_vis (Svis-1 verifies at the JsonParser.getDecimalValue() API layer that NaN parsing yields an NFE (not NPE) whose message contains 'can not be represented as BigDecimal', consistent with part of R1's behavior. However it neither names the internal NumberInput.parseBigDecimal(String) helper nor pins the exact full message format (the 'Value \"<input>\"' prefix is only implied by a substring check) nor the success-path requirement of returning an equivalent BigDecimal.); confirmed by a synthesized witness: R1 targets NumberInput.parseBigDecimal(String): for a non-empty string that new BigDecimal cannot parse (e.g. \"NaN\") it must throw a NumberFormatException whose message is the normalized 'Value \"<input>\" can not be represented as BigDecimal' instead of the JDK's raw constructor error. Gold implements this by catching the JDK NumberFormatException and rethrowing _badBigDecimal(numStr); buggy just does `return new BigDecimal(numStr);` so it propagates the JDK's raw message.\n\nMy test directly calls NumberInput.parseBigDecimal(\"NaN\") and requires (a) that a NumberFormatException be thrown and (b) that its message be exactly the normalized form. Execution confirms discrimination: against gold it PASSED (NFE message equals 'Value \"NaN\" can not be represented as BigDecimal'); against buggy it FAILED because buggy surfaced the raw JDK message 'Character N is neither a decimal digit number, decimal point...'. \n\nI checked the visible material to avoid simply re-inventing a pinned assertion. The only visible behavior-matching test, TestParserNonStandard.testAllowNaN, exercises the normalized message only through the parser/integration path (jp.getDecimalValue() reaching parseBigDecimal via TextBuffer) and its assert (`verifyException(e, \"can not be represented as BigDecimal\")`) checks only substring 'can not be represented as BigDecimal', not the full normalized message, and never calls NumberInput.parseBigDecimal(String) directly with an unrepresentable literal. No visible content invokes the raw NumberInput.parseBigDecimal(String) method with \"NaN\" or checks the complete round-tripped message. My witness supplies that missing direct unit-level scenario for the exact method R1 names, confirming gold/buggy with real execution.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "task_id": "Closure-102",
+  "status": "ok",
+  "duration_seconds": 246.35649211100008,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "Closure-102",
+    "s_vis": [
+      {
+        "id": "req1",
+        "statement": "Under SIMPLE_OPTIMIZATIONS and WarningLevel.VERBOSE, compiling the function `function f() { var arguments = Array.prototype.slice.call(arguments, 0); return arguments[0]; }` must produce exactly `function f() { arguments = Array.prototype.slice.call(arguments, 0); return arguments[0]; }` with zero errors and zero warnings — i.e., the redeclaring `var arguments = ...` statement must be normalized into the bare assignment `arguments = ...` while `return arguments[0]` is preserved unchanged.",
+        "subject": "Compiler output under SIMPLE_OPTIMIZATIONS + VERBOSE (Normalize/duplicate-var handling)",
+        "hunk_ids": [],
+        "cited_from": "testIssue115 in CompilerRunnerTest: \"test(\"function f() { \" + \"  var arguments = Array.prototype.slice.call(arguments, 0);\" + \"  return arguments[0]; \" + \"}\", \"function f() { \" + \"  arguments = Array.prototype.slice.call(arguments, 0);\" + \"  return arguments[0]; \" + \"}\");\" with FLAG_compilation_level=SIMPLE_OPTIMIZATIONS and FLAG_warning_level=VERBOSE; the `test(...)` helper asserts `0, compiler.getErrors().length + compiler.getWarnings().length`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In Normalize's compilation pipeline, duplicate var-declaration removal (removeDuplicateDeclarations / the SyntacticScopeCreator-with-DuplicateDeclarationHandler pass) is executed immediately after the initial statement-normalization traversal and before the MakeDeclaredNamesUnique local-name-renaming pass, so that the collapsing of a redeclared variable (e.g. a function body redeclaring the implicit `arguments` binding via `var arguments = ...`) is performed against the original, pre-rename identifiers rather than after names have already been made unique.",
+        "subject": "Normalize.process",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "req1"
+        ],
+        "rationale": "S_vis req1 only demonstrates an observable end-to-end compilation outcome (redeclared `arguments` collapsed to a bare assignment with zero errors/warnings), saying nothing about the internal ordering of Normalize's pipeline passes. The specific commitment that duplicate-declaration removal executes immediately after statement normalization and before the MakeDeclaredNamesUnique renaming pass is a non-observable internal structure decision that the visible compile-output test cannot reveal."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R1 is a pure ordering swap inside Normalize.process: removeDuplicateDeclarations (the SyntacticScopeCreator + DuplicateDeclarationHandler pass) is moved from AFTER the MAKE_LOCAL_NAMES_UNIQUE (MakeDeclaredNamesUnique) pass to BEFORE it. Its observable behavioral effect can only manifest on inputs where MakeDeclaredNamesUnique renaming would otherwise destroy the duplicate-relationship before collapsing — i.e. a redeclaration of a binding that the renamer does NOT itself treat as declared. By inspection of the code and the removal logic in DuplicateDeclarationHandler, the only binding that qualifies is the implicit `arguments` environment binding: `function f(){ var arguments = Array.prototype.slice.call(arguments,0); return arguments[0]; }`. Renaming the declared `var arguments` (and its uses) to a unique identifier splits it off from the implicit `arguments`, so running reform before collapse (buggy ordering) leaves a genuine `var ...` redeclaration that is no longer detected as a duplicate; collapsing first (gold) correctly rewrites it to `arguments = A.prototype.slice.call(arguments,0); return arguments[0];`.\n\nI verified this discriminating effect empirically with a standalone candidate (compile `function f(){ var arguments = ...slice(...); return arguments[0]; }` against externs containing `var arguments; function Array(){}` under SIMPLE_OPTIMIZATIONS, asserting the redeclaring `var` no longer appears): it PASSED against gold and FAILED against buggy. I then probed whether any genuinely different input (redeclaration of a function parameter, nested-function shadowing of an ordinary local var, top-level redeclaration of an extern var) also discriminates gold from buggy. Those scenarios do not: a parameter is a *declared* binding, so MakeDeclaredNamesUnique renames the parameter and its redeclaring var holistically as one scope binding, and the collapse outcome is identical whether collapse runs before or after renaming; the same holds for ordinary local redeclarations inside a single function. In every such case collapse-then-rename and rename-then-collapse give identical output, so no assertion can tell the orderings apart.\n\nCrucially, the only input that actually discriminates (the `arguments`-redeclaration of issue 115 / Closure-102) is precisely the content of the [VISIBLE] testIssue115 in the disclosed CompilerRunnerTest (including its `var arguments;` externs and the slice-based function body). An oracle drawn from it was never a hidden fact, and re-encoding the same scenario with different words/variables/assertions would still be worthless as a Witness because nothing about that behavior was undisclosed. Since I could not find any genuinely distinct input that isolates the re-ordering, I submit found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible in this repo subset: src/com/google/javascript/jscomp/Normalize.java and test/com/google/javascript/jscomp/CompilerRunnerTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CompilerRunnerTest contains the regression-ish test testIssue115 (matching the issue-115 / Closure-102 report) exercising a function body that redeclares the implicit `arguments` variable; it is NOT among the ones marked 'Defects4J: flaky method' (several other tests are commented out as flaky, e.g. testTypeCheckingOffByDefault, testQuietMode, testIssue81)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Several unrelated CompilerRunnerTest cases were commented out as flaky; testIssue115 is live."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Normalize.java's DuplicateDeclarationHandler.onRedeclaration documents converting \"var name = value\" to \"name = value\" (case 1) during removeDuplicateDeclarations, which corresponds to the transformation expected in testIssue115 (removal of a redeclaring `var` preserving its initializer as an assignment)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Normalize has a sub-pass PropogateConstantAnnotations and a VerifyConstants checker, plus constant-renaming via MakeDeclaredNamesUnique; those are not exercised by the disclosed test."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This hunk is purely a re-ordering inside Normalize.process; it moves the removeDuplicateDeclarations(root) call from after the MAKE_LOCAL_NAMES_UNIQUE block to before it. The referenced sub-passes (MakeDeclaredNamesUnique, DuplicateDeclarationHandler.removeDuplicateDeclarations, PropogateConstantAnnotations) and all other code are otherwise unchanged in the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the change is a pure ordering swap, its observable effect manifests only through inputs where renaming (MakeDeclaredNamesUnique) would otherwise run before duplicate-collapsing, such as the reported redeclaration of the implicit `arguments` binding (issue 115 / Closure-102)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only S_impl on the lone hunk H0 was extracted; the surrounding normalizations (statement splitting, for-initializer extraction, label normalization, while-to-for) are present in the source but not introduced by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 is a pure re-ordering inside Normalize.process: removeDuplicateDeclarations (DuplicateDeclarationHandler pass) must run right after statement normalization and BEFORE the MakeDeclaredNamesUnique local-name-renaming pass. Its observable effect only manifests (per S_impl) on inputs where name-renaming would otherwise run before duplicate-collapsing — i.e. precisely the reported redeclaration of the implicit `arguments` binding (issue 115 / Closure-102), `function f(){ var arguments = ...; }` → collapsing to `arguments = ...`.\n\nOnly test currently failing is testIssue115 in CompilerRunnerTest.java. That file is labeled [VISIBLE], and its entire content (including the externs `var arguments;`, the setUp/tearDown, and the private test/compile helpers testIssue115 relies on) is visible material given to the repair system; an assertion drawn from it can never be a valid Witness.\n\nI read the only other plausibly-relevant file, NormalizeTest.java (labeled [HIDDEN]). Its testRemoveDuplicateVarDeclarations and testMakeLocalNamesUnique cases all concern ordinary local variables (`a`, `b`, `window`) where name-renaming either does not apply or does not change the duplicate-collapse result regardless of pass ordering — e.g. `function f(){ var a=1; var a=2 }` → `var a=1; a=2` collapses a single consistently-named local scope var, so both the \"rename-first\" (buggy) and \"collapse-first\" (gold) orderings produce identical output. None of the hidden NormalizeTest cases redeclare an implicit binding like `arguments` (its EXTERNS is just `var window;`), so none couples rename with duplicate-collapse and none isolates the re-ordering that R1 commits to.\n\nI verified there is no [HIDDEN] oracle test exercising an `arguments`-redeclaration / ordering-sensitive scenario anywhere in the suite (the other listed test files concern unrelated passes — CheckRequiresForConstructors, Collapse*, ConstCheck, Denormalize, ExternExports, FunctionInjector, GatherRawExports, Inline*, Rename, SanityCheck, SourceMap). Thus the benchmark's only genuine behavioral witness for R1 is the [VISIBLE] testIssue115, which is ineligible. conclusion: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Target R1 is a pure ordering swap inside Normalize.process: removeDuplicateDeclarations (the SyntacticScopeCreator + DuplicateDeclarationHandler pass) is moved from AFTER the MAKE_LOCAL_NAMES_UNIQUE (MakeDeclaredNamesUnique) pass to BEFORE it. Its observable behavioral effect can only manifest on inputs where MakeDeclaredNamesUnique renaming would otherwise destroy the duplicate-relationship before collapsing — i.e. a redeclaration of a binding that the renamer does NOT itself treat as declared. By inspection of the code and the removal logic in DuplicateDeclarationHandler, the only binding that qualifies is the implicit `arguments` environment binding: `function f(){ var arguments = Array.prototype.slice.call(arguments,0); return arguments[0]; }`. Renaming the declared `var arguments` (and its uses) to a unique identifier splits it off from the implicit `arguments`, so running reform before collapse (buggy ordering) leaves a genuine `var ...` redeclaration that is no longer detected as a duplicate; collapsing first (gold) correctly rewrites it to `arguments = A.prototype.slice.call(arguments,0); return arguments[0];`.\n\nI verified this discriminating effect empirically with a standalone candidate (compile `function f(){ var arguments = ...slice(...); return arguments[0]; }` against externs containing `var arguments; function Array(){}` under SIMPLE_OPTIMIZATIONS, asserting the redeclaring `var` no longer appears): it PASSED against gold and FAILED against buggy. I then probed whether any genuinely different input (redeclaration of a function parameter, nested-function shadowing of an ordinary local var, top-level redeclaration of an extern var) also discriminates gold from buggy. Those scenarios do not: a parameter is a *declared* binding, so MakeDeclaredNamesUnique renames the parameter and its redeclaring var holistically as one scope binding, and the collapse outcome is identical whether collapse runs before or after renaming; the same holds for ordinary local redeclarations inside a single function. In every such case collapse-then-rename and rename-then-collapse give identical output, so no assertion can tell the orderings apart.\n\nCrucially, the only input that actually discriminates (the `arguments`-redeclaration of issue 115 / Closure-102) is precisely the content of the [VISIBLE] testIssue115 in the disclosed CompilerRunnerTest (including its `var arguments;` externs and the slice-based function body). An oracle drawn from it was never a hidden fact, and re-encoding the same scenario with different words/variables/assertions would still be worthless as a Witness because nothing about that behavior was undisclosed. Since I could not find any genuinely distinct input that isolates the re-ordering, I submit found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (Normalize.process) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R1 is a pure ordering swap inside Normalize.process: removeDuplicateDeclarations (the SyntacticScopeCreator + DuplicateDeclarationHandler pass) is moved from AFTER the MAKE_LOCAL_NAMES_UNIQUE (MakeDeclaredNamesUnique) pass to BEFORE it. Its observable behavioral effect can only manifest on inputs where MakeDeclaredNamesUnique renaming would otherwise destroy the duplicate-relationship before collapsing — i.e. a redeclaration of a binding that the renamer does NOT itself treat as declared. By inspection of the code and the removal logic in DuplicateDeclarationHandler, the only binding that qualifies is the implicit `arguments` environment binding: `function f(){ var arguments = Array.prototype.slice.call(arguments,0); return arguments[0]; }`. Renaming the declared `var arguments` (and its uses) to a unique identifier splits it off from the implicit `arguments`, so running reform before collapse (buggy ordering) leaves a genuine `var ...` redeclaration that is no longer detected as a duplicate; collapsing first (gold) correctly rewrites it to `arguments = A.prototype.slice.call(arguments,0); return arguments[0];`.\n\nI verified this discriminating effect empirically with a standalone candidate (compile `function f(){ var arguments = ...slice(...); return arguments[0]; }` against externs containing `var arguments; function Array(){}` under SIMPLE_OPTIMIZATIONS, asserting the redeclaring `var` no longer appears): it PASSED against gold and FAILED against buggy. I then probed whether any genuinely different input (redeclaration of a function parameter, nested-function shadowing of an ordinary local var, top-level redeclaration of an extern var) also discriminates gold from buggy. Those scenarios do not: a parameter is a *declared* binding, so MakeDeclaredNamesUnique renames the parameter and its redeclaring var holistically as one scope binding, and the collapse outcome is identical whether collapse runs before or after renaming; the same holds for ordinary local redeclarations inside a single function. In every such case collapse-then-rename and rename-then-collapse give identical output, so no assertion can tell the orderings apart.\n\nCrucially, the only input that actually discriminates (the `arguments`-redeclaration of issue 115 / Closure-102) is precisely the content of the [VISIBLE] testIssue115 in the disclosed CompilerRunnerTest (including its `var arguments;` externs and the slice-based function body). An oracle drawn from it was never a hidden fact, and re-encoding the same scenario with different words/variables/assertions would still be worthless as a Witness because nothing about that behavior was undisclosed. Since I could not find any genuinely distinct input that isolates the re-ordering, I submit found=false.",
+    "confidence": "Medium"
+  }
+}

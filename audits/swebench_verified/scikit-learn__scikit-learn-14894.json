@@ -1,0 +1,116 @@
+{
+  "task_id": "scikit-learn__scikit-learn-14894",
+  "status": "ok",
+  "duration_seconds": 180.4559308339376,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-14894",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Fitting sklearn.svm.SVR (kernel='linear', and the C/cache_size/epsilon/gamma/tol/max_iter parameters of the reproduction) on the described input must complete without error even when the resulting model has an empty set of support vectors; the sparse fit must not raise a ZeroDivisionError where the equivalent dense fit succeeds without error.",
+        "subject": "sklearn.svm.base.BaseLibSVM._sparse_fit (SVR on csr data)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"# dense x_train has no error\nmodel.fit(x_train, y_train)\n\n# convert to sparse\nxtrain= scipy.sparse.csr_matrix(x_train)\nmodel.fit(xtrain, y_train)\" ... Actual results traceback: \"File \"/usr/local/lib/python3.5/dist-packages/sklearn/svm/base.py\", line 302, in _sparse_fit\n    dual_coef_indices.size / n_class)\nZeroDivisionError: float division by zero\""
+      },
+      {
+        "id": "R2",
+        "statement": "When a sparse (csr_matrix) SVR fit of the reproducing data yields an empty support-vectors set, the fit should succeed and leave the fitted model's dual_coef_ as an empty sparse matrix of the form sp.csr_matrix([]), rather than failing.",
+        "subject": "sklearn.svm.base.BaseLibSVM._sparse_fit resulting dual_coef_",
+        "hunk_ids": [],
+        "cited_from": "Issue, Expected Results: \"No error is thrown and  `self.dual_coef_ = sp.csr_matrix([])`\" (and note base.py `_sparse_fit`: \"dual_coef_indirect = np.arange(0, dual_coef_indices.size + 1, dual_coef_indices.size / n_class)\" is the construction that divides when n_SV == 0)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "When BaseLibSVM._sparse_fit completes a sparse-input (CSR) training run that results in zero support vectors (n_SV == 0), previously raising an error from the CSR dual_coef_ reconstruction, it now completes successfully and assigns an empty scipy sparse CSR matrix to self.dual_coef_ instead of executing the tile/arange reconstruction.",
+        "subject": "BaseLibSVM._sparse_fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "When BaseLibSVM._sparse_fit completes a sparse-input training run that results in at least one support vector (n_SV > 0), self.dual_coef_ is still reconstructed as a CSR matrix of shape (n_class, n_SV) from the libsvm dual coefficient data, unchanged by the fix.",
+        "subject": "BaseLibSVM._sparse_fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 and R2 together pin down that a sparse SVR fit producing n_SV==0 must not raise the ZeroDivisionError from the tile/arange CSR reconstruction and must instead complete successfully assigning an empty csr matrix (sp.csr_matrix([])) to self.dual_coef_ — exactly the behavior impl-1 describes."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern only the degenerate n_SV==0 case (that it must not error and dual_coef_ becomes an empty CSR matrix). Neither states anything about the normal n_SV>0 path or that its (n_class, n_SV) CSR reconstruction remains unchanged by the fix, so the visible evidence does not pin down impl-2."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement [impl-2] asserts that when BaseLibSVM._sparse_fit completes a sparse training run with n_SV > 0, self.dual_coef_ is reconstructed as a CSR matrix of shape (n_class, n_SV), \"unchanged by the fix\". Comparing the full gold and buggy files of sklearn/svm/base.py line-by-line, the two are byte-for-byte identical EXCEPT for the tail of _sparse_fit: the gold adds `if not n_SV: self.dual_coef_ = sp.csr_matrix([]) else: ...` around the existing reconstruction, while buggy always runs the reconstruction. Critically, gold's `else` branch (n_SV > 0) is textually identical to the buggy always-executed code. Therefore for any n_SV > 0 run the behavior is provably identical on both builds.\n\nI verified empirically with run_test on a genuine n_SV>0 sparse SVR regression (n_class=1): the dual_coef_ CSR shape (1, n_SV) and indptr checks PASS on BOTH gold and buggy. I additionally verified a multi-class (n_class=len(classes)-1=2) sparse SVC fit on iris; buggy reconstructs dual_coef_ as CSR of shape (2, n_SV) correctly — also passing. Both candidate tests PASSED on buggy, because the n_SV>0 reconstruction was never broken there; the bug only existed in the degenerate n_SV==0 division-by-zero path, which the fix special-cases away to satisfy the companion requirement (the n_SV==0 case). By definition a witness must FAIL on buggy, but impl-2's n_SV>0 claim is true on buggy already, so no hidden test (that a repair system would not have already observed) could discriminate buggy from gold. No genuine execution-confirmed witness exists for impl-2; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Crash site is BaseLibSVM._sparse_fit in sklearn/svm/base.py, where after libsvm_sparse.libsvm_sparse_train the CSR dual_coef_ is reconstructed via np.arange over dual_coef_indices; when n_SV (support vector count) is 0, that arange divides by zero."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug is in the sparse libsvm path only: _dense_fit receives arrays directly from libsvm.fit and never performs this np.arange reconstruction, which is why the dense SVR fit of the same x_train succeeds (as the issue reports)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "SVR regression path sets n_class=1 (hasattr(self,'classes_') is False); classification estimators (SVC/NuSVC) set n_class = len(self.classes_)-1, so the empty-support-vector CSR reconstruction can in principle affect both, though the reproducer only exercises SVR/epsilon_svr."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant tests live in sklearn/svm/tests/test_sparse.py and test_svm.py; neither currently contains an empty-support-vector sparse reproducer."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "classes.py confirms SVR._impl == 'epsilon_svr' and is a RegressorMixin(BaseLibSVM) using the shared _sparse_fit."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix adds a guard in BaseLibSVM._sparse_fit: the elif branch keeps the pre-existing reconstruction logic untouched for n_SV > 0, while the if branch handles the degenerate n_SV == 0 CSR reconstruction upstream of the np.arange/size-division steps. The crash previously arose because for n_SV=0, dual_coef_indices.size is 0 and np.arange(0, size+1, size/n_class) used a step of 0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold patch introduces this special-casing only in the sparse path; the dense fit path is not affected. Both the regression estimators (n_class=1) and classification estimators (n_class = len(classes_)-1) use this shared _sparse_fit, so the guard applies to any of them that yield zero support vectors."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: Requirement [impl-2] asserts that when BaseLibSVM._sparse_fit completes a sparse-input run with at least one support vector (n_SV > 0), self.dual_coef_ is reconstructed as a CSR matrix of shape (n_class, n_SV), unchanged by the fix — i.e. the gold patch's new n_SV==0 special-casing must not disturb the pre-existing n_SV>0 reconstruction path.\n\nI examined every SVM-related oracle test file: sklearn/svm/tests/test_svm.py, test_sparse.py, and test_bounds.py. All of this content is labeled [VISIBLE] (content the repair system already saw), and none of it may be used as a witness.\n\nThe single test reported as failing against the buggy program, test_svm.py::test_sparse_fit_support_vectors_empty, is not present anywhere in the oracle test files available to me (it does not appear in the sklearn/svm/tests/test_svm.py source I read), so I cannot read or run its actual assertion. More fundamentally, even taking the notes at face value, that failing test targets the degenerate n_SV==0 case — the crash the fix addresses by special-casing the reconstruction before the np.arange/size-division. By construction, requirement [impl-2] is precisely the complement: the n_SV > 0 path should be behaviorally unchanged between buggy and gold. Because the n_SV>0 CSR reconstruction already works correctly on the buggy program, any hidden test asserting that \"unchanged n_SV>0 reconstruction\" outcome would PASS on the buggy build and therefore cannot be a witness (a witness must fail against buggy). No candidate test was found that genuinely exercises impl-2's n_SV>0 claim while failing on the buggy program and passing on gold, using hidden content."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: Requirement [impl-2] asserts that when BaseLibSVM._sparse_fit completes a sparse training run with n_SV > 0, self.dual_coef_ is reconstructed as a CSR matrix of shape (n_class, n_SV), \"unchanged by the fix\". Comparing the full gold and buggy files of sklearn/svm/base.py line-by-line, the two are byte-for-byte identical EXCEPT for the tail of _sparse_fit: the gold adds `if not n_SV: self.dual_coef_ = sp.csr_matrix([]) else: ...` around the existing reconstruction, while buggy always runs the reconstruction. Critically, gold's `else` branch (n_SV > 0) is textually identical to the buggy always-executed code. Therefore for any n_SV > 0 run the behavior is provably identical on both builds.\n\nI verified empirically with run_test on a genuine n_SV>0 sparse SVR regression (n_class=1): the dual_coef_ CSR shape (1, n_SV) and indptr checks PASS on BOTH gold and buggy. I additionally verified a multi-class (n_class=len(classes)-1=2) sparse SVC fit on iris; buggy reconstructs dual_coef_ as CSR of shape (2, n_SV) correctly — also passing. Both candidate tests PASSED on buggy, because the n_SV>0 reconstruction was never broken there; the bug only existed in the degenerate n_SV==0 division-by-zero path, which the fix special-cases away to satisfy the companion requirement (the n_SV==0 case). By definition a witness must FAIL on buggy, but impl-2's n_SV>0 claim is true on buggy already, so no hidden test (that a repair system would not have already observed) could discriminate buggy from gold. No genuine execution-confirmed witness exists for impl-2; found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[impl-2] (BaseLibSVM._sparse_fit) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement [impl-2] asserts that when BaseLibSVM._sparse_fit completes a sparse training run with n_SV > 0, self.dual_coef_ is reconstructed as a CSR matrix of shape (n_class, n_SV), \"unchanged by the fix\". Comparing the full gold and buggy files of sklearn/svm/base.py line-by-line, the two are byte-for-byte identical EXCEPT for the tail of _sparse_fit: the gold adds `if not n_SV: self.dual_coef_ = sp.csr_matrix([]) else: ...` around the existing reconstruction, while buggy always runs the reconstruction. Critically, gold's `else` branch (n_SV > 0) is textually identical to the buggy always-executed code. Therefore for any n_SV > 0 run the behavior is provably identical on both builds.\n\nI verified empirically with run_test on a genuine n_SV>0 sparse SVR regression (n_class=1): the dual_coef_ CSR shape (1, n_SV) and indptr checks PASS on BOTH gold and buggy. I additionally verified a multi-class (n_class=len(classes)-1=2) sparse SVC fit on iris; buggy reconstructs dual_coef_ as CSR of shape (2, n_SV) correctly — also passing. Both candidate tests PASSED on buggy, because the n_SV>0 reconstruction was never broken there; the bug only existed in the degenerate n_SV==0 division-by-zero path, which the fix special-cases away to satisfy the companion requirement (the n_SV==0 case). By definition a witness must FAIL on buggy, but impl-2's n_SV>0 claim is true on buggy already, so no hidden test (that a repair system would not have already observed) could discriminate buggy from gold. No genuine execution-confirmed witness exists for impl-2; found=false.",
+    "confidence": "Medium"
+  }
+}

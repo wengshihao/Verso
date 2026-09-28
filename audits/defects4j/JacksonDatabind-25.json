@@ -1,0 +1,157 @@
+{
+  "task_id": "JacksonDatabind-25",
+  "status": "ok",
+  "duration_seconds": 368.6144200419985,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-25",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "Deserializing the JSON object {\"someBytes\":\"AQIDBA==\"} into class HiddenBinaryBean890 (which declares field `@JsonDeserialize(as=byte[].class) public Object someBytes;`) must succeed without exception and yield a non-null `someBytes` whose runtime class is exactly byte[].",
+        "subject": "JsonDeserializer/@JsonDeserialize(as=...) narrowing for Object-typed field someBytes",
+        "hunk_ids": [],
+        "cited_from": "static class HiddenBinaryBean890 {\n    @JsonDeserialize(as=byte[].class)\n    public Object someBytes;\n}\n...\n// for [databind#890]\npublic void testByteArrayTypeOverride890() throws Exception\n{\n    HiddenBinaryBean890 result = MAPPER.readValue(\n            aposToQuotes(\"{'someBytes':'AQIDBA=='}\"), HiddenBinaryBean890.class);\n    assertNotNull(result);\n    assertNotNull(result.someBytes);\n    assertEquals(byte[].class, result.someBytes.getClass());\n}"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When BasicDeserializerFactory.modifyTypeByAnnotation narrows a member/creator-declared value type to the concrete class returned by findDeserializationType (e.g. @JsonDeserialize(as=...) on a field/method/creator parameter), the resulting JavaType is produced by the active context's TypeFactory.constructSpecializedType rather than a raw-class narrowBy, so that a nominal base whose concrete target is of a different kind (an array, collection or map; e.g. an Object-valued property with concrete type byte[].class) resolves to a properly-kinded structural JavaType and the value deserializes as that structural concrete type (decoding base64 into a byte[]).",
+        "subject": "com.fasterxml.jackson.databind.deser.BasicDeserializerFactory#modifyTypeByAnnotation",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When DeserializerCache.modifyTypeByAnnotation narrows the (whole/class-level) declared type during value-deserializer construction to the concrete class from the type's deserialization-type annotation, the resulting JavaType is produced by ctxt.getTypeFactory().constructSpecializedType rather than a raw-class narrowBy, so a declared nominal type whose concrete override is of a different kind (an array, collection or map) resolves to the correctly-kinded structural JavaType and is deserialized accordingly.",
+        "subject": "com.fasterxml.jackson.databind.deser.DeserializerCache#modifyTypeByAnnotation",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When TypeDeserializerBase._findDeserializer resolves a polymorphic subtype from a type id over a matching-kind base type, the concrete type/deserializer used is built by specializing the (possibly parameterized) base type onto the subtype's raw class via ctxt.getTypeFactory().constructSpecializedType (instead of _baseType.narrowBy of the raw class), so the resolved subtype retains the appropriate generic/structural Jackson type information of the base.",
+        "subject": "com.fasterxml.jackson.databind.jsontype.impl.TypeDeserializerBase#_findDeserializer",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "When SimpleAbstractTypeResolver.findTypeMapping resolves an input type to its registered concrete subtype (dst), it returns a JavaType built by config.getTypeFactory().constructSpecializedType(type, dst) rather than by type.narrowBy(dst), so abstract-to-concrete mapping properly accounts for the kind/generic structure of the types (e.g. mapping an abstract supertype to a concrete collection/map subtype keeps the result correctly typed).",
+        "subject": "com.fasterxml.jackson.databind.module.SimpleAbstractTypeResolver#findTypeMapping",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "vis-1 is a black-box test confirming that narrowing an Object-typed field ('someBytes') via @JsonDeserialize(as=byte[].class) succeeds and yields a byte[] (array of a different kind than a plain Object). This matches the symptom of R1, but the test reveals nothing about the specific mechanism (constructSpecializedType vs raw narrowBy) or that BasicDeserializerFactory.modifyTypeByAnnotation is the changed path."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "The vis-1 test exercises field-annotation-driven narrowing whose fix plausibly lives in DeserializerCache.modifyTypeByAnnotation, but it is purely a behavioral assertion on decoded output and does not pin down the use of ctxt.getTypeFactory().constructSpecializedType versus a raw-class narrowBy."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "R3 concerns polymorphic subtype resolution from a type id over a base type in TypeDeserializerBase._findDeserializer; the visible evidence contains no @JsonTypeInfo/polymorphic scenario and says nothing about how a specialized subtype is built in such a path."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "false",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "R4 concerns SimpleAbstractTypeResolver.findTypeMapping resolving an abstract supertype to a concrete collection/map subtype; the visible test deserializes a concrete bean class (no abstract type mapping involved), so vis-1 provides no evidence toward this mechanism."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Attempted to construct a genuine witness for R3 (TypeDeserializerBase._findDeserializer electing constructSpecializedType over narrowBy when resolving a subtype from a type id over a matching-kind base). The targeted narrowing/additive-substitution branch is only reached when `_baseType != null && _baseType.getClass() == type.getClass()`, and the whole observed behavioral difference (narrowBy vs constructSpecializedType on _baseType using the resolved raw) only manifests when _baseType's JavaType subclass is structurally wrong for the resolved raw class.\n\nI empirically probed multiple polymorphic/default-typing scenarios, running each against BOTH gold and buggy: (1) NON_FINAL default typing round-tripping an Object-typed holder whose content is a byte[] (canonical #890-style structural content) — PASS both; (2) an Object[] field whose array element is a byte[] resolved polymorphically — PASS both; (3) a List<Object> field containing a default-typed Map element — identical HashMap result on both. In every reachable scenario the base type from the bean definition is structurally correct, the type-id resolver (ClassIdResolver) yields an already structurally-correct JavaType (ArrayType/MapType/etc.), so for the narrowing guard the resolved type's subclass either differs from the base's (guard false → no constructSpecializedType/narrowBy call at all) or matches with a structurally-consistent raw where narrowBy == constructSpecializedType. Hence buggy and gold produce indistinguishable results, matching the Oracle Search Agent's prior finding that none of the visible or reconstructed polymorphic structural-subtype scenarios fail against the buggy program.\n\nAdditionally, the only test actually failing on buggy (testByteArrayTypeOverride890) is fully VISIBLE and exercises the non-polymorphic property/annotation modifyTypeByAnnotation path (BasicDeserializerFactory/DeserializerCache), not TypeDeserializerBase._findDeserializer, so it cannot serve as a witness for R3. No hidden assertion enforcing R3's specific constructSpecializedType-vs-narrowBy behavior at the TypeDeserializerBase site was found. Conclusion: found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only eight main-source files and one test file are visible; this appears to be a cut-down/reduced footprint of the full Jackson-databind repo (many referenced classes such as BeanDeserializerFactory, TypeFactory internals are absent)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug's original report text could not be fetched, so the visible behavioral specification rests solely on the JUnit test in src/test/java/com/fasterxml/jackson/databind/deser/TestArrayDeserialization.java, specifically testByteArrayTypeOverride890 and bean HiddenBinaryBean890, both of which reference issue #890."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The listed fix-touching files (BasicDeserializerFactory, DeserializerCache, TypeDeserializerBase, SimpleAbstractTypeResolver) span deserializer construction/caching, polymorphic-type handling, and abstract-type mapping; no test other than the byte-array override test is visible that pins down their intended behavior wrt this bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DeserializerCache already contains logic (e.g. _hasCustomValueHandler and comment '27-Mar-2015, tatu: As per [databind#735], avoid caching types with custom value desers') guarding against caching types with custom value/type handlers on contents."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DeserializerCache._findDeserializer wraps the factory constructor, mapping abstract types only when type is abstract/map-like/collection-like, and applies modifyTypeByAnnotation / builder / converter processing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypeDeserializerBase lazily caches per-type-id deserializers and narrows resolved types from _baseType in _findDeserializer; SimpleAbstractTypeResolver.findTypeMapping narrows via type.narrowBy(dst)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Bug JacksonDatabind #890: java bean property `Object someBytes` annotated `@JsonDeserialize(as=byte[].class)` must deserialize its (base64) content into a byte[]. The nominal base is a SimpleType (Object) while the concrete target is a structural array type — a kind mismatch that plain `JavaType.narrowBy(newRawClass)` cannot express."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is the same conceptual substitution (`narrowBy` -> `TypeFactory.constructSpecializedType(type, concreteClass)`) applied at four distinct specialization sites across four files."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 and H1 are two duplicated copies of an otherwise identical helper method `modifyTypeByAnnotation`; H0 is the member/creator-scope copy in BasicDeserializerFactory, H1 is the class/value-scope copy in DeserializerCache."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The reduced repo lacks TypeFactory/JavaType internals and BeanDeserializerFactory, so exactly which of H0..H3 the single visible #890 field-property test drives could not be confirmed from source alone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "constructSpecializedType narrows via the configured TypeFactory which selects the correct JavaType sub-kind for the concrete raw class, which narrowBy cannot when the target is an array/collection/map kind different from the source."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: R3 concerns exclusively the polymorphic type-id resolution path in TypeDeserializerBase._findDeserializer: when a subtype is resolved from a type id, the concrete deserializer's JavaType must be built via TypeFactory.constructSpecializedType (not plain narrowBy) so structural/parameterized type info of the base is retained.\n\nInvestigating the oracle:\n- The ONLY test currently failing against the buggy program is testByteArrayTypeOverride890 (+ its bean HiddenBinaryBean890). That test deserializes a plain (non-polymorphic) bean field `Object someBytes` annotated @JsonDeserialize(as=byte[].class). Since the field carries no @JsonTypeInfo and the mapper uses no default typing, no TypeDeserializer is ever constructed for it; this test exercises the property/annotation-level modifyTypeByAnnotation specialization path (BasicDeserializerFactory/DeserializerCache), not TypeDeserializerBase._findDeserializer. Moreover the entire TestArrayDeserialization.java file is labeled [VISIBLE], and visible content can never serve as a witness regardless of how well it appears to match.\n- I examined the hidden jsontype tests that would actually drive polymorphic subtype resolution involving structural/array kinds (TestDefaultForArrays, TestDefaultForLists, TestDefaultForObject, TestSubtypes, TestSubtypesExistingProperty, TestPropertyTypeInfo, TestTypedDeserialization, TestTypedArrayDeserialization) and found no assertion that depends on TypeDeserialerBase electing constructSpecializedType over narrowBy for a matching/parameterized base vs structural subtype.\n- I empirically confirmed (against BOTH buggy and gold) that the canonical structural-subtype polymorphic deserialization scenarios (Object-superset resolving concrete Object[][]/String[] via default-typing class id) PASS on the buggy program, i.e., they do not discriminate the TypeDeserializerBase constructSpecializedType change, and therefore cannot be witnesses for R3.\n\nConclusion: the real oracle contains no test (hidden or otherwise) whose assertion genuinely enforces R3's specific behavior and that fails against the buggy program; R3's TypeDeserializerBase hunk, in this reduced footprint, is not pinned by any oracle test. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: Attempted to construct a genuine witness for R3 (TypeDeserializerBase._findDeserializer electing constructSpecializedType over narrowBy when resolving a subtype from a type id over a matching-kind base). The targeted narrowing/additive-substitution branch is only reached when `_baseType != null && _baseType.getClass() == type.getClass()`, and the whole observed behavioral difference (narrowBy vs constructSpecializedType on _baseType using the resolved raw) only manifests when _baseType's JavaType subclass is structurally wrong for the resolved raw class.\n\nI empirically probed multiple polymorphic/default-typing scenarios, running each against BOTH gold and buggy: (1) NON_FINAL default typing round-tripping an Object-typed holder whose content is a byte[] (canonical #890-style structural content) — PASS both; (2) an Object[] field whose array element is a byte[] resolved polymorphically — PASS both; (3) a List<Object> field containing a default-typed Map element — identical HashMap result on both. In every reachable scenario the base type from the bean definition is structurally correct, the type-id resolver (ClassIdResolver) yields an already structurally-correct JavaType (ArrayType/MapType/etc.), so for the narrowing guard the resolved type's subclass either differs from the base's (guard false → no constructSpecializedType/narrowBy call at all) or matches with a structurally-consistent raw where narrowBy == constructSpecializedType. Hence buggy and gold produce indistinguishable results, matching the Oracle Search Agent's prior finding that none of the visible or reconstructed polymorphic structural-subtype scenarios fail against the buggy program.\n\nAdditionally, the only test actually failing on buggy (testByteArrayTypeOverride890) is fully VISIBLE and exercises the non-polymorphic property/annotation modifyTypeByAnnotation path (BasicDeserializerFactory/DeserializerCache), not TypeDeserializerBase._findDeserializer, so it cannot serve as a witness for R3. No hidden assertion enforcing R3's specific constructSpecializedType-vs-narrowBy behavior at the TypeDeserializerBase site was found. Conclusion: found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R3] (com.fasterxml.jackson.databind.jsontype.impl.TypeDeserializerBase#_findDeserializer) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Attempted to construct a genuine witness for R3 (TypeDeserializerBase._findDeserializer electing constructSpecializedType over narrowBy when resolving a subtype from a type id over a matching-kind base). The targeted narrowing/additive-substitution branch is only reached when `_baseType != null && _baseType.getClass() == type.getClass()`, and the whole observed behavioral difference (narrowBy vs constructSpecializedType on _baseType using the resolved raw) only manifests when _baseType's JavaType subclass is structurally wrong for the resolved raw class.\n\nI empirically probed multiple polymorphic/default-typing scenarios, running each against BOTH gold and buggy: (1) NON_FINAL default typing round-tripping an Object-typed holder whose content is a byte[] (canonical #890-style structural content) — PASS both; (2) an Object[] field whose array element is a byte[] resolved polymorphically — PASS both; (3) a List<Object> field containing a default-typed Map element — identical HashMap result on both. In every reachable scenario the base type from the bean definition is structurally correct, the type-id resolver (ClassIdResolver) yields an already structurally-correct JavaType (ArrayType/MapType/etc.), so for the narrowing guard the resolved type's subclass either differs from the base's (guard false → no constructSpecializedType/narrowBy call at all) or matches with a structurally-consistent raw where narrowBy == constructSpecializedType. Hence buggy and gold produce indistinguishable results, matching the Oracle Search Agent's prior finding that none of the visible or reconstructed polymorphic structural-subtype scenarios fail against the buggy program.\n\nAdditionally, the only test actually failing on buggy (testByteArrayTypeOverride890) is fully VISIBLE and exercises the non-polymorphic property/annotation modifyTypeByAnnotation path (BasicDeserializerFactory/DeserializerCache), not TypeDeserializerBase._findDeserializer, so it cannot serve as a witness for R3. No hidden assertion enforcing R3's specific constructSpecializedType-vs-narrowBy behavior at the TypeDeserializerBase site was found. Conclusion: found=false.",
+    "confidence": "Medium"
+  }
+}

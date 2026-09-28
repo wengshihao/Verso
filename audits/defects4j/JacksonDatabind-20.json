@@ -1,0 +1,118 @@
+{
+  "task_id": "JacksonDatabind-20",
+  "status": "ok",
+  "duration_seconds": 232.90971031400113,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-20",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When an ObjectMapper configured with a PropertyNamingStrategy deserializes JSON into a POJO that has an ObjectNode-valued field, the JSON field names and values that form the *content* of that ObjectNode must not be transformed by the property naming strategy -- the ObjectNode's keys are data and must be preserved exactly as they appear in the input (e.g. key \"baz\" must remain \"baz\").",
+        "subject": "com.fasterxml.jackson.databind.node.ObjectNode (deserialization into a JsonNode/ObjectNode property)",
+        "hunk_ids": [],
+        "cited_from": "From TestNamingStrategyStd.java, method testNamingWithObjectNode (header: \"Test [databind#815], problems with ObjectNode, naming strategy\"): `m.setPropertyNamingStrategy(PropertyNamingStrategy.LOWER_CASE); ClassWithObjectNodeField result = m.readValue( \"{ \\\"id\\\": \\\"1\\\", \\\"json\\\": { \\\"foo\\\": \\\"bar\\\", \\\"baz\\\": \\\"bing\\\" } }\", ClassWithObjectNodeField.class);` ... `assertEquals(2, result.json.size()); assertEquals(\"bing\", result.json.path(\"baz\").asText());`"
+      },
+      {
+        "id": "R2",
+        "statement": "Deserializing the JSON object `{ \"id\": \"1\", \"json\": { \"foo\": \"bar\", \"baz\": \"bing\" } }` using an ObjectMapper whose property naming strategy is LOWER_CASE into a class with String-typed and ObjectNode-typed fields must succeed without throwing, yielding an id of \"1\" and a non-null ObjectNode holding exactly two entries whose content is \"bar\" at key \"foo\" and \"bing\" at key \"baz\".",
+        "subject": "com.fasterxml.jackson.databind.node.ObjectNode / ObjectMapper property-naming deserialization into a bean with an ObjectNode field",
+        "hunk_ids": [],
+        "cited_from": "From TestNamingStrategyStd.java testNamingWithObjectNode: `ClassWithObjectNodeField result = m.readValue( \"{ \\\"id\\\": \\\"1\\\", \\\"json\\\": { \\\"foo\\\": \\\"bar\\\", \\\"baz\\\": \\\"bing\\\" } }\", ClassWithObjectNodeField.class); assertNotNull(result); assertEquals(\"1\", result.id); assertNotNull(result.json); assertEquals(2, result.json.size()); assertEquals(\"bing\", result.json.path(\"baz\").asText());` where the bean is `public static class ClassWithObjectNodeField { public String id; public ObjectNode json; }`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ObjectNode.setAll(Map<String,? extends JsonNode>) is excluded (via @JsonIgnore) from Jackson's bean-property introspection, i.e. it is no longer treated as the setter of an introspectable bean property named after the method.",
+        "subject": "com.fasterxml.jackson.databind.node.ObjectNode.setAll(Map<String,? extends JsonNode>)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a POJO whose field type is ObjectNode is (de)serialized under a configured PropertyNamingStrategy (e.g. LOWER_CASE), the ObjectNode-typed field binds to and reflects the actual JSON-object child fields (its own _children entries) rather than being corrupted or augmented by treating the ObjectNode's setAll method as an extra bean property.",
+        "subject": "ObjectMapper (de)serialization of a POJO containing an ObjectNode-typed property",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only documents the observable behavioral outcome (deserializing into an ObjectNode field preserves content keys exactly and yields exactly two entries). It never mentions ObjectNode.setAll, @JsonIgnore, or bean-property introspection, so the specific internal mechanism of excluding setAll from introspection is not pinned down by the visible tests; a repair could plausibly differ on implementation while passing the visible test."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 directly assert that with LOWER_CASE, the ObjectNode field binds to the actual JSON child content, exactly matching the provided entries (size 2, foo->bar, baz->bing) with keys preserved and no augmentation/corruption, which pins down the behavior described in R2."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    com.fasterxml.jackson.databind.ObjectMapper m = new com.fasterxml.jackson.databind.ObjectMapper();\n    com.fasterxml.jackson.databind.BeanDescription bd =\n        m.getSerializationConfig().introspect(m.constructType(com.fasterxml.jackson.databind.node.ObjectNode.class));\n    java.util.Iterator<com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition> it = bd.findProperties().iterator();\n    boolean hasAll = false;\n    while (it.hasNext()) {\n        String n = it.next().getName();\n        if (\"all\".equals(n)) hasAll = true;\n    }\n    assertFalse(\"ObjectNode should not expose a bean property named 'all'\", hasAll);\n}",
+      "gold_result": "PASSED — after the @JsonIgnore patch, introspecting ObjectNode class as a bean reveals no property named 'all' (the setAll(Map) mutator is excluded).",
+      "buggy_result": "FAILED — AssertionError: ObjectNode should not expose a bean property named 'all'; before the patch, bean introspection of ObjectNode still exposes property 'all' backed by the setAll(Map) setter.",
+      "explanation": "R1 requires that ObjectNode.setAll(Map) be excluded (via @JsonIgnore) from Jackson bean-property introspection, so it is no longer introspected as the setter of a bean property named after the method (the property 'all'). The published regression test (testNamingWithObjectNode) only exercises this indirectly via an end-to-end POJO-with-ObjectNode-field deserialization under LOWER_CASE whose failure surfaces as a 'Conflicting setter definitions for property \\\"all\\\"' crash. To build an independent witness I instead directly introspect the ObjectNode class itself as a bean and assert that no bean property named 'all' exists. On the buggy revision the introspector still collects a setter for 'all' (coming from setAll(Map)) so PropertyNamingStrategy.Base introspects it into bean properties, and my assertion fails; after the @JsonIgnore fix that mutator is dropped and no 'all' property is exposed, so the assertion passes. This uses no naming strategy and no wrapper POJO, so it is not re-asserting the exact visible regression-test scenario but the more fundamental, directly-introspectable claim of R1. Both executions confirmed: PASSED on gold and FAILED on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug report text could not be fetched; the visible material that pins down the issue is the dedicated regression test testNamingWithObjectNode in src/test/java/com/fasterxml/jackson/databind/introspect/TestNamingStrategyStd.java, whose comment reads 'Test [databind#815], problems with ObjectNode, naming strategy'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "objectNode.json is backed by a LinkedHashMap<String,JsonNode> field _children (preserving insertion order); ObjectNode mutators such as set/replace/put and without/remove/removeAll/retain are defined in ObjectNode.java. deepCopy recurses into each child."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ObjectNode extends ContainerNode<ObjectNode>; the input used in the test exercises two ObjectNode 'put' pathways (bean field id via setter/field binding and the nested ObjectNode field content)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other methods in TestNamingStrategyStd.java (testLower*, CamelCase name-translation table) constrain PropertyNamingStrategy behavior for ordinary beans, but are not related to the ObjectNode fix that this bug targets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The whole patch is the @JsonIgnore annotation on ObjectNode.setAll(Map) (plus the needed import); no method bodies changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The javadoc comment on the annotation reads 'work-around for [databind#815]', matching the regression test testNamingWithObjectNode (PropertyNamingStrategy.LOWER_CASE on ClassWithObjectNodeField with an ObjectNode 'json' field)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "There are two overloaded setAll methods on ObjectNode: setAll(Map) (annotated, single Map argument) and setAll(ObjectNode); only the Map overload is annotated."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 concerns ObjectNode.setAll(Map) being excluded (via the patch's @JsonIgnore) from jackson bean-property introspection so it is no longer treated as an introspectable setter. The regression test for this (databind#815) is testNamingWithObjectNode in src/test/java/com/fasterxml/jackson/databind/introspect/TestNamingStrategyStd.java, which deserializes JSON into ClassWithObjectNodeField (an ObjectNode-typed 'json' field) under a LOWER_CASE PropertyNamingStrategy — precisely the scenario where the spurious setAll(Map) setter/received property-mutator would interfere. That is the ONLY test currently failing against the buggy program.\n\nHowever, that test file is labeled [VISIBLE]; per the audit rules, an assertion drawn from [VISIBLE] content can never serve as a Witness, no matter how well it matches R1, because the repair system already saw it and it was never hidden.\n\nI checked the other plausibly-relevant files (the full oracle list plus ObjectNode/naming/bean-binder tests): node/TestObjectNode.java, node/TestConversions.java, node/TestTreeDeserialization.java, node/TestTreeMapperDeserializer.java, introspect/TestPOJOPropertiesCollector.java, introspect/TestNamingStrategyCustom.java. None of these [HIDDEN] files contain any test that introspects ObjectNode as a bean / binds an ObjectNode field under a naming strategy such that the spurious setAll(Map) mutator would matter; they only test ordinary ObjectNode container behavior which is unaffected by the @JsonIgnore fix. No [HIDDEN] test in the oracle triggers the actual defect targeted by R1.\n\nTherefore no genuine hidden witness exists for R1, and I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (com.fasterxml.jackson.databind.node.ObjectNode.setAll(Map<String,? extends JsonNode>)): ObjectNode.setAll(Map<String,? extends JsonNode>) is excluded (via @JsonIgnore) from Jackson's bean-property introspection, i.e. it is no longer treated as the setter of an introspectable bean property named after the method. — not entailed by S_vis (S_vis only documents the observable behavioral outcome (deserializing into an ObjectNode field preserves content keys exactly and yields exactly two entries). It never mentions ObjectNode.setAll, @JsonIgnore, or bean-property introspection, so the specific internal mechanism of excluding setAll from introspection is not pinned down by the visible tests; a repair could plausibly differ on implementation while passing the visible test.); confirmed by a synthesized witness: R1 requires that ObjectNode.setAll(Map) be excluded (via @JsonIgnore) from Jackson bean-property introspection, so it is no longer introspected as the setter of a bean property named after the method (the property 'all'). The published regression test (testNamingWithObjectNode) only exercises this indirectly via an end-to-end POJO-with-ObjectNode-field deserialization under LOWER_CASE whose failure surfaces as a 'Conflicting setter definitions for property \\\"all\\\"' crash. To build an independent witness I instead directly introspect the ObjectNode class itself as a bean and assert that no bean property named 'all' exists. On the buggy revision the introspector still collects a setter for 'all' (coming from setAll(Map)) so PropertyNamingStrategy.Base introspects it into bean properties, and my assertion fails; after the @JsonIgnore fix that mutator is dropped and no 'all' property is exposed, so the assertion passes. This uses no naming strategy and no wrapper POJO, so it is not re-asserting the exact visible regression-test scenario but the more fundamental, directly-introspectable claim of R1. Both executions confirmed: PASSED on gold and FAILED on buggy.",
+    "confidence": "Medium"
+  }
+}

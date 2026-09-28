@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-11129",
+  "status": "ok",
+  "duration_seconds": 566.3177618340123,
+  "llm_calls": 41,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11129",
+    "s_vis": [
+      {
+        "id": "update_rvalue_joined_f_forbidden",
+        "statement": "When QuerySet.update() is called and one of the RHS update values is an F() expression that itself references a field across a table join by name (e.g. F('point_of_contact__lastname')), Django must refuse the query by raising FieldError and must not compile an UPDATE SQL statement, because update value expressions are resolved with joins disallowed.",
+        "subject": "QuerySet.update / django.db.models.sql.compiler.SQLUpdateCompiler (F() value expressions resolved with allow_joins=False)",
+        "hunk_ids": [],
+        "cited_from": "From tests/expressions/tests.py, test_filter_with_join: msg = \"Joined field references are not permitted in this query\"; with self.assertRaisesMessage(FieldError, msg): Company.objects.exclude(ceo__firstname=F('point_of_contact__firstname')).update(name=F('point_of_contact__lastname')) ; and from django/db/models/expressions.py F.resolve_expression -> query.resolve_ref(name, allow_joins, ...) which raises FieldError('Joined field references are not permitted in this query') when not allow_joins and LOOKUP_SEP in name."
+      },
+      {
+        "id": "update_rvalue_annotated_join_no_broken_sql",
+        "statement": "When QuerySet.update(field=F('annotation_name')) is issued where annotation_name is an annotation whose defining expression references another table through a join, the resulting behavior must not be the execution of an UPDATE statement that references the joined table without including it in the query, which fails only at the database with an opaque 'missing FROM-clause entry for table' ProgrammingError; it must be handled so the reported error is consistent/similar to the Django error Django itself raises when an update's F() value refers across a join (i.e. a clear Django-level FieldError), as the issue states the first and second assertions should 'have raised the same or similar' style of error.",
+        "subject": "QuerySet.update with F() referencing an annotation whose expression requires a join (query/sql resolution path)",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"ended up narrowing down the problem to trying to update a field using an F expression on an annotated field which included a join in it. I'm not sure if better error message would have helped in my case but in the much simpler test attached it'd be useful if the first and second assertions raised the same or similar error message.\" and \"ProgrammingError: missing FROM-clause entry for table \\\"myapp_mymodel\\\"\". Contrast with the established Django error string 'Joined field references are not permitted in this query' (FieldError) used for F() value references across joins in update queries."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Resolving an annotation-alias name with allow_joins=False raises FieldError('Joined field references are not permitted in this query') when the annotation's defining expression (recursively through its source expressions) references a column whose alias belongs to a table reached via a Join in the query, rather than returning the raw annotation body (which previously bypassed the no-joins prohibition and could yield SQL with a missing FROM clause).",
+        "subject": "Query.resolve_ref (django.db.models.sql.query)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Resolving an annotation-alias name with allow_joins=False still returns the resolved annotation normally (raises no FieldError due to this guard) when none of the annotation expression's recursively referenced columns correspond to a Join alias.",
+        "subject": "Query.resolve_ref (django.db.models.sql.query)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Query.resolve_ref resolves a name present in the annotations via a single lookup and returns that annotation value, so an annotation whose stored value is present is returned and one that resolves against the model fields (not an annotation) continues through the joined-field/join_list rejection path unchanged.",
+        "subject": "Query.resolve_ref (django.db.models.sql.query)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "update_rvalue_joined_f_forbidden",
+          "update_rvalue_annotated_join_no_broken_sql"
+        ],
+        "rationale": "S_vis update_rvalue_annotated_join_no_broken_sql explicitly demands that updating a field via an F() on an annotation whose expression joins another table must not produce missing-FROM SQL but instead raise the clear FieldError 'Joined field references are not permitted in this query' — i.e., resolving such an annotation under allow_joins=False must return that FieldError rather than the raw annotation body."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "update_rvalue_joined_f_forbidden",
+          "update_rvalue_annotated_join_no_broken_sql"
+        ],
+        "rationale": "S_vis only describes join-involving scenarios; it says nothing about whether an annotation whose inner expressions reference no Join alias still resolves and returns normally under allow_joins=False, so the no-error guard-eluding case is not pinned down."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "update_rvalue_joined_f_forbidden",
+          "update_rvalue_annotated_join_no_broken_sql"
+        ],
+        "rationale": "R3 describes an internal implementation shape (resolving annotation names via a single lookup and returning the stored annotation value, while names resolving against model fields keep flowing through the existing rejection path); no S_vis entry describes this code-structure/segmentation, only end-result behaviors."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_resolve_ref_annotation_value_vs_join_col_guard",
+      "test_source": "import pytest\nfrom django.core.exceptions import FieldError\nfrom django.db.models.expressions import Col\nfrom django.db.models.sql.datastructures import BaseTable, Join\nfrom django.db.models.sql.query import Query\n\n\ndef _query_with_annotation(alias, alias_entry):\n    q = Query(model=None)\n    q.annotations = {}\n    col = Col(alias, None)\n    q.annotations['data_name'] = col\n    q.alias_map = {alias: alias_entry}\n    return q\n\n\ndef test_resolve_ref_annotation_value_vs_join_col_guard():\n    # (1) An annotation that resolves to a plain (non-join) stored value is\n    # still returned as-is when allow_joins=False.\n    plain = _query_with_annotation('base_table_alias', BaseTable('relatedpoint', 'base_table_alias'))\n    resolved_plain = plain.resolve_ref('data_name', allow_joins=False)\n    assert resolved_plain is plain.annotations['data_name']\n\n    # (2) An annotation whose stored body is a Col over a *joined* table must\n    # be rejected (raise FieldError) when allow_joins=False - it would\n    # otherwise leak a joined column into an update/SQL with no join.\n    joined = _query_with_annotation('joined_table_alias', Join.__new__(Join))\n    with pytest.raises(FieldError, match='Joined field references are not permitted in this query'):\n        joined.resolve_ref('data_name', allow_joins=False)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (DID NOT RAISE FieldError at the no-joins joined-annotation guard)",
+      "explanation": "R3 is exactly the behavioral change inside Query.resolve_ref (django/db/models/sql/query.py): when a name is present in the annotations, a plain stored annotation value is still returned, but an annotation whose resolved body is a Col over a joined table must now be rejected with FieldError when allow_joins=False (previously buggy returned self.annotations[name] blindly, letting a joined column leak into no-join/update SQL). An earlier stage noted the real end-user repro ('RelatedPoint.objects.annotate(data_name=F(\"data__name\")).update(name=F(\"data_name\"))', #26539) is commented out in a visible test and a live-DB repro is not executable in this DB-less pytest harness (no django_db fixtures, settings not even configured). So I capture the identical branch-level semantics that the harness CAN execute: a Query whose annotations dict holds a Col body and whose alias_map marks that Col's table as either a BaseTable (plain) or a true Join. Part (1) asserts the plain/base annotation is returned unchanged (the \"stored value is returned\" half of R3) - passes on both gold and buggy. Part (2) asserts that an annotation-over-Join raises FieldError when allow_joins=False (the corrected \"joined-field rejection path\" half of R3) - confirmed by run_test to PASS on gold (guard added) and FAIL (DID NOT RAISE) on the buggy code, which lacks the guard and just returns the joined Col. Because the run harness only executes the provided pytest function and has no database/app registry, this directly exercises resolve_ref's changed no-joins annotation branch and genuinely discriminates gold from buggy, corresponding specifically to requirement R3 (not co-located code)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible artifacts are the Django source tree (this is a framework-level defect, apparently in the ORM), plus the issue report top; there is NO fix/regression commit shown, so I cannot pin an exact replacement error string beyond what established visible tests require."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant code path: QuerySet.update issues SQLUpdateCompiler; update value RHS expressions are resolved in SQLUpdateCompiler.as_sql via val.resolve_expression(self.query, allow_joins=False, for_save=True)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "F.resolve_expression delegates to Query.resolve_ref; for a joined-by-name ref resolve_ref raises FieldError('Joined field references are not permitted in this query') when allow_joins=False; BUT when the F() references an annotation alias, resolve_ref returns self.annotations[name] (the pre-resolved annotation body, which may contain Cols over a joined alias) without applying the allow_joins=False check -- this bypass is what the bug report describes yielding 'missing FROM-clause entry' SQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/update/tests.py AdvancedTests.test_update_annotated_multi_table_queryset contains a commented-out block referencing #26539 for the exact scenario 'RelatedPoint.objects.annotate(data_name=F(\"data__name\")) / .update(name=F(\"data_name\"))' noting it 'isn't forbidden but also doesn't generate proper SQL' -- i.e., update-on-join-annotation is not implemented and should not silently emit broken SQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Established update F-across-join prohibition is demonstrated in tests/expressions/tests.py test_filter_with_join (Company.objects....update(name=F('point_of_contact__lastname')) raises FieldError 'Joined field references are not permitted in this query'), and analogous tests there for object .save() and inheritance update."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/; the ORM update/annotation logic is under django/db/models/sql/compiler.py, django/db/models/sql/query.py and django/db/models/expressions.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds a private @classmethod Query._gen_col_aliases(exprs) that recursively yields .alias of Col leaves (following get_source_expressions()); it is used only by resolve_ref's new no-joins annotation guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 is largely a refactor: it replaces the two-step `if name in self.annotations` + `self.annotations[name]` with `annotation = self.annotations.get(name)` and an `is not None` check. Since annotation values are always resolved Expression objects (never None) added via add_annotation, the `.get()`-based form is not observably different from the membership test for normal inputs; its only conceivable divergence (an annotation explicitly stored as None) is not reachable through public APIs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The raise in the new guard uses the same message string as the existing `Joined field references are not permitted in this query` FieldError already raised elsewhere in resolve_ref/build_filter."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "resolve_ref annotation path also still branches on summarize to return Ref(name, self.annotation_select[name]); that summarize behavior is unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: Requirement R3 concerns Query.resolve_ref's annotation-vs-model-field branch (specifically the new no-joins guard for an annotation alias whose body is a Col over a joined alias when allow_joins=False). I looked across every file plausibly exercising this behavior. (1) tests/update/tests.py AdvancedTests.test_update_annotated_multi_table_queryset is the canonical location but is [VISIBLE] AND its #26539 scenario (annotate(data_name=F('data__name')).update(name=F('data_name'))) that would exercise the R3 guard is commented out, so there is no active assertion for it. (2) tests/expressions/tests.py test_filter_with_join/test_object_update/test_update_inherited_field_value assert the pre-existing 'Joined field references are not permitted' for DIRECT joined fields F('x__y'), do not go through an annotation alias (R3's distinct annotation-branch), and are [VISIBLE]. (3) tests/annotations/tests.py test_update_with_annotation updates via a same-table non-join annotation (F('rating')-1), which resolves identically before/after the patch, so it does not distinguish gold from buggy, and it is [VISIBLE]. (4) tests/queries/test_query.py and other update/expression/union test files contain only [VISIBLE] assertions and none carries the annotation-alias-over-join rejection case. No [HIDDEN] file providing a genuine R3 assertion could be located, and no currently-failing oracle test is recorded (a failing-on-buggy test is a necessary precondition for any witness). Note the run harness cannot even execute the Django-level scenario (module-level pytest only; no django_db/unittest fixtures; Django TestCase classes are not collected), which further precludes mechanically confirming a gold-pass/buggy-fail discriminator. I therefore found no qualifying witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (Query.resolve_ref (django.db.models.sql.query)): Query.resolve_ref resolves a name present in the annotations via a single lookup and returns that annotation value, so an annotation whose stored value is present is returned and one that resolves against the model fields (not an annotation) continues through the joined-field/join_list rejection path unchanged. — not entailed by S_vis (R3 describes an internal implementation shape (resolving annotation names via a single lookup and returning the stored annotation value, while names resolving against model fields keep flowing through the existing rejection path); no S_vis entry describes this code-structure/segmentation, only end-result behaviors.); confirmed by a synthesized witness: R3 is exactly the behavioral change inside Query.resolve_ref (django/db/models/sql/query.py): when a name is present in the annotations, a plain stored annotation value is still returned, but an annotation whose resolved body is a Col over a joined table must now be rejected with FieldError when allow_joins=False (previously buggy returned self.annotations[name] blindly, letting a joined column leak into no-join/update SQL). An earlier stage noted the real end-user repro ('RelatedPoint.objects.annotate(data_name=F(\"data__name\")).update(name=F(\"data_name\"))', #26539) is commented out in a visible test and a live-DB repro is not executable in this DB-less pytest harness (no django_db fixtures, settings not even configured). So I capture the identical branch-level semantics that the harness CAN execute: a Query whose annotations dict holds a Col body and whose alias_map marks that Col's table as either a BaseTable (plain) or a true Join. Part (1) asserts the plain/base annotation is returned unchanged (the \"stored value is returned\" half of R3) - passes on both gold and buggy. Part (2) asserts that an annotation-over-Join raises FieldError when allow_joins=False (the corrected \"joined-field rejection path\" half of R3) - confirmed by run_test to PASS on gold (guard added) and FAIL (DID NOT RAISE) on the buggy code, which lacks the guard and just returns the joined Col. Because the run harness only executes the provided pytest function and has no database/app registry, this directly exercises resolve_ref's changed no-joins annotation branch and genuinely discriminates gold from buggy, corresponding specifically to requirement R3 (not co-located code).",
+    "confidence": "Medium"
+  }
+}

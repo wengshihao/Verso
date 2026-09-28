@@ -1,0 +1,111 @@
+{
+  "task_id": "Jsoup-90",
+  "status": "ok",
+  "duration_seconds": 270.38603308099846,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-90",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "Header get/set/add/remove/has operations are case-insensitive with respect to matching header names, while a new header set via header(String,String) supersedes (removes) any previously stored same-name-insensitive header before inserting the new value.",
+        "subject": "HttpConnection.Base.header/removeHeader/hasHeader (header map)",
+        "hunk_ids": [],
+        "cited_from": "Test caseInsensitiveHeaders: \"res.header(\"content-type\", \"text/html\")\"... assertEquals(\"text/html\", res.header(\"Content-Type\")); res.removeHeader(\"Content-Type\"); assertFalse(res.hasHeader(\"content-type\")); res.header(\"ACCEPT-ENCODING\", \"deflate\"); assertEquals(\"deflate\", res.header(\"Accept-Encoding\"));"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Adding a header (via header/addHeader, which routes values through fixHeaderEncoding/looksLikeUtf8) whose ISO-8859-1 byte form ends with an incomplete UTF-8 multi-byte sequence whose continuation range reaches or exceeds the end of the data no longer throws an out-of-bounds exception; instead the value is accepted and stored unchanged (i.e., not treated as valid-looking UTF-8 and therefore not re-decoded to UTF-8).",
+        "subject": "HttpConnection.Request.header / HttpConnection.Base.fixHeaderEncoding header-value handling",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In the UTF-8 plausibility check over header-value bytes, when a multi-byte UTF-8 lead byte's implied sequence would extend to or past the end of the available bytes (a truncated final sequence), the input is treated as not-looking-like-UTF-8 (scan stops, result false) rather than attempting to read the missing continuation byte past the end of the data.",
+        "subject": "HttpConnection.Base.looksLikeUtf8 truncated-trailing-sequence handling",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "The single S_vis entry (and its cited test) concerns only case-insensitive header name matching and header supersession. It contains nothing about fixHeaderEncoding/looksLikeUtf8, ISO-8859-1 byte forms, or incomplete UTF-8 sequences, so it cannot pin down this behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis says nothing about the looksLikeUtf8 plausibility scan or truncated trailing UTF-8 sequence handling; it only covers case-insensitive header name operations. This behavior is not entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "truncatedLeadAtByteBoundaryHeaderKeptUnchanged_noException",
+      "test_source": "@Test public void truncatedLeadAtByteBoundaryHeaderKeptUnchanged_noException() throws Exception {\n    // Header value whose ISO-8859-1 bytes end in a truncated 2-byte UTF-8 lead (0xC0)\n    // such that the expected continuation range ends exactly at the buffer length.\n    String value = \"pre-\" + (char) 0xC0; // bytes: p r e - C0  == a lead byte as the last byte\n    org.jsoup.Connection con = org.jsoup.Jsoup.connect(\"http://example.com/\");\n    con.header(\"X-TruncLead\", value);                 // gold: guard catches, no AIOOBE\n    String stored = con.request().header(\"X-TruncLead\");\n    org.junit.Assert.assertEquals(\"value should be stored unchanged (not re-decoded as UTF-8)\", value, stored);\n}\n",
+      "gold_result": "PASSED (header added without exception; fixHeaderEncoding guards with `if (end >= input.length) return false;` so looksLikeUtf8 returns false and value \"pre-?0xC0\" is stored unchanged, matching the assertEquals).",
+      "buggy_result": "FAILED with java.lang.ArrayIndexOutOfBoundsException: Index 5 out of bounds for length 5 at HttpConnection$Base.looksLikeUtf8 (HttpConnection.java:427), reached via fixHeaderEncoding -> addHeader -> header for the truncated 2-byte lead byte 0xC0 at the last position (end == input.length); the guard is missing so the inner loop reads past the array end.",
+      "explanation": "Target R1: route that adds a header through fixHeaderEncoding/looksLikeUtf8 must not throw an out-of-bounds exception when a header value's ISO-8859-1 byte form ends in an incomplete UTF-8 multi-byte sequence whose continuation range reaches/exceeds the buffer end, and must keep the value stored unchanged. The only code change is the added `if (end >= input.length) return false;` guard in the private looksLikeUtf8.\n\nThe witness drives the full public API (Connection.header -> Base.header -> addHeader -> fixHeaderEncoding -> looksLikeUtf8) so it cannot be bypassed. Value \"pre-\" + U+00C0 has ISO-8859-1 bytes 'p','r','e','-',0xC0; 0xC0 is a 2-byte UTF-8 lead bytes so end = i+1 = length, i.e. the continuation range ends EXACTLY at (not past) the array length — the equality boundary that the >= guard is designed to catch. On the gold build the guard fires, looksLikeUtf8 returns false, fixHeaderEncoding returns the original value, and the assertEquals verifying the header is stored unchanged passes. On the buggy build (no guard) the inner `while (i < end)` loop increments i to length and reads input[length], throwing ArrayIndexOutOfBoundsException — confirmed in the run output (Index 5 out of bounds for length 5).\n\nThis is genuinely a distinct witness, not a re-spelling of the [VISIBLE] test: the visible handlesHeaderEncodingOnRequest only adds a single \"é\" (an absent-minded no-throw smoke check with no assertion at all). My input uses a different byte value (a 2-byte lead 0xC0 at the exact length boundary rather than a 3-byte-lead 0xE9 truncated in the middle of a 2+ continuation run) and, more importantly, asserts an additional, un-pinned contract that the value remains stored unchanged and is not treated as valid UTF-8 and re-decoded to a different string. Both the choice of bytes and the stored-value equality are hidden facts not derivable from any visible artifact; the buggy build crashes while gold accepts/stores the value intact."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible 'Issue / visible description' for this task is citation-only: it states the original bug text could not be fetched and defers to GitHub issue 1172 (described as 'Jsoup-90'). No actual issue prose, code snippet, input/output pair, or expected behavior is present in the visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No regression test for the bug is disclosed: src/test/java/org/jsoup/helper/HttpConnectionTest.java contains only pre-existing API tests (caseInsensitiveHeaders, sameHeadersCombineWithComma, multipleHeaders, ignoresEmptyCookieNameAndVals, encodeUrl, etc.), none of which is a new/failing test tied to a defect."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "src/main/java/org/jsoup/helper/HttpConnection.java is the only other visible artifact. The task states the fix touches org.jsoup.helper.HttpConnection."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because neither the issue text nor a failing regression test is visible, I could not confidently identify the single targeted defect; the requirements below are limited to concrete, test-verified contracts in the HttpConnection header/URL-handling area, which is the most defensible ground available. A downstream compare against S_impl will need to map these to the actual patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is in the private static helper looksLikeUtf8(byte[]), called only by the private static fixHeaderEncoding(String) from addHeader; both live in the nested HttpConnection.Base class used by Request and Response header storage."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is a single added guard: after computing end (last index of the current UTF-8 multibyte sequence) based on the lead byte, `if (end >= input.length) return false;` is inserted before the inner continuation-byte loop."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "R1 and R2 describe the same underlying fix at the two observability levels (public header API vs. the internal UTF-8-detection outcome); they are listed separately because a test harness could target either surface independently, though any correct fix for this bug satisfies both together."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy behavior: the inner `while (i < end){i++; o=input[i];...}` loop reads input[i] after incrementing, which reads past the array end when a truncated multi-byte sequence ends at/exceeds input.length, causing ArrayIndexOutOfBoundsException (uncaught by fixHeaderEncoding, which only catches UnsupportedEncodingException)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I inspected all oracle test files (only three exist): src/test/java/org/jsoup/helper/HttpConnectionTest.java ([VISIBLE]), src/test/java/org/jsoup/integration/ConnectTest.java ([HIDDEN]), and src/test/java/org/jsoup/nodes/FormElementTest.java ([HIDDEN]).\n\nThe only test that exercises R1's behavior — HttpConnection.Base.header -> fixHeaderEncoding -> looksLikeUtf8 guard preventing an ArrayIndexOutOfBoundsException when a header value's ISO-8859-1 byte form ends in an incomplete UTF-8 multi-byte sequence — is `handlesHeaderEncodingOnRequest` in HttpConnectionTest.java. It adds a header with the value \"é\" (whose ISO-8859-1 form is a single truncated lead byte 0xE9) and simply asserts that no exception is thrown, which on the buggy build throws AIOOBE out of the looksLikeUtf8 inner loop.\n\nHowever, HttpConnectionTest.java is content-labeled [VISIBLE], so its assertions were not hidden from the repair system and can never serve as a Witness no matter how well they match R1. The two [HIDDEN] files contain no assertion about this behavior: ConnectTest.java is a live-server HTTP integration suite (ASCII header values, multipart/form data); FormElementTest.java tests form submission/connection wiring with ASCII form values. Neither adds an arbitrary header whose byte form triggers the truncated-UTF-8 path in looksLikeUtf8/fixHeaderEncoding, and neither is reproducible standalone (live server required).\n\nI further attempted to mechanically confirm `handlesHeaderEncodingOnRequest`, but the standalone runner cannot place a test in package org.jsoup.helper (the Request constructor and HttpConnection.Request are package-private), so it failed to compile in both buggy and gold runs regardless. That is moot, since even a confirmed pass/fail split wouldn't change that the assertion derives from [VISIBLE] content. Accordingly, no genuine [HIDDEN] witness for R1 exists in the oracle, and I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (HttpConnection.Request.header / HttpConnection.Base.fixHeaderEncoding header-value handling): Adding a header (via header/addHeader, which routes values through fixHeaderEncoding/looksLikeUtf8) whose ISO-8859-1 byte form ends with an incomplete UTF-8 multi-byte sequence whose continuation range reaches or exceeds the end of the data no longer throws an out-of-bounds exception; instead the value is accepted and stored unchanged (i.e., not treated as valid-looking UTF-8 and therefore not re-decoded to UTF-8). — not entailed by S_vis (The single S_vis entry (and its cited test) concerns only case-insensitive header name matching and header supersession. It contains nothing about fixHeaderEncoding/looksLikeUtf8, ISO-8859-1 byte forms, or incomplete UTF-8 sequences, so it cannot pin down this behavior.); confirmed by a synthesized witness: Target R1: route that adds a header through fixHeaderEncoding/looksLikeUtf8 must not throw an out-of-bounds exception when a header value's ISO-8859-1 byte form ends in an incomplete UTF-8 multi-byte sequence whose continuation range reaches/exceeds the buffer end, and must keep the value stored unchanged. The only code change is the added `if (end >= input.length) return false;` guard in the private looksLikeUtf8.\n\nThe witness drives the full public API (Connection.header -> Base.header -> addHeader -> fixHeaderEncoding -> looksLikeUtf8) so it cannot be bypassed. Value \"pre-\" + U+00C0 has ISO-8859-1 bytes 'p','r','e','-',0xC0; 0xC0 is a 2-byte UTF-8 lead bytes so end = i+1 = length, i.e. the continuation range ends EXACTLY at (not past) the array length — the equality boundary that the >= guard is designed to catch. On the gold build the guard fires, looksLikeUtf8 returns false, fixHeaderEncoding returns the original value, and the assertEquals verifying the header is stored unchanged passes. On the buggy build (no guard) the inner `while (i < end)` loop increments i to length and reads input[length], throwing ArrayIndexOutOfBoundsException — confirmed in the run output (Index 5 out of bounds for length 5).\n\nThis is genuinely a distinct witness, not a re-spelling of the [VISIBLE] test: the visible handlesHeaderEncodingOnRequest only adds a single \"é\" (an absent-minded no-throw smoke check with no assertion at all). My input uses a different byte value (a 2-byte lead 0xC0 at the exact length boundary rather than a 3-byte-lead 0xE9 truncated in the middle of a 2+ continuation run) and, more importantly, asserts an additional, un-pinned contract that the value remains stored unchanged and is not treated as valid UTF-8 and re-decoded to a different string. Both the choice of bytes and the stored-value equality are hidden facts not derivable from any visible artifact; the buggy build crashes while gold accepts/stores the value intact.",
+    "confidence": "Medium"
+  }
+}

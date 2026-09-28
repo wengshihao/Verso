@@ -1,0 +1,115 @@
+{
+  "task_id": "sympy__sympy-12454",
+  "status": "ok",
+  "duration_seconds": 302.46201233391184,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-12454",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Matrix.is_upper must not raise an IndexError for a tall matrix (rows > cols); in particular evaluating `sympy.zeros(4, 2).is_upper` must not raise and must return True, because a matrix whose every existing element strictly below the main diagonal (i.e. only those cells with row index i > j and column within self.cols) is zero is upper triangular.",
+        "subject": "MatrixProperties.is_upper",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The function Matrix.is_upper raises an IndexError for a 4x2 matrix of zeros. ... >>> sympy.zeros(4,2).is_upper Traceback ... IndexError: Index out of range: a[2]\" and \"The attempt to index the (3,2) entry appears to be the source of the error.\"  Source code under test: \"return all(self[i, j].is_zero for i in range(1, self.rows) for j in range(i))\"  Docstring contract: \"Check if matrix is an upper triangular matrix. True can be returned even if the matrix is not square.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Matrix.is_upper evaluates to True for a rectangular matrix having more rows than columns whose strictly-below-main-diagonal entries that lie within the matrix's actual columns are all zero — in particular an all-zero k×m matrix with k > m reports is_upper == True rather than raising an IndexError from iterating a column index ≥ cols.",
+        "subject": "MatrixProperties.is_upper",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Matrix.is_upper_hessenberg evaluates to True for a rectangular matrix having more rows than columns whose entries that lie in the strictly-below-subdiagonal band within the matrix's actual columns are all zero — in particular an all-zero k×m matrix with k > m reports is_upper_hessenberg == True rather than raising an IndexError from iterating a column index ≥ cols.",
+        "subject": "MatrixProperties._eval_is_upper_hessenberg",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly states that Matrix.is_upper must not raise an IndexError for a tall matrix and that an all-zero 4×2 matrix evaluates is_upper to True, matching S_impl R1 exactly (including the cause of the IndexError being column-index iteration beyond cols)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "All visible evidence (issue report, source, docstring) concerns only Matrix.is_upper/upper-triangular; there is no mention whatsoever of is_upper_hessenberg or the upper-Hessenberg property, so S_vis does not pin down that behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_tall_zero_hessenberg",
+      "test_source": "from sympy import Matrix\n\ndef test_tall_zero_hessenberg():\n    m = Matrix.zeros(5, 2)\n    assert m.is_upper_hessenberg is True\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - IndexError: Index out of range: a[2] (crash in _eval_is_upper_hessenberg iterating column index 2 on a 2-column matrix)",
+      "explanation": "Requirement R2 states that Matrix.is_upper_hessenberg must evaluate to True for a rectangular (rows > cols) all-zero matrix without raising IndexError from iterating a column index >= cols. The fix in H0 changed _eval_is_upper_hessenberg's inner loop bound from range(i - 1) to range(min(self.cols, i - 1)), bounding column indices by self.cols.\n\nMy witness builds a 5x2 all-zero Matrix (rows=rows, cols=2 satisfying rows >= cols+3 so that the buggy loop's max column index i-2 reaches 2 >= cols). On the buggy build, evaluating is_upper_hessenberg iterates self[i, j] with j == 2 on the last rows, and since every encountered below-subdiagonal entry is genuinely zero the all(...) generator never short-circuits, so it raises IndexError: Index out of range: a[2]. On the gold build the inner loop is bounded by min(cols, i-1)=2 yielding j in {0,1} only, all-zero entries are zero, and the property correctly returns True.\n\nI confirmed this exactly: the candidate source PASSED against gold and FAILED with the IndexError against buggy via run_test. This input/scenario is not pinned by any visible oracle content: the only disclosed is-hessenberg tests (test_is_hessenberg in test_commonmatrix.py and test_hessenberg in test_matrices.py) use square 3x3 matrices, and test_is_upper/test_is_lower only exercise generic upper/lower on 1x3/3x1 cases, none of which is a tall all-zero matrix on the is_upper_hessenberg path."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "is_upper is a @property defined on MatrixProperties in sympy/matrices/matrices.py; its implementation iterates `for i in range(1, self.rows) for j in range(i)` which is not bounded by self.cols, so it overflows column indices whenever rows > cols and the matrix has no nonzero entries that would make the generator's `all(...)` short-circuit."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The is_upper docstring's own non-square example (`Matrix(4, 3, [5, 1, 9, 0, 4, 6, 0, 0, 5, 0, 0, 0]).is_upper` == True) does not overflow because cols=3 keeps the max column index in range; the failure requires the column count to be smaller than the largest row-determined column index, i.e. exactly the rows > cols (tall) shapes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests exercising is_upper/is_lower are in sympy/matrices/tests/test_matrices.py (test_is_upper: 1x3 row matrix True, 3x1 column matrix False) and sympy/matrices/tests/test_commonmatrix.py (same cases through PropertiesOnlyMatrix); a 4x2 (or generally tall) zero matrix is not covered by the existing disclosed tests, which is why the bug escapes them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Uses of .is_upper elsewhere: LU/QR decomposition checks in test_matrices.py (e.g. assert U.is_upper) and the square/upper call path of upper_triangular_solve; .is_lower/_eval_is_lower already bounds its j by self.cols (`for j in range(i + 1, self.cols)`), so it is unaffected; _eval_is_upper_hessenberg uses a similarly unbounded `for j in range(i - 1)` pattern but is not mentioned by the issue report."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 changes only _eval_is_upper_hessenberg's inner loop bound (range(i-1) → range(min(cols, i-1))); the hunk also shows an unchanged _eval_values line that is not part of the fix (same before and after)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 changes only the is_upper property's inner loop bound (range(i) → range(min(i, cols))); the hunk's trailing is_zero property def is unchanged context."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The bug this patch fixes is reachable only for 'tall' matrices (rows > cols) and only when the generator's all(...) does not short-circuit, i.e. its below-band entries are genuinely zero — consistent with an all-zero tall matrix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_eval_is_lower/_eval_is_lower_hessenberg already bound their j range by self.cols and are unaffected."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Although both methods have their own overflow bug in this class, they are independent API surfaces (is_upper and is_upper_hessenberg) with separate observable behavior."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the real oracle for a test that would witness R2 (Matrix.is_upper_hessenberg returning True on a tall rectangular zero matrix with rows > cols, i.e. no IndexError from iterating a column index >= cols). I read every relevant matrix test file in the oracle (sympy/matrices/tests/test_matrices.py, test_commonmatrix.py, test_immutable.py, test_sparse.py, test_interactions.py, test_densesolve.py, test_densearith.py, test_densetools.py) and sympy/assumptions/tests/test_matrices.py. Two observations:\n\n1) Every one of these files is labeled [VISIBLE] (content by-btye identical to what a repair system already saw), so none of their assertions can serve as a Witness regardless of how well they matched R2. No [HIDDEN] test file exists anywhere in the matrix/assumptions area.\n\n2) Even aside from visibility, the only is_upper_hessenberg / is_lower_hessenberg assertions in the entire oracle are square-matrix tests (test_hessenberg in test_matrices.py and test_is_hessenberg in test_commonmatrix.py, both 3x3). None of them test a rectangular/tall all-zero matrix, so none exercises the exact rows>cols overflow-on-a-tall-zero-matrix path that R2 describes; they would all pass on both the buggy and gold builds. There is also no other hidden test asserting the R2 behavior anywhere in the oracle.\n\nConsistent with this, the task reported no tests currently failing against the buggy program. Since a genuine Witness must be drawn from [HIDDEN] content that enforces the exact R2 behavior, and no such test exists in the oracle, I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (MatrixProperties._eval_is_upper_hessenberg): Matrix.is_upper_hessenberg evaluates to True for a rectangular matrix having more rows than columns whose entries that lie in the strictly-below-subdiagonal band within the matrix's actual columns are all zero — in particular an all-zero k×m matrix with k > m reports is_upper_hessenberg == True rather than raising an IndexError from iterating a column index ≥ cols. — not entailed by S_vis (All visible evidence (issue report, source, docstring) concerns only Matrix.is_upper/upper-triangular; there is no mention whatsoever of is_upper_hessenberg or the upper-Hessenberg property, so S_vis does not pin down that behavior.); confirmed by a synthesized witness: Requirement R2 states that Matrix.is_upper_hessenberg must evaluate to True for a rectangular (rows > cols) all-zero matrix without raising IndexError from iterating a column index >= cols. The fix in H0 changed _eval_is_upper_hessenberg's inner loop bound from range(i - 1) to range(min(self.cols, i - 1)), bounding column indices by self.cols.\n\nMy witness builds a 5x2 all-zero Matrix (rows=rows, cols=2 satisfying rows >= cols+3 so that the buggy loop's max column index i-2 reaches 2 >= cols). On the buggy build, evaluating is_upper_hessenberg iterates self[i, j] with j == 2 on the last rows, and since every encountered below-subdiagonal entry is genuinely zero the all(...) generator never short-circuits, so it raises IndexError: Index out of range: a[2]. On the gold build the inner loop is bounded by min(cols, i-1)=2 yielding j in {0,1} only, all-zero entries are zero, and the property correctly returns True.\n\nI confirmed this exactly: the candidate source PASSED against gold and FAILED with the IndexError against buggy via run_test. This input/scenario is not pinned by any visible oracle content: the only disclosed is-hessenberg tests (test_is_hessenberg in test_commonmatrix.py and test_hessenberg in test_matrices.py) use square 3x3 matrices, and test_is_upper/test_is_lower only exercise generic upper/lower on 1x3/3x1 cases, none of which is a tall all-zero matrix on the is_upper_hessenberg path.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "task_id": "Lang-60",
+  "status": "ok",
+  "duration_seconds": 112.45867834299861,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "Lang-60",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "StrBuilder.contains(char) must consider only the current logical content of the builder (buffer indices 0..size-1), not the full underlying buffer capacity; characters that remain physically in the buffer beyond 'size' after a delete must not cause contains to return true.",
+        "subject": "StrBuilder.contains(char)",
+        "hunk_ids": [],
+        "cited_from": "Test testLang295: StrBuilder sb = new StrBuilder(\"onetwothree\"); sb.deleteFirst(\"three\"); assertFalse( \"The contains(char) method is looking beyond the end of the string\", sb.contains('h'));"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "StrBuilder.contains(char ch) reports true only when ch occurs at an index within the builder's logical content (indices 0 through size-1); characters located only in the allocated-but-unused buffer capacity region beyond size are not considered part of the content and never cause contains to return true.",
+        "subject": "StrBuilder.contains(char)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "StrBuilder.indexOf(char ch, int startIndex) considers only indices from startIndex through the logical content boundary size-1 when searching, so it returns -1 (rather than a stale or beyond-content index) when ch does not occur within the logical content; it never reports a hit at an index >= size.",
+        "subject": "StrBuilder.indexOf(char, int)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] (with its cited test, where contains('h') must be false after deleting 'three' leaves 'h' physically beyond size) directly pins down the logical-content-boundary behavior for contains(char), which is exactly what R1 commits to."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] describes the behavior of contains(char), not indexOf(char, int); it says nothing about indexOf's startIndex-bound search semantics, its -1 return when not found within logical content, or avoiding hits at index >= size."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "indexOfCharIgnoresZeroFilledCapacity",
+      "test_source": "@Test\npublic void indexOfCharIgnoresZeroFilledCapacity() throws Exception {\n    org.apache.commons.lang.text.StrBuilder sb = new org.apache.commons.lang.text.StrBuilder(\"abcd\");\n    assertEquals(4, sb.size());\n    // '\\0' is not part of the logical content, but buffer capacity slots hold it\n    assertEquals(-1, sb.indexOf('\\0', 0));\n}",
+      "gold_result": "PASSED — indexOf('\\0', 0) returned -1 on a StrBuilder(\"abcd\") whose logical content size 4 < buffer capacity 36.",
+      "buggy_result": "FAILED — indexOf('\\0', 0) returned 4 (scanning into unused capacity slots at index >= size), asserting expected -1.",
+      "explanation": "R2 requires indexOf(char ch, int startIndex) to bound its scan by the logical content boundary (size-1) and never report a hit at an index >= size. Gold bounds the loop by `size` and so returns -1 when ch has no occurrence within the logical content; buggy bounds it by buffer.length (capacity). A StrBuilder(\"abcd\") allocates a 36-char buffer (size 4 + CAPACITY 32), with slots 4..35 default-filled to '\\u0000'. Searching for NUL (a char that is absent from the logical content but present in unused capacity) therefore returns 4 on the buggy build and -1 on gold — exactly the R2 distinguishing behavior. This was confirmed by run_test: gold PASSED (-1), buggy FAILED (-1 expected but 4 was returned). The scenario is genuinely distinct from the [VISIBLE] Lang295 test, which pins only the delete-shift stale-char repro with content \"onetwothree\"/deleteFirst(\"three\") searching 'h'; no visible test searches NUL across over-allocated unused capacity of a fresh builder, so it is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The StrBuilder internal buffer is pre-allocated with extra capacity (CAPACITY=32 on top of any content length via the String constructor, or full CAPACITY for an empty builder), so buffer.length can exceed the logical content size."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before the fix both contains(char) and indexOf(char, int) iterated to buffer.length instead of size, scanning uninitialized/unused capacity positions (which default to '\\0' for fresh builders and can hold leftover values after delete/replace), which could yield a spurious positive for a character absent from the logical content."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "indexOf(String) and the matcher-based indexOf methods already correctly bounded their loops by size; only the two char-scanning methods were affected."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I enumerated all four oracle test files. The only test that genuinely exercises R2 — StrBuilder.indexOf(char)/(char,int) refusing to report a hit at an index >= the logical content size (content shortened so buffer slots beyond size still hold stale chars) — is StrBuilderTest.testLang295(\"onetwothree\", deleteFirst(\"three\"), expect indexOf('h') == -1). However, StrBuilderTest.java is labeled [VISIBLE], so its assertions cannot serve as an oracle witness regardless of how precisely they match R2.\n\nI checked all [HIDDEN] files for a test covering this same bounded-search behavior: StrBuilderAppendInsertTest.java contains only append/insert tests and never touches indexOf(char,int); StrSubstitutorTest.java uses StrBuilder only through replaceIn and makes no assertion about indexOf(char,int)'s boundary behavior; StrTokenizerTest.java concerns the tokenizer and does not test StrBuilder.indexOf(char,int) at all. None of them contains an assertion that a character scan must stop at size-1 or return -1 for a char that existed only past the logical boundary in the buffer. Therefore no [HIDDEN] oracle test qualifies as a witness for R2 → found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (StrBuilder.indexOf(char, int)): StrBuilder.indexOf(char ch, int startIndex) considers only indices from startIndex through the logical content boundary size-1 when searching, so it returns -1 (rather than a stale or beyond-content index) when ch does not occur within the logical content; it never reports a hit at an index >= size. — not entailed by S_vis (S_vis [1] describes the behavior of contains(char), not indexOf(char, int); it says nothing about indexOf's startIndex-bound search semantics, its -1 return when not found within logical content, or avoiding hits at index >= size.); confirmed by a synthesized witness: R2 requires indexOf(char ch, int startIndex) to bound its scan by the logical content boundary (size-1) and never report a hit at an index >= size. Gold bounds the loop by `size` and so returns -1 when ch has no occurrence within the logical content; buggy bounds it by buffer.length (capacity). A StrBuilder(\"abcd\") allocates a 36-char buffer (size 4 + CAPACITY 32), with slots 4..35 default-filled to '\\u0000'. Searching for NUL (a char that is absent from the logical content but present in unused capacity) therefore returns 4 on the buggy build and -1 on gold — exactly the R2 distinguishing behavior. This was confirmed by run_test: gold PASSED (-1), buggy FAILED (-1 expected but 4 was returned). The scenario is genuinely distinct from the [VISIBLE] Lang295 test, which pins only the delete-shift stale-char repro with content \"onetwothree\"/deleteFirst(\"three\") searching 'h'; no visible test searches NUL across over-allocated unused capacity of a fresh builder, so it is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

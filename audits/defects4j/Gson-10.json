@@ -1,0 +1,94 @@
+{
+  "task_id": "Gson-10",
+  "status": "ok",
+  "duration_seconds": 208.67800555399992,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "Gson-10",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a Java primitive field (e.g. `final long part`) is annotated with `@JsonAdapter(LongToStringTypeAdapterFactory.class)`, serializing the enclosing object must invoke that annotated custom type adapter's write method for the field, so that `gson.toJson(new GadgetWithPrimitivePart(42))` produces the JSON string `{\"part\":\"42\"}` (the custom adapter emits `value.toString()`) rather than the default numeric output `{\"part\":42}`.",
+        "subject": "ReflectiveTypeAdapterFactory.BoundField.write / @JsonAdapter on primitive fields (serialization)",
+        "hunk_ids": [],
+        "cited_from": "assertion in testPrimitiveFieldAnnotationTakesPrecedenceOverDefault: `String json = gson.toJson(new GadgetWithPrimitivePart(42)); assertEquals(\"{\\\"part\\\":\\\"42\\\"}\", json);`; adapter write method: `@Override public void write(JsonWriter out, Long value) throws IOException { out.value(value.toString()); }`; and bug source: in ReflectiveTypeAdapterFactory `BoundField.write` constructs `new TypeAdapterRuntimeTypeWrapper(context, typeAdapter, fieldType.getType())` before `t.write(writer, fieldValue);`"
+      },
+      {
+        "id": "R2",
+        "statement": "Deserializing a JSON string value `{\"part\":\"42\"}` into a class whose `@JsonAdapter(LongToStringTypeAdapterFactory.class)`-annotated `long part` field must read through that custom adapter (which calls `in.nextLong()`) and yield `gadget.part == 42`, so the annotated primitive field round-trips correctly.",
+        "subject": "@JsonAdapter on primitive fields (deserialization round-trip through LongToStringTypeAdapterFactory)",
+        "hunk_ids": [],
+        "cited_from": "assertion in testPrimitiveFieldAnnotationTakesPrecedenceOverDefault: `GadgetWithPrimitivePart gadget = gson.fromJson(json, GadgetWithPrimitivePart.class); assertEquals(42, gadget.part);`; adapter read: `@Override public Long read(JsonReader in) throws IOException { return in.nextLong(); }`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When an object field is annotated with @JsonAdapter (so that a mapped field-level adapter exists), serializing (writing) that field used the adapter supplied by the @JsonAdapter annotation directly, instead of wrapping it in a runtime-type-resolving adapter (TypeAdapterRuntimeTypeWrapper) that could dispatch to a different adapter based on the field value's runtime type.",
+        "subject": "ReflectiveTypeAdapterFactory.BoundField.write (field serialization via @JsonAdapter on a field)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis demonstrates via test assertions that a primitive `long` field annotated with @JsonAdapter serializes through its custom adapter (yielding {\"part\":\"42\"}) and round-trips, and its citation reveals that the problematic BoundField.write code wrapped the adapter in a TypeAdapterRuntimeTypeWrapper. This strongly implies the adapter is used directly rather than runtime-resolved for that path, but the S_vis requirements are framed only around these primitive-field test outcomes and do not themselves commit to the general 'object field → @JsonAdapter adapter used directly, no TypeAdapterRuntimeTypeWrapper' mechanism S_impl states; that generalization across object fields is a further inference, so I rate it uncertain rather than true."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R1 (issue 831) is: on the WRITE path, a field-level @JsonAdapter adapter must be used directly rather than wrapped in TypeAdapterRuntimeTypeWrapper, so the runtime type of the field value must not re-dispatch the write.\n\nEvery discriminating test for exactly this semantics lives in JsonAdapterAnnotationOnFieldsTest.java, which the S_vis extractor and Oracle Search Agent both designate fully [VISIBLE] — it already contains testNonPrimitiveFieldAnnotationTakesPrecedenceOverDefault and testPrimitiveFieldAnnotationTakesPrecedenceOverDefault (both contributed through github issue 831). Any re-statement of that behavior in different words (renamed container, different marker literal, an Object-typed field with a String/Number runtime value that the wrapper would re-dispatch, etc.) is still asserting semantics wholly fixed by visible material — never a hidden oracle fact — so it is worthless as a Witness by the audit rule. The Oracle agent also confirmed no [HIDDEN] test (of the ~13 related functional/type-adapter files) exercises field-level @JsonAdapter honoring on the serialize path.\n\nI also attempted to engineer genuinely distinct runtime-typed inputs (an Object-typed annotated field whose value's adapter the wrapper would prefer) to confirm the gold/buggy direction mechanically. That path is blocked by this repo's constraints: the run_test harness only accepts a single complete @Test (JUnit 3) method and places the source inside a method body, so I cannot declare static nested holder/adapter classes with a field-level @JsonAdapter annotation (class-scope declarations are rejected; a top-level 'public class ...' also fails compilation). Using method-local (non-static) classes for the reflective container is unusable: this Gson version serializes method-local instances to JSON literal null even on gold (verified empirically: toJson(new local Holder(\"hi\")) == \"null\" on gold), so no field-graph can be serialized through local classes. Consequently no genuine, execution-confirmed, gold-pass/buggy-fail witness distinct from the visible regression tests could be produced."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Regression test file: gson/src/test/java/com/google/gson/functional/JsonAdapterAnnotationOnFieldsTest.java already contains both `testNonPrimitiveFieldAnnotationTakesPrecedenceOverDefault` and `testPrimitiveFieldAnnotationTakesPrecedenceOverDefault`, plus supporting classes GadgetWithPrimitivePart and LongToStringTypeAdapterFactory — i.e. the issue's proposed test additions are already present in the visible tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Buggy source: gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java `createBoundField` wraps the field/mapped type adapter in `new TypeAdapterRuntimeTypeWrapper(...)` in the `write` path, whereas the `read` path calls `typeAdapter.read(reader)` directly on the mapped adapter — so only serialization drops the @JsonAdapter type adapter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In createBoundField, the mapped @JsonAdapter adapter is only fetched and honored for the read path; isPrimitive and jsonAdapterPresent are computed but the write method ignores jsonAdapterPresent, which is where the defect (issue 831) lies."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The file contains a mix of already-passing precedence tests (field annotation beats registered/class/default adapters for non-primitive fields) and the new regression tests referencing https://github.com/google/gson/issues/831."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change makes the write/serialize path of issue 831 consistent with the read/deserialize path, which already calls typeAdapter.read(reader) directly (without the runtime-type wrapper)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "createBoundField already computes jsonAdapterPresent (mapped != null) and reuses the same 'typeAdapter' variable on both paths; only the write closure consults jsonAdapterPresent, and only after this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns the write/serialize path of ReflectiveTypeAdapterFactory.BoundField.write: when an object field carries a @JsonAdapter annotation, serialization must use the mapped field-level adapter directly (not wrap it in TypeAdapterRuntimeTypeWrapper that could dispatch on the runtime-typed value). The only oracle tests that exercise this field-level @JsonAdapter write behavior are all inside gson/src/test/java/com/google/gson/functional/JsonAdapterAnnotationOnFieldsTest.java (the failing testPrimitiveFieldAnnotationTakesPrecedenceOverDefault, plus the sibling testNonPrimitiveFieldAnnotationTakesPrecedenceOverDefault, GadgetWithPrimitivePart, and LongToStringTypeAdapterFactory). That entire file is labeled [VISIBLE] — its regression content (issue 831) is byte-for-byte already present in the material a repair pipeline would have seen. Per the audit rule, an assertion drawn from [VISIBLE] content can never serve as a Witness (it was never hidden), and this file is the sole home of R1's semantics. I exhaustively reviewed every relevant [HIDDEN] test file that touches @JsonAdapter or runtime-type field serialization — JsonAdapterAnnotationOnClassesTest, JsonAdapterNullSafeTest, RuntimeTypeAdapterFactoryFunctionalTest, MoreSpecificTypeSerializationTest, TypeAdapterPrecedenceTest, DelegateTypeAdapterTest, TypeHierarchyAdapterTest, InheritanceTest, ObjectTest, CustomTypeAdaptersTest, GsonTypeAdapterTest — and none of them tests a *field-level* @JsonAdapter being honored on the serialize/write path (they use class-level annotations, registered adapters, null-safety of class adapters, or runtime-type dispatch without a field @JsonAdapter). The remaining files in the tree are unrelated functional tests. Consequently no [HIDDEN] oracle test genuinely tests R1's distinct behavior, so no Witness exists in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Target R1 (issue 831) is: on the WRITE path, a field-level @JsonAdapter adapter must be used directly rather than wrapped in TypeAdapterRuntimeTypeWrapper, so the runtime type of the field value must not re-dispatch the write.\n\nEvery discriminating test for exactly this semantics lives in JsonAdapterAnnotationOnFieldsTest.java, which the S_vis extractor and Oracle Search Agent both designate fully [VISIBLE] — it already contains testNonPrimitiveFieldAnnotationTakesPrecedenceOverDefault and testPrimitiveFieldAnnotationTakesPrecedenceOverDefault (both contributed through github issue 831). Any re-statement of that behavior in different words (renamed container, different marker literal, an Object-typed field with a String/Number runtime value that the wrapper would re-dispatch, etc.) is still asserting semantics wholly fixed by visible material — never a hidden oracle fact — so it is worthless as a Witness by the audit rule. The Oracle agent also confirmed no [HIDDEN] test (of the ~13 related functional/type-adapter files) exercises field-level @JsonAdapter honoring on the serialize path.\n\nI also attempted to engineer genuinely distinct runtime-typed inputs (an Object-typed annotated field whose value's adapter the wrapper would prefer) to confirm the gold/buggy direction mechanically. That path is blocked by this repo's constraints: the run_test harness only accepts a single complete @Test (JUnit 3) method and places the source inside a method body, so I cannot declare static nested holder/adapter classes with a field-level @JsonAdapter annotation (class-scope declarations are rejected; a top-level 'public class ...' also fails compilation). Using method-local (non-static) classes for the reflective container is unusable: this Gson version serializes method-local instances to JSON literal null even on gold (verified empirically: toJson(new local Holder(\"hi\")) == \"null\" on gold), so no field-graph can be serialized through local classes. Consequently no genuine, execution-confirmed, gold-pass/buggy-fail witness distinct from the visible regression tests could be produced."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (ReflectiveTypeAdapterFactory.BoundField.write (field serialization via @JsonAdapter on a field)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R1 (issue 831) is: on the WRITE path, a field-level @JsonAdapter adapter must be used directly rather than wrapped in TypeAdapterRuntimeTypeWrapper, so the runtime type of the field value must not re-dispatch the write.\n\nEvery discriminating test for exactly this semantics lives in JsonAdapterAnnotationOnFieldsTest.java, which the S_vis extractor and Oracle Search Agent both designate fully [VISIBLE] — it already contains testNonPrimitiveFieldAnnotationTakesPrecedenceOverDefault and testPrimitiveFieldAnnotationTakesPrecedenceOverDefault (both contributed through github issue 831). Any re-statement of that behavior in different words (renamed container, different marker literal, an Object-typed field with a String/Number runtime value that the wrapper would re-dispatch, etc.) is still asserting semantics wholly fixed by visible material — never a hidden oracle fact — so it is worthless as a Witness by the audit rule. The Oracle agent also confirmed no [HIDDEN] test (of the ~13 related functional/type-adapter files) exercises field-level @JsonAdapter honoring on the serialize path.\n\nI also attempted to engineer genuinely distinct runtime-typed inputs (an Object-typed annotated field whose value's adapter the wrapper would prefer) to confirm the gold/buggy direction mechanically. That path is blocked by this repo's constraints: the run_test harness only accepts a single complete @Test (JUnit 3) method and places the source inside a method body, so I cannot declare static nested holder/adapter classes with a field-level @JsonAdapter annotation (class-scope declarations are rejected; a top-level 'public class ...' also fails compilation). Using method-local (non-static) classes for the reflective container is unusable: this Gson version serializes method-local instances to JSON literal null even on gold (verified empirically: toJson(new local Holder(\"hi\")) == \"null\" on gold), so no field-graph can be serialized through local classes. Consequently no genuine, execution-confirmed, gold-pass/buggy-fail witness distinct from the visible regression tests could be produced.",
+    "confidence": "Medium"
+  }
+}

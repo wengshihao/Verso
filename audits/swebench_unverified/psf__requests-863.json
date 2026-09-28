@@ -1,0 +1,120 @@
+{
+  "task_id": "psf__requests-863",
+  "status": "ok",
+  "duration_seconds": 241.9912866250379,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-863",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Request.__init__ must parse its hooks parameter so that a dict value for a hook event may be a list of multiple hook functions: each element of such a list is registered as an individual hook for that event rather than the whole list being wrapped/appended as a single (non-callable) entry that would fail when the hooks are later dispatched.",
+        "subject": "Request.__init__ hooks parsing (requests/models.py)",
+        "hunk_ids": [],
+        "cited_from": "\"the code in Request.**init**() will wrap the list in a list which then fails when the hooks are consumed (since a list is not callable).\"  and  \"This would all be much easier if Request.**init**() parsed the hooks parameter in a way that it accepts lists as it's values.\" (issue description); code path: Request.__init__ ``for (k, v) in list(hooks.items()):\n    self.register_hook(event=k, hook=v)``  with ``def register_hook(self, event, hook):\n    self.hooks[event].append(hook)``"
+      },
+      {
+        "id": "R2",
+        "statement": "When the ``args`` hook is given a list of two hook functions, both hooks run against the request so that each hook's effect on the request is actually applied when the request is sent (e.g. both an 'X-Foo' and an 'X-Bar' header get added and are reflected in the response).",
+        "subject": "hooks end-to-end dispatch (Session.request / dispatch_hook, tests/test_requests.py::test_multiple_hooks)",
+        "hunk_ids": [],
+        "cited_from": "\"def add_foo_header(args):\n    ...\n    args['headers'].update({\n        'X-Foo': 'foo'\n    })\n    return args\n\ndef add_bar_header(args):\n    ...\n    args['headers'].update({\n        'X-Bar': 'bar'\n    })\n    return args\n...\nresponse = get(url=url,\n    hooks={\n        'args': [add_foo_header, add_bar_header]\n    }\n)\n\nassert 'foo' in response.text\nassert 'bar' in response.text\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "Request.register_hook (and thus Request.__init__ given a hooks dict) stores each element of a list/tuple/set hook value as a separate entry in self.hooks[event], instead of the collection as a single nested entry, so that each member callable is dispatched/fired individually during request processing rather than the collection being treated as one callable.",
+        "subject": "Request.register_hook",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "Request.register_hook continues to store a hook value that is not a list, tuple, or set (e.g. a single callable) as a single entry appended to self.hooks[event], preserving single-hook registration semantics.",
+        "subject": "Request.register_hook",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins down that a list-valued hook gets each element registered individually (not nested as one non-callable entry), which matches the list part of SI-1 and the register_hook unwrapping behavior. But SI-1 explicitly broadens to tuple and set values, which the visible evidence (issue report speaking only of 'lists' and its code path) never mentions, so the full range of SI-1 is not decisively covered."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern only multiple hooks given as a collection (a list of two callables); neither the issue report nor the test says anything about how a single non-collection callable hook value is stored. Nothing in S_vis leads to or pins down the 'preserve single-hook semantics' behavior described by SI-2."
+      }
+    ],
+    "target_requirement_id": "SI-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_register_mixed_single_and_collection",
+      "test_source": "def test_register_mixed_single_and_collection():\n    import requests\n    from requests.models import Request\n    req = Request('http://example.com/')\n    calls = []\n    def single(h):\n        calls.append('single')\n        return h\n    def a(h):\n        calls.append('a')\n        return h\n    def b(h):\n        calls.append('b')\n        return h\n    req.register_hook('response', single)\n    req.register_hook('response', (a, b))\n    requests.hooks.dispatch_hook('response', req.hooks, object())\n    assert calls == ['single', 'a', 'b'], calls\n",
+      "gold_result": "PASSED — dispatch runs single, then a, then b in order and the assert call==['single','a','b'] holds.",
+      "buggy_result": "FAILED — register_hook always uses append, so req.hooks['response'] becomes [single, (a,b)] (the tuple nested whole); dispatch_hook then raises TypeError: 'tuple' object is not callable when it reaches the nested tuple.",
+      "explanation": "Target [SI-2] requires that Request.register_hook preserves single-hook registration semantics: a non-collection callable is stored as one distinct entry, and subsequently registered collection-type hooks are flattened (extended) rather than nested — otherwise the still-working single hook entry coexists with a nested tuple/list that dispatch_hook later tries to call as a function.\tThe fix changes register_hook from always-append to extend-for-(list,tuple,set)/append-otherwise.\tMy witness registers a genuine single callable 'single' first, then registers a tuple (a,b) of two callables on the 'response' event (mirroring what a Request hooks dict/register_hook does, and what send() dispatches via dispatch_hook).\t- Gold: hooks['response'] == [single, a, b]; dispatch_hook runs them in order -> calls == ['single','a','b'] -> PASS.\t- Buggy: register_hook appends the tuple whole -> hooks['response'] == [single, (a,b)]; dispatch_hook calls the nested tuple -> TypeError: 'tuple' object is not callable -> FAIL.\tBoth outcomes were execution-confirmed via run_test.\tThis is NOT redundant with the visible list-based end-to-end test (test_multiple_hooks uses a two-element LIST on the 'args' event through a real network get): my test exercises the TUPLE flattening branch on the 'response' event offline via the same dispatch call used in send(), and combines it with a single-callable registration so it directly checks that the single-hook entry is preserved as an individual, callable registration (exactly SI-2's concern) rather than merely being swallowed by an extension code path. A fix that handled only lists (flattening list but still treating tuples as single items) would pass the visible test yet fail this one."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Hook event names are defined in requests/hooks.py: HOOKS = ('args', 'pre_request', 'pre_send', 'post_request', 'response')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "dispatch_hook (requests/hooks.py) already tolerates both a single callable (wrapping it into a one-item list) and a list of callables, iterating and calling each; it fails only if the value is a list that was itself nested (list-of-list)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The problematic nesting arises because Request.__init__ calls self.register_hook(event=k, hook=v), and register_hook does self.hooks[event].append(hook), so a list value would be appended whole instead of its elements; self.hooks[event] for each event is pre-initialized to []."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Session.request (requests/sessions.py) fires the 'args' hook via dispatch_hook('args', args['hooks'], args) and also pulls session-level hooks into each request, so multiple-hook semantics matter both for direct get() and session-backed requests."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/test_requests.py already contains both test_single_hook (one callable for 'args') and test_multiple_hooks (a two-element list for 'args'), the latter serving as the end-to-end behavioral check for this issue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch changes only Request.register_hook in requests/models.py; both before and after revisions were compared and no other line differs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "dispatch_hook (requests/hooks.py, unchanged by the patch) already wraps a single callable into a one-item list and iterates/calls each element; it fails only when the stored value contains a nested non-callable list, which is what the old append caused for list hooks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Request.__init__ pre-initializes self.hooks[event] = [] for each event in HOOKS and forwards each (k, v) from the hooks argument through register_hook(event=k, hook=v), so Request.__init__ inherits the changed registration semantics."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-2]: I investigated the entire oracle (every test file was read). The target requirement [SI-2] concerns Request.register_hook preserving single-hook registration semantics: storing a non-list/tuple/set hook value (a single callable) as a single entry in self.hooks[event] rather than registering its elements.\n\nThe only hook-registration-related tests in the whole oracle are `test_single_hook` (a single callable for the 'args' hook) and `test_multiple_hooks` (a two-element list), both located in `tests/test_requests.py`. That file is explicitly labeled [VISIBLE] content, so its assertions were never hidden from a repair system and per policy cannot serve as a witness, no matter how well they match the requirement.\n\nI also read every other test file in the oracle:\n- tests/informal/test_leaked_connections.py — [HIDDEN] but purely about socket leaks over repeated HEAD requests to google; no hooks involved.\n- requests/packages/chardet2/test.py — [HIDDEN] but a chardet universal-detector script; unrelated.\n- tests/test_cookies.py, tests/test_proxies.py, tests/test_requests_https.py — [VISIBLE], covering cookies/proxies/HTTPS smoke; no hooks.\n\nWith the only hidden files containing no hook-registration assertions and the hook tests all being visible, there is no [HIDDEN] test in the oracle that genuinely enforces requirement [SI-2]. Nothing qualified as a witness, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-2] (Request.register_hook): Request.register_hook continues to store a hook value that is not a list, tuple, or set (e.g. a single callable) as a single entry appended to self.hooks[event], preserving single-hook registration semantics. — not entailed by S_vis (Both S_vis entries concern only multiple hooks given as a collection (a list of two callables); neither the issue report nor the test says anything about how a single non-collection callable hook value is stored. Nothing in S_vis leads to or pins down the 'preserve single-hook semantics' behavior described by SI-2.); confirmed by a synthesized witness: Target [SI-2] requires that Request.register_hook preserves single-hook registration semantics: a non-collection callable is stored as one distinct entry, and subsequently registered collection-type hooks are flattened (extended) rather than nested — otherwise the still-working single hook entry coexists with a nested tuple/list that dispatch_hook later tries to call as a function.\tThe fix changes register_hook from always-append to extend-for-(list,tuple,set)/append-otherwise.\tMy witness registers a genuine single callable 'single' first, then registers a tuple (a,b) of two callables on the 'response' event (mirroring what a Request hooks dict/register_hook does, and what send() dispatches via dispatch_hook).\t- Gold: hooks['response'] == [single, a, b]; dispatch_hook runs them in order -> calls == ['single','a','b'] -> PASS.\t- Buggy: register_hook appends the tuple whole -> hooks['response'] == [single, (a,b)]; dispatch_hook calls the nested tuple -> TypeError: 'tuple' object is not callable -> FAIL.\tBoth outcomes were execution-confirmed via run_test.\tThis is NOT redundant with the visible list-based end-to-end test (test_multiple_hooks uses a two-element LIST on the 'args' event through a real network get): my test exercises the TUPLE flattening branch on the 'response' event offline via the same dispatch call used in send(), and combines it with a single-callable registration so it directly checks that the single-hook entry is preserved as an individual, callable registration (exactly SI-2's concern) rather than merely being swallowed by an extension code path. A fix that handled only lists (flattening list but still treating tuples as single items) would pass the visible test yet fail this one.",
+    "confidence": "Medium"
+  }
+}

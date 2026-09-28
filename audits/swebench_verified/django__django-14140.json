@@ -1,0 +1,138 @@
+{
+  "task_id": "django__django-14140",
+  "status": "ok",
+  "duration_seconds": 429.9057433339767,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14140",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Calling deconstruct() on a Q object whose single child is a conditional/query expression rather than a keyword lookup pair — e.g. Q(Exists(...)) or Q(self) produced by combining a boolean expression into a Q — must not raise a TypeError by trying to index the child as a (field, value) tuple; such a single non-tuple child must instead be handled so the Q round-trips (route it through the args form rather than kwargs = {child[0]: child[1]}).",
+        "subject": "django.db.models.query_utils.Q.deconstruct",
+        "hunk_ids": [],
+        "cited_from": ">>> Q(Exists(get_user_model().objects.filter(username='jim'))).deconstruct() Traceback (most recent call last): File \"<console>\", line 1, in <module> ... kwargs = {child[0]: child[1]} TypeError: 'Exists' object is not subscriptable"
+      },
+      {
+        "id": "S2",
+        "statement": "For a Q object constructed from a single keyword lookup (a true 2-length-tuple child, such as Q(x=1) or Q(price__gt=F('discounted_price'))), deconstruct() continues to return the kwargs form path, (), {'field': value}, and the Q must reconstruct to itself from that form as asserted by the existing QTests.",
+        "subject": "django.db.models.query_utils.Q.deconstruct",
+        "hunk_ids": [],
+        "cited_from": "def test_deconstruct(self): q = Q(price__gt=F('discounted_price')) path, args, kwargs = q.deconstruct() self.assertEqual(path, 'django.db.models.Q') self.assertEqual(args, ()) self.assertEqual(kwargs, {'price__gt': F('discounted_price')})"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "Q.deconstruct() no longer raises when the Q has exactly one child that is a non-Q, non-tuple positional argument such as a boolean/query expression (e.g. a Subquery/Exists node); instead it returns that child placed inside the returned positional args tuple, so the deconstruct/reconstruct round-trip succeeds for such a Q.",
+        "subject": "Q.deconstruct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "Q.deconstruct() no longer special-cases a single non-Q child by re-encoding it into keyword kwargs: for a Q built from a single lookup keyword (single two-element child, e.g. Q(name='x')), the child is now returned as an element of the positional args (args=(('name','x'),)) with an empty kwargs dict, rather than as args=() with kwargs={'name':'x'}.",
+        "subject": "Q.deconstruct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S3",
+        "statement": "Q.deconstruct() still emits kwargs {'_connector': connector} only when the Q's connector differs from its default AND, and {'_negated': True} only when the Q is negated; this behavior is unchanged by the fix. (Observation: single-child Qs with a non-default connector or negated flag now produce both the args tuple for their child and these connector/negated kwargs.)",
+        "subject": "Q.deconstruct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_vis S1 explicitly states that a Q with a single non-tuple child (e.g. Q(Exists(...))) must not raise TypeError and must be routed through the args form so the Q round-trips, which pins down precisely the behavior of S_impl S1 (no raise, child placed in the positional args). S_vis S2 concerns the tuple-child case and does not conflict with this requirement."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_impl S2 claims a single two-element keyword-lookup child now returns args=((...),) with empty kwargs, but S_vis S2 (and its cited test) asserts the opposite for exactly this case: args=() and kwargs={'field': value} remain the expected form. The visible evidence contradicts rather than supports this requirement."
+      },
+      {
+        "requirement_id": "S3",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "No S_vis entry mentions the emission of '_connector' or '_negated' kwargs or any condition on connector/negation; S_vis S1 and S2 deal only with how children are routed between args and kwargs. The visible information says nothing that would pin down this unchanged connector/negated-kwargs behavior."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_s2_single_keyword_is_positional",
+      "test_source": "from django.db.models import Q\n\n\ndef test_witness_s2_single_keyword_is_positional():\n    path, args, kwargs = Q(name='x').deconstruct()\n    assert path == 'django.db.models.Q', path\n    assert args == (('name', 'x'),), args\n    assert kwargs == {}, kwargs\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: args==() != (('name', 'x'),))",
+      "explanation": "Requirement [S2] states that Q.deconstruct() no longer re-encodes a single non-Q (keyword/lookup) child into kwargs; instead the single two-element child must be returned as an element of the positional args tuple with an empty kwargs dict. The witness builds Q(name='x') (single two-element lookup child) and asserts deconstruct() returns args == (('name','x'),) and kwargs == {}. Confirmed by execution: PASSED against gold (which forwards all children as positional args -> args=(('name','x'),), kwargs={}) and FAILED against buggy (whose removed special case returned args=() and kwargs={'name':'x'} -> args==()). This directly captures the exact behavioral change in [S2] at the Q.deconstruct location in query_utils.py. It is distinct from the visible test_q.py deconstruct tests, which assert the opposite (old) kwargs-based form for single keyword children and therefore fail on gold; this test's assertion was not already pinned down by any visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The Q class lives in django/db/models/query_utils.py (subclass of django/utils/tree.py Node). Its __init__ stores children as positional args plus sorted(kwargs.items()), i.e. 2-tuples, so only genuine keyword lookups are subscriptable children."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Q.deconstruct single-child special case: `if len(self.children) == 1 and not isinstance(self.children[0], Q): child = self.children[0]; kwargs = {child[0]: child[1]}` — this is the line that crashes on a single expression child."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Boolean/query expressions such as Exists (Subquery subclass in django/db/models/expressions.py) are conditional via BooleanField output_field; combining them into Q goes through Combinable.__and__/__or__ -> Q(self) & Q(other)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Q._combine calls self.deconstruct()/other.deconstruct() when the other Q is empty, so combining an empty Q with a Q wrapping a single expression also triggers the crashing deconstruct path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing Q deconstruct/reconstruct tests live in tests/queries/test_q.py (QTests): test_deconstruct, test_deconstruct_negated, test_reconstruct assert single keyword children deconstruct to the kwargs form and reconstruct to equal themselves; no test currently covers a single non-tuple expression child."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Q.deconstruct() (in django/db/models/query_utils.py, Q subclass of django/utils/tree.py Node) is used by Q._combine (when an operand Q is empty) and by Django's deconstructable serialization, so its returned (path, args, kwargs) triple is part of Q's public deconstruction contract."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the previous revision, the sole non-default branch of the removed single-child special case only mattered when the single child was subscriptable into a (lookup, value) pair; the gold revision removes that heuristic entirely and always forwards all children as positional args."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The immediate crash motivation: Q wrapping a single boolean/query expression (e.g. Q(Exists(...))) had a single non-tuple child on which child[0]/child[1] subscripting failed in the buggy deconstruct."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: Searched the oracle for a [HIDDEN] test that enforces [S2]'s new Q.deconstruct() contract (a single-keyword/single non-Q child returned as a positional arg with empty kwargs instead of kwargs re-encoding). The behavior change is real: I confirmed mechanically that gold's Q(name='x').deconstruct() returns args=(('name','x'),), kwargs={} while buggy returns args=(), kwargs={'name':'x'}; and buggy crashes ('Exists' object is not subscriptable at django/db/models/query_utils.py:90) on Q(Exists(OuterRef('pk'))).deconstruct().\n\nHowever, every oracle file that could plausibly test this is [VISIBLE], and none qualifies as a witness:\n- tests/queries/test_q.py ([VISIBLE]): its test_deconstruct / test_deconstruct_negated / test_reconstruct etc. assert the OLD kwargs-based form for single keyword children (e.g. args==(), kwargs=={'price__gt':F(...)}). I ran that content: it PASSES against buggy and FAILS against gold — the opposite direction of a witness. (These visible deconstruct tests do not enforce the fix's new behavior.)\n- tests/queries/test_query.py, tests/queries/test_qs_combinators.py, tests/expressions/tests.py (including test_boolean_expression_combined_with_empty_Q, which exercises Q() combines with Exists at the DB level rather than asserting deconstruct's args/kwargs shape), tests/migrations/test_writer.py, tests/utils_tests/test_tree.py — all [VISIBLE], none assert the S2 output shape.\n\nPer the Verso rule, a witness may rest only on [HIDDEN] assertions. No [HIDDEN] oracle content enforcing S2's deconstruct output contract could be located; the only readable relevant content encodes the buggy-era (old) behavior. (\"Tests currently failing against the buggy program: none recorded\" is consistent with there being no captured hidden failing test.) Therefore no genuine witness exists for [S2]."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S2] (Q.deconstruct): Q.deconstruct() no longer special-cases a single non-Q child by re-encoding it into keyword kwargs: for a Q built from a single lookup keyword (single two-element child, e.g. Q(name='x')), the child is now returned as an element of the positional args (args=(('name','x'),)) with an empty kwargs dict, rather than as args=() with kwargs={'name':'x'}. — not entailed by S_vis (S_impl S2 claims a single two-element keyword-lookup child now returns args=((...),) with empty kwargs, but S_vis S2 (and its cited test) asserts the opposite for exactly this case: args=() and kwargs={'field': value} remain the expected form. The visible evidence contradicts rather than supports this requirement.); confirmed by a synthesized witness: Requirement [S2] states that Q.deconstruct() no longer re-encodes a single non-Q (keyword/lookup) child into kwargs; instead the single two-element child must be returned as an element of the positional args tuple with an empty kwargs dict. The witness builds Q(name='x') (single two-element lookup child) and asserts deconstruct() returns args == (('name','x'),) and kwargs == {}. Confirmed by execution: PASSED against gold (which forwards all children as positional args -> args=(('name','x'),), kwargs={}) and FAILED against buggy (whose removed special case returned args=() and kwargs={'name':'x'} -> args==()). This directly captures the exact behavioral change in [S2] at the Q.deconstruct location in query_utils.py. It is distinct from the visible test_q.py deconstruct tests, which assert the opposite (old) kwargs-based form for single keyword children and therefore fail on gold; this test's assertion was not already pinned down by any visible material.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "task_id": "Closure-29",
+  "status": "ok",
+  "duration_seconds": 474.02550146700014,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "Closure-29",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The InlineObjectLiterals pass must not object-split (must leave byte-identical / unchanged) a local variable like `getType` whose only assignment is an object literal `{}` (an object literal empty of keys) when one of its reads is a property access such as `getType.toString.apply(...)` on a property (toString) that is not a key of the object literal, and the object was pre-declared then assigned in a separate statement (`var getType; getType = {};`).",
+        "subject": "InlineObjectLiterals.splitObject/isInlinableObject",
+        "hunk_ids": [],
+        "cited_from": "InlineObjectLiteralsTest.testIssue724:\n    \"var getType; getType = {};\" +\n    \"return functionToCheck && \" +\n    \"   getType.toString.apply(functionToCheck) === \" +\n    \"   '[object Function]';\" -- asserted via testSameLocal (input must equal expected output, i.e. no transformation): \"private void testSameLocal(String code) { testLocal(code, code); }\""
+      },
+      {
+        "id": "R2",
+        "statement": "When compiled at ADVANCED_OPTIMIZATIONS, the function containing `var getType = {}; return functionToCheck && getType.toString.apply(functionToCheck) === '[object Function]';` must compile successfully without error/warning, preserving the object-literal variable `getType` as an actual object (represented as a var initialized to `{}`) rather than it being dropped or collapsed away before the `getType.toString`-based comparison.",
+        "subject": "InlineObjectLiterals (integration: full optimization pipeline used to inline object literals)",
+        "hunk_ids": [],
+        "cited_from": "IntegrationTest.testIssue724:\n  String code =\n    \"isFunction = function(functionToCheck) {\" +\n    \"  var getType = {};\" +\n    \"  return functionToCheck && \" +\n    \"      getType.toString.apply(functionToCheck) === \" +\n    \"     '[object Function]';\" +\n    \"};\";\n  String result =\n    \"isFunction=function(a){var b={};\" +\n    \"return a&&\\\"[object Function]\\\"===b.b.a(a)}\";\n  (expected result keeps `var b={}` for the object)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "A local variable whose assigned value is an object literal is no longer object-inlined (split into JSCompiler_object_inline_* variables) when some direct property reference on it reads a property name that is not a key defined on the assigned object literal and is not itself a defining reference; instead the object literal and its references are left unchanged in the output. (This is the regression fix for a read of a prototype-inherited property such as `toString` off an empty-literal object `getType = {}` — previously such a read was tolerated and the object was split, corrupting semantics.)",
+        "subject": "InlineObjectLiterals.isInlinableObject / object-literal inlining selection",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Property references on an object held by the variable that either (a) name a key actually defined on one of the assigned object literals or (b) are the target of a var declaration or simple-assignment statement (the GETPROP is the LHS, i.e. the property is being defined/overwritten there, e.g. `a.x = z`) are treated as 'valid' for that object and do not by themselves prevent it from being inlined; such objects are still split/rewritten as before.",
+        "subject": "InlineObjectLiterals.isInlinableObject / object-literal inlining selection",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly pins down this exact regression behavior: a local var assigned an empty object literal is left unchanged (testSameLocal asserts input==output) when a direct property read like getType.toString references a property that is not a key of the literal and is not a defining reference. S_vis R2 corroborates that the toString-based object is retained in the compiled output. The described non-key, non-defining read therefore blocks inlining, matching S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only describes the negative case (a toString / non-key, non-defining read prevents inlining) and gives no scenario with a read of a defined key or a defining assignment LHS. Nothing in S_vis states that such references are classified as valid and still allow the object to be inlined, so this positive classification claim is not pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 is the AFFIRMATIVE/valid-reference branch of the InlineObjectLiterals patch: an object is still inlined/split when every property reference either names a key defined in one of its assigned object literals (case a) or is a var/simple-assignment LHS target (case b, e.g. 'a.x = z').\n\nThe buggy (pre-fix) program is the superset: it contains NO validProperties guard at all — every GETPROP reference unconditionally 'continue's, so every such object literal is split regardless of which property is referenced. The gold program only adds a stricter bail-out that fires when a referenced property is absent from the literals AND not an assignment/var-LHS target. Consequently, on every input where gold would inline (R2's scenario — all refs valid), buggy inlines identically, producing byte-identical output. There is structurally no JavaScript input on which buggy fails an 'object still split / all-valid refs are inlined' assertion while gold passes it.\n\nI confirmed this empirically by driving the real compiler in ADVANCED_OPTIMIZATIONS mode from a standalone JUnit method against both revisions for two genuine R2 canonical scenarios — one where the only non-literal reference is an assignment-LHS property write 'a.x=3' plus a read of literal key 'y', and one where an out-of-line assignment stores the object and each prop is read after a.y / written via a.x — and in every case the harness reported PASSED on BOTH gold AND buggy (identical behavior). Cases that DO make buggy fail (issue724-style empty-literal referenced via an absent/prototype property, e.g. .toString) belong to the complementary bail-out requirement, already separately found insufficient for R2, and their contradictory (NOT inlined) outcome is the opposite of R2's inlining-positive branch.\n\nMoreover the visible test file InlineObjectLiteralsTest already pins R2's exact split outputs in testObject1/testObject2/testObject22/testObject26, so any reinvented R2 assertion would merely restate S_vis facts rather than witness a hidden oracle fact. Since buggy and gold behave identically on every R2-relevant input, no discriminating Witness exists for R2; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The change surface for Closure bug 29 is InlineObjectLiterals, and its regression proof lives in two tests both named testIssue724 (matching the bug ID in the task header, original report 724): InlineObjectLiteralsTest.java (unit-level, assertNothingChanged via testSameLocal) and IntegrationTest.java (end-to-end under CompilationLevel.ADVANCED_OPTIMIZATIONS, expecting output `isFunction=function(a){var b={};return a&&\"[object Function]\"===b.b.a(a)}`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "InlineObjectLiterals splits local object-literal variables into per-key vars named `JSCompiler_object_inline_<key>_<n>`; for reference, testBug545 shows that genuinely-unused empty literals ARE collapsed as desired (`var a = {}` -> `` and `var a; a = {}` -> `true`), so R1/R2 are NOT a blanket \"never touch empty literals\" rule but specifically apply when a non-literal-keyed property read (toString) keeps the object meaningful."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both tests' inputs differ only cosmetically (unit one declares via `var getType; getType = {};` then uses; integration one uses `var getType = {};`), so they constrain the same underlying pass behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "compiler/test harness files listed are generic framework (CompilerTestCase, IntegrationTestCase); they carry no pass-specific behavioral constraints beyond turning on Normalize (constructor calls enableNormalize) and line-number checking (setUp calls enableLineNumberCheck(true))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The recognized-properties set `validProperties` is accumulated in a single forward pass over `refs`, so its contents depend on ref ordering: literal keys (H2) and assignment-LHS props (H1) only become 'valid' once their defining reference is visited, so a property read appearing before its definition would (counter to source-intuition) not be seen as valid — an internal ordering fragility, not treated here as a committed requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is purely conservative in scope: it adds a bail-out path (no inlining) for reads of properties absent from the literals; all previously-inlineable patterns (reads of defined keys, assignment targets, self-reference disallowals, accessor disallowals, non-literal reassignments, `isVarOrAssignExprLhs` constraint, empty-literal collapsing in testBug545) are preserved unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both the assignment-LHS acceptance path (NodeUtil.isVarOrSimpleAssignLhs) and the literal-key recording (child.getString()) are the only routes by which a property name enters `validProperties`; there is no allowance for reads of computed/indexed properties (those still go down the pre-existing non-GETPROP treatment)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 is the AFFIRMATIVE branch of the InlineObjectLiterals patch: property references that (a) name a key genuinely defined on one of the assigned object literals or (b) are the LHS/var-declaration target (GETPROP is written, e.g. `a.x = z`) are treated as valid and do NOT by themselves prevent inlining; such objects are still split/rewritten.\n\nEmpirical probing (via an ADVANCED_OPTIMIZATIONS compile, using the repo's own integration path) established that this branch is UNCHANGED between buggy and gold: my snippet `function f(){var a={x:1,y:2};return a.x+a.y}window['f']=f;` compiled to the identical string `window.f=function(){return 3};` on BOTH buggy and gold (only mismatch to my expected was a trailing `;` on both). Meanwhile the same probe on the issue724 input showed the ACTUAL difference the patch makes: buggy collapses the empty literal and emits broken `===(void 0).a(a)`, while gold keeps `var b={};...===b.b.a(a)` — i.e. the change is purely the new \"don't inline when an absent/undefined property (toString, or a merely-read key like a.y2 / x.c) is referenced\" bail-out, which is the complementary invalid-input direction, not R2.\n\nAn oracle test can only be a Witness if it FAILS against the buggy program and passes against gold. Every currently-failing-listed test (InlineObjectLiteralsTest testObject10/testObject12/testObject22/testIssue724, and IntegrationTest testIssue724) asserts the NOT-INLINED outcome for absent/invalid property reads — these belong to the bail-out requirement, not to R2's valid-reference/inlining behavior. I read all four oracle files: CompilerTest (hidden) and CommandLineRunnerTest (hidden) contain no object-literal inlining assertions at all, and IntegrationTest is [VISIBLE] so it could not serve as a witness anyway. Since R2 expresses a genuinely pre-existing, preserved behavior (objects whose refs are all valid are still split exactly as before) that is identical in buggy and gold, no hidden oracle test can distinguish the two programs on R2, and thus no Witness for R2 exists in the real oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 is the AFFIRMATIVE/valid-reference branch of the InlineObjectLiterals patch: an object is still inlined/split when every property reference either names a key defined in one of its assigned object literals (case a) or is a var/simple-assignment LHS target (case b, e.g. 'a.x = z').\n\nThe buggy (pre-fix) program is the superset: it contains NO validProperties guard at all — every GETPROP reference unconditionally 'continue's, so every such object literal is split regardless of which property is referenced. The gold program only adds a stricter bail-out that fires when a referenced property is absent from the literals AND not an assignment/var-LHS target. Consequently, on every input where gold would inline (R2's scenario — all refs valid), buggy inlines identically, producing byte-identical output. There is structurally no JavaScript input on which buggy fails an 'object still split / all-valid refs are inlined' assertion while gold passes it.\n\nI confirmed this empirically by driving the real compiler in ADVANCED_OPTIMIZATIONS mode from a standalone JUnit method against both revisions for two genuine R2 canonical scenarios — one where the only non-literal reference is an assignment-LHS property write 'a.x=3' plus a read of literal key 'y', and one where an out-of-line assignment stores the object and each prop is read after a.y / written via a.x — and in every case the harness reported PASSED on BOTH gold AND buggy (identical behavior). Cases that DO make buggy fail (issue724-style empty-literal referenced via an absent/prototype property, e.g. .toString) belong to the complementary bail-out requirement, already separately found insufficient for R2, and their contradictory (NOT inlined) outcome is the opposite of R2's inlining-positive branch.\n\nMoreover the visible test file InlineObjectLiteralsTest already pins R2's exact split outputs in testObject1/testObject2/testObject22/testObject26, so any reinvented R2 assertion would merely restate S_vis facts rather than witness a hidden oracle fact. Since buggy and gold behave identically on every R2-relevant input, no discriminating Witness exists for R2; found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (InlineObjectLiterals.isInlinableObject / object-literal inlining selection) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 is the AFFIRMATIVE/valid-reference branch of the InlineObjectLiterals patch: an object is still inlined/split when every property reference either names a key defined in one of its assigned object literals (case a) or is a var/simple-assignment LHS target (case b, e.g. 'a.x = z').\n\nThe buggy (pre-fix) program is the superset: it contains NO validProperties guard at all — every GETPROP reference unconditionally 'continue's, so every such object literal is split regardless of which property is referenced. The gold program only adds a stricter bail-out that fires when a referenced property is absent from the literals AND not an assignment/var-LHS target. Consequently, on every input where gold would inline (R2's scenario — all refs valid), buggy inlines identically, producing byte-identical output. There is structurally no JavaScript input on which buggy fails an 'object still split / all-valid refs are inlined' assertion while gold passes it.\n\nI confirmed this empirically by driving the real compiler in ADVANCED_OPTIMIZATIONS mode from a standalone JUnit method against both revisions for two genuine R2 canonical scenarios — one where the only non-literal reference is an assignment-LHS property write 'a.x=3' plus a read of literal key 'y', and one where an out-of-line assignment stores the object and each prop is read after a.y / written via a.x — and in every case the harness reported PASSED on BOTH gold AND buggy (identical behavior). Cases that DO make buggy fail (issue724-style empty-literal referenced via an absent/prototype property, e.g. .toString) belong to the complementary bail-out requirement, already separately found insufficient for R2, and their contradictory (NOT inlined) outcome is the opposite of R2's inlining-positive branch.\n\nMoreover the visible test file InlineObjectLiteralsTest already pins R2's exact split outputs in testObject1/testObject2/testObject22/testObject26, so any reinvented R2 assertion would merely restate S_vis facts rather than witness a hidden oracle fact. Since buggy and gold behave identically on every R2-relevant input, no discriminating Witness exists for R2; found=false.",
+    "confidence": "Medium"
+  }
+}

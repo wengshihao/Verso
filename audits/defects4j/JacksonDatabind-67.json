@@ -1,0 +1,102 @@
+{
+  "task_id": "JacksonDatabind-67",
+  "status": "ok",
+  "duration_seconds": 48.23254418899887,
+  "llm_calls": 7,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-67",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the key type being resolved is an enum, a deserializer registered as a BeanDeserializerModifier (via setDeserializerModifier/withDeserializerModifier) must still have its modifyKeyDeserializer(...) applied to the created key deserializer — i.e., createKeyDeserializer must not take an early return for enum types that bypasses the modifier post-processing block that runs for non-enum key types.",
+        "subject": "BasicDeserializerFactory.createKeyDeserializer / BeanDeserializerModifier.modifyKeyDeserializer",
+        "hunk_ids": [],
+        "cited_from": "Buggy factory code: \"if (deser == null) { if (type.isEnumType()) { return _createEnumKeyDeserializer(ctxt, type); } deser = StdKeyDeserializers.findStringBasedKeyDeserializer(config, type); } // and then post-processing if (deser != null) { if (_factoryConfig.hasDeserializerModifiers()) { for (BeanDeserializerModifier mod : _factoryConfig.deserializerModifiers()) { deser = mod.modifyKeyDeserializer(config, type, deser); } } }\" — combined with the issue text \"Since we are an enum type, it returns the value in the `_createEnumKeyDeserializer` ... Below that block is the check for the hasDeserializerModifiers, but since we have returned already, it is never called, so we can't override the behaviour.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Deserializing the JSON object \"{'REPlaceMENTS':'foobar'}\" into type EnumMap<KeyEnum,String> using an ObjectMapper whose module registers a BeanDeserializerModifier whose modifyKeyDeserializer returns a KeyDeserializer that performs \"Enum.valueOf(rawClass, key.toLowerCase())\" must yield a map with exactly this behavior: (findKeyDeserializer/createKeyDeserializer applies the modifier) resulting in a one-entry map whose single key is the enum constant KeyEnum.replacements (so the modifier's lower-casing override is honored rather than the default case-sensitive enum deserializer rejecting \"REPlaceMENTS\").",
+        "subject": "Enum-keyed map deserialization (EnumMap/Map key deserialization path)",
+        "hunk_ids": [],
+        "cited_from": "Test (databind#1445): \"EnumMap<KeyEnum,String> map = mapper.readValue( aposToQuotes(\"{'REPlaceMENTS':'foobar'}\"), new TypeReference<EnumMap<KeyEnum,String>>() { }); assertEquals(1, map.size()); assertSame(KeyEnum.replacements, map.keySet().iterator().next());\" with modifier: \"public KeyDeserializer modifyKeyDeserializer(DeserializationConfig config, final JavaType type, KeyDeserializer deserializer) { if (!type.isEnumType()) { return deserializer; } return new KeyDeserializer() { ... public Object deserializeKey(String key, DeserializationContext ctxt) ... { Class<? extends Enum> rawClass = (Class<Enum<?>>) type.getRawClass(); return Enum.valueOf(rawClass, key.toLowerCase()); } }; }\""
+      },
+      {
+        "id": "R3",
+        "statement": "A module's BeanDeserializerModifier.modifyEnumDeserializer (which returns a custom enum JsonDeserializer that reads values via \"Enum.valueOf(rawClass, p.getValueAsString().toLowerCase())\") must continue to be honored when deserializing an enum as a JSON value: reading the string \"REPLACEMENTS\" (KeyEnum.replacements.name().toUpperCase()) as type KeyEnum must yield the enum constant KeyEnum.replacements.",
+        "subject": "BasicDeserializerFactory.createEnumDeserializer / BeanDeserializerModifier.modifyEnumDeserializer",
+        "hunk_ids": [],
+        "cited_from": "Test (databind#1445): \"KeyEnum key = mapper.readValue(quote(KeyEnum.replacements.name().toUpperCase()), KeyEnum.class); assertSame(KeyEnum.replacements, key);\" preceded by modifier \"public JsonDeserializer<Enum> modifyEnumDeserializer(DeserializationConfig config, final JavaType type, BeanDescription beanDesc, final JsonDeserializer<?> deserializer) { return new JsonDeserializer<Enum>() { ... public Enum deserialize(JsonParser p, DeserializationContext ctxt) ... { Class<? extends Enum> rawClass = (Class<Enum<?>>) type.getRawClass(); final String str = p.getValueAsString().toLowerCase(); return KeyEnum.valueOf(rawClass, str); } }; }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "In BasicDeserializerFactory.createKeyDeserializer, when no custom key deserializer was found via registered KeyDeserializers and the requested key type is an enum, the enum key deserializer produced by _createEnumKeyDeserializer is returned only after being passed through the post-processing loop that invokes modifyKeyDeserializer on any registered BeanDeserializerModifier (whose result is used as the returned deserializer), rather than being returned immediately and bypassing that modifier post-processing; i.e. enum key deserializers are treated the same as the non-enum string-based key deserializers with respect to deserializer-modifier application.",
+        "subject": "BasicDeserializerFactory.createKeyDeserializer (enum key type with registered BeanDeserializerModifiers)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R1 directly pins down this exact structural claim: the buggy factory code early-returns _createEnumKeyDeserializer for enum key types before reaching the modifyKeyDeserializer post-processing loop, and the issue requires enum key deserializers to be passed through that loop like non-enum string-based key deserializers. impl-1 is essentially the same behavior restated; R2 functionally corroborates via the EnumMap key deserialization example. R3 is less directly relevant (enum-value rather than enum-key path) but consistent."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "All test methods in TestCustomEnumKeyDeserializer.java do not necessarily carry @Test; testWithEnumKeys() has @Test, while testCustomEnumValueAndKeyViaModifier (the method exercising the R2/R3 behaviors) is tagged only with @SuppressWarnings and no @Test (withTree749 is commented as deliberately non-test), yet it is present visible source establishing expected fix behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repository snapshot is heavily reduced: only BasicDeserializerFactory.java, DeserializerFactory.java, and TestCustomEnumKeyDeserializer.java are visible; the deeper call chain (DeserializerCache.findKeyDeserializer, DeserializationContext.findKeyDeserializer, guava ImmutableMapDeserializer) referenced in the issue text is not present here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "KeyEnum in the visible test has substitutes replacements/rootDirectory/licenseString built from lowercase names, so Enum.valueOf(rawClass, key.toLowerCase()) is how the test's custom modifier maps e.g. the key \"REPlaceMENTS\" to the constant \"replacements\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DeserializerFactory.java simply declares the abstract createKeyDeserializer; the actual buggy post-processing logic (early enum return before modifier application) lives in BasicDeserializerFactory.createKeyDeserializer."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible enum-value path (createEnumDeserializer) already applies modifiers after construction and is the working baseline against which the broken enum-key path is contrasted in the issue report."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The full createKeyDeserializer body (surrounding the changed hunk) is unchanged otherwise: registered KeyDeserializers are consulted first, and when none is found the code branches on enum vs non-enum key type before entering the post-processing block."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is purely a control-flow join: the buggy version's early 'return _createEnumKeyDeserializer(...)' was replaced by assignment into the shared 'deser' variable with an else-branch, so the modifier post-processing block becomes reachable for the enum-key path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "observable API surface affected is the returned KeyDeserializer from createKeyDeserializer when a BeanDeserializerModifier is configured via withDeserializerModifier; no other entry point is touched by the patch."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

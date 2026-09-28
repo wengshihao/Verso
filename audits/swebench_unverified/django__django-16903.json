@@ -1,0 +1,145 @@
+{
+  "task_id": "django__django-16903",
+  "status": "ok",
+  "duration_seconds": 464.4238053750014,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16903",
+    "s_vis": [
+      {
+        "id": "sv-1",
+        "statement": "Creating (saving) an instance of a leaf model in a concrete diamond-shaped multi-table-inheritance hierarchy (the leaf inherits from two concrete sibling models that descend from one shared concrete root model), when the shared root model's primary key field has a Python default (for example a UUIDField with default=uuid4), must not raise an IntegrityError/UNIQUE-constraint failure from attempting to insert the shared root row a second time with the same primary key value; the shared ancestor row must be written exactly once.",
+        "subject": "Model._save_parents/_save_table save workflow for multi-table inheritance (django/db/models/base.py)",
+        "hunk_ids": [],
+        "cited_from": "\"Trying to create a BookReview in our case, causes a django.db.utils.IntegrityError: UNIQUE constraint failed error, because django tries to create the Piece object twice, with the same uuid.\" and \"In my case, we are using a UUIDField as the primary key with a default of uuid4.\" and \"the doc's example only works when these models use a primary key field that does not have a default.\" and (root-cause expectation) \"Django will first insert the first instance of the Piece object, and then for the second one, since force_insert is False, _save_table tries an update and goes through. Therefore there is not duplicate.\" reported against the code shown in django/db/models/base.py where the body once contained 'if ( not raw and not force_insert and self._state.adding and meta.pk.default and meta.pk.default is not NOT_PROVIDED ): force_insert = True'."
+      },
+      {
+        "id": "sv-2",
+        "statement": "Creating a child instance in a linear (non-diamond) concrete multi-table-inheritance chain via Model.objects.create(...) or a bare Model().save() must issue only INSERT statements — one per ancestor/leaf table (4 tables for the GrandChild->Child->Parent->GrandParent chain) — and must not trigger any UPDATE query against any of those tables.",
+        "subject": "Model.save_base/_save_table multi-table-inheritance insert path (tested via GrandChild/Child/Parent/GrandParent)",
+        "hunk_ids": [],
+        "cited_from": "\"def test_create_child_no_update(self):\n        \"\"\"Creating a child with non-abstract parents only issues INSERTs.\"\"\"\n        def a():\n            GrandChild.objects.create(\n                email='grand_parent@example.com',\n                first_name='grand',\n                last_name='parent',\n            )\n        def b():\n            GrandChild().save()\n        for i, test in enumerate([a, b]):\n            with self.subTest(i=i), self.assertNumQueries(4), CaptureQueriesContext(connection) as queries:\n                test()\n                for query in queries:\n                    sql = query['sql']\n                    self.assertIn('INSERT INTO', sql, sql)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When saving a newly-created instance whose concrete (non-abstract) parent hierarchy forms a diamond — the same concrete ancestor being reachable through more than one parent branch — each distinct ancestor's row is written at most once for the entire operation: an ancestor already saved by one branch is not re-attempted (no second INSERT and no redundant UPDATE) when reached again through another branch.",
+        "subject": "django.db.models.base.Model.save / Model._save_parents (multi-table inheritance)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Saving such a new diamond-MTI instance whose shared concrete ancestor's primary key has a default (whose forced-insert path in _save_table would otherwise insert the shared ancestor twice) succeeds, storing exactly one row for that ancestor, rather than raising an IntegrityError from attempting to insert that ancestor's row more than once.",
+        "subject": "django.db.models.base.Model.save / Model._save_parents (multi-table inheritance)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When _save_parents re-encounters, along a second inheritance branch, a concrete parent that was already saved during the same save, the prior outcome for that parent (inserted vs. not) is reused so that a shared ancestor which had been inserted is still reported as having inserted parents (keeping the cumulative 'a parent was inserted' result true for the recursion), rather than losing knowledge of that earlier insert.",
+        "subject": "django.db.models.base.Model._save_parents (multi-table inheritance)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "sv-1",
+          "sv-2"
+        ],
+        "rationale": "sv-1 pins down that a diamond-shared ancestor (with a PK default) must be inserted exactly once rather than twice, supporting the 'at most once / no second INSERT' core. But R1 further guarantees no redundant UPDATE and no re-attempt when re-encountered on a second branch generally, which the visible bug report (about double-INSERT under a defaulted PK) does not spell out; sv-2's all-INSERT/no-UPDATE property is only for a linear single-branch chain."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "sv-1",
+          "sv-2"
+        ],
+        "rationale": "sv-1 directly describes the diamond-MTI case where the shared root's UUIDField default causes the shared ancestor to be inserted twice, raising an IntegrityError, and requires that the shared row be written exactly once so the save succeeds. This is exactly R2's scenario and desired outcome."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "sv-1",
+          "sv-2"
+        ],
+        "rationale": "R3 describes internal recursion bookkeeping of _save_parents — reusing a parent's prior inserted-vs-not outcome when a different branch re-encounters it and keeping the cumulative 'a parent was inserted' flag true through recursion. Neither sv-1 nor sv-2 contains any detail about return-value propagation or outcome reuse inside _save_parents; no visible artifact would lead a repair system to this precise mechanism."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_diamond_defaulted_shared_ancestor_saved_once",
+      "test_source": "from django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DEBUG=False,\n        INSTALLED_APPS=[\n            \"django.contrib.contenttypes\",\n            \"django.contrib.auth\",\n        ],\n        DATABASES={\n            \"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}\n        },\n        DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n        SECRET_KEY=\"witness-key\",\n        USE_TZ=True,\n        SILENCED_SYSTEM_CHECKS=[\"models.W042\"],\n    )\n    import django\n\n    django.setup()\n\nimport unittest\nimport uuid\nfrom django.db import connection, models\n\n\nclass T(unittest.TestCase):\n    def test_diamond_defaulted_shared_ancestor_saved_once(self):\n        # Diamond concrete MTI: Root is shared by two concrete branches (A and\n        # B) that both inherit it, and Leaf inherits from both A and B.  Root's\n        # primary key carries a callable default, so _save_table's \"Skip an\n        # UPDATE when adding an instance and primary key has a default\" branch\n        # applies whenever Root is visited while self._state.adding is True.\n        class Root(models.Model):\n            label = models.CharField(max_length=50)\n            id = models.UUIDField(default=uuid.uuid4, primary_key=True)\n\n            class Meta:\n                app_label = \"diamond_probe\"\n\n        class A(Root):\n            class Meta:\n                app_label = \"diamond_probe\"\n\n        class B(Root):\n            class Meta:\n                app_label = \"diamond_probe\"\n\n        class Leaf(A, B):\n            class Meta:\n                app_label = \"diamond_probe\"\n\n        with connection.schema_editor() as editor:\n            for m in (Root, A, B, Leaf):\n                editor.create_model(m)\n        try:\n            leaf = Leaf()\n            leaf.save_base()\n            # _save_parents walks from Leaf up to Root along branch A, inserts\n            # Root there, and then must re-use that result when the recursion\n            # reaches the same already-saved Root along branch B instead of\n            # issuing a duplicate INSERT. Exactly one row per table should exist.\n            self.assertEqual(Root.objects.count(), 1)\n            self.assertEqual(A.objects.count(), 1)\n            self.assertEqual(B.objects.count(), 1)\n            self.assertEqual(Leaf.objects.count(), 1)\n        finally:\n            with connection.schema_editor() as editor:\n                for m in (Leaf, B, A, Root):\n                    editor.delete_model(m)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - django.db.utils.IntegrityError: UNIQUE constraint failed: diamond_probe_root.id (second INSERT for the already-saved shared ancestor Root along the second inheritance branch)",
+      "explanation": "R3 describes Model._save_parents re-encountering, along a second inheritance branch, a concrete parent already saved during the same save, reusing the earlier outcome so an ancestor inserted on the first branch is still reported as inserted rather than re-saved. The only path where this matters is a concrete diamond (Root <- A/B, Leaf(A,B)) where the shared ancestor Root has a *defaulted* PK: the unchanged \"_save_table\" 'Skip an UPDATE when adding ... pk has a default' branch then forces a second INSERT of Root with the already-assigned pk, which on the buggy (pre-memoization) code issues a duplicate INSERT → IntegrityError, whereas the gold updated_parents memoization skips re-saving Root entirely.\n\nMy witness builds such a diamond: Root(UUID primary key with default=uuid.uuid4, callable), concrete children A(Root), B(Root), and Leaf(A,B). After bootstrapping a self-contained sqlite settings environment and creating the four tables with schema_editor, it saves a fresh Leaf via save_base() and asserts exactly one row exists in Root, A, B and Leaf.\n\nConfirmation:\n- gold: PASSED (save succeeds; Root row inserted once; counts all 1).\n- buggy: FAILED with django.db.utils.IntegrityError: UNIQUE constraint failed: diamond_probe_root.id, traced to the second visit to Root inside _save_parents (base.py _save_parents/_save_table) attempting a second INSERT.\n\nThis behavior is not pinned down anywhere in the visible material: the visible model_inheritance suite (test_create_child_no_update) only exercises a LINEAR GrandParent→Parent→Child→GrandChild chain, and model_inheritance_regress uses separate roots/auto id pks rather than a concrete diamond whose defaulted-PK ancestor is shared across two branches. So no existing visible assertion already prophesies this input/outcome."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy logic under scrutiny lives in django/db/models/base.py: the 'Skip an UPDATE when adding an instance and primary key has a default' branch sits inside Model._save_table and forces force_insert=True purely from the presence of a pk default (with db_default also now checked), rather than relying on prior parent insertion / self._state.adding."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant test modules for MTI behavior: tests/model_inheritance/tests.py (incl. test_create_child_no_update, ModelInheritanceTests/DataTests) and tests/model_inheritance_regress/{models,tests}.py. None of the visible tests directly reproduces the diamond+defaulted-PK IntegrityError from the issue; the diamond fixtures named in the issue (UserPost/ImagePost/VideoPost/MixedContentPost and Piece/Article/Book/BookReview) do not appear in the visible test models."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The model_inheritance_regress models include concrete+concrete multiple inheritance (Congressman(Person,Politician), Senator(Congressman)) and tests like test_create_new_instance_with_pk_equals_none_multi_inheritance, but these use AutoField-style id pk's rather than a defaulted shared-ancestor pk."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue also narrates an internal redundancy (a redundant UPDATE on the root in the no-default case) and proposes relocating the force_insert inference; that narration is implementation reasoning rather than an independently checkable behavioral spec and is therefore not captured as a requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/model_inheritance_regress/models.py also exercises shared-abstract->concrete hierarchies (ParkingLot4A/4B) and concrete->abstract->concrete (BusStation/TrainStation via Station(SearchableLocation)); those cover pk selection/ordering, not the save-duplication defect."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a purely internal refactor restricted to Model._save_parents (both sides of which are private); no public API signature changes and no non-diamond behavior change (on a linear/one-path MTI hierarchy updated_parents stays empty and traversal is identical to the old code)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible test suites (tests/model_inheritance and tests/model_inheritance_regress) do not contain a diamond-concrete-inheritance fixture; test_create_child_no_update covers only a linear GrandParent->Parent->GrandChild chain, so the diamond scenario the patch repairs is not directly exercised there."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'Skip an UPDATE when adding an instance and primary key has a default' branch in _save_table (outside this patch's hunks) is the mechanism that turns the buggy second visit to the shared ancestor into a forced duplicate INSERT; it remains unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Existing notes confirm D's defaulted shared-ancestor failure (IntegrityError) is reproduced only with concrete-concrete multiple inheritance sharing a common ancestor with a defaulted PK; that structure is what the updated_parents memoization addresses."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: I investigated the target requirement R3, which concerns Model._save_parents re-encountering, along a second inheritance branch, a concrete parent already saved in the same save so that a shared/diamond ancestor that had been inserted is still reported as having inserted parents. This scenario requires a diamond concrete-concrete MTI hierarchy whose shared ancestor carries a *defaulted* primary key.\n\nI read the two test modules the task notebook flags as containing the MTI behavior under study:\n- tests/model_inheritance/tests.py ([VISIBLE]) — includes test_create_child_no_update, but that only exercises a LINEAR GrandParent->Parent->Child->GrandChild chain (asserting 4 INSERTs), not any diamond re-encounter of an already-saved shared ancestor.\n- tests/model_inheritance_regress/tests.py ([VISIBLE]) — the closest item is test_create_new_instance_with_pk_equals_none_multi_inheritance (Congressman(Person, Politician)), but Person and Politician are two *separate roots* each with its own AutoField pk; there is no shared/common defaulted-PK ancestor across two inheritance branches, so this is not the diamond scenario R3 describes.\n\nI also inspected the corresponding model files (tests/model_inheritance/models.py and tests/model_inheritance_regress/models.py). Neither contains a fixture matching the issue's diamond + defaulted shared-ancestor structure; the concrete-concrete Congressman/Senator chain uses AutoField-style ids, not a defaulted shared ancestor.\n\nCritically, the provided batch records that zero tests currently FAIL against the buggy program. A test that passes on gold and fails on buggy (necessary for a witness) would have to appear in that failing set; since it is empty, and every relevant oracle test I examined is [VISIBLE] (content already seen, so it can never serve as a hidden witness) and does not assert this diamond-reuse behavior, no [HIDDEN] assertion from the real oracle genuinely tests R3. Because a real match I haven't read is distinguishable from one that doesn't exist only via reading, I verified the specific model-inheritance test files that would house such a regression test; no qualifying assertion exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (django.db.models.base.Model._save_parents (multi-table inheritance)): When _save_parents re-encounters, along a second inheritance branch, a concrete parent that was already saved during the same save, the prior outcome for that parent (inserted vs. not) is reused so that a shared ancestor which had been inserted is still reported as having inserted parents (keeping the cumulative 'a parent was inserted' result true for the recursion), rather than losing knowledge of that earlier insert. — not entailed by S_vis (R3 describes internal recursion bookkeeping of _save_parents — reusing a parent's prior inserted-vs-not outcome when a different branch re-encounters it and keeping the cumulative 'a parent was inserted' flag true through recursion. Neither sv-1 nor sv-2 contains any detail about return-value propagation or outcome reuse inside _save_parents; no visible artifact would lead a repair system to this precise mechanism.); confirmed by a synthesized witness: R3 describes Model._save_parents re-encountering, along a second inheritance branch, a concrete parent already saved during the same save, reusing the earlier outcome so an ancestor inserted on the first branch is still reported as inserted rather than re-saved. The only path where this matters is a concrete diamond (Root <- A/B, Leaf(A,B)) where the shared ancestor Root has a *defaulted* PK: the unchanged \"_save_table\" 'Skip an UPDATE when adding ... pk has a default' branch then forces a second INSERT of Root with the already-assigned pk, which on the buggy (pre-memoization) code issues a duplicate INSERT → IntegrityError, whereas the gold updated_parents memoization skips re-saving Root entirely.\n\nMy witness builds such a diamond: Root(UUID primary key with default=uuid.uuid4, callable), concrete children A(Root), B(Root), and Leaf(A,B). After bootstrapping a self-contained sqlite settings environment and creating the four tables with schema_editor, it saves a fresh Leaf via save_base() and asserts exactly one row exists in Root, A, B and Leaf.\n\nConfirmation:\n- gold: PASSED (save succeeds; Root row inserted once; counts all 1).\n- buggy: FAILED with django.db.utils.IntegrityError: UNIQUE constraint failed: diamond_probe_root.id, traced to the second visit to Root inside _save_parents (base.py _save_parents/_save_table) attempting a second INSERT.\n\nThis behavior is not pinned down anywhere in the visible material: the visible model_inheritance suite (test_create_child_no_update) only exercises a LINEAR GrandParent→Parent→Child→GrandChild chain, and model_inheritance_regress uses separate roots/auto id pks rather than a concrete diamond whose defaulted-PK ancestor is shared across two branches. So no existing visible assertion already prophesies this input/outcome.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "task_id": "django__django-15038",
+  "status": "ok",
+  "duration_seconds": 665.3899551250506,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15038",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the new squashed migration's name resolves to a file path that already exists as a migration file in the target app's migrations package (e.g. running `squashmigrations --squashed-name initial myapp 0002`, or squashing from/excluding start as `... 0001 0002 --squashed-name initial`, produces a migration named `0001_initial`, and `0001_initial.py` already exists), the command must NOT overwrite that existing migration file; instead it must exit with an error rather than proceeding to write the new file over it.",
+        "subject": "squashmigrations command (django/core/management/commands/squashmigrations.py::Command.handle)",
+        "hunk_ids": [],
+        "cited_from": "\"squashmigrations --squashed-name initial myapp 0002 will overwrite 0001_initial.py. If that migration has already been applied anywhere, the code and the database will be in an inconsistent state. Furthermore, the 0002_... migration likely depends on 0001_initial, so the new replaces = …0002… line added to 0001_initial.py introduces a CircularDependencyError. squashmigrations should exit with an error instead of overwriting existing migration files.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "The squashmigrations management command refuses to run when the on-disk destination migration file it would write already exists: instead of creating/overwriting any file at that path, it fails the command by raising CommandError whose message contains the phrase 'already exists' and the new migration name.",
+        "subject": "django.core.management.commands.squashmigrations.Command.handle",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis confirms the command must not overwrite an existing destination migration file and should exit with an error, which matches the core of S_impl. However, S_impl additionally specifies the failure must be a CommandError whose message contains 'already exists' and the new migration name; no visible evidence pins this exact exception type or message content, so the full requirement is only partially covered."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_collision",
+      "test_source": "import os\nimport shutil\nimport sys\nimport tempfile\nfrom unittest import mock\n\n_TESTS_DIR = '/testbed/tests'\n\n\ndef test_witness_collision():\n    if _TESTS_DIR not in sys.path:\n        sys.path.insert(0, _TESTS_DIR)\n\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=['migrations'],\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n            DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n            SECRET_KEY='x',\n            USE_TZ=False,\n        )\n    django.setup()\n\n    from django.core.management import CommandError, call_command\n    from django.db.migrations.recorder import MigrationRecorder\n    from django.test.utils import override_settings\n\n    temp_dir = None\n    try:\n        temp_dir = tempfile.mkdtemp()\n        target_dir = tempfile.mkdtemp(dir=temp_dir)\n        with open(os.path.join(target_dir, '__init__.py'), 'w'):\n            pass\n        target_migrations_dir = os.path.join(target_dir, 'migrations')\n        source = os.path.join(_TESTS_DIR, 'migrations', 'test_migrations')\n        shutil.copytree(source, target_migrations_dir)\n        sys.path.insert(0, temp_dir)\n        new_module = os.path.basename(target_dir) + '.migrations'\n        dest = os.path.join(target_migrations_dir, '0001_initial.py')\n        with open(dest, encoding='utf-8') as f:\n            original = f.read()\n        with override_settings(MIGRATION_MODULES={'migrations': new_module}):\n            with mock.patch.object(MigrationRecorder, 'applied_migrations', return_value={}):\n                try:\n                    call_command(\n                        'squashmigrations', 'migrations', '0002',\n                        squashed_name='initial', interactive=False,\n                        verbosity=0,\n                    )\n                except CommandError as exc:\n                    raised = str(exc)\n                else:\n                    raised = None\n        assert raised is not None, \"expected CommandError when destination migration file already exists\"\n        assert '0001_initial' in raised\n        assert 'already exists' in raised\n        with open(dest, encoding='utf-8') as f:\n            assert f.read() == original\n    finally:\n        if temp_dir:\n            sys.path[:] = [p for p in sys.path if p != temp_dir]\n            shutil.rmtree(temp_dir, ignore_errors=True)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (because buggy squashmigrations does NOT raise CommandError; it silently overwrites the pre-existing 0001_initial.py, so the `raised is not None` assertion fails)",
+      "explanation": "The witness exercises squashmigrations.Command.handle (R1) at the exact code that changed between buggy and gold. It copies the real `migrations.test_migrations` package (containing an existing `0001_initial.py`) into a fresh temporary migrations module and runs `call_command('squashmigrations', 'migrations', '0002', squashed_name='initial', interactive=False, verbosity=0)`. Without a start migration, handle() derives the new migration name as `'0001_%s' % squashed_name` = `0001_initial`, so the destination path `.../0001_initial.py` already exists on disk.\n\nOn the gold (fixed) program, handle() checks `os.path.exists(writer.path)` before writing and raises CommandError('Migration 0001_initial already exists. Use a different name.'). The test asserts the CommandError is raised, its message contains both the migration name ('0001_initial') and the phrase 'already exists', and the pre-existing destination file is left byte-for-byte untouched. Verified: gold PASSED.\n\nOn the buggy (pre-fix) program, no existence guard exists, so the command writes (overwrites) the file unconditionally and never raises CommandError; the `raised is not None` assertion fires. Verified against buggy it FAILS with \"AssertionError: expected CommandError when destination migration file already exists\".\n\nThis is a true witness for R1 (gold passes, buggy fails) and not already pinned down by any visible test: every existing squashmigrations test writes to a non-colliding filename inside a fresh temp migrations module, so none of them exercise (or assert against) overwriting a pre-existing on-disk destination file — that behavior is only implied by the changed code (the existence guard). The recorder DB lookup is stubbed (recorder.applied_migrations -> {}) only to let the real command run in a sandboxed in-memory sqlite without the oracle test DB; the command logic, migrations on disk, MigrationWriter path resolution, and the file-existence guard are all the real code."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant command is django/core/management/commands/squashmigrations.py. Its handle() derives the new migration name as: with a start migration, `name = '%s_%s' % (prefix, squashed_name)` where `prefix, _ = start_migration.name.split('_', 1)`; without a start migration, `name = '0001_%s' % (squashed_name or 'squashed_%s' % migration.name)`. In both branches a `--squashed-name initial` (colliding with an existing `0001_initial`) yields a migration whose filename `0001_initial.py` already exists."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "handle() writes the file unconditionally near the end via `with open(writer.path, \"w\", encoding='utf-8') as fh: fh.write(writer.as_string())` — there is no existence/collision check anywhere before writing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MigrationWriter.path is `os.path.join(self.basedir, self.filename)` with `filename = '%s.py' % self.migration.name` (django/db/migrations/writer.py), so the destination path is determined purely by the derived migration name and the app's migrations package directory."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing SquashMigrationsTests in tests/migrations/test_commands.py exercise squashmigrations only inside `temporary_migration_module()` contexts (fresh temp dirs where no collision filename pre-exists), so none of them currently assert the no-overwrite/error behavior; the only visible artifact describing that requirement is the issue report itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the migration writer and command live under tests/migrations (test_writer.py, test_commands.py). SquashMigrationsTests subclass MigrationTestBase in tests/migrations/test_base.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only functional change is a pre-write existence guard: os.path.exists(writer.path) → raise CommandError, inserted before the open(...'w') block in handle(). H0 merely adds `import os` to support that guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "writer.path is built from MigrationWriter and equals <app migrations dir>/<new_migration.name>.py, so the guard triggers when the derived migration name (e.g. 0001_initial via --squashed-name initial without a start migration) collides with an existing migration file."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The destination file (if it already exists) is left untouched when the CommandError is raised, because the guard fires before any write."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real oracle test suite contains a test that witnesses R1: that `squashmigrations` refuses to run (raising CommandError whose message contains 'already exists' and the migration name) when the on-disk destination migration file already exists, rather than overwriting it.\n\nScope of checks:\n- tests/migrations/test_commands.py is the file housing SquashMigrationsTests (and MigrateTests/MakeMigrationsTests). I read the entire file. Every squashmigrations test (test_squashmigrations_squashes, test_squashmigrations_initial_attribute, test_squashmigrations_optimizes, test_ticket_23799_squashmigrations_no_optimize, test_squashmigrations_valid_start, test_squashmigrations_invalid_start, test_squashed_name_with_start_migration_name, test_squashed_name_without_start_migration_name) runs the command inside a `temporary_migration_module()` context, where a fresh temp migrations package is copied/created and no pre-existing collision file can exist at the squashed destination path. None of these tests asserts the no-overwrite/CommandError behavior described in R1.\n- tests/migrations/test_base.py and tests/migrations/test_writer.py: read, no relevant assertion; test_base just defines the temporary_migration_module helper.\n- gis/contenttypes management test files that exercise migrate/squash-related commands: read, unrelated to the write-collision behavior.\n\nDecisive facts:\n1. \"Tests currently failing against the buggy program\" is \"(none recorded)\". A witness MUST fail against the buggy program (which writes the file unconditionally, so it never raises the required CommandError). With no failing test recorded, no existing test can be a witness for R1.\n2. Every relevant oracle file I read is labeled [VISIBLE]. A Witness must rest exclusively on [HIDDEN] assertions (content not already visible to the repair system); no such hidden assertion covering the collision/overwrite behavior exists anywhere in the oracle reachable for this command.\n\nBecause the oracle does not actually enforce R1 (no hidden test asserting the CommandError/no-overwrite behavior), no genuine witness can be built, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.core.management.commands.squashmigrations.Command.handle): The squashmigrations management command refuses to run when the on-disk destination migration file it would write already exists: instead of creating/overwriting any file at that path, it fails the command by raising CommandError whose message contains the phrase 'already exists' and the new migration name. — not entailed by S_vis (S_vis confirms the command must not overwrite an existing destination migration file and should exit with an error, which matches the core of S_impl. However, S_impl additionally specifies the failure must be a CommandError whose message contains 'already exists' and the new migration name; no visible evidence pins this exact exception type or message content, so the full requirement is only partially covered.); confirmed by a synthesized witness: The witness exercises squashmigrations.Command.handle (R1) at the exact code that changed between buggy and gold. It copies the real `migrations.test_migrations` package (containing an existing `0001_initial.py`) into a fresh temporary migrations module and runs `call_command('squashmigrations', 'migrations', '0002', squashed_name='initial', interactive=False, verbosity=0)`. Without a start migration, handle() derives the new migration name as `'0001_%s' % squashed_name` = `0001_initial`, so the destination path `.../0001_initial.py` already exists on disk.\n\nOn the gold (fixed) program, handle() checks `os.path.exists(writer.path)` before writing and raises CommandError('Migration 0001_initial already exists. Use a different name.'). The test asserts the CommandError is raised, its message contains both the migration name ('0001_initial') and the phrase 'already exists', and the pre-existing destination file is left byte-for-byte untouched. Verified: gold PASSED.\n\nOn the buggy (pre-fix) program, no existence guard exists, so the command writes (overwrites) the file unconditionally and never raises CommandError; the `raised is not None` assertion fires. Verified against buggy it FAILS with \"AssertionError: expected CommandError when destination migration file already exists\".\n\nThis is a true witness for R1 (gold passes, buggy fails) and not already pinned down by any visible test: every existing squashmigrations test writes to a non-colliding filename inside a fresh temp migrations module, so none of them exercise (or assert against) overwriting a pre-existing on-disk destination file — that behavior is only implied by the changed code (the existence guard). The recorder DB lookup is stubbed (recorder.applied_migrations -> {}) only to let the real command run in a sandboxed in-memory sqlite without the oracle test DB; the command logic, migrations on disk, MigrationWriter path resolution, and the file-existence guard are all the real code.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-13028",
+  "status": "ok",
+  "duration_seconds": 540.3902400829829,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13028",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Filtering a queryset of the model that holds the foreign key by passing a related-model instance as the RHS value (e.g. ProductMetaData.objects.filter(value=..., metadata_type=<ProductMetaDataType instance>)) must produce a valid filter (a query that executes normally) and must not raise NotSupportedError solely because the related model has a BooleanField named 'filterable' whose value is False.",
+        "subject": "Query.check_filterable / Query.build_filter (django/db/models/sql/query.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Queryset raises NotSupportedError when RHS has filterable=False attribute.\" Failing call quoted in the report: \"ProductMetaData.objects.filter(value=\"Dark Vador\", metadata_type=self.brand_metadata)\" and traceback final line \"django.db.utils.NotSupportedError: ProductMetaDataType is disallowed in the filter clause.\" Reporter note: \"I changed label to filterable_test and it fixed this issue.\""
+      },
+      {
+        "id": "S2",
+        "statement": "In the filter clause, an object's mere possession of an attribute or field named 'filterable' that evaluates to False must not be mistaken for Django's internal expression-level filterability marker (BaseExpression.filterable); check_filterable must only refuse objects that are genuinely disallowed in the WHERE clause, not a plain database value / model instance carrying a field of that name.",
+        "subject": "Query.check_filterable (django/db/models/sql/query.py)",
+        "hunk_ids": [],
+        "cited_from": "Code in django/db/models/sql/query.py check_filterable(): \"if not getattr(expression, 'filterable', True):\\n            raise NotSupportedError(expression.__class__.__name__ + ' is disallowed in the filter '\\\n                'clause.')\"; model in report: \"filterable = models.BooleanField(default=False, verbose_name=_(\"filterable\"))\"; error raised names the model class: \"NotSupportedError: ProductMetaDataType is disallowed in the filter clause.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Query.check_filterable (invoked when building a filter over a resolved lookup RHS value) no longer raises NotSupportedError for a value that is not a Django expression, i.e. an object without a resolve_expression method, even if that object exposes a truthy/falsy attribute named 'filterable' — so a lookup such as .filter(metadata_type=<related model instance whose model has a field named 'filterable'>) is now allowed rather than raising '<Class> is disallowed in the filter clause.'",
+        "subject": "Query.check_filterable/build_filter filter-value allowance",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Query.check_filterable still raises NotSupportedError ('<Class> is disallowed in the filter clause.') when it examines an expression that has a resolve_expression method and whose 'filterable' attribute is False (and recursively through get_source_expressions), preserving the existing rejection of genuinely non-filterable expressions such as Window in WHERE clauses.",
+        "subject": "Query.check_filterable non-filterable expression rejection",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1 pins the exact concrete behavior: .filter(metadata_type=<related model instance whose model has a BooleanField 'filterable'=False>) must execute normally and must not raise NotSupportedError merely because of that field. S2 reinforces that possessing a field named 'filterable' (a plain model attribute) must not be mistaken for Django's expression-level filterable marker, so plain values/instances without a resolve_expression are allowed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S2 indicates that check_filterable 'must only refuse objects that are genuinely disallowed in the WHERE clause,' which implies genuine non-filterable expressions remain rejected and S2's cited code shows the NotSupportedError raising logic. However, the visible evidence (issue report plus the narrow if-snippet) does not explicitly pin the exact preservation details R2 asserts (gating on a resolve_expression method and recursive traversal through get_source_expressions, e.g. Window), so I stop short of full entailment."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 describes a PRESERVED behavior: Query.check_filterable must STILL raise NotSupportedError(\"...disallowed in the filter clause.\") for an expression that has a resolve_expression method and whose 'filterable' attribute is False (genuine non-filterable nodes such as Window), recursively through get_source_expressions. The gold diff only guards the filterable-check behind an added `hasattr(expression, 'resolve_expression')`; it does not alter (weaken or remove) rejection of genuine expressions that already carry resolve_expression. Therefore any input matching R2 (an expression with resolve_expression + filterable=False) is rejected identically on buggy and gold.\n\nI empirically confirmed this by executing a witness against both revisions:\n  test that builds a real Window = Window(Sum('salary'), partition_by=F('x')) (which has resolve_expression and filterable=False) and asserts Query(None).check_filterable(window) raises NotSupportedError containing 'is disallowed in the filter clause', plus asserts hasattr(window,'resolve_expression') and window.filterable is False. Result: PASSED on gold AND PASSED on buggy. Because the required observable behavior is indistinguishable between the two revisions, no test can fail on buggy yet pass on gold — a Witness requires pass-on-gold AND fail-on-buggy. This matches the Oracle Search Agent's prior conclusion.\n\nFor completeness I also confirmed the only genuinely discriminating scenario is the RELAXATION half (a plain object, e.g. a model instance/class with a real BooleanField named 'filterable' = False but NO resolve_expression method): with such a value gold does NOT raise (relaxation, PASS) while buggy DOES raise (FAIL). That scenario is the subject of the relaxation effect behind the fix, which R2 explicitly excludes — R2 is worded solely as the preserved rejection of genuine non-filterable expressions (Window in WHERE). The relaxation requirement is the separate concern already flagged as S1/S2 and is out of R2's scope. Hence found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Mechanism of the reported bug (root cause, inferred from reading django/db/models/sql/query.py): Query.build_filter calls self.check_filterable(value) on the RHS after resolve_lookup_value; for a filter like metadata_type=<ProductMetaDataType instance> the raw model instance is passed in as the RHS value. check_filterable() does getattr(expression, 'filterable', True) on it; because filterable is Django's internal property marking whether an expression may be used in a WHERE clause (class attr filterable=True on BaseExpression, filterable=False on Window), reading that name off an instance whose model defines a real BooleanField named 'filterable' (default False) makes Django wrongly conclude the value is disallowed and raise NotSupportedError('<Class> is disallowed in the filter clause.')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The failing call in the report filters ProductMetaData by its FK 'metadata_type' pointing to a ProductMetaDataType that happens to carry the BooleanField named 'filterable'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No dedicated regression test for this scenario is present in the visible tree under tests/; the behavioral contract is established by the issue report alone."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The exception message '<Model> is disallowed in the filter clause.' comes from check_filterable, using expression.__class__.__name__, which is why the traceback shows 'ProductMetaDataType is disallowed...'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change in Query.check_filterable guards the filterable=getattr default-check behind an additional hasattr(expression, 'resolve_expression') condition, so plain values (model instances) passed as filter operands are exempted from the filterable-based disallowance."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "check_filterable is called from Query.build_filter in two places: once on reffed_expression and once on value (post resolve_lookup_value), and separately recurses via get_source_expressions()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'filterable' attribute is Django's internal class-level mark on expression nodes (e.g. True on BaseExpression, False on Window); the bug arose when a user model instance carried a real BooleanField named 'filterable'."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 describes a PRESERVED behavior: Query.check_filterable still raises NotSupportedError for genuine expressions that have a resolve_expression method and filterable=False (and recursively via get_source_expressions) — i.e. Window-type expressions remain disallowed in WHERE clauses. The gold change only adds an hasattr(expression, 'resolve_expression') guard that RELAXES checks on plain values lacking resolve_expression (the model-instance-collision bug); it does not alter, weaken, or remove any rejection of genuine non-filterable expressions. Consequently Window-filter rejection is byte-for-byte identical on buggy and gold, so no test can fail on buggy yet pass on gold for R2's behavior: a Witness requires pass-on-gold AND fail-on-buggy, which is impossible for a preserved property. This matches the recorded fact that no tests currently fail against the buggy program (had buggy stopped rejecting Window filters, the pre-existing tests test_invalid_filter/test_conditional_annotation in tests/expressions_window/tests.py would be failing against it — they are not). I checked those natural candidates (all labeled [VISIBLE]; the only [HIDDEN] file in that app is models.py, which is a model definition, not a test), and reviewed tests/queries/models.py where no model carries a literal 'filterable' field (and, regardless, the instance-allowed scenario is the relaxation half, not R2's preserved-rejection claim). Because the required observable behavior is indistinguishable between buggy and gold, no pre-existing oracle test can witness R2 — found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 describes a PRESERVED behavior: Query.check_filterable must STILL raise NotSupportedError(\"...disallowed in the filter clause.\") for an expression that has a resolve_expression method and whose 'filterable' attribute is False (genuine non-filterable nodes such as Window), recursively through get_source_expressions. The gold diff only guards the filterable-check behind an added `hasattr(expression, 'resolve_expression')`; it does not alter (weaken or remove) rejection of genuine expressions that already carry resolve_expression. Therefore any input matching R2 (an expression with resolve_expression + filterable=False) is rejected identically on buggy and gold.\n\nI empirically confirmed this by executing a witness against both revisions:\n  test that builds a real Window = Window(Sum('salary'), partition_by=F('x')) (which has resolve_expression and filterable=False) and asserts Query(None).check_filterable(window) raises NotSupportedError containing 'is disallowed in the filter clause', plus asserts hasattr(window,'resolve_expression') and window.filterable is False. Result: PASSED on gold AND PASSED on buggy. Because the required observable behavior is indistinguishable between the two revisions, no test can fail on buggy yet pass on gold — a Witness requires pass-on-gold AND fail-on-buggy. This matches the Oracle Search Agent's prior conclusion.\n\nFor completeness I also confirmed the only genuinely discriminating scenario is the RELAXATION half (a plain object, e.g. a model instance/class with a real BooleanField named 'filterable' = False but NO resolve_expression method): with such a value gold does NOT raise (relaxation, PASS) while buggy DOES raise (FAIL). That scenario is the subject of the relaxation effect behind the fix, which R2 explicitly excludes — R2 is worded solely as the preserved rejection of genuine non-filterable expressions (Window in WHERE). The relaxation requirement is the separate concern already flagged as S1/S2 and is out of R2's scope. Hence found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (Query.check_filterable non-filterable expression rejection) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 describes a PRESERVED behavior: Query.check_filterable must STILL raise NotSupportedError(\"...disallowed in the filter clause.\") for an expression that has a resolve_expression method and whose 'filterable' attribute is False (genuine non-filterable nodes such as Window), recursively through get_source_expressions. The gold diff only guards the filterable-check behind an added `hasattr(expression, 'resolve_expression')`; it does not alter (weaken or remove) rejection of genuine expressions that already carry resolve_expression. Therefore any input matching R2 (an expression with resolve_expression + filterable=False) is rejected identically on buggy and gold.\n\nI empirically confirmed this by executing a witness against both revisions:\n  test that builds a real Window = Window(Sum('salary'), partition_by=F('x')) (which has resolve_expression and filterable=False) and asserts Query(None).check_filterable(window) raises NotSupportedError containing 'is disallowed in the filter clause', plus asserts hasattr(window,'resolve_expression') and window.filterable is False. Result: PASSED on gold AND PASSED on buggy. Because the required observable behavior is indistinguishable between the two revisions, no test can fail on buggy yet pass on gold — a Witness requires pass-on-gold AND fail-on-buggy. This matches the Oracle Search Agent's prior conclusion.\n\nFor completeness I also confirmed the only genuinely discriminating scenario is the RELAXATION half (a plain object, e.g. a model instance/class with a real BooleanField named 'filterable' = False but NO resolve_expression method): with such a value gold does NOT raise (relaxation, PASS) while buggy DOES raise (FAIL). That scenario is the subject of the relaxation effect behind the fix, which R2 explicitly excludes — R2 is worded solely as the preserved rejection of genuine non-filterable expressions (Window in WHERE). The relaxation requirement is the separate concern already flagged as S1/S2 and is out of R2's scope. Hence found=false.",
+    "confidence": "Medium"
+  }
+}

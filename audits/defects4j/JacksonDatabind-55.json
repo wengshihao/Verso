@@ -1,0 +1,112 @@
+{
+  "task_id": "JacksonDatabind-55",
+  "status": "ok",
+  "duration_seconds": 190.74619991999862,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-55",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When serializing an EnumMap whose key type is an enum, the object keys must honor a @JsonProperty annotation declared on the enum constants, writing the @JsonProperty value as the field name rather than the raw enum name().",
+        "subject": "EnumMap key serialization (StdKeySerializers / Enum key serializer (TYPE_ENUM))",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"But I also have an EnumMap which uses the enum, and it's generated JSON uses the original enum names for the keys and not the JsonProperty values.\" Test file: \"// [databind#1322]\n    public void testEnumsWithJsonPropertyAsKey() throws Exception\n    {\n        EnumMap<EnumWithJsonProperty,String> input = new EnumMap<EnumWithJsonProperty,String>(EnumWithJsonProperty.class);\n        input.put(EnumWithJsonProperty.A, \"b\");\n        assertEquals(\"{\\\"aleph\\\":\\\"b\\\"}\", MAPPER.writeValueAsString(input));\n    }\" together with enum declaration \"protected enum EnumWithJsonProperty {\n        @JsonProperty(\"aleph\")\n        A;\n    }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "StdKeySerializers.getFallbackKeySerializer, when given a concrete enum raw key type (one for which rawKeyType.isEnum() is true but rawKeyType != Enum.class), returns an EnumKeySerializer whose key field names are derived from the serialization config's AnnotationIntrospector (findEnumValues, honoring e.g. @JsonProperty/@JsonValue on enum constants), falling back to the enum constant's name() when no annotation value is present — rather than always writing the value as Enum.name().",
+        "subject": "StdKeySerializers.getFallbackKeySerializer",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When StdKeySerializers.EnumKeySerializer serializes an enum key and SerializationFeature.WRITE_ENUMS_USING_TO_STRING is enabled at serialization time, the field name is written as value.toString(), overriding any annotation-derived name; only when that feature is disabled is the introspector-derived/name() value written.",
+        "subject": "StdKeySerializers.EnumKeySerializer.serialize",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] pins that for enum keys annotated with @JsonProperty the field name is written as the annotation value rather than the raw name() (test expects \"aleph\" not \"A\"), which matches R1's core claim. However R1 additionally asserts honoring of @JsonValue, a general fallback-to-name() path, and a broader getFallbackKeySerializer mechanism beyond the EnumMap case S_vis demonstrates, none of which S_vis commits to clearly."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] contains no information about SerializationFeature.WRITE_ENUMS_USING_TO_STRING, value.toString() overriding annotation-derived names at serialization time, or any feature-dependent branching. R2's specific behavior is entirely absent from the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "r2Witness",
+      "test_source": "@Test public void r2Witness() throws Exception {\n    // R2[databind#1322]: EnumMap key of a concrete enum whose constant carries @JsonProperty.\n    // Without WRITE_ENUMS_USING_TO_STRING the introspector-derived (annotation) name must\n    // be emitted (via EnumKeySerializer); when that feature is ON at serialization time,\n    // value.toString() must override the annotation-derived name.\n    java.util.EnumMap<WKey,String> m = new java.util.EnumMap<>(WKey.class);\n    m.put(WKey.A, \"v\");\n\n    com.fasterxml.jackson.databind.ObjectMapper plain = new com.fasterxml.jackson.databind.ObjectMapper();\n    // feature disabled -> annotation-derived name expected, NOT raw name() (\"A\")/ toString (\"toStringVal\")\n    assertEquals(\"{\\\"mappedA\\\":\\\"v\\\"}\",\n            plain.writer().without(com.fasterxml.jackson.databind.SerializationFeature.WRITE_ENUMS_USING_TO_STRING)\n                 .writeValueAsString(m));\n    // feature enabled at serialization time -> toString() overrides annotation\n    assertEquals(\"{\\\"toStringVal\\\":\\\"v\\\"}\",\n            plain.writer().with(com.fasterxml.jackson.databind.SerializationFeature.WRITE_ENUMS_USING_TO_STRING)\n                 .writeValueAsString(m));\n}\nenum WKey {\n    @com.fasterxml.jackson.annotation.JsonProperty(\"mappedA\") A(\"ignored\");\n    private final String extra;\n    WKey(String x){ this.extra = x; }\n    @Override public String toString(){ return \"toStringVal\"; }\n}",
+      "gold_result": "PASSED (both assertions: disabled -> {\"mappedA\":\"v\"} annotation honored; enabled -> {\"toStringVal\":\"v\"} toString overrides annotation)",
+      "buggy_result": "FAILED on the disabled branch: expected {\"mappedA\":\"v\"} but got {\"A\":\"v\"} — pre-fix code used .name() via Default(TYPE_ENUM) ignoring @JsonProperty",
+      "explanation": "R2 is the behavior of EnumKeySerializer (gold's getFallbackKeySerializer returns EnumKeySerializer.construct for a concrete enum type) when an EnumMap key's enum constant carries @JsonProperty: the annotation-derived name (via EnumValues/_values.serializedValueFor) must be emitted when WRITE_ENUMS_USING_TO_STRING is disabled, while value.toString() overrides that annotation name when the feature is enabled at serialization time. The pre-fix code routed such keys through Default(TYPE_ENUM), which wrote ((Enum)value).name() when the feature was disabled, ignoring @JsonProperty entirely.\n\nI confirmed against the actual sources: gold's getFallbackKeySerializer returns EnumKeySerializer for concrete enums while buggy's returns new Default(TYPE_ENUM, ...); gold's EnumKeySerializer consults the serialization-time WRITE_ENUMS_USING_TO_STRING feature and uses _values (annotation-derived) otherwise.\n\nMy witness uses a fresh helper enum WKey whose constant carries @JsonProperty(\"mappedA\"), whose raw name() is \"A\", and whose overridden toString() is \"toStringVal\" (so annotation != name != toString). It serializes a concretely-typed EnumMap<WKey,String> in both feature modes. This genuinely discriminates: gold PASSED both assertions (disabled -> \"mappedA\" from the introspector; enabled -> \"toStringVal\" from toString overriding the annotation), while buggy FAILED the disabled assertion producing \"A\".\n\nIt is not a byte-reinvention of the visible oracle: TestEnumSerialization.java's testEnumsWithJsonPropertyAsKey uses that file's own EnumWithJsonProperty.A (no override, toString()==name()) and never enables WRITE_ENUMS_USING_TO_STRING, so the visible tests pin neither the toString-overrides-annotation branch for the key path nor output values for a constant whose toString differs from its name. Both gold and buggy runs were executed with this exact source via run_test."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Similarly the test file (TestEnumSerialization) goes on to show that EnumWithJsonProperty.A already serializes correctly both as a plain property value (testEnumsWithJsonProperty, expects quote(\"aleph\")) and inside an EnumSet (testEnumsWithJsonPropertyInSet, expects [\"aleph\"]) — i.e. @JsonProperty is honored for value serialization and the reported gap is only the EnumMap-key path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "StdKeySerializers.getFallbackKeySerializer has comments referencing EnumMap and returning a Dynamic serializer when rawKeyType==Enum.class (\"root EnumMap... no static type\"), and the static field at the bottom is declared with comments \"Specialized instance to use for Enum keys, as per [databind#1322] @since 2.8\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The Default key serializer's TYPE_ENUM branch currently writes either value.toString() when SerializationFeature.WRITE_ENUMS_USING_TO_STRING is enabled, else ((Enum<?>)value).name() — it does not consult any @JsonValue/@JsonProperty annotation, which is the code path at issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other visible tests (testEnumsWithJsonValueInMap, testJsonValueForEnumMapKey, testToStringEnumWithEnumMap, testEnumMapSerDefault/EnableToString/DisableToString) establish that EnumMap keys already honor @JsonValue and the WRITE_ENUMS_USING_TO_STRING feature; the gap specific to issue 1322 is @JsonProperty-on-constant handling for EnumMap keys."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 only adds an import of com.fasterxml.jackson.databind.util.EnumValues; it enables no independently observable behavior by itself and is cited only implicitly alongside H1/H2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The old Default(Default.TYPE_ENUM,...) TYPE_ENUM branch (value.toString() under WRITE_ENUMS_USING_TO_STRING else name()) is retained in the file but no longer selected by getFallbackKeySerializer for concrete enum types; the new EnumKeySerializer reproduces the dynamic feature check itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The branch rawKeyType == Enum.class returning a Dynamic serializer is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "EnumValues.constructFromName calls config.getAnnotationIntrospector().findEnumValues and substitutes en.name() wherever the introspector returns null."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target R2 concerns the behavior of StdKeySerializers.EnumKeySerializer when serializing an EnumMap key for an enum constant annotated with @JsonProperty, and specifically its interplay with SerializationFeature.WRITE_ENUMS_USING_TO_STRING (issue databind#1322). \n\nSearch: The entire oracle's only occurrence of the relevant test scenario (@JsonProperty on an enum constant used as an EnumMap key so that the annotation-derived name must be produced) is the single failing test `TestEnumSerialization.testEnumsWithJsonPropertyAsKey`, which serializes EnumMap<EnumWithJsonProperty,String> and asserts {\"aleph\":\"b\"}. That file (TestEnumSerialization.java), and all three issue-1322 sibling tests (testEnumsWithJsonProperty value, testEnumsWithJsonPropertyInSet set, testEnumsWithJsonPropertyAsKey key), use the EnumWithJsonProperty helper enum defined in the same file. The file is labeled [VISIBLE]. Per the pipeline rules a witness may only rest on [HIDDEN] assertion content, so even though this test passes on gold and would fail on the buggy program, it cannot serve as a witness because it was never hidden.\n\nI additionally reviewed the other test files that could plausibly hold an enum-key-serialization or key-serializer test looking for a hidden R2 witness: TestKeySerializers ([HIDDEN]; its key-serializer tests cover custom/module/mixin @JsonSerialize(keyUsing), never @JsonProperty-on-enum-constant keys), TestMapSerialization and TestBeanSerializer ([HIDDEN]; no R2-relevant enum-key/annotation content), TestJsonValue, TestCustomSerializers, TestConfig, TestCollectionSerialization, TestSerializerProvider, TestUntypedSerialization ([HIDDEN]; none touch enum Map-key serialization honoring @JsonProperty/toString), plus the rest of the oracle files involve unrelated deserialization/filtering/struct behaviors. No [HIDDEN] test anywhere exercises enum keys via the introspector-derived (annotation) name in an EnumKeySerializer path, nor the toString-overriding-annotation branch under WRITE_ENUMS_USING_TO_STRING.\n\nConclusion: the only oracle assertion that genuinely tests R2 lives in [VISIBLE] content (TestEnumSerialization.java), so no qualifying hidden witness exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (StdKeySerializers.EnumKeySerializer.serialize): When StdKeySerializers.EnumKeySerializer serializes an enum key and SerializationFeature.WRITE_ENUMS_USING_TO_STRING is enabled at serialization time, the field name is written as value.toString(), overriding any annotation-derived name; only when that feature is disabled is the introspector-derived/name() value written. — not entailed by S_vis (S_vis[1] contains no information about SerializationFeature.WRITE_ENUMS_USING_TO_STRING, value.toString() overriding annotation-derived names at serialization time, or any feature-dependent branching. R2's specific behavior is entirely absent from the visible evidence.); confirmed by a synthesized witness: R2 is the behavior of EnumKeySerializer (gold's getFallbackKeySerializer returns EnumKeySerializer.construct for a concrete enum type) when an EnumMap key's enum constant carries @JsonProperty: the annotation-derived name (via EnumValues/_values.serializedValueFor) must be emitted when WRITE_ENUMS_USING_TO_STRING is disabled, while value.toString() overrides that annotation name when the feature is enabled at serialization time. The pre-fix code routed such keys through Default(TYPE_ENUM), which wrote ((Enum)value).name() when the feature was disabled, ignoring @JsonProperty entirely.\n\nI confirmed against the actual sources: gold's getFallbackKeySerializer returns EnumKeySerializer for concrete enums while buggy's returns new Default(TYPE_ENUM, ...); gold's EnumKeySerializer consults the serialization-time WRITE_ENUMS_USING_TO_STRING feature and uses _values (annotation-derived) otherwise.\n\nMy witness uses a fresh helper enum WKey whose constant carries @JsonProperty(\"mappedA\"), whose raw name() is \"A\", and whose overridden toString() is \"toStringVal\" (so annotation != name != toString). It serializes a concretely-typed EnumMap<WKey,String> in both feature modes. This genuinely discriminates: gold PASSED both assertions (disabled -> \"mappedA\" from the introspector; enabled -> \"toStringVal\" from toString overriding the annotation), while buggy FAILED the disabled assertion producing \"A\".\n\nIt is not a byte-reinvention of the visible oracle: TestEnumSerialization.java's testEnumsWithJsonPropertyAsKey uses that file's own EnumWithJsonProperty.A (no override, toString()==name()) and never enables WRITE_ENUMS_USING_TO_STRING, so the visible tests pin neither the toString-overrides-annotation branch for the key path nor output values for a constant whose toString differs from its name. Both gold and buggy runs were executed with this exact source via run_test.",
+    "confidence": "Medium"
+  }
+}

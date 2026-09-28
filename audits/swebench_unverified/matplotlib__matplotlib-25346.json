@@ -1,0 +1,106 @@
+{
+  "task_id": "matplotlib__matplotlib-25346",
+  "status": "ok",
+  "duration_seconds": 511.68365779099986,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-25346",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When a long figure suptitle is set with wrap=True on a figure using layout='constrained', the constrained layout must reserve enough vertical (top) room for the full multi-line wrapped suptitle so the subtitle region is not clipped or overlapped; i.e., it must provide as much room as an equivalent suptitle whose text is split into the same lines with explicit newline (\\n) characters.",
+        "subject": "FigureBase.suptitle / make_margin_suptitles / constrained layout",
+        "hunk_ids": [],
+        "cited_from": "Issue bug summary: \"When titles are long and wrapped, constrained layout doesn't leave enough room for them.\"; reproduction: `fig.suptitle(\"suptitle that is clearly too long in this case\", wrap=True)` with `plt.subplots(2, 2, figsize=(3, 3), layout=\"constrained\")`; expected outcome: \"Enough space for the titles.\"; report adds: \"There's no problem if the titles have an explicit new line (\\\"\\\\n\\\"), so this seems to be specific to the wrapping.\""
+      },
+      {
+        "id": "2",
+        "statement": "When a long axes title is set with wrap=True on an Axes inside a layout='constrained' figure, the constrained layout must reserve enough vertical room for the full multi-line wrapped title so it is not clipped or overlapped; i.e., it must provide as much room as an equivalent axes title whose text is split into the same lines with explicit newline (\\n) characters.",
+        "subject": "Axes.set_title / _AxesBase title handling / constrained layout",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: `ax_arr[1, 0].set_title(\"axes title that is too long for the size\", wrap=True)` on a `fig, ax_arr = plt.subplots(2, 2, figsize=(3, 3), layout=\"constrained\")`; expected outcome: \"Enough space for the titles.\"; report adds: \"There's no problem if the titles have an explicit new line (\\\"\\\\n\\\"), so this seems to be specific to the wrapping.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Text._get_layout computes the layout (bounding box, per-line metrics/parts, and descent) from the wrapped text returned by _get_wrapped_text() rather than from the raw stored text, so that when wrap=True (and usetex is False) the extent/reservation it reports reflects the wrapped multi-line rendering instead of a single long line — for wrapping widths that actually trigger one or more breaks. This makes all consumers of _get_layout (the returned bbox/info used, e.g., by get_window_extent and the layout-time tightbbox/constrained-layout paths that call _get_layout before draw) report the same, wrapped shape that draw renders.",
+        "subject": "matplotlib.text.Text._get_layout",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis establishes a behavioral symptom (wrapped suptitles/axes titles don't get enough room in constrained layout, while explicit-newline versions do), which implies the layout reservation is computed from unwrapped text — i.e. it points generally at this phenomenon. But it never names Text._get_layout, _get_wrapped_text, or the consumer paths, so whether the actual patch changes this specific method's source of text (vs. some other fix point) is not pinned down by the visible evidence, leaving the implementation-level detail genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_wrap_layout_multiline",
+      "test_source": "def test_wrap_layout_multiline():\n    import matplotlib\n    matplotlib.use('agg')\n    import matplotlib.pyplot as plt\n    fig = plt.figure(figsize=(6, 4))\n    text = fig.text(0.7, 0.5, 'This is a very long text that should be wrapped multiple times.', wrap=True)\n    fig.canvas.draw()\n    renderer = fig.canvas.get_renderer()\n    bbox, info, descent = text._get_layout(renderer)\n    # On gold, _get_layout consumes the wrapped text, so it reports several\n    # physical lines; on the buggy build it sees the raw single-line text.\n    assert len(info) > 1\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: assert 1 > 1; _get_layout of raw single-line text yields a single part)",
+      "explanation": "R1 says Text._get_layout must compute its layout/per-line parts from _get_wrapped_text() (the wrapped multi-line render) rather than from the raw stored get_text(). The bug is that the pre-fix _get_layout calls self.get_text().split(\"\\\\n\"), so whenever wrap=True (usetex False) and the wrap width triggers breaks, _get_layout reports the raw single line, whereas gold reports the wrapped lines.\n\nThis witness creates a figure exactly like the existing (visible-only) wrap-string test (figsize=(6,4), text at x=0.7 wording 'This is a very long text...', wrap=True) but, crucially, then calls Text._get_layout(renderer) directly and asserts on len(info) -- the number of per-line parts reported by _get_layout. On gold _get_layout consumes _get_wrapped_text() (which wraps to 4 lines ['This is a very long','text that should be','wrapped multiple','times.']) so len(info)==4; on the buggy build _get_layout consumes the raw single-line get_text() so len(info)==1 and the assertion `> 1` fails.\n\nRuntime check: against gold PASSED; against buggy FAILED with AssertionError \"assert 1 > 1\" and info showing a single part whose text is the full unwrapped line. I read the visible wrap tests in lib/matplotlib/tests/test_text.py (test_wrap, test_long_word_wrap, test_wrap_no_wrap) and confirmed they only assert the wrapped *string* result of _get_wrapped_text() -- they never call _get_layout's per-line parts count, so no visible assertion pins down this input/scenario. This is a genuine discriminating witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Text wrapping is applied only at draw time: Text.draw renders `self._cmp_set(text=self._get_wrapped_text())`), whereas Text.get_window_extent / text.get_window_extent / title.get_tightbbox call `self._get_layout` on the raw single-line `self.get_text()` without wrapping. All layout-time extent measurement in lib/matplotlib/_constrained_layout.py (both axes margins via get_pos_and_bbox->Axes.get_tightbbox and suptitle margins via make_margin_suptitles->fig._suptitle.get_tightbbox) therefore sees the title at unwrapped single-line height."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "File lib/matplotlib/text.py defines Text methods used by titles: Text._get_wrap_line_width measures the wrapping width from the text anchor to the *figure* window extent (self.get_figure().get_window_extent()), independent of any Axes/figure layout size."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Axes.get_tightbbox (lib/matplotlib/axes/_base.py) special-cases titles for layout with for_layout_only=True by collapsing title bbox width to 1px (keeping the height), and it also calls self._update_title_position(renderer) before measuring."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing wrap unit tests in lib/matplotlib/tests/test_text.py (test_wrap, test_long_word_wrap, test_wrap_no_wrap) assert only on the wrapped string result of Text._get_wrapped_text() at specific figure sizes, not on layout reservation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reproduction writes the figure to test.png via savefig with both a figure-level suptitle and an axes-level title carrying wrap=True, with the figure small (3x3 inches) so that natural wrapping produces multiple lines."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is inside Text._get_layout, which is the single shared layout path for draw, get_window_extent, _get_textbox (used by update_bbox_position_size / bbox patches), and (via tightbbox/constrained-layout) title reservation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_get_wrapped_text returns self.get_text() unchanged when wrap is False or when get_usetex() is True, so for those cases _get_layout behavior is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before the patch, wrapping was applied only in Text.draw (via _cm_set(text=self._get_wrapped_text())) / get_window_extent used the unwrapped text indirectly here; the patch makes wrapping happen inside _get_layout so every extent-measuring caller sees it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Rewrapping at a different available-figure-width can only make a wrap=True non-tex Text measured taller/shorter or re-broken at layout measure time; non-wrapped (wrap=False/usetex) text layout output is bit-for-bit identical pre/post patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I read the text/layout test files that could plausibly exercise the behavior described in R1 (Text._get_layout computing extents/per-line metrics/descent from the *wrapped* text so that get_window_extent / get_tightbbox / constrained-layout title reservation reflects multi-line wrapping). Specifically I examined lib/matplotlib/tests/test_text.py, test_constrainedlayout.py, test_artist.py, test_figure.py, test_tightlayout.py, and test_offsetbox.py.\n\nFindings:\n1. Every wrap-related test in test_text.py (test_wrap, test_long_word_wrap, test_wrap_no_wrap) asserts ONLY the wrapped *string* returned by Text._get_wrapped_text() at a given figure size. None of them calls _get_layout / get_window_extent / get_tightbbox on a wrap=True text nor checks any extent/per-line-metric/descent that depends on _get_layout consuming wrapped text. Even the buggy pre-fix program produces _get_wrapped_text() unchanged (the bug is specifically that _get_layout ignores it), so these visible tests do not discriminate the bug and are not about R1's runtime behavior anyway.\n2. The layout tests in test_tightlayout.py (e.g. test_suptitle), test_constrainedlayout.py, test_figure.py, test_artist.py, and test_offsetbox.py exercise titles/layout but always with ordinary (non-wrapped) text or explicit '\\n' newlines; none configures a wrap=True title/Text at a width that forces a break and then measures the laid-out extent.\n3. No test is recorded as currently failing against the buggy program, and no assertion drawn from any [HIDDEN] oracle content describes the wrapped-layout reservation behavior in R1 — all the relevant files I read (and the relevant wrap assertions) are [VISIBLE] content, which by the audit rules cannot serve as a Witness.\n\nConsequently there is no oracle test in the real test suite whose assertion genuinely tests R1's wrapped-text layout/extent behavior; the existing coverage only checks the wrapped string produced by a helper that is unchanged by the patch."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (matplotlib.text.Text._get_layout): Text._get_layout computes the layout (bounding box, per-line metrics/parts, and descent) from the wrapped text returned by _get_wrapped_text() rather than from the raw stored text, so that when wrap=True (and usetex is False) the extent/reservation it reports reflects the wrapped multi-line rendering instead of a single long line — for wrapping widths that actually trigger one or more breaks. This makes all consumers of _get_layout (the returned bbox/info used, e.g., by get_window_extent and the layout-time tightbbox/constrained-layout paths that call _get_layout before draw) report the same, wrapped shape that draw renders. — not entailed by S_vis (S_vis establishes a behavioral symptom (wrapped suptitles/axes titles don't get enough room in constrained layout, while explicit-newline versions do), which implies the layout reservation is computed from unwrapped text — i.e. it points generally at this phenomenon. But it never names Text._get_layout, _get_wrapped_text, or the consumer paths, so whether the actual patch changes this specific method's source of text (vs. some other fix point) is not pinned down by the visible evidence, leaving the implementation-level detail genuinely ambiguous.); confirmed by a synthesized witness: R1 says Text._get_layout must compute its layout/per-line parts from _get_wrapped_text() (the wrapped multi-line render) rather than from the raw stored get_text(). The bug is that the pre-fix _get_layout calls self.get_text().split(\"\\\\n\"), so whenever wrap=True (usetex False) and the wrap width triggers breaks, _get_layout reports the raw single line, whereas gold reports the wrapped lines.\n\nThis witness creates a figure exactly like the existing (visible-only) wrap-string test (figsize=(6,4), text at x=0.7 wording 'This is a very long text...', wrap=True) but, crucially, then calls Text._get_layout(renderer) directly and asserts on len(info) -- the number of per-line parts reported by _get_layout. On gold _get_layout consumes _get_wrapped_text() (which wraps to 4 lines ['This is a very long','text that should be','wrapped multiple','times.']) so len(info)==4; on the buggy build _get_layout consumes the raw single-line get_text() so len(info)==1 and the assertion `> 1` fails.\n\nRuntime check: against gold PASSED; against buggy FAILED with AssertionError \"assert 1 > 1\" and info showing a single part whose text is the full unwrapped line. I read the visible wrap tests in lib/matplotlib/tests/test_text.py (test_wrap, test_long_word_wrap, test_wrap_no_wrap) and confirmed they only assert the wrapped *string* result of _get_wrapped_text() -- they never call _get_layout's per-line parts count, so no visible assertion pins down this input/scenario. This is a genuine discriminating witness for R1.",
+    "confidence": "Medium"
+  }
+}

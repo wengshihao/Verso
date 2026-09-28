@@ -1,0 +1,120 @@
+{
+  "task_id": "JacksonDatabind-3",
+  "status": "ok",
+  "duration_seconds": 230.79767297999933,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-3",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When deserializing the JSON content \" [ null ]\" into String[].class through the default (inlined) element-deserialization path, the result must be a non-null String[] of length 1 whose single element is null; i.e. a JsonToken.VALUE_NULL encountered inside the array must be converted to a Java null element rather than failing, and a null element deserializer must not be dereferenced.",
+        "subject": "StringArrayDeserializer.deserialize (default/inlined path, no custom element deserializer)",
+        "hunk_ids": [],
+        "cited_from": "TestArrayDeserialization.testStringArray: \"// [#479]: null handling was busted in 2.4.0\\n        result = MAPPER.readValue(\" [ null ]\", String[].class);\\n        assertNotNull(result);\\n        assertEquals(1, result.length);\\n        assertNull(result[0]);\""
+      },
+      {
+        "id": "R2",
+        "statement": "Deserializing a JSON array whose elements are strings (including strings such as \"a\", \"b\", \"abcd\", \"\" empty string, \"\\\"quoted\\\"\", and \"lf: \\n\" containing a newline) into String[].class must yield an array of the same length preserving each string element value at its index.",
+        "subject": "StringArrayDeserializer.deserialize",
+        "hunk_ids": [],
+        "cited_from": "TestArrayDeserialization.testStringArray: \"final String[] STRS = new String[] { \\\"a\\\", \\\"b\\\", \\\"abcd\\\", \\\"\\\", \\\"???\\\", \\\"\\\\\\\"quoted\\\\\\\"\\\", \\\"lf: \\\\n\\\" }; ... assertEquals(STRS.length, result.length); for (int i = 0; i < STRS.length; ++i) { assertEquals(STRS[i], result[i]); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the standard/inlined deserialization path of StringArrayDeserializer is active (no custom String element deserializer configured), deserializing a JSON array whose content deserializes to String[] maps each JSON null element (VALUE_NULL token) to a Java null element in the returned String[] instead of failing with an exception (e.g. NullPointerException), while non-null elements are handled as before.",
+        "subject": "StringArrayDeserializer.deserialize (standard inlined path)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When StringArrayDeserializer deserializes via the custom value-deserializer path (i.e., a non-default String element deserializer is configured, after contextualization), each JSON null element (VALUE_NULL token) of the input array is resolved by invoking that element deserializer's getNullValue(), and the returned value (which may be non-null) is stored as that position of the result array, rather than the position always being Java null.",
+        "subject": "StringArrayDeserializer._deserializeCustom / element null handling",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly pins down that via the default/inlined path, a VALUE_NULL token in the array (input ' [ null ]') is converted to a Java null element in a length-1 result rather than failing, which matches S_impl R1's requirement."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern only the default (inlined, no custom element deserializer) path and basic string preservation. Neither addresses the custom value-deserializer path where each null element is resolved via getNullValue() and the returned possibly-non-null value stored."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws java.lang.Exception {\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    com.fasterxml.jackson.databind.module.SimpleModule mod = new com.fasterxml.jackson.databind.module.SimpleModule(\"test\", com.fasterxml.jackson.core.Version.unknownVersion());\n    mod.addDeserializer(String.class, new com.fasterxml.jackson.databind.JsonDeserializer<String>() {\n        @Override\n        public String deserialize(com.fasterxml.jackson.core.JsonParser jp, com.fasterxml.jackson.databind.DeserializationContext ctxt) throws java.io.IOException {\n            return jp.getText();\n        }\n        @Override\n        public String getNullValue() {\n            return \"funny\";\n        }\n    });\n    mapper.registerModule(mod);\n    String[] result = mapper.readValue(\"[null,\\\"x\\\"]\", String[].class);\n    org.junit.Assert.assertNotNull(result);\n    org.junit.Assert.assertEquals(2, result.length);\n    org.junit.Assert.assertEquals(\"funny\", result[0]);\n    org.junit.Assert.assertEquals(\"x\", result[1]);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: expected:<funny> but was:<null>",
+      "explanation": "R2 targets StringArrayDeserializer._deserializeCustom's null-element handling: when a non-default (custom) String element deserializer survives contextualization so the _deserializeCustom path is taken, each VALUE_NULL element is resolved through deser.getNullValue() and that (possibly non-null) value is stored rather than Java null.\n\nThe witness forces the custom path by registering a SimpleModule that installs a custom JsonDeserializer<String> whose getNullValue() returns \"funny\". Because that deserializer is not the (implied/inlined) default String deserializer, createContextual() keeps _elementDeserializer non-null, so deserializing \"[null,\\\"x\\\"]\" into String[].class routes through _deserializeCustom. On gold, the null element calls deser.getNullValue() = \"funny\", so result[0]==\"funny\" (test PASSED). On buggy, the null element is hard-coded to null so result[0]==null (test FAILED with expected:<funny> but was:<null>). Execution confirmed on both revisions.\n\nThis genuinely corresponds to R2, and is not pinned down by visible material: the only visible test file, TestArrayDeserialization::testStringArray, covers the standard/inlined path (default mapper, [ null ] => Java null, i.e. R1), and no visible test combines a custom String value-deserializer with a non-null getNullValue against a null element of a Java String[] routed through StringArrayDeserializer. That combination (registration of a custom String deserializer turning null array elements into \"funny\") is a hidden fact not derivable from the visible code assertions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible bug (JacksonDatabind issue #479, where the fix touches StringArrayDeserializer) is that the inlined/standard path of StringArrayDeserializer.deserialize() dereferences _elementDeserializer when an element token is VALUE_NULL: \"value = _elementDeserializer.getNullValue();\" even though _elementDeserializer is null for the standard case (createContextual() resets default String deserializer to null). The custom path _deserializeCustom() already handles null correctly via \"(t == JsonToken.VALUE_NULL) ? null : deser.deserialize(...)\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under src/test/java/com/fasterxml/jackson/databind/deser/TestArrayDeserialization.java; the #479 regression assertions are inside the testStringArray method of that class."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "StringArrayDeserializer extends StdDeserializer<String[]> and implements ContextualDeserializer; its standard deserialize path uses ctxt.leaseObjectBuffer()/ObjectBuffer chunking."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "StdDeserializer.java is large and provides _parseString and other numeric/coercion helpers used by deserializers; not directly implicated in the #479 bug beyond supplying _parseString."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "deserialize() branches: `if (_elementDeserializer != null) return _deserializeCustom(...)` before reaching the inlined loop, so H0's null-handling code is only reachable when _elementDeserializer==null; the comment added in gold notes this invariant."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_deserializeCustom() holds `final JsonDeserializer<String> deser = _elementDeserializer;` so H1 always resolves deser via a local that is non-null in that path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After the fix the two paths handle null elements asymmetrically: standard path yields Java null for null tokens; custom path consults deser.getNullValue() which could return a non-null default."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "createContextual() resets a default String element deserializer to null (so it inlines), meaning typical String[]-typed fields/properties use H0's standard path."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Requirement R2 describes the behavior in StringArrayDeserializer._deserializeCustom: when a non-default (custom) String *element* deserializer survives contextualization, each null element (VALUE_NULL) of a JAVA String[] array is resolved via that deserializer's getNullValue(), and its (possibly non-null) returned value is stored in the result position. I confirmed empirically (by direct run) that this behavior genuinely distinguishes gold from buggy for this build: deserializing \"[null,\\\"x\\\"]\" into String[].class with a module-registered String deserializer whose getNullValue() returns \"funny\" yields [\"funny\",...] on gold (PASSED) but result[0]=Java null on buggy (FAILED). So the requirement is real and differentiable.\n\nHowever, no [HIDDEN] oracle test actually asserts THIS behavior on a Java String[] array routed through StringArrayDeserializer:\n\n- The only listed failing test, TestArrayDeserialization::testStringArray (TestArrayDeserialization.java, [VISIBLE]), reads \"[ null ]\" into String[].class with the DEFAULT mapper (no custom element deserializer), i.e. the standard inlined path (#479 NPE), not _deserializeCustom. Even setting aside that it is [VISIBLE], its comment/assertions (assertNull(result[0])) describe R1 (standard path yields Java null) — not R2 (custom path consults getNullValue, no R2 null on buggy, and the default-path assertion would not even go through the custom deserializer). It cannot witness R2.\n\n- The [HIDDEN] TestNullHandling.java is the only file hosting a String value-deserializer whose getNullValue() is non-null (FunnyNullDeserializer -> \"funny\"). But its three tests cover only STRING ROOT (testCustomRootNulls), List<String> (testListOfNulls), and Map<String,String> (testMapOfNulls). None deserialize a Java String[] (List/Map go through Collection/Map deserializers, not StringArrayDeserializer._deserializeCustom), so none exercises R2. testListOfNulls/testMapOfNulls target the older #407 collection/map behavior, a different code path than StringArrayDeserializer.\n\n- I also checked [HIDDEN] TestCustomDeserializers, TestConvertingDeserializer (contentConverter, no getNullValue override), TestContextualDeserialization (array test uses StringValue[]/custom contextual deserializer with no elements being null and no non-null getNullValue), TestArrayConversions, TestSimpleTypes/TestJacksonTypes, TestCollectionDeserialization, TestValueAnnotations (contentAs tests on objects, not null-replacement on String[]), and TestTypedArrayDeserialization. None combines a custom String element deserializer with a null element in a Java String[] deserialized by StringArrayDeserializer.\n\nConsequently, even though R2's semantics are genuinely enforced by the gold code and differentiate buggy/gold, the oracle's only related assertions are either [VISIBLE] (testStringArray) or, if [HIDDEN], they test a different code path (collection/map #407). No [HIDDEN] oracle test witnesses R2; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (StringArrayDeserializer._deserializeCustom / element null handling): When StringArrayDeserializer deserializes via the custom value-deserializer path (i.e., a non-default String element deserializer is configured, after contextualization), each JSON null element (VALUE_NULL token) of the input array is resolved by invoking that element deserializer's getNullValue(), and the returned value (which may be non-null) is stored as that position of the result array, rather than the position always being Java null. — not entailed by S_vis (Both S_vis entries concern only the default (inlined, no custom element deserializer) path and basic string preservation. Neither addresses the custom value-deserializer path where each null element is resolved via getNullValue() and the returned possibly-non-null value stored.); confirmed by a synthesized witness: R2 targets StringArrayDeserializer._deserializeCustom's null-element handling: when a non-default (custom) String element deserializer survives contextualization so the _deserializeCustom path is taken, each VALUE_NULL element is resolved through deser.getNullValue() and that (possibly non-null) value is stored rather than Java null.\n\nThe witness forces the custom path by registering a SimpleModule that installs a custom JsonDeserializer<String> whose getNullValue() returns \"funny\". Because that deserializer is not the (implied/inlined) default String deserializer, createContextual() keeps _elementDeserializer non-null, so deserializing \"[null,\\\"x\\\"]\" into String[].class routes through _deserializeCustom. On gold, the null element calls deser.getNullValue() = \"funny\", so result[0]==\"funny\" (test PASSED). On buggy, the null element is hard-coded to null so result[0]==null (test FAILED with expected:<funny> but was:<null>). Execution confirmed on both revisions.\n\nThis genuinely corresponds to R2, and is not pinned down by visible material: the only visible test file, TestArrayDeserialization::testStringArray, covers the standard/inlined path (default mapper, [ null ] => Java null, i.e. R1), and no visible test combines a custom String value-deserializer with a non-null getNullValue against a null element of a Java String[] routed through StringArrayDeserializer. That combination (registration of a custom String deserializer turning null array elements into \"funny\") is a hidden fact not derivable from the visible code assertions.",
+    "confidence": "Medium"
+  }
+}

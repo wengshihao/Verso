@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-13109",
+  "status": "ok",
+  "duration_seconds": 119.53267979098018,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13109",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "ForeignKey.validate() performs its referenced-object existence query against the related model's _base_manager (not its _default_manager), so that a ForeignKey value referencing a target instance that is hidden by a filtered default manager (e.g. an archived Article whose default manager filters archived=False) is still accepted and does not raise the '%(model)s instance with %(field)s %(value)r does not exist.' validation error.",
+        "subject": "ForeignKey.validate",
+        "hunk_ids": [],
+        "cited_from": "\"ForeignKey.validate() should validate using the base manager instead of the default manager.\" / \"The above form will never validate as True when a user selects an archived article. This is because the ForeignKey validation always uses _default_manager instead of _base_manager. ... The code for this validation is here ... The FavoriteAriclesForm is specifically designed to use a different manager, but the ForeignKey validation makes this difficult.\" (related.py currently: \"qs = self.remote_field.model._default_manager.using(using).filter(\\n            **{self.remote_field.field_name: value}\\n        )\")"
+      },
+      {
+        "id": "R2",
+        "statement": "ForeignKey.validate() still applies the field's limit_choices_to restriction to the (base-manager) existence query via qs.complex_filter(self.get_limit_choices_to()), so a target value that exists but is excluded by limit_choices_to must still fail validation.",
+        "subject": "ForeignKey.validate",
+        "hunk_ids": [],
+        "cited_from": "related.py validate(): \"qs = self.remote_field.model._default_manager.using(using).filter(\\n            **{self.remote_field.field_name: value}\\n        )\\n        qs = qs.complex_filter(self.get_limit_choices_to())\"; existing validation test: \"test_limited_FK_raises_error ... The limit_choices_to on the parent field says that a parent object's number attribute must be 10, so this should fail validation. ... parent = ModelToValidate.objects.create(number=11, name='Other Name') ... self.assertFailsValidation(mtv.full_clean, ['parent'])\""
+      },
+      {
+        "id": "R3",
+        "statement": "Given a Model model whose default manager filters rows (e.g. Article.objects = ArticleManager() returning only archived=False) and whose FK field is exposed through a ModelForm whose field queryset is set to Article._base_manager.all(), the form must validate (is_valid() True) when the user selects one of the otherwise-filtered (e.g. archived) target instances.",
+        "subject": "ModelForm / ModelChoiceField + ForeignKey validation",
+        "hunk_ids": [],
+        "cited_from": "\"class FavoriteAriclesForm(forms.ModelForm):\\n\\t ... \\tdef __init__(self, *args, **kwargs):\\n\\t\\tsuper().__init__(*args, **kwargs)\\n\\t\\t# Use the base manager instead of the default manager to allow archived articles.\\n\\t\\tself.fields['article'].queryset = Article._base_manager.all()\\nThe above form will never validate as True when a user selects an archived article. This is because the ForeignKey validation always uses _default_manager instead of _base_manager.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ForeignKey.validate() (and thus OneToOneField.validate() via inheritance) checks for the existence of a related object referenced by a non-null value using the remote model's _base_manager rather than its _default_manager, so validation no longer raises a ValidationError for a value that references a row that physically exists but would be filtered out by the remote model's custom (restricted) default manager, as long as any limit_choices_to restriction on the field is still satisfied.",
+        "subject": "ForeignKey.validate",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "ForeignKey.validate() still rejects (raises code='invalid' ValidationError) a non-null referencing value when the referenced row does not exist among the rows reachable through the base manager AND filtered by the field's limit_choices_to, i.e. the limit_choices_to and genuine-nonexistence rejection behavior is preserved after switching to the base manager.",
+        "subject": "ForeignKey.validate",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 states exactly that ForeignKey.validate() runs its existence query against the related model's _base_manager rather than _default_manager so that a value referencing a row physically present but hidden by a filtered default manager is accepted and no longer raises the 'does not exist' ValidationError; S_vis R2 adds that the limit_choices_to restriction still applies, matching S_impl R1's caveat."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R2 specifies that the limit_choices_to restriction is still applied via qs.complex_filter on the (base-manager) existence query so target values excluded by limit_choices_to must still fail validation, and S_vis R1/R2 jointly establish a filter-based existence query that raises when no reachable base-manager row satisfies the value; this pins down S_impl R2's preserved rejection behavior including the genuine-nonexistence case."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This ticket modifies the ForeignKey.validate() method in django/db/models/fields/related.py, which currently uses `self.remote_field.model._default_manager` for the existence query. The fix's essence is switching to `_base_manager`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ForeignKey.validate() is invoked via Model.clean_fields()/full_clean(), which ModelForm._post_clean() runs after ModelChoiceField.to_python() accepts the value from the user-supplied queryset; this is why the reported archived-article selection passes the form field but is rejected by the model-level FK validation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant tests living in tests/validation/ (validation/models.py, ModelToValidate with self-FK `parent` and limit_choices_to={'number': 10}; tests.py tests like test_wrong_FK_value_raises_error, test_limited_FK_raises_error) exercise ForeignKey.validate() behavior and must keep passing (limit_choices_to + non-existent reference rejection preserved)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible codebase is the pre-fix state, so no test specifically covering the base-manager-in-validation behavior exists yet in this tree."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Single-line change in django.db.models.fields.related.ForeignKey.validate(): remote existence check switched from _default_manager to _base_manager."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ForeignKey.formfield() still uses _default_manager for the ModelChoiceField queryset, so the manager used in form-level validation differs from that used in model-level field validation after this change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "OneToOneField subclasses ForeignKey and inherits validate(); it is also affected by the change."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

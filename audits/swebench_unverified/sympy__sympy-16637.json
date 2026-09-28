@@ -1,0 +1,124 @@
+{
+  "task_id": "sympy__sympy-16637",
+  "status": "ok",
+  "duration_seconds": 455.40109595900867,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-16637",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Plane.intersection must not report an intersection point with a Segment3D when that point lies on the segment's carrying infinite line but outside the segment's delimited range; specifically Plane([0,0,0], normal_vector=[1,1,1]).intersection(Segment3D([0,0,1], [0,0,2])) must return an empty list ([]) rather than [Point3D(0,0,0)], because (0,0,0) is cut off by the segment which only spans z from 1 to 2.",
+        "subject": "Plane.intersection(Segment3D)",
+        "hunk_ids": [],
+        "cited_from": "plane = Plane([0,0,0], normal_vector=[1,1,1])\n\n# this clearly has no intersection with the plane due to being cut off at z=1:\nsegment = Segment3D([0,0,1], [0,0,2])\n\nintersections = plane.intersection(segment)\n\nprint(intersections) # yields: [Point3D(0, 0, 0)]\n\n# basic sanity check: intersections should be part of the intersected objects\nfor intersection in intersections:\n  assert intersection in plane # works fine\n  assert intersection in segment # fails\n\"\"\"\nThe expected result is of course that ``Plane.intersections`` returns an empty list in this case."
+      },
+      {
+        "id": "R2",
+        "statement": "Every point returned by Plane.intersection when the non-Planar argument is a delimited linear entity (Segment3D) that does not lie entirely in the plane must be a point belonging to that linear entity itself (i.e. inside the segment), not merely to its unbounded carrying line — a fix must not narrow its behavior to the single geometry in R1.",
+        "subject": "Plane.intersection(Segment3D)",
+        "hunk_ids": [],
+        "cited_from": "\"So that the returned points lie in both the intersection objects. ... updated the intersection method of plane class so that intersection points lie in both the intersection objects if the other entity is LinearEntity.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "req1",
+        "statement": "For a linear entity o that is not contained entirely in the plane, Plane.intersection(o) returns a point only when that point (the intersection of the plane with o's supporting line) actually lies on the bounded entity o; when the supporting-line intersection falls outside o's extent (e.g. beyond a Segment3D's endpoints or behind a Ray3D's endpoint), intersections returns []. In particular, a Segment3D whose supporting line meets the plane at a point outside the segment yields [] rather than that out-of-extent point.",
+        "subject": "Plane.intersection",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "req2",
+        "statement": "For a Segment3D or Ray3D argument whose intersection with the plane is empty (the entity does not reach the plane), Plane.distance returns the Euclidean distance from the plane to the nearest point actually on that bounded/ray entity rather than the perpendicular plane-to-point distance to that entity's first defining point regardless of its extent: for a Ray3D this is the plane-to-point distance of the ray's initial point o.p1, and for a Segment3D it is the plane-to-point distance of the nearer of the two endpoints.",
+        "subject": "Plane.distance",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "req1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins the concrete Segment3D out-of-extent case (return [] rather than the off-segment point) and R2 generalizes the membership requirement for segments without narrowing to R1's single geometry, which supports the segment clause of req1. However, req1 also explicitly asserts the same [] behavior for Ray3D points behind the endpoint, and neither S_vis statement mentions rays, so the full behavior is only partially pinned down."
+      },
+      {
+        "requirement_id": "req2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "req2 describes Plane.distance returning the distance to the nearest point actually on a Segment/Ray3D entity. Both visible requirements concern Plane.intersection membership behavior only; nothing in S_vis says anything about a distance method, so it cannot entail(req2)."
+      }
+    ],
+    "target_requirement_id": "req2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_segment_nearest_endpoint_distance",
+      "test_source": "from sympy import Plane, Point3D, Segment3D, sqrt\ndef test_segment_nearest_endpoint_distance():\n    pl = Plane(Point3D(2, 3, 7), normal_vector=(2, 2, 2))\n    seg = Segment3D(Point3D(2, 3, 1), Point3D(1, 3, 4))\n    # x+y+z = 12 plane; the segment does not reach the plane (its\n    # supporting line meets it beyond endpoint (1,3,4), off the segment),\n    # so the distance is to the nearer endpoint (1,3,4), not 0 and not\n    # the o.p1-only projection.\n    assert pl.distance(seg) == 4*sqrt(3)/3\n",
+      "gold_result": "PASSED — pl.distance(Segment3D((2,3,1),(1,3,4))) == 4*sqrt(3)/3",
+      "buggy_result": "FAILED — buggy returns 0 (Plane.intersection returns the off-bounded-segment point (-1,3,10) non-empty, so distance short-circuits to S.Zero; even at o.p1 it would be the wrong 2*sqrt(3) instead of the nearer endpoint)",
+      "explanation": "Req2 says Plane.distance for a Segment3D/Ray3D disjoint from the plane (bounded intersection empty) must return the plane-to-nearest-point-on-entity distance instead of returning 0 / using only the entity's first defining point. This witness uses a plane x+y+z=12 (Plane(Point3D(2,3,7), normal 2,2,2)) and a Segment3D from (2,3,1) to (1,3,4), whose supporting line meets the plane only at t=3 — beyond the [0,1] segment that ends at (1,3,4) — so the bounded segment does not reach the plane. The correct plane-to-entity distance is therefore the plane distance to the nearer endpoint (1,3,4): (sum 8, plane 12, diff 4, /sqrt(3)) = 4*sqrt(3)/3. Gold returns exactly this (confirmed PASSED). Buggy computes self.intersection(seg) != [] (its intersection returns the off-segment point (-1,3,10)) so it returns S.Zero=0, failing the assertion (confirmed FAILED with 'assert 0 == 4*sqrt(3)/3'). This correctly encodes req2's nearer-endpoint behavior, which no visible oracle assertion pins (the visible test asserts the opposite pre-fix zero on this same input)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant method is Plane.intersection in sympy/geometry/plane.py; the not-contained LinearEntity3D branch solves for t on o.arbitrary_point(t), checks `if p not in self` (plane membership) but never checks that p lies within the t-range of a bounded entity (Segment3D), which is the reported bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note: an existing test in sympy/geometry/tests/test_plane.py currently ASSERTS the buggy result: `assert pl6.intersection(Segment3D(Point3D(2, 3, 1), Point3D(1, 3, 4))) == [Point3D(-1, 3, 10)]` — (-1,3,10) is not actually on that segment (t=3 exceeds the [0,1] parameter range), so a correct fix would have to reconcile/update that assertion."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The sibling Ray3D test in the same vicinity (`pl6.intersection(Ray3D(Point3D(2,3,1), Point3D(1,3,4))) == [Point3D(-1,3,10)]`) returns a point that IS valid on the ray (t=3>=0), so rays are only bounded in one direction."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "plane.py already converts 2D Segment/Ray/Line arguments to their 3D counterparts (Segment3D/Ray3D/Line3D) inside intersection before solving."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The whole-entity-contained branch (`if o in self`) returns [o] for an entity lying entirely in the plane; that path is unaffected by this bug."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In H0 the Point3D, generic LinearEntity3D (e.g. infinite Line3D), and Plane branches of Plane.distance are reworked into a single abs((a - self.p1).dot(unit normal)) formula that is mathematically equivalent to the prior per-type computations, so only the Segment3D/Ray3D handling gains new observable behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Plane.distance still returns S.Zero up front whenever self.intersection(o) != [] (line/segment/ray actually crosses or lies in the plane), so the new Segment3D/Ray3D branch only affects entities disjoint from the plane."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "plane.py converts 2D Segment/Ray/Line arguments to Segment3D/Ray3D/Line3D inside Plane.intersection before solving, so the introspected bounds checking (p in o) also applies to 2D-originated entities."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard in H0's Segment3D/Ray3D branch 'if pi in o: return self.distance(pi)' is effectively unreachable for exact input since a pi lying in o would already make self.intersection(o) non-empty and trigger the earlier Zero return; the meaningful endpoints of that branch are the distance-to-endpoint results."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [req2]: I investigated the full oracle test list and read the only geometry file whose tests touch Plane.distance with Segment3D/Ray3D arguments — sympy/geometry/tests/test_plane.py — which is labeled [VISIBLE] (all relevant content is byte-for-byte what the repair system already sees), and no [HIDDEN] content anywhere in the oracle exercises req2's corrected behavior.\n\nreq2 requires that Plane.distance on a Segment3D/Ray3D whose (bounded) intersection with the plane is empty return the plane-to-nearest-point-on-entity distance (nearer endpoint for a Segment3D, start o.p1 for a Ray3D) instead of 0/the old handling.\n\nWhat the [VISIBLE] oracle actually contains contradicts req2 rather than witnessing it:\n- `pl6.distance(Segment3D(Point3D(2,3,1), Point3D(1,3,4))) == 0`\n- `pl6.intersection(Segment3D(Point3D(2,3,1), Point3D(1,3,4))) == [Point3D(-1,3,10)]`\n(the supporting segment's line meets plane x+y+z=12 at parameter t=3, off the [0,1] segment, yet the test asserts the pre-fix behavior).\n\nI empirically confirmed these visible assertions are the OPPOSITE of a witness:\n- Against buggy, distance returns 0 (assertion ==0 holds) — matches the visible test, not req2.\n- Against gold, distance returns 4*sqrt(3)/3 (distance to the nearer endpoint (1,3,4)) and intersection(segment) == [], so the visible `==0` and `==[Point3D(-1,3,10)]` assertions FAIL on gold.\n\nSo the current oracle test file asserts the buggy outputs and does not contain any assertion that (a) passes on gold and (b) fails on buggy while encoding req2's nearer-endpoint distance. Every test in the file that could touch this behavior fails on gold (they encode pre-fix semantics) and no [HIDDEN] oracle test in any other file (I reviewed the geometry test suite) asserts the corrected distance. Requirement req2 is therefore not backed by any genuine, hidden oracle witness; reporting found=false.\n\n(Note: a hypothetical reconciled assertion `pl6.distance(Segment3D(...)) == 4*sqrt(3)/3` does pass gold and fail buggy as I verified by direct run, but that assertion exists nowhere in the current oracle's [HIDDEN] content — the oracle still carries the stale buggy-asserting line — so it cannot be submitted as a real oracle witness.)"
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [req2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[req2] (Plane.distance): For a Segment3D or Ray3D argument whose intersection with the plane is empty (the entity does not reach the plane), Plane.distance returns the Euclidean distance from the plane to the nearest point actually on that bounded/ray entity rather than the perpendicular plane-to-point distance to that entity's first defining point regardless of its extent: for a Ray3D this is the plane-to-point distance of the ray's initial point o.p1, and for a Segment3D it is the plane-to-point distance of the nearer of the two endpoints. — not entailed by S_vis (req2 describes Plane.distance returning the distance to the nearest point actually on a Segment/Ray3D entity. Both visible requirements concern Plane.intersection membership behavior only; nothing in S_vis says anything about a distance method, so it cannot entail(req2).); confirmed by a synthesized witness: Req2 says Plane.distance for a Segment3D/Ray3D disjoint from the plane (bounded intersection empty) must return the plane-to-nearest-point-on-entity distance instead of returning 0 / using only the entity's first defining point. This witness uses a plane x+y+z=12 (Plane(Point3D(2,3,7), normal 2,2,2)) and a Segment3D from (2,3,1) to (1,3,4), whose supporting line meets the plane only at t=3 — beyond the [0,1] segment that ends at (1,3,4) — so the bounded segment does not reach the plane. The correct plane-to-entity distance is therefore the plane distance to the nearer endpoint (1,3,4): (sum 8, plane 12, diff 4, /sqrt(3)) = 4*sqrt(3)/3. Gold returns exactly this (confirmed PASSED). Buggy computes self.intersection(seg) != [] (its intersection returns the off-segment point (-1,3,10)) so it returns S.Zero=0, failing the assertion (confirmed FAILED with 'assert 0 == 4*sqrt(3)/3'). This correctly encodes req2's nearer-endpoint behavior, which no visible oracle assertion pins (the visible test asserts the opposite pre-fix zero on this same input).",
+    "confidence": "Medium"
+  }
+}

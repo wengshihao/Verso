@@ -1,0 +1,94 @@
+{
+  "task_id": "matplotlib__matplotlib-26232",
+  "status": "ok",
+  "duration_seconds": 668.0075518750818,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-26232",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "Calling `plt.pcolormesh(masked_X, masked_Y, masked_Z)` — i.e. Axes/pyplot pcolormesh with 2D masked X and Y coordinate arrays whose masks are read-only (as produced by `np.ma.array(X, mask=np.broadcast_to(...))`) — must complete without raising (Expected outcome: \"No error\"), rather than raising `ValueError: array is read-only` in `_pcolorargs`/`safe_masked_invalid`; because masking of X and Y is not supported by pcolormesh, those X/Y masks are to be ignored/stripped while the plot still renders.",
+        "subject": "matplotlib.axes.Axes.pcolormesh",
+        "hunk_ids": [],
+        "cited_from": "\"Code for reproduction\" block ending in:\n```python\nmasked_X = np.ma.array(X, mask=mask)\nmasked_Y = np.ma.array(Y, mask=mask)\nmasked_Z = np.ma.array(Z, mask=mask)\n\nplt.pcolormesh(masked_X, masked_Y, masked_Z)\n```\nwith `mask = np.broadcast_to([True, False] * 5, Z.shape)`, plus Actual outcome \"Traceback ... ValueError: array is read-only\" / \"File .../cbook/__init__.py\", line 715, in safe_masked_invalid\n    xm = np.ma.masked_invalid(x, copy=False)\" and Expected outcome \"No error\". Supporting docstring (pcolormesh, Notes/Masked arrays): \"*C* may be a masked array. If ``C[i, j]`` is masked, the corresponding quadrilateral will be transparent. Masking of *X* and *Y* is not supported.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "Calling Axes.pcolor(X, Y, C) or Axes.pcolormesh(X, Y, C) with an X or Y that is a masked (float) array whose mask is read-only/non-writable no longer raises an exception caused by an in-place write to that read-only mask; instead X and Y are masked/processed on a writable copy of the data so the operation proceeds exactly as it would with an equivalent array carrying a writable mask.",
+        "subject": "Axes.pcolor / Axes.pcolormesh (_pcolorargs 3-arg X,Y masking)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "vis-1 clearly pins the core 'read-only masked X/Y must not raise' no-error behavior for pcolormesh with 2D broadcast masks, which is the dominant case in SI-1. However SI-1 additionally extends to pcolor (never exercised in the visible evidence) and specifies the mechanism that X/Y are processed on a writable copy and proceed exactly as with a writable mask, whereas vis-1's documented rationale is that X/Y masks are ignored/stripped because masking of X and Y is unsupported — a differing semantic that is not resolved by visible info."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to build a genuine witness for [SI-1]: 3-arg pcolor with an X that is a masked float array whose mask is a read-only np.broadcast_to view. I confirmed by actually running it via run_test that gold PASSES (pcolor processes X on a writable copy and completes, masked region omitted) while buggy FAILS with 'ValueError: array is read-only' inside _pcolorargs -> cbook.safe_masked_invalid -> np.ma.masked_where/_shrink_mask. That candidate therefore genuinely discriminates gold vs buggy behavior.\n\nHowever, this cannot count as a Witness per the Verso rules: the entire behavior is already specified verbatim in the visible target-requirement description [SI-1] (\"Calling Axes.pcolor(X, Y, C) or Axes.pcolormesh(X, Y, C) with an X or Y that is a masked (float) array whose mask is read-only/non-writable no longer raises an exception caused by an in-place write to that read-only mask; instead X and Y are masked/processed on a writable copy...\"). A repair system given that issue text (and the whole diff-hunk showing the one-line copy=True change at the call site, visible in the source) already knows exactly what the fix yields, so my independently-constructed assertion is just a mechanical restatement of already-visible facts, not a hidden oracle assertion.\n\nI also checked the visible test suite (test_pcolorargs_with_read_only in lib/matplotlib/tests/test_axes.py, which is entirely [VISIBLE]); it only covers a 1-arg masked C input and pcolormesh(X, Y, masked_Z) with plain X/Y — but crucially, running that visible test against buggy already PASSES (C never took the read-only-masked-X/Y in-place path), so even though the visible tests don't exercise my exact scenario, they were insufficient and no [HIDDEN] test enforcing this read-only-masked-X/Y behavior exists in the oracle (consistent with the Oracle Search Agent's found=false and S_vis insufficiency determination). Since every discriminating input I can construct for [SI-1] reduces to restating the fully-disclosed requirement, found=false is the honest result."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source: `Axes._pcolorargs` in lib/matplotlib/axes/_axes.py applies `cbook.safe_masked_invalid(a)` to X and Y for both pcolor/pcolormesh; the pcolormesh branch then has code stripping the mask (`X = X.data`) with the comment 'strip mask as downstream doesn't like it...'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cbook.safe_masked_invalid is in lib/matplotlib/cbook.py; it calls `np.ma.masked_invalid(x, copy=False)` then `xm.shrink_mask()`, which is where the read-only-mask in-place write crashes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in lib/matplotlib/tests/test_axes.py. `test_pcolorargs` asserts pcolormesh with a masked (non-finite) x raises ValueError; `test_pcolorargs_with_read_only` already covers read-only masks on masked_Z (3-arg, plain X/Y) and on a 1-arg masked input, but none of the visible tests covers the read-only masked X/Y 3-arg pcolormesh case that this issue reports."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docstrings state pcolor supports masked X, Y, and C (masked regions not plotted), whereas pcolormesh supports masking only of C; this is the documented design the patch is expected to keep consistent (no new X/Y-mask semantics asserted for pcolor here, as the issue's reproduction is specifically pcolormesh)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Change is one line in Axes._pcolorargs's 3-argument branch (shared by pcolor and pcolormesh): safe_masked_invalid is now called with copy=True on X and Y (it was already copy=True for C in the same method)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "safe_masked_invalid(x, copy=False) → np.array(x, subok=True, copy=False) returns the input unmasked-array view; np.ma.masked_invalid(x, copy=False).shrink_mask() is where the read-only-mask in-place write would raise, which is the failure this patch removes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "pcolor and pcolormesh keep their documented asymmetry downstream: after the (now copy-based) masking, pcolor processes masked X/Y (masked regions omitted) whereas pcolormesh raises ValueError for masked/non-finite X or Y; the patch does not change those existing semantics, only prevents the read-only-mask crash for both."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No cbook.py change is part of this patch; the copy flag is added only at the call site in _axes.py."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: Requirement [SI-1] concerns Axes.pcolor/pcolormesh called in the 3-arg form with a read-only/non-writable-mask float array as X or Y: the buggy program raises 'ValueError: array is read-only' inside _pcolorargs -> cbook.safe_masked_invalid (confirmed by running a faithful reproduction against buggy, which crashes, vs gold, which now copies the data and proceeds), and the patch fixes this by masking X/Y on a writable copy.\n\nI searched the oracle for a test genuinely exercising this read-only-masked-X/Y 3-arg scenario and found none qualifies:\n\n1. All pcolor/pcolormesh argument tests live in lib/matplotlib/tests/test_axes.py, and the ENTIRE file is labeled [VISIBLE]. Per the rules a Witness may only rest on [HIDDEN] assertions, so nothing in that file can serve.\n\n2. The closest existing test, test_pcolorargs_with_read_only, only covers read-only masks on the C array: a 1-arg masked input (treated as C) and pcolormesh(X, Y, masked_Z) where X/Y are plain arrays. I confirmed by mechanically running it against the buggy program that it PASSES there too (it never touches read-only-masked X/Y, and C always used copy=True even before the fix), so it does not discriminate buggy vs gold for this requirement.\n\n3. No test is reported as currently failing against the buggy program for this patch. A genuine witness for SI-1 would have to fail on buggy (the read-only-mask write crash) and pass on gold. Since none does, the oracle evidently contains no test enforcing this specific X/Y-masking behavior.\n\nI additionally constructed and ran my own reproduction (3-arg pcolor with a read-only masked X derived via np.ma.array(X, mask=broadcast read-only section)) to establish that the bug is real and that gold does fix it (gold PASSED, buggy FAILED with the read-only-mask ValueError). But that test is my own construction, not content present in the oracle, so it cannot constitute an oracle Witness. Thus found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: I attempted to build a genuine witness for [SI-1]: 3-arg pcolor with an X that is a masked float array whose mask is a read-only np.broadcast_to view. I confirmed by actually running it via run_test that gold PASSES (pcolor processes X on a writable copy and completes, masked region omitted) while buggy FAILS with 'ValueError: array is read-only' inside _pcolorargs -> cbook.safe_masked_invalid -> np.ma.masked_where/_shrink_mask. That candidate therefore genuinely discriminates gold vs buggy behavior.\n\nHowever, this cannot count as a Witness per the Verso rules: the entire behavior is already specified verbatim in the visible target-requirement description [SI-1] (\"Calling Axes.pcolor(X, Y, C) or Axes.pcolormesh(X, Y, C) with an X or Y that is a masked (float) array whose mask is read-only/non-writable no longer raises an exception caused by an in-place write to that read-only mask; instead X and Y are masked/processed on a writable copy...\"). A repair system given that issue text (and the whole diff-hunk showing the one-line copy=True change at the call site, visible in the source) already knows exactly what the fix yields, so my independently-constructed assertion is just a mechanical restatement of already-visible facts, not a hidden oracle assertion.\n\nI also checked the visible test suite (test_pcolorargs_with_read_only in lib/matplotlib/tests/test_axes.py, which is entirely [VISIBLE]); it only covers a 1-arg masked C input and pcolormesh(X, Y, masked_Z) with plain X/Y — but crucially, running that visible test against buggy already PASSES (C never took the read-only-masked-X/Y in-place path), so even though the visible tests don't exercise my exact scenario, they were insufficient and no [HIDDEN] test enforcing this read-only-masked-X/Y behavior exists in the oracle (consistent with the Oracle Search Agent's found=false and S_vis insufficiency determination). Since every discriminating input I can construct for [SI-1] reduces to restating the fully-disclosed requirement, found=false is the honest result."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SI-1] (Axes.pcolor / Axes.pcolormesh (_pcolorargs 3-arg X,Y masking)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to build a genuine witness for [SI-1]: 3-arg pcolor with an X that is a masked float array whose mask is a read-only np.broadcast_to view. I confirmed by actually running it via run_test that gold PASSES (pcolor processes X on a writable copy and completes, masked region omitted) while buggy FAILS with 'ValueError: array is read-only' inside _pcolorargs -> cbook.safe_masked_invalid -> np.ma.masked_where/_shrink_mask. That candidate therefore genuinely discriminates gold vs buggy behavior.\n\nHowever, this cannot count as a Witness per the Verso rules: the entire behavior is already specified verbatim in the visible target-requirement description [SI-1] (\"Calling Axes.pcolor(X, Y, C) or Axes.pcolormesh(X, Y, C) with an X or Y that is a masked (float) array whose mask is read-only/non-writable no longer raises an exception caused by an in-place write to that read-only mask; instead X and Y are masked/processed on a writable copy...\"). A repair system given that issue text (and the whole diff-hunk showing the one-line copy=True change at the call site, visible in the source) already knows exactly what the fix yields, so my independently-constructed assertion is just a mechanical restatement of already-visible facts, not a hidden oracle assertion.\n\nI also checked the visible test suite (test_pcolorargs_with_read_only in lib/matplotlib/tests/test_axes.py, which is entirely [VISIBLE]); it only covers a 1-arg masked C input and pcolormesh(X, Y, masked_Z) with plain X/Y — but crucially, running that visible test against buggy already PASSES (C never took the read-only-masked-X/Y in-place path), so even though the visible tests don't exercise my exact scenario, they were insufficient and no [HIDDEN] test enforcing this read-only-masked-X/Y behavior exists in the oracle (consistent with the Oracle Search Agent's found=false and S_vis insufficiency determination). Since every discriminating input I can construct for [SI-1] reduces to restating the fully-disclosed requirement, found=false is the honest result.",
+    "confidence": "Medium"
+  }
+}

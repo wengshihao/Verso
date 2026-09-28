@@ -1,0 +1,107 @@
+{
+  "task_id": "Closure-120",
+  "status": "ok",
+  "duration_seconds": 398.567149848,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Closure-120",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For the program `var u; function f() { u = Random(); var x = u; f(); alert(x===u)}`, the InlineVariables pass output must be identical to the input (i.e., the initialization `var x = u` must NOT be inlined into the `alert(x===u)` reference, because the recursive call `f()` reassigns `u` between the initialization of `x` and its use — inlining would change runtime behavior).",
+        "subject": "InlineVariables/ReferenceCollectingCallback.isWellDefined (variable inlining safety across a recursively-invoked function that reassigns the source variable)",
+        "hunk_ids": [],
+        "cited_from": "public void testExternalIssue1053() {\n    testSame(\n        \"var u; function f() { u = Random(); var x = u; f(); alert(x===u)}\");\n  }"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "I1",
+        "statement": "ReferenceCollection.isAssignedOnceInLifetime now returns false (previously true) when, walking outward from the variable's sole assignment reference, a function basic-block is reached before any loop and that function's scope differs from the scope of the variable's declaring symbol; i.e. an assignment placed inside an inner/nested function scope capturing the variable is treated like an assignment that can execute more than once, not as an assignment occurring exactly once in the variable's lifetime, even though only one assignment statement exists and no enclosing loop is present.",
+        "subject": "ReferenceCollection.isAssignedOnceInLifetime",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "I2",
+        "statement": "InlineVariables leaves a program unchanged (does not inline read/copy references of a variable) when the variable is declared in an outer scope but assigned by an inner recursive function that is invoked more than once — the assignment can re-execute per invocation, so the variable is not deemed assigned-once-in-lifetime and its referencing reads (e.g. `var x = u`, `alert(x===u)` in `var u; function f(){ u = Random(); var x = u; f(); alert(x===u); }`) are not inlined away.",
+        "subject": "InlineVariables (testExternalIssue1053 scenario)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "I1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 is only a top-level test showing the program is left unchanged (testSame); it reveals nothing about the interior algorithm of ReferenceCollection.isAssignedOnceInLifetime (walking basic blocks, comparing the reached function scope against the declaring symbol's scope, function-block-before-loop ordering). That internal implementation behavior is not pinned down by the visible evidence."
+      },
+      {
+        "requirement_id": "I2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's testExternalIssue1053 asserts the exact scenario described in I2 (variable declared in outer scope, assigned by an inner recursive function invoked more than once, in the exact code `var u; function f(){ u=Random(); var x=u; f(); alert(x===u); }`) is left unchanged, i.e. the copy references are not inlined. This directly pins down the behavior I2 describes."
+      }
+    ],
+    "target_requirement_id": "I1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testExternalIssue1053NoInlineCaptureIntoSelfComparison",
+      "test_source": "@Test\npublic void testExternalIssue1053NoInlineCaptureIntoSelfComparison() {\n  // Issue 1053: a value assigned to a variable that is captured by a\n  // recursive function (u) must not be inlined into an alias as if it were\n  // assigned exactly once in its lifetime.\n  //\n  // u's only assignment lives inside the recursive function f(), whose scope\n  // differs from the declaration scope of u. Inlining \"var x = u\" by swapping\n  // the captured reference for the current u corrupts the comparison at the\n  // end (it degenerates into u === u) exactly when the pre-fix\n  // ReferenceCollection.isAssignedOnceInLifetime() wrongly returned true for\n  // that assignment.\n  String src =\n      \"var u; function f() { u = Random(); var x = u; f(); alert(x===u)}\";\n\n  com.google.javascript.jscomp.CompilerOptions opt =\n      new com.google.javascript.jscomp.CompilerOptions();\n  com.google.javascript.jscomp.CompilationLevel.SIMPLE_OPTIMIZATIONS\n      .setOptionsForCompilationLevel(opt);\n  opt.inlineVariables = true;\n\n  com.google.javascript.jscomp.Compiler c =\n      new com.google.javascript.jscomp.Compiler();\n  c.compile(\n      com.google.javascript.jscomp.SourceFile.fromCode(\"externs.js\", \"var Random;\"),\n      com.google.javascript.jscomp.SourceFile.fromCode(\"input.js\", src),\n      opt);\n\n  String out = c.toSource();\n  // The fix keeps the recursive capture intact (the value u gets each time f\n  // runs is held in a distinct binding); the buggy code collapses the\n  // comparison to a self-comparison u === u because it wrongly inlines the\n  // captured value as if it were assigned exactly once.\n  org.junit.Assert.assertTrue(\"expected the recursive capture to remain intact: \" + out,\n      out.contains(\"Random()\"));\n  org.junit.Assert.assertFalse(\"buggy inline collapsed the capture into u===u: \" + out,\n      out.contains(\"u===u\"));\n}",
+      "gold_result": "PASSED — gold leaves the recursive capture intact (output `var u;function f(){var a=u=Random();f();alert(a===u)};`), no `u===u`.",
+      "buggy_result": "FAILED — buggy inlines the captured variable and collapses the comparison into `var u;function f(){u=Random();f();alert(u===u)};` (contains `u===u`), exactly the wrongly-inlined \"assigned once in lifetime\" behavior.",
+      "explanation": "The oracle's real witness for requirement I1 is the [HIDDEN] test `testExternalIssue1053` in `test/com/google/javascript/jscomp/InlineVariablesTest.java`. It is the only oracle test unambiguously tied to this fix (named for issue 1053 / Closure-120) and it currently FAILS against the buggy program. Its assertion is `testSame(\"var u; function f() { u = Random(); var x = u; f(); alert(x===u)}\")`: with the fix, `u`'s sole assignment lives inside the inner function `f` whose scope differs from the declaration scope of `u`; walking from that assignment there is no loop but a function basic-block is reached first, so the fixed `isAssignedOnceInLifetime` must return false and the alias `x` (whose value is the captured `u`) must NOT be inlined; the code must remain unchanged. Under the buggy implementation it returns true and the captured reference is incorrectly inlined, turning the final comparison `alert(x===u)` into `alert(u===u)`. Because `InlineVariables`, `Compiler.parseTestCode`, and `getExternsRoot` are package-private and the run_test harness places candidates outside the `com.google.javascript.jscomp` package, I reproduced the identical decision through the public pipeline (SIMPLE optimizations with `inlineVariables=true`, the same InlineVariables-based inline logic) on the exact oracle snippet, asserting the recursive capture remains intact (no self-comparison `u===u`). Confirmed: gold PASSED, buggy FAILED. I reviewed the full InlineVariablesTest file (the relevant oracle) and the only genuinely matching test is testExternalIssue1053; the sibling pass tests use different passes (e.g. flow-sensitive) not related to isAssignedOnceInLifetime."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug's fix target is com.google.javascript.jscomp.ReferenceCollectingCallback; its reference/well-definedness analysis feeds InlineVariables, whose correctness is exercised through InlineVariablesTest (a subclass of CompilerTestCase)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "InlineVariablesTest wires getProcessor to `new InlineVariables(compiler, Mode.ALL, inlineAllStrings)` and enables normalize; testSame asserts input and output are equivalent, so the single visible behavior for this bug is that the testExternalIssue1053 program is left unchanged (runs twice since getNumRepetitions defaults to 2)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CompilerTestCase compares input vs. expected output (typically as an AST tree) and also validates the symbol table and that changes are only reported when the AST actually changed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only this one test (testExternalIssue1053, directly named for the issue) is unambiguously tied to bug 1053/Closure-120 among the many general inline/alias tests; the rest exercise pre-existing behavior not specific to this fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed method is ReferenceCollection.isAssignedOnceInLifetime(); pre-fix it bounced (break) at the first enclosing function block and returned true regardless of whether that function is the variable's declaring scope."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "isAssignedOnceInLifetime is consulted by InlineVariables.InliningBehavior in isInlineableDeclaredConstant() and in the alias-inlining tail of inlineNonConstants(), so its return value gates whether a given variable gets inlined."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The ref whose basic-block chain is walked is getOneAndOnlyAssignment() from isAssignedOnceInLifetime (Reference.getSymbol().getScope() vs Reference.scope are compared)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single concrete end-to-end case added is testExternalIssue1053 in InlineVariablesTest (testSame on the recursive-capture program)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [I1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[I1] (ReferenceCollection.isAssignedOnceInLifetime): ReferenceCollection.isAssignedOnceInLifetime now returns false (previously true) when, walking outward from the variable's sole assignment reference, a function basic-block is reached before any loop and that function's scope differs from the scope of the variable's declaring symbol; i.e. an assignment placed inside an inner/nested function scope capturing the variable is treated like an assignment that can execute more than once, not as an assignment occurring exactly once in the variable's lifetime, even though only one assignment statement exists and no enclosing loop is present. — not entailed by S_vis (R1 is only a top-level test showing the program is left unchanged (testSame); it reveals nothing about the interior algorithm of ReferenceCollection.isAssignedOnceInLifetime (walking basic blocks, comparing the reached function scope against the declaring symbol's scope, function-block-before-loop ordering). That internal implementation behavior is not pinned down by the visible evidence.); confirmed by a oracle witness: The oracle's real witness for requirement I1 is the [HIDDEN] test `testExternalIssue1053` in `test/com/google/javascript/jscomp/InlineVariablesTest.java`. It is the only oracle test unambiguously tied to this fix (named for issue 1053 / Closure-120) and it currently FAILS against the buggy program. Its assertion is `testSame(\"var u; function f() { u = Random(); var x = u; f(); alert(x===u)}\")`: with the fix, `u`'s sole assignment lives inside the inner function `f` whose scope differs from the declaration scope of `u`; walking from that assignment there is no loop but a function basic-block is reached first, so the fixed `isAssignedOnceInLifetime` must return false and the alias `x` (whose value is the captured `u`) must NOT be inlined; the code must remain unchanged. Under the buggy implementation it returns true and the captured reference is incorrectly inlined, turning the final comparison `alert(x===u)` into `alert(u===u)`. Because `InlineVariables`, `Compiler.parseTestCode`, and `getExternsRoot` are package-private and the run_test harness places candidates outside the `com.google.javascript.jscomp` package, I reproduced the identical decision through the public pipeline (SIMPLE optimizations with `inlineVariables=true`, the same InlineVariables-based inline logic) on the exact oracle snippet, asserting the recursive capture remains intact (no self-comparison `u===u`). Confirmed: gold PASSED, buggy FAILED. I reviewed the full InlineVariablesTest file (the relevant oracle) and the only genuinely matching test is testExternalIssue1053; the sibling pass tests use different passes (e.g. flow-sensitive) not related to isAssignedOnceInLifetime.",
+    "confidence": "High"
+  }
+}

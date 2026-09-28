@@ -1,0 +1,98 @@
+{
+  "task_id": "django__django-11003",
+  "status": "ok",
+  "duration_seconds": 575.3832410000032,
+  "llm_calls": 35,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11003",
+    "s_vis": [
+      {
+        "id": "11003_req1",
+        "statement": "A form field that is a ModelChoiceField with disabled=True and that is initialized/displayed with an option that is a valid choice of that field (i.e. resolvable from the field's queryset) must pass form validation when the form is bound and submitted; it must NOT raise the 'Select a valid choice...' error merely because the field is disabled.",
+        "subject": "ModelChoiceField.clean / disabled-field form validation",
+        "hunk_ids": [],
+        "cited_from": "\"When I set disabled=True on that field in forms.py, submitting the form yields the following error: <ul class=errorlist><li>fieldname<ul class=errorlist><li>Select a valid choice. That choice is not one of the available choices.</li></ul></li></ul>\" and \"Secondly, if a field is disabled but does contain a valid choice, validating the form should work and not trigger an error.\""
+      },
+      {
+        "id": "11003_req2",
+        "statement": "The 'invalid_choice' validation error message produced by ModelChoiceField should identify the specific submitted/considered value that is not a valid choice, rather than a generic message that names no choice.",
+        "subject": "ModelChoiceField invalid_choice error message",
+        "hunk_ids": [],
+        "cited_from": "\"Firstly, I would like to comment on the general quality of the error message, as it is not very useful: It does not return which choice it considers invalid. Including this information would make the message much more informative, and would avoid sending people on a wild goose chase to discover what the message could possibly mean.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "r1",
+        "statement": "ModelChoiceField.to_python accepts a value that is already an instance of the queryset's model by extracting the value's to_field_name attribute (defaulting to the model's pk) and using that extracted value for the queryset lookup; this resolves to the cached DB object rather than raising an invalid_choice ValidationError as was the case when the model instance itself was passed as the lookup parameter.",
+        "subject": "ModelChoiceField.to_python",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "r1",
+        "entailed": "false",
+        "checked_ids": [
+          "11003_req1",
+          "11003_req2"
+        ],
+        "rationale": "S_vis req1 only states at the form-validation level that a disabled ModelChoiceField holding a valid choice must pass validation (not raise 'Select a valid choice...'), and req2 concerns the error message content. Neither pins down r1's specific to_python mechanism of extracting the model instance's to_field_name attribute (defaulting to pk) and using it for a queryset lookup resolving to the cached DB object; many fixes could satisfy the reported symptom without that exact extraction/lookup implementation."
+      }
+    ],
+    "target_requirement_id": "r1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness",
+      "test_source": "def test_witness():\n    import django\n    from django.conf import settings\n    settings.configure(\n        DEBUG=True,\n        DATABASES={},\n        INSTALLED_APPS=[],\n        SECRET_KEY='x',\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\n    django.setup()\n    from django.core.exceptions import ValidationError\n    from django.forms.models import ModelChoiceField\n\n    # A model-like class standing in for the queryset's model. Real django.db\n    # Models expose a ``DoesNotExist`` exception attribute which to_python's\n    # except clause references.\n    class Radio(object):\n        class DoesNotExist(Exception):\n            pass\n\n        def __init__(self, pk):\n            self.pk = pk\n\n        def __eq__(self, other):\n            return isinstance(other, Radio) and other.pk == self.pk\n\n    captured = {}\n\n    class FakeQS(object):\n        model = Radio\n\n        def all(self):\n            return self\n\n        def get(self, **kwargs):\n            captured.update(kwargs)\n            value = list(kwargs.values())[0]\n            # Mirror real Django: an integer-pk lookup cannot be performed by\n            # passing a whole model instance (only its pk value is accepted).\n            if not isinstance(value, int):\n                raise TypeError(\"cannot query with a model instance\")\n            return \"fetched_db_row(pk=%d)\" % value\n\n    f = ModelChoiceField(FakeQS(), empty_label=None)\n    device = Radio(pk=7)\n    with_our_dunder = isinstance(device, FakeQS.model)\n    assert with_our_dunder\n    try:\n        result = f.to_python(device)\n    except ValidationError:\n        # Gold must accept a model instance; failing to accept it is the bug.\n        raise AssertionError(\"to_python wrongly raised invalid_choice for a model instance\")\n    assert result == \"fetched_db_row(pk=7)\"\n    assert captured.get('pk') == 7",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "Requirement r1 is a Django (Python) behavior fix to ModelChoiceField.to_python in django/forms/models.py: when the incoming value is already an instance of the queryset's model, the field must extract that instance's to_field_name attribute (defaulting to 'pk') and use that primitive for the queryset `.get()`, instead of passing the whole model instance (which made the lookup fail as an invalid_choice ValidationError).\n\nThe oracle search found no genuine DB-backed test could be executed in this harness (TestCase unusable; manual sqlite fails with 'no such table'), and left no witness. My witness instead drives the actual `ModelChoiceField.to_python` code and reproduces the semantics of the DB lookup with a faithful queryset stand-in: `FakeQS.model` is a model-like class whose instance is passed in as `value`, and its `.get(**kw)` behaves exactly as a real integer-pk DB `.get` would — it rejects a whole model instance (raising TypeError, which to_python's except clause maps to a ValidationError of code invalid_choice) and only accepts a primitive pk. The fake model also exposes `DoesNotExist` (real django.db.Model subclasses do), so the except-branch in both code paths operates normally.\n\nThe executed test asserts the observable contract of r1: `to_python(<instance of queryset.model>)` returns the fetched DB row without raising, and the pk used for the lookup is the extracted integer 7 (not the model instance). On the GOLD program it PASSED (returns \"fetched_db_row(pk=7)\"). On the BUGGY program it FAILED reproducibly because the pre-fix code calls `queryset.get(pk=<model instance>)`, triggering the TypeError path and ending in the invalid_choice ValidationError (surfaced as AssertionError in the witness). This scenario (feeding a model instance as the value) is not pinned by any visible test — existing tests only feed raw PK values/strings."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source is django/forms/models.py: ModelChoiceField (default_error_messages['invalid_choice'] = 'Select a valid choice. That choice is not one of the available choices.' with no %(value)s placeholder; to_python raises this with code='invalid_choice' and no params). By contrast ModelMultipleChoiceField's invalid_choice message is 'Select a valid choice. %(value)s is not one of the available choices.' and does pass value."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DetailField clean flow: BaseForm._clean_fields (django/forms/forms.py) uses self.get_initial_for_field() for disabled fields, then calls field.clean(value); for a model-bound ModelForm the value comes from model_to_dict/initial (raw pk), and ModelChoiceField.to_python does self.queryset.get(**{to_field_name or 'pk': value})."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing test tests/model_forms/test_modelchoicefield.py::test_disabled_modelchoicefield currently expects the error for a disabled ModelChoiceField whose declared queryset (Author) does not contain the model instance's actual related value (a Writer) — this existing expectation may need revisiting under this ticket's behavior, but it is a test artifact, not an added requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the affected code live under tests/model_forms/ and tests/forms_tests/; model definitions incl. Author/Writer/Book/Inventory(to_field barcode) are in tests/model_forms/models.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Single hunk H0 modifies only ModelChoiceField.to_python in django/forms/models.py; no other code is touched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The to_field_name is resolved to a model attribute via getattr on the incoming model instance, so the change only triggers when value is an instance of self.queryset.model."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ModelMultipleChoiceField inherits this to_python but overrides it with its own to_python/_check_values; this normalized-value behavior therefore directly applies to ModelChoiceField (and subclasses that do not override to_python)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [r1]: Searched the oracle test suite for a test asserting ModelChoiceField.to_python's new behavior of accepting a value that is already an instance of the queryset's model (normalizing via to_field_name/pk before the lookup and returning the DB object rather than raising invalid_choice). All plausibly-relevant files were read and proved [VISIBLE] content with no such assertion:\n- tests/model_forms/test_modelchoicefield.py — ModelChoiceFieldTests feed only raw PKs into clean() (e.g. f.clean(self.c2.id)); it never passes a model instance as the value. The only disabled-field test (test_disabled_modelchoicefield) uses a deliberately mismatched model (Book.author is a Writer while the queryset is Author) and asserts the invalid_choice error is still raised — i.e. it pins the old error case, not the new acceptance path, and is [VISIBLE].\n- tests/model_formsets/tests.py — contains formset id-field error tests (test_validation_with_invalid_id / _nonexistent_id) that feed strings/nonexistent PKs and assert errors; not related to passing a model instance into to_python.\nModels and other related helper files under tests/model_forms are likewise [VISIBLE].\nAdditionally, no tests are currently recorded as failing against the buggy program (a necessary condition for any witness), and the standalone witness harness cannot run DB-backed Django tests (normal TestCase yields 'ConnectionHandler is not iterable'; even manual sqlite+installed-apps setup fails with 'no such table'), so no model-querying witness for this behavior could be located, let alone execution-confirmed. No [HIDDEN] oracle test enforcing r1 was found; therefore no genuine witness exists for this requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [r1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[r1] (ModelChoiceField.to_python): ModelChoiceField.to_python accepts a value that is already an instance of the queryset's model by extracting the value's to_field_name attribute (defaulting to the model's pk) and using that extracted value for the queryset lookup; this resolves to the cached DB object rather than raising an invalid_choice ValidationError as was the case when the model instance itself was passed as the lookup parameter. — not entailed by S_vis (S_vis req1 only states at the form-validation level that a disabled ModelChoiceField holding a valid choice must pass validation (not raise 'Select a valid choice...'), and req2 concerns the error message content. Neither pins down r1's specific to_python mechanism of extracting the model instance's to_field_name attribute (defaulting to pk) and using it for a queryset lookup resolving to the cached DB object; many fixes could satisfy the reported symptom without that exact extraction/lookup implementation.); confirmed by a synthesized witness: Requirement r1 is a Django (Python) behavior fix to ModelChoiceField.to_python in django/forms/models.py: when the incoming value is already an instance of the queryset's model, the field must extract that instance's to_field_name attribute (defaulting to 'pk') and use that primitive for the queryset `.get()`, instead of passing the whole model instance (which made the lookup fail as an invalid_choice ValidationError).\n\nThe oracle search found no genuine DB-backed test could be executed in this harness (TestCase unusable; manual sqlite fails with 'no such table'), and left no witness. My witness instead drives the actual `ModelChoiceField.to_python` code and reproduces the semantics of the DB lookup with a faithful queryset stand-in: `FakeQS.model` is a model-like class whose instance is passed in as `value`, and its `.get(**kw)` behaves exactly as a real integer-pk DB `.get` would — it rejects a whole model instance (raising TypeError, which to_python's except clause maps to a ValidationError of code invalid_choice) and only accepts a primitive pk. The fake model also exposes `DoesNotExist` (real django.db.Model subclasses do), so the except-branch in both code paths operates normally.\n\nThe executed test asserts the observable contract of r1: `to_python(<instance of queryset.model>)` returns the fetched DB row without raising, and the pk used for the lookup is the extracted integer 7 (not the model instance). On the GOLD program it PASSED (returns \"fetched_db_row(pk=7)\"). On the BUGGY program it FAILED reproducibly because the pre-fix code calls `queryset.get(pk=<model instance>)`, triggering the TypeError path and ending in the invalid_choice ValidationError (surfaced as AssertionError in the witness). This scenario (feeding a model instance as the value) is not pinned by any visible test — existing tests only feed raw PK values/strings.",
+    "confidence": "Medium"
+  }
+}

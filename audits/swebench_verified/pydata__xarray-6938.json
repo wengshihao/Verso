@@ -1,0 +1,108 @@
+{
+  "task_id": "pydata__xarray-6938",
+  "status": "ok",
+  "duration_seconds": 369.9812963330187,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-6938",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Dataset.swap_dims must be non-mutating: the Dataset on which swap_dims is called must be left unmodified. Concretely, for a Dataset (such as the MVCE's ds2, produced by swap_dims(z='lev').rename_dims(lev='z').reset_index('lev').reset_coords()) in which 'lev' is a data variable with single dimension ('z') and not an indexed coordinate, evaluating ds2.swap_dims(z='lev') must not alter ds2 itself — in particular ds2['lev'] must remain a data variable over dimension 'z' and must not become a dimension/index coordinate having dimension 'lev'.",
+        "subject": "Dataset.swap_dims",
+        "hunk_ids": [],
+        "cited_from": "\"I expected it not to modify the original object.\" ... \"ds2 after .swap_dims() applied\\n{ds2}\" ... \"# ^ `ds2['lev']` now has dimension 'lev' although otherwise same\" (issue: '.swap_dims() can modify original object'); and from Dataset.swap_dims docstring: \"Returns a new object with swapped dimensions.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_R1",
+        "statement": "IndexVariable.to_index_variable() (and its to_coord alias) returns a new IndexVariable object that is distinct from the receiver rather than returning the receiver itself, so that mutating the returned variable (e.g. assigning its dims) does not change the dims of the IndexVariable it was called on.",
+        "subject": "xarray.core.variable.IndexVariable.to_index_variable / to_coord",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl_R2",
+        "statement": "Dataset.swap_dims leaves the receiver dataset unchanged: when a dimension is swapped onto an existing index coordinate (an IndexVariable), the coordinate variable of the result is built from a copy of that index variable, so the dims/labels of the original coordinate variables held by the receiver are not mutated as a side effect of the swap.",
+        "subject": "xarray.core.dataset.Dataset.swap_dims",
+        "hunk_ids": [
+          "H0",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (and its citations: user complaint + docstring 'Returns a new object with swapped dimensions') only establishes that Dataset.swap_dims does not mutate its receiver; nothing in it mentions IndexVariable.to_index_variable/to_coord or requires those methods to return a distinct object, so the specific code-level behavior R1 describes is not pinned down by the visible information."
+      },
+      {
+        "requirement_id": "S_impl_R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 does affirm that Dataset.swap_dims leaves the receiver unchanged (docstring / issue), which aligns with R2's top-level non-mutation claim, but its concrete scenario concerns lev as a plain data variable (not an existing index coordinate) and does not spell out that the result coordinate must be built from a copy of an existing IndexVariable; the specific mechanism/coordinate case is therefore not clearly entailed."
+      }
+    ],
+    "target_requirement_id": "S_impl_R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_to_index_variable_distinct",
+      "test_source": "def test_to_index_variable_distinct():\n    import xarray as xr\n    iv = xr.IndexVariable(\"lev\", [0, 1, 2])\n    returned = iv.to_index_variable()\n    returned.dims = (\"alternative\",)\n    assert returned is not iv\n    assert iv.dims == (\"lev\",)\n    assert returned.dims == (\"alternative\",)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError on line `assert returned is not iv` — because buggy to_index_variable returns self, so mutating returned.dims also changed iv's dims to (\"alternative\",), making `returned is iv`)",
+      "explanation": "Target S_impl_R1: IndexVariable.to_index_variable() (and to_coord) must return a NEW IndexVariable distinct from the receiver so that mutating the returned variable's dims does not alter the original receiver's dims. In the gold fix (H3) IndexVariable.to_index_variable() returns self.copy(), whereas the buggy revision returns self directly (both the source files confirm this exact diff).\n\nThe discriminating test builds an IndexVariable over dim (\"lev\",), calls iv.to_index_variable(), then reassigns the returned object's .dims to (\"alternative\",). If to_index_variable returns self (buggy), the dims-setter mutates the receiver itself, so `returned is iv` is True (the identity assertion fails) and iv.dims becomes (\"alternative\",). In gold, to_index_variable returns a distinct copy whose dims are independent, so `returned is not iv` holds, iv.dims stays (\"lev\",), and returned.dims becomes (\"alternative\",).\n\nThis behavior is not pinned down anywhere in the visible oracle: I inspected the full visible xarray/tests/test_variable.py and xarray/tests/test_dataset.py — TestIndexVariable has no test that calls to_index_variable()/to_coord on an IndexVariable and asserts the result is a distinct object or that dims mutation is isolated; the only to_index_variable usage visible is in as_variable tests comparing equality (not distinctness/mutation isolation) on plain Variables. Consequently this witness rests on a genuinely unobserved fact about r rather than reinventing a visible assertion.\n\nExecution confirmation: run against gold → PASSED; run against buggy → FAILED with assertion `returned is not iv` failing because the buggy implementation aliases the receiver."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Dataset.swap_dims is defined in xarray/core/dataset.py (method of class Dataset), and returns, per its docstring, \"a new object with swapped dimensions.\""
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing Dataset.swap_dims tests live in TestDataset.test_swap_dims in xarray/tests/test_dataset.py; they cover swapping dims, the multiindex case, and error paths but do not assert that the receiver is left unchanged after a swap of the kind shown in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The loop body of Dataset.swap_dims (in this checkout) rebinds v = v.to_index_variable() / v = v.to_base_variable() then assigns v.dims = dims; because XarrayIndexVariable/Variable share their _data with the source variable while these can be fresh wrapper objects, the side effect that leaks back onto the source in the reported scenario is what the issue documents."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's MVCE uses only Dataset (not DataArray) methods: ds.swap_dims(z='lev'), then .rename_dims, .reset_index, .reset_coords."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch is predominantly a mypy/type-annotation change: H0 re-declares `var: Variable` inside Dataset.swap_dims's loop, H1 imports NoReturn, H2 adds return type annotations and dereferences `self._dims` directly (behavior-neutral) in Variable.to_base_variable/to_index_variable/to_index, H4 annotates the level_names property, H5 annotates IndexVariable.name getter/setter. None of these change runtime behavior. Only H3 (`return self.copy()` instead of `return self` in IndexVariable.to_index_variable) is behavioral."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The Dataset.swap_dims loop (dataset.py, unchanged except typing) relies on to_index_variable returning a fresh wrapper so that `var.dims = dims` doesn't corrupt the original index variable; the fix in H3 restores that safety for IndexVariable inputs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "IndexVariable.copy() ignores the deep argument for data since its data is an immutable pandas.Index, so returning self.copy() yields a new object still sharing the immutable index data but with its own dims/attrs/encoding state."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_R1]: Target requirement r is that IndexVariable.to_index_variable()/to_coord returns a new object distinct from the receiver, so that mutating its dims does not corrupt the IndexVariable it was called on. The regression test that genuinely tests this — TestIndexVariable::test_to_index_variable_copy (in xarray/tests/test_variable.py) — is the currently-failing test, but reading the oracle's test_variable.py returns ENTIRELY [VISIBLE] content, and that visible TestIndexVariable class does NOT contain any such test method (it has test_init/test_to_index/test_name/etc., none of which assert distinct-object or mutation-isolation for to_index_variable). I also examined test_dataset.py (holder of test_swap_dims/rename_dims/reset_index/reset_coords related to the MVCE) and test_indexes.py: both are fully [VISIBLE] and contain no hidden assertion about to_index_variable returning a distinct, independently-mutable object. Per the rules a Witness may rest only on [HIDDEN] assertions; since no [HIDDEN] content bearing on r is accessible/readable in the oracle, I cannot construct a complete test method backed by execution confirmation against both buggy (FAILED) and gold (PASSED). Therefore I report found=false; the qualifying regression belongs to hidden-only oracle content not available here."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_R1] (xarray.core.variable.IndexVariable.to_index_variable / to_coord): IndexVariable.to_index_variable() (and its to_coord alias) returns a new IndexVariable object that is distinct from the receiver rather than returning the receiver itself, so that mutating the returned variable (e.g. assigning its dims) does not change the dims of the IndexVariable it was called on. — not entailed by S_vis (S_vis R1 (and its citations: user complaint + docstring 'Returns a new object with swapped dimensions') only establishes that Dataset.swap_dims does not mutate its receiver; nothing in it mentions IndexVariable.to_index_variable/to_coord or requires those methods to return a distinct object, so the specific code-level behavior R1 describes is not pinned down by the visible information.); confirmed by a synthesized witness: Target S_impl_R1: IndexVariable.to_index_variable() (and to_coord) must return a NEW IndexVariable distinct from the receiver so that mutating the returned variable's dims does not alter the original receiver's dims. In the gold fix (H3) IndexVariable.to_index_variable() returns self.copy(), whereas the buggy revision returns self directly (both the source files confirm this exact diff).\n\nThe discriminating test builds an IndexVariable over dim (\"lev\",), calls iv.to_index_variable(), then reassigns the returned object's .dims to (\"alternative\",). If to_index_variable returns self (buggy), the dims-setter mutates the receiver itself, so `returned is iv` is True (the identity assertion fails) and iv.dims becomes (\"alternative\",). In gold, to_index_variable returns a distinct copy whose dims are independent, so `returned is not iv` holds, iv.dims stays (\"lev\",), and returned.dims becomes (\"alternative\",).\n\nThis behavior is not pinned down anywhere in the visible oracle: I inspected the full visible xarray/tests/test_variable.py and xarray/tests/test_dataset.py — TestIndexVariable has no test that calls to_index_variable()/to_coord on an IndexVariable and asserts the result is a distinct object or that dims mutation is isolated; the only to_index_variable usage visible is in as_variable tests comparing equality (not distinctness/mutation isolation) on plain Variables. Consequently this witness rests on a genuinely unobserved fact about r rather than reinventing a visible assertion.\n\nExecution confirmation: run against gold → PASSED; run against buggy → FAILED with assertion `returned is not iv` failing because the buggy implementation aliases the receiver.",
+    "confidence": "Medium"
+  }
+}

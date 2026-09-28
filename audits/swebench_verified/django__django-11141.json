@@ -1,0 +1,128 @@
+{
+  "task_id": "django__django-11141",
+  "status": "ok",
+  "duration_seconds": 901.5104736249195,
+  "llm_calls": 40,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11141",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When an installed app's migrations module is an implicit namespace package (a real directory present on the import path without a __init__.py, so it has no __file__ attribute but does expose a __path__ list) and that directory contains migration modules, MigrationLoader.load_disk() must not shunt the app into unmigrated_apps because of the missing __file__; instead it must continue to per-module discovery via pkgutil.iter_modules(module.__path__) so those migrations are loaded into disk_migrations/migrated_apps and the migrate/makemigrations machinery can act on the app.",
+        "subject": "django.db.migrations.loader.MigrationLoader.load_disk",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The migrate command currently checks for existence of a __file__ attribute on the migrations package.\" ... \"in #23406 migration file discovery was changed to use pkgutil.iter_modules(), instead of direct filesystem access. pkgutil.iter_modules() uses the package's __path__ list, which exists on implicit namespace packages.\" ... \"the __file__ check is no longer needed, and in fact prevents migrate from working on namespace packages (implicit or otherwise).\" Loader code (loader.py): \"# Empty directories are namespaces.\n# getattr() needed on PY36 and older (replace w/attribute access).\nif getattr(module, '__file__', None) is None:\n    self.unmigrated_apps.add(app_config.label)\n    continue\" followed later by \"migration_names = {\n    name for _, name, is_pkg in pkgutil.iter_modules(module.__path__)\n    if not is_pkg and name[0] not in '_~'\n}\""
+      },
+      {
+        "id": "R2",
+        "statement": "An app whose migrations named module imports as a plain module and not a package at all (e.g. a single migrations.py file, which has no __path__ attribute) must continue to be treated as unmigrated, distinct from the namespace-package-directory case.",
+        "subject": "django.db.migrations.loader.MigrationLoader.load_disk",
+        "hunk_ids": [],
+        "cited_from": "Loader code (loader.py): \"# Module is not a package (e.g. migrations.py).\nif not hasattr(module, '__path__'):\n    self.unmigrated_apps.add(app_config.label)\n    continue\" and loader test test_load_module_file: with override_settings(MIGRATION_MODULES={\"migrations\": \"migrations.faulty_migrations.file\"}): ... self.assertIn(\"migrations\", loader.unmigrated_apps, \"App with migrations module file not in unmigrated apps.\")"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "MigrationLoader.load_disk() no longer unconditionally marks an app as unmigrated and skips it merely because its migrations module is imported as an implicit namespace package (a directory with an iterable __path__ but no __file__, e.g. a migrations directory without __init__.py); instead such a migrations module is scanned normally, so migration files that live directly under that namespace package's __path__ are discovered and loaded into disk_migrations (and, via the file-discovery classification, the app is treated as migrated) rather than being ignored.",
+        "subject": "MigrationLoader.load_disk: namespace-package migrations module handling",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "MigrationLoader.load_disk() classifies an app whose successfully-imported migrations module is a package (regular or namespace) that contains no discoverable migration files: the app is added to unmigrated_apps (not migrated_apps) when ignore_no_migrations is False, and remains in migrated_apps when ignore_no_migrations is True.",
+        "subject": "MigrationLoader.load_disk: migrated/unmigrated classification of an empty migrations package",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins down exactly this behavior: an implicit namespace-package migrations module (no __file__, but iterable __path__) must no longer be shunted into unmigrated_apps due to the missing __file__, and must instead continue per-module discovery via pkgutil.iter_modules(module.__path__) so its migrations load into disk_migrations and the app is treated as migrated. R2 (plain non-package module) is a different, contrasted case and does not contradict it."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 concerns discovering real migrations under a namespace package's __path__, and R2 concerns a plain non-package migrations module being treated as unmigrated; neither S_vis requirement says anything about classifying a successfully-imported empty migrations package (regular or namespace) with no discoverable files differentially based on the ignore_no_migrations flag."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target [impl-2] concerns MigrationLoader.load_disk() classification of an app whose successfully-imported migrations module is an empty regular/namespace package. I identified a plausible new witness: point MIGRATION_MODULES at the (regular empty-package) fixture migrations.test_migrations_empty, instantiate MigrationLoader(connection) (ignore_no_migrations=False), and assert 'migrations' is in loader.unmigrated_apps / not in migrated_apps; plus the ignore=True companion assertion that it stays in migrated_apps. This direct loader-membership assertion on a regular empty package is not verbatim pinned by any S_vis loader test (the closest, test_load_empty_dir, uses the *namespace* fixture migrations.faulty_migrations.namespace). However, when I actually submitted this candidate to run_test, it failed in setup for the *independent reason* that the standalone Django witness environment is not fully bootstrapped: django.test.TestCase.setUpClass raises 'TypeError: argument of type ConnectionHandler is not iterable' (app/settings/DATABASES not wired by the harness for a candidate file, unlike the repo's own runtests bootstrap). This setup crash is identical regardless of loader logic (I verified it against gold first), so it yields no genuine gold-PASSED/buggy-FAILED signal. Per the standing rule that a submission must be backed by real run_test PASSED(gold) and FAILED(buggy) executions obtained on the exact submitted source, and because I could not obtain either signal (only env setup errors), the discriminating test could not be execution-confirmed here. I therefore report found=false rather than crediting an unconfined witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy gate lives in MigrationLoader.load_disk() (django/db/migrations/loader.py): after successfully importing an app's migrations module, ``if getattr(module, '__file__', None) is None: self.unmigrated_apps.add(...); continue`` marks the app unmigrated. Discovery then proceeds with ``pkgutil.iter_modules(module.__path__)`` filtering out names starting with '_' or '~' and excluding sub-packages."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Implicit-namespace handling helper: django/utils/module_loading.py module_dir(module) resolves a module's directory from ``__path__`` (single entry) or ``__file__``, raising ValueError for split namespace packages."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MigrationTestBase.temporary_migration_module() (tests/migrations/test_base.py) copies a named migration module template into a temp dir whose parent gets an __init__.py but whose ``migrations`` subdir does not, enabling tests of no-__init__ migrations dirs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant fixtures used by loader/command tests: tests/migrations/faulty_migrations/namespace (subdir without __init__.py containing only subpackage foo/), tests/migrations/faulty_migrations/file.py (a module file), tests/migrations/migrations_test_apps/without_init_file/migrations/.keep, and tests/migrations/test_migrations_no_init/.gitkeep."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "makemigrations' write_migration_files() currently creates an empty __init__.py in any migrations directory it has to create (os.path.join(migrations_directory, '__init__.py')), and MigrationWriter.basedir resolves the destination via import_module + module_dir, so multi-location namespace concerns interact with MigrationWriter (django/db/migrations/writer.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Loader tests live in tests/migrations/test_loader.py; migration command tests in tests/migrations/test_commands.py (e.g. test_makemigrations_no_init, which asserts '0001_initial.py' is produced into a migrations dir lacking __init__.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MigrationLoader is constructed by management commands; makemigrations builds it as MigrationLoader(None, ignore_no_migrations=True), whereas migrate/showmigrations/sqlmigrate and direct loader tests use ignore_no_migrations=False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The migrated_apps / unmigrated_apps sets on MigrationLoader are the observable surface: check_key() and project_state(real_apps=...) read unmigrated_apps, and test_loader.py asserts membership (e.g. test_load_empty_dir, test_load_module_file)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Pre-existing paths left untouched by this patch: a migrations module that is a plain (non-package) module file is added to unmigrated_apps, and an app with no importable/None migrations module or an unresolved explicit module is also added to unmigrated_apps."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change affects name-filtering-free flows: discovered migration filenames still exclude names starting '_', '~', and '.', and exclude sub-packages (via pkgutil.iter_modules is_pkg)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: Investigated the oracle for a [HIDDEN] test witnessing impl-2 (MigrationLoader.load_disk classification of an app whose successfully-imported migrations module is an empty regular/namespace package: added to unmigrated_apps when ignore_no_migrations=False, stays in migrated_apps when True).\n\nA witness for this loader-specific behavior would have to assert membership in loader.migrated_apps / loader.unmigrated_apps, so it can only live in a loader/discovery test. I read every plausible home in the oracle:\n\n- tests/migrations/test_loader.py — the canonical location for such assertions (test_marked_as_migrated, test_load_empty_dir, test_load_module_file, etc.) — entire file labeled [VISIBLE].\n- tests/migrations/test_commands.py (loader exercised through migrate/makemigrations/showmigrations over empty/namespace migration packages, e.g. test_migrations_empty, test_makemigrations_no_init) — entire file [VISIBLE].\n- test_writer.py, test_base.py, test_executor.py, test_autodetector.py, test_multidb.py — all [VISIBLE], none assert load_disk empty-package migrated/unmigrated classification.\n\nAdditionally, the benchmark reports no tests currently failing against the buggy program for this target, which is a necessary condition for any witness (a witness must fail against the pre-fix program). Since every location that could carry this classification test is [VISIBLE] content and no [HIDDEN] oracle test implements the behavior, I cannot construct an execution-confirmed witness from hidden content. No test qualifies, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: Target [impl-2] concerns MigrationLoader.load_disk() classification of an app whose successfully-imported migrations module is an empty regular/namespace package. I identified a plausible new witness: point MIGRATION_MODULES at the (regular empty-package) fixture migrations.test_migrations_empty, instantiate MigrationLoader(connection) (ignore_no_migrations=False), and assert 'migrations' is in loader.unmigrated_apps / not in migrated_apps; plus the ignore=True companion assertion that it stays in migrated_apps. This direct loader-membership assertion on a regular empty package is not verbatim pinned by any S_vis loader test (the closest, test_load_empty_dir, uses the *namespace* fixture migrations.faulty_migrations.namespace). However, when I actually submitted this candidate to run_test, it failed in setup for the *independent reason* that the standalone Django witness environment is not fully bootstrapped: django.test.TestCase.setUpClass raises 'TypeError: argument of type ConnectionHandler is not iterable' (app/settings/DATABASES not wired by the harness for a candidate file, unlike the repo's own runtests bootstrap). This setup crash is identical regardless of loader logic (I verified it against gold first), so it yields no genuine gold-PASSED/buggy-FAILED signal. Per the standing rule that a submission must be backed by real run_test PASSED(gold) and FAILED(buggy) executions obtained on the exact submitted source, and because I could not obtain either signal (only env setup errors), the discriminating test could not be execution-confirmed here. I therefore report found=false rather than crediting an unconfined witness."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[impl-2] (MigrationLoader.load_disk: migrated/unmigrated classification of an empty migrations package) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target [impl-2] concerns MigrationLoader.load_disk() classification of an app whose successfully-imported migrations module is an empty regular/namespace package. I identified a plausible new witness: point MIGRATION_MODULES at the (regular empty-package) fixture migrations.test_migrations_empty, instantiate MigrationLoader(connection) (ignore_no_migrations=False), and assert 'migrations' is in loader.unmigrated_apps / not in migrated_apps; plus the ignore=True companion assertion that it stays in migrated_apps. This direct loader-membership assertion on a regular empty package is not verbatim pinned by any S_vis loader test (the closest, test_load_empty_dir, uses the *namespace* fixture migrations.faulty_migrations.namespace). However, when I actually submitted this candidate to run_test, it failed in setup for the *independent reason* that the standalone Django witness environment is not fully bootstrapped: django.test.TestCase.setUpClass raises 'TypeError: argument of type ConnectionHandler is not iterable' (app/settings/DATABASES not wired by the harness for a candidate file, unlike the repo's own runtests bootstrap). This setup crash is identical regardless of loader logic (I verified it against gold first), so it yields no genuine gold-PASSED/buggy-FAILED signal. Per the standing rule that a submission must be backed by real run_test PASSED(gold) and FAILED(buggy) executions obtained on the exact submitted source, and because I could not obtain either signal (only env setup errors), the discriminating test could not be execution-confirmed here. I therefore report found=false rather than crediting an unconfined witness.",
+    "confidence": "Medium"
+  }
+}

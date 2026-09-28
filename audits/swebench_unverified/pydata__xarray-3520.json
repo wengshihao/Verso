@@ -1,0 +1,118 @@
+{
+  "task_id": "pydata__xarray-3520",
+  "status": "ok",
+  "duration_seconds": 609.949095082935,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-3520",
+    "s_vis": [
+      {
+        "id": "r1",
+        "statement": "For the issue's MCVE construction — da = xr.DataArray([0, 1], dims=['x'], coords={'x': [0, 1], 'y': 'a'}), db = xr.DataArray([2, 3], dims=['x'], coords={'x': [0, 1], 'y': 'b'}), data = xr.concat([da, db], dim='x').set_index(xy=['x', 'y']) — calling data.sel(y='a') must not return all elements; it must select only the elements whose y level equals 'a', i.e. return an array of shape (x: 2) with values array([0, 1]) and x coordinate int64 0 1.",
+        "subject": "DataArray.sel level-based selection on a concat+set_index MultiIndex",
+        "hunk_ids": [],
+        "cited_from": "MCVE code sample:\n```python\nda = xr.DataArray([0, 1], dims=['x'], coords={'x': [0, 1], 'y': 'a'})\ndb = xr.DataArray([2, 3], dims=['x'], coords={'x': [0, 1], 'y': 'b'})\ndata = xr.concat([da, db], dim='x').set_index(xy=['x', 'y'])\ndata.sel(y='a')\n```\nExpected Output:\n```python\n>>> <xarray.DataArray (x: 2)>\n>>> array([0, 1])\n>>> Coordinates:\n>>>   * x        (x) int64 0 1\n```\nProblem description: 'Should select the array'.\nActual observed (bug):\n```python\n>>> <xarray.DataArray (x: 4)>\n>>> array([0, 1, 2, 3])\n>>> Coordinates:\n>>>   * x        (x) int64 0 1\n```"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "s1",
+        "statement": "When set_index forms a MultiIndex (two or more source coordinates merged) onto a dimension d, every other variable of the object that was still dimensioned along one of the absorbed source-coordinate names (because that source coordinate had served as the variable's own dimension) has that dimension rewritten to the MultiIndex dimension d in the result; no retained variable keeps a dangling reference to a dimension name that has become a MultiIndex level.",
+        "subject": "merge_indexes helper / Dataset.set_index (and, via shared code, DataArray.set_index)",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "s2",
+        "statement": "DataArray.set_index applies the same dimension/index bookkeeping as Dataset.set_index by round-tripping through a temporary dataset, so that after creating a (multi-)index the resulting DataArray's own data-variable dimensions are reconciled onto the new index dimension and consistent index metadata is retained — enabling correctly constructed output (e.g. a later label selection against the resulting index level) instead of the previously per-coordinate, dim-inconsistent construction.",
+        "subject": "DataArray.set_index",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "s1",
+        "entailed": "false",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "r1 only documents the observable MCVE symptom/output (sel(y='a') returns array([0,1]) rather than all elements). It says nothing about the internal invariant that other variables dimensioned along an absorbed source-coordinate name get their dimension rewritten to the MultiIndex dimension, nor about dangling dimension references."
+      },
+      {
+        "requirement_id": "s2",
+        "entailed": "false",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "r1 confirms the observable consequence (a later label selection yields correctly constructed output), but describes nothing about DataArray.set_index round-tripping through a temporary dataset to reuse Dataset bookkeeping. That specific implementation mechanism is not derivable from the visible MCVE."
+      }
+    ],
+    "target_requirement_id": "s1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_set_index_rewrites_dims_of_variables_dimensioned_on_absorbed_coord",
+      "test_source": "import xarray as xr\nimport numpy as np\n\n\ndef test_set_index_rewrites_dims_of_variables_dimensioned_on_absorbed_coord():\n    da = xr.DataArray(\n        np.ones((2, 3)),\n        dims=['x', 'y'],\n        coords={'x': range(2), 'y': range(3), 'a': ('x', [3, 4])},\n    )\n    ds = xr.Dataset({'v': da}).assign_coords(b=('x', ['p', 'q']))\n    out = ds.set_index(mx=['x', 'b'])  # MultiIndex 'mx' absorbs coords 'x' & 'b'\n\n    # every retained variable still dimensioned along the absorbed source\n    # coordinate 'x' must have that dimension rewritten to MultiIndex dim 'mx'\n    assert out['a'].dims == ('mx',)\n    assert out['v'].dims == ('mx', 'y')\n    assert out['b'].dims == ('mx',)  # re-exposed lowest level\n    assert 'x' not in list(out.dims)\n    assert set(out.dims) == {'mx', 'y'}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert out['a'].dims == ('mx',) -> got ('x',))",
+      "explanation": "Requirement s1 says that when Dataset.set_index (via merge_indexes, shared with DataArray.set_index) forms a MultiIndex by absorbing two+ source coordinates onto a new dimension d, every other retained variable that is still dimensioned along one of the absorbed source-coordinate names must have that dimension rewritten to d; buggy code lacks the GH:3512 dims_to_replace rewrite block while gold has it.\n\nI built a Dataset in which coordinate 'a' (a coordinate distinct from the merged ones) and the data variable 'v' are still dimensioned along 'x', then called set_index(mx=['x','b']) to form a MultiIndex 'mx' from source coords 'x' and 'b' (which live on dim 'x'). In buggy, after set_index the retained vars keep dims ('x',) and ('x','y') leaving a dangling uncoordinated 'x' dimension (dims = {x, y, mx}); in gold, merge_indexes rewrites every variable referencing the absorbed 'x' level to the new MultiIndex dimension so vars become ('mx',) and ('mx','y') and the stale 'x' dimension disappears (dims = {mx, y}). assert out['a'].dims == ('mx',) passes on gold and fails on buggy (got ('x',)).\n\nThis is an independent construction, not an echo of the visible tests: the [VISIBLE] TestDataset.test_set_index only forms a MultiIndex over level coords (with no extra retained variables dimensioned on the absorbed level names), and DataArray.set_index doc/tests only cover the single-coordinate (plain pd.Index) path which intentionally doesn't trigger dims_to_replace remapping. My scenario specifically exercises the two+ source-coordinate MultiIndex branch that the fix added, so it is a genuine hidden-fact witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "xarray codebase: core label/Dataset-level logic for sel/indexing lives in xarray/core/indexing.py (convert_label_indexer, remap_label_indexers, get_dim_indexers) and xarray/core/indexes.py; set_index/merge_indexes/split_indexes in xarray/core/dataset.py; DataArray.sel delegates to Dataset.sel via _to_temp_dataset/_from_temp_dataset."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests that exercise the area: TestDataset.test_sel, test_selection_multiindex, test_set_index/test_reset_index in xarray/tests/test_dataset.py, and TestConcat... in xarray/tests/test_concat.py. None encode the exact issue scenario (concat of differing scalar y coords then set_index then .sel(y=...))."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The developer fix is NOT shown; S_vis is derived only from the issue MCVE + expected output."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue MCVE concatenates two 2-element DataArrays da (y='a') and db (y='b') along their existing dim x, then set_index(xy=['x','y']); the exact resulting intermediate index/coord shape is intricate (scalar y promoted/repeated) and the issue's only explicit contract is the behavior of the final .sel(y='a')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The functional heart of the fix lives in dataset.merge_indexes (shared by Dataset.set_index and DataArray.set_index); via H1 DataArray.set_index now forwards to Dataset.set_index through _to_temp_dataset/_from_temp_dataset and no longer imports/normalizes merge itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes merge_indexes from DataArray's set of imported helpers, confirming merge handling is only reached through the Dataset path after the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed merge_indexes block is commented 'GH: 3512' (referencing the GitHub issue this bug corresponds to)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "merge_indexes only performs the dim remapping for MultiIndex groups (else-branch, H3/H4) where level names are recorded in dims_to_replace; the single-coordinate case (Index path) is untouched by H2/H3/H4 and does not trigger remapping."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DataArray.reset_index is unchanged by this patch and still splits in place via split_indexes."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [s1]: Requirement r (set_index/merge_indexes rewriting the dims of variables that referenced an absorbed source-coordinate name to the freshly-formed MultiIndex dimension) is tested by no assertion that qualifies as a Witness.\n\nI inventoried the oracle test files via list_test_files and read every module that exercises this area: xarray/tests/test_dataarray.py (TestDataArray.set_index/sel/selection_multiindex*), xarray/tests/test_dataset.py (TestDataset.set_index/reset_index/reorder_levels/selection_multiindex), xarray/tests/test_concat.py, xarray/tests/test_combine.py, xarray/tests/test_indexing.py, xarray/tests/test_variable.py, xarray/tests/test_merge.py and xarray/tests/test_dask.py. Every one of these was labeled [VISIBLE] by read_test_file, and per the pipeline rules an assertion drawn from [VISIBLE] content can never serve as a Witness — even if it inspected the right method, the behavior it checks was not hidden from the repair system. More fundamentally, none of the visible tests encode the specific dim-rewrite behavior in r (the only failing test reported, TestDataArray::test_selection_multiindex_from_level, is not present in the [VISIBLE] copy of test_dataarray.py that read_test_file returns, and no [HIDDEN] counterpart containing it was surfaced anywhere in the oracle).\n\nBecause a proper Witness must (a) pass on gold, fail on buggy, AND (b) rest on [HIDDEN] assertions whose test_source I can actually confirm by running against both programs, and I could neither locate such a [HIDDEN] assertion matching r nor construct test_source from one, I am reporting found=false rather than submitting an unverified or VISIBLE-content-based test."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [s1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[s1] (merge_indexes helper / Dataset.set_index (and, via shared code, DataArray.set_index)): When set_index forms a MultiIndex (two or more source coordinates merged) onto a dimension d, every other variable of the object that was still dimensioned along one of the absorbed source-coordinate names (because that source coordinate had served as the variable's own dimension) has that dimension rewritten to the MultiIndex dimension d in the result; no retained variable keeps a dangling reference to a dimension name that has become a MultiIndex level. — not entailed by S_vis (r1 only documents the observable MCVE symptom/output (sel(y='a') returns array([0,1]) rather than all elements). It says nothing about the internal invariant that other variables dimensioned along an absorbed source-coordinate name get their dimension rewritten to the MultiIndex dimension, nor about dangling dimension references.); confirmed by a synthesized witness: Requirement s1 says that when Dataset.set_index (via merge_indexes, shared with DataArray.set_index) forms a MultiIndex by absorbing two+ source coordinates onto a new dimension d, every other retained variable that is still dimensioned along one of the absorbed source-coordinate names must have that dimension rewritten to d; buggy code lacks the GH:3512 dims_to_replace rewrite block while gold has it.\n\nI built a Dataset in which coordinate 'a' (a coordinate distinct from the merged ones) and the data variable 'v' are still dimensioned along 'x', then called set_index(mx=['x','b']) to form a MultiIndex 'mx' from source coords 'x' and 'b' (which live on dim 'x'). In buggy, after set_index the retained vars keep dims ('x',) and ('x','y') leaving a dangling uncoordinated 'x' dimension (dims = {x, y, mx}); in gold, merge_indexes rewrites every variable referencing the absorbed 'x' level to the new MultiIndex dimension so vars become ('mx',) and ('mx','y') and the stale 'x' dimension disappears (dims = {mx, y}). assert out['a'].dims == ('mx',) passes on gold and fails on buggy (got ('x',)).\n\nThis is an independent construction, not an echo of the visible tests: the [VISIBLE] TestDataset.test_set_index only forms a MultiIndex over level coords (with no extra retained variables dimensioned on the absorbed level names), and DataArray.set_index doc/tests only cover the single-coordinate (plain pd.Index) path which intentionally doesn't trigger dims_to_replace remapping. My scenario specifically exercises the two+ source-coordinate MultiIndex branch that the fix added, so it is a genuine hidden-fact witness.",
+    "confidence": "Medium"
+  }
+}

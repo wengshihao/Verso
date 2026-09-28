@@ -1,0 +1,96 @@
+{
+  "task_id": "django__django-13279",
+  "status": "ok",
+  "duration_seconds": 385.43929333402775,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13279",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "SessionBase.encode() must produce its encoded session string in the pre-Django-3.1 legacy session format whenever settings.DEFAULT_HASHING_ALGORITHM == 'sha1' (the transitional value used during a rolling upgrade shared with older Django instances), so that data written by this Django-3.1 instance stays decodable by the older Django instances; it should otherwise (e.g. the transitional setting's default 'sha256') continue using the newer signing-based format.",
+        "subject": "SessionBase.encode (django.contrib.sessions.backends.base)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"In d4fff711d4c97356bd6ba1273d2a5e349326eb5f (#31274) we've changed format for session data, that's why setting DEFAULT_HASHING_ALGORITHM to 'sha1' is not enough to support running multiple instances of the same project during the transition to Django 3.1. We could use the legacy encode() when DEFAULT_HASHING_ALGORITHM == 'sha1' (it's a bit hacky).\" Docs ref/settings.txt: \"If you are upgrading multiple instances of the same project to Django 3.1, you should set DEFAULT_HASHING_ALGORITHM to 'sha1' during the transition, in order to allow compatibility with the older versions of Django.\""
+      },
+      {
+        "id": "R2",
+        "statement": "SessionBase.decode() must successfully decode session data that was produced in the pre-Django-3.1 legacy format (base64 of '<hash>:<serialized data>'), returning the original session dictionary, in addition to decoding new-format (signing-generated) data.",
+        "subject": "SessionBase.decode (django.contrib.sessions.backends.base)",
+        "hunk_ids": [],
+        "cited_from": "tests/sessions_tests/tests.py test_decode_legacy: \"legacy_encoded = ('OWUzNTNmNWQxNTBjOWExZmM4MmQ3NzNhMDRmMjU4NmYwNDUyNGI2NDp7ImEgdGVzdCBrZXkiOiJhIHRlc3QgdmFsdWUifQ=='); self.assertEqual(self.session.decode(legacy_encoded), {'a test key': 'a test value'})\", and test_decode: \"encoded = self.session.encode(data); self.assertEqual(self.session.decode(encoded), data)\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "SessionBase.encode returns the output of self._legacy_encode(session_dict) when settings.DEFAULT_HASHING_ALGORITHM == 'sha1', and otherwise returns the new-style signing.dumps(session_dict, salt=self.key_salt, serializer=self.serializer, compress=True) result.",
+        "subject": "django.contrib.sessions.backends.base.SessionBase.encode",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "SessionBase._legacy_encode returns an ASCII string that is base64-encoded content of hash.encode() + b':' + serialized, where serialized is self.serializer().dumps(session_dict) and hash is self._hash(serialized); the resulting string is in the legacy format consumed by _legacy_decode.",
+        "subject": "django.contrib.sessions.backends.base.SessionBase._legacy_encode",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly states SessionBase.encode must produce the legacy (pre-3.1) format when DEFAULT_HASHING_ALGORITHM=='sha1' and otherwise use the newer signing-based format, which is exactly the branch behavior S_impl R1 commits to (legacy output in that case, signing.dumps otherwise)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 pin down the legacy encode format as base64 of '<hash>:<serialized data>' and that encode must yield it when sha1, which the _legacy_encode helper produces; however S_vis never names a distinct _legacy_encode method nor pins its exact composition via self.serializer().dumps and self._hash(serialized), leaving the specific helper implementation detail ambiguous."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_direct_legacy_encode_format",
+      "test_source": "import base64\nimport unittest\n\nimport django\nfrom django.conf import settings\n\nsettings.configure(\n    SECRET_KEY='django_tests_secret_key',\n    SESSION_SERIALIZER='django.contrib.sessions.serializers.JSONSerializer',\n    DEFAULT_HASHING_ALGORITHM='sha256',\n    INSTALLED_APPS=[],\n)\ndjango.setup()\n\nfrom django.contrib.sessions.backends.base import SessionBase\nfrom django.utils.crypto import salted_hmac\n\n\nclass LegacyEncodeWitness(unittest.TestCase):\n\n    def test_direct_legacy_encode_format(self):\n        session = SessionBase()\n        session_dict = {'a test key': 'a test value'}\n        serialized = session.serializer().dumps(session_dict)\n        hash_hex = salted_hmac(\n            'django.contrib.sessions' + session.__class__.__name__,\n            serialized,\n        ).hexdigest()\n        expected = base64.b64encode(\n            hash_hex.encode() + b':' + serialized\n        ).decode('ascii')\n        result = session._legacy_encode(session_dict)\n        self.assertEqual(result, expected)\n        self.assertIsInstance(result, str)\n        self.assertTrue(all(ord(ch) < 128 for ch in result))\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AttributeError: 'SessionBase' object has no attribute '_legacy_encode' (line calling session._legacy_encode(session_dict))",
+      "explanation": "R2 describes exactly the SessionBase._legacy_encode helper (H1): given a session dict,  serialize via self.serializer().dumps,  compute self._hash(serialized)  (which in Django uses salted_hmac with salt 'django.contrib.sessions'+ClassName), and  return base64.b64encode(hash.encode() + b':' + serialized).decode('ascii').  The witness builds a SessionBase instance and directly calls _legacy_encode on {'a test key': 'a test value'}, then asserts that raw_ascii == hex_hash_bytes + b':' + json_serialized, that the result is a str, and that it is pure ASCII.\n\nThis is the exact helper added by H1 that the pre-fix (buggy) program does not have at all — in the buggy revision SessionBase only defines _legacy_decode and encode() unconditionally does signing.dumps; there is no _legacy_encode method.  Hence execution is confirmed: on the gold program the test PASSES (the method exists and returns the exactly predicted ascii/base64 legacy hash:serialized payload), while on the buggy program it FAILS with AttributeError: 'SessionBase' object has no attribute '_legacy_encode'.\n\nThis is a genuine, hidden discriminator and not a mere reinvention of an oracle assertion: the visible test surface (sessions_tests/test_decode_legacy etc.) only exercises the decode side with a fixed literal string and never asserts on _legacy_encode or the encode-side legacy format, so no visible test pins down this newly-added helper."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy revision already defined _legacy_decode, _hash, and a new-style encode (signing.dumps); the patch adds the sha1-based routing in encode (H0) and a new _legacy_encode helper (H1) so that when DEFAULT_HASHING_ALGORITHM is still 'sha1', encode keeps emitting the legacy format that _legacy_decode understands."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The transition is marked with RemovedInDjango40Warning comments: both the DEFAULT_HASHING_ALGORITHM-based dispatch and _legacy_encode are slated for removal."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target requirement R2 concerns SessionBase._legacy_encode -- that it returns an ASCII base64 string of hash.encode() + b':' + serialized, emitted by encode() only when DEFAULT_HASHING_ALGORITHM is overridden to 'sha1' (a deprecated, RemovedInDjango40 path). I examined every session/encoding-relevant test file in the oracle: tests/sessions_tests/tests.py (SessionTestsMixin with test_decode/test_decode_legacy, CookieSession tests, etc.), tests/deprecation/* (the DEFAULT_HASHING_ALGORITHM system-check/deprecation tests), tests/messages_tests/* (test_cookie.py with test_default_hashing_algorithm and test_legacy_hash_decode, base.py, test_fallback.py), and tests/signed_cookies_tests/tests.py, plus tests/deprecation/test_middleware_mixin.py. All were labeled [VISIBLE]. None of them contains an assertion on the format produced by SessionBase.encode()/._legacy_encode() under a DEFAULT_HASHING_ALGORITHM='sha1' override. The only encode-side legacy-material tests are for django.contrib.messages CookieStorage's OWN legacy hash format (its _legacy_hash / hash-and-value concatenation), which is a different code path from SessionBase._legacy_encode and does not exercise the requirement's behavior. The only session tests touching the base64 legacy format (test_decode_legacy) exercise _legacy_decode loading a fixed literal string -- a decode-side behavior present in the buggy program already, so it cannot witness the newly added encode-side helper R2 describes. Also consistent: no oracle test is currently failing against the buggy program. Since every relevant oracle assertion is drawn from [VISIBLE] content and none genuinely tests R2's encode-legacy-format behavior (no [HIDDEN] session test exists), there is no admissible witness. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.contrib.sessions.backends.base.SessionBase._legacy_encode): SessionBase._legacy_encode returns an ASCII string that is base64-encoded content of hash.encode() + b':' + serialized, where serialized is self.serializer().dumps(session_dict) and hash is self._hash(serialized); the resulting string is in the legacy format consumed by _legacy_decode. — not entailed by S_vis (S_vis R1/R2 pin down the legacy encode format as base64 of '<hash>:<serialized data>' and that encode must yield it when sha1, which the _legacy_encode helper produces; however S_vis never names a distinct _legacy_encode method nor pins its exact composition via self.serializer().dumps and self._hash(serialized), leaving the specific helper implementation detail ambiguous.); confirmed by a synthesized witness: R2 describes exactly the SessionBase._legacy_encode helper (H1): given a session dict,  serialize via self.serializer().dumps,  compute self._hash(serialized)  (which in Django uses salted_hmac with salt 'django.contrib.sessions'+ClassName), and  return base64.b64encode(hash.encode() + b':' + serialized).decode('ascii').  The witness builds a SessionBase instance and directly calls _legacy_encode on {'a test key': 'a test value'}, then asserts that raw_ascii == hex_hash_bytes + b':' + json_serialized, that the result is a str, and that it is pure ASCII.\n\nThis is the exact helper added by H1 that the pre-fix (buggy) program does not have at all — in the buggy revision SessionBase only defines _legacy_decode and encode() unconditionally does signing.dumps; there is no _legacy_encode method.  Hence execution is confirmed: on the gold program the test PASSES (the method exists and returns the exactly predicted ascii/base64 legacy hash:serialized payload), while on the buggy program it FAILS with AttributeError: 'SessionBase' object has no attribute '_legacy_encode'.\n\nThis is a genuine, hidden discriminator and not a mere reinvention of an oracle assertion: the visible test surface (sessions_tests/test_decode_legacy etc.) only exercises the decode side with a fixed literal string and never asserts on _legacy_encode or the encode-side legacy format, so no visible test pins down this newly-added helper.",
+    "confidence": "Medium"
+  }
+}

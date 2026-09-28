@@ -1,0 +1,139 @@
+{
+  "task_id": "django__django-13128",
+  "status": "ok",
+  "duration_seconds": 782.8878109169891,
+  "llm_calls": 48,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13128",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "An annotation expression that subtracts two equal-typed temporal fields (the issue's DateTimeField 'end' minus DateTimeField 'start') and then adds that result to a DurationField value must be accepted, rather than raising FieldError 'Expression contains mixed types: DateTimeField, DurationField. You must set output_field.'; i.e. the temporal subtraction must be resolvable as a DurationField so it can combine with a DurationField inside another expression without an enclosing ExpressionWrapper supplying output_field.",
+        "subject": "django.db.models.expressions.CombinedExpression (temporal subtraction type resolution within compound expressions)",
+        "hunk_ids": [],
+        "cited_from": "Issue code: \"Experiment.objects.annotate(delta=F('end') - F('start') + Value(datetime.timedelta(), output_field=DurationField()))\" and the reported failure \"django.core.exceptions.FieldError: Expression contains mixed types: DateTimeField, DurationField. You must set output_field.\", with title \"make temporal subtraction work without ExpressionWrapper\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "During CombinedExpression.resolve_expression, a combined subtraction (connector SUB) whose two operands resolve to the same datetime field type (one of DateField/DateTimeField/TimeField) is rewritten, at resolution time, into a TemporalSubtraction whose output field is a DurationField; the resulting expression therefore is usable as a DurationField-typed operand inside a larger combined expression (e.g. combined by addition with a DurationField-valued operand such as datetime.timedelta), and resolving/evaluating such an enclosing expression succeeds without raising a 'Expression contains mixed types ... You must set output_field.' FieldError — instead of only working when the temporal subtraction was separately wrapped in an ExpressionWrapper that explicitly set output_field to DurationField.",
+        "subject": "CombinedExpression.resolve_expression / TemporalSubtraction (expressions.py)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During CombinedExpression.resolve_expression, a combined arithmetic expression whose two operands resolve to different field internal types where at least one is DurationField (a DurationField mixed with a non-duration field) is rewritten, at resolution time, into a DurationExpression and recursively resolved; the rewritten DurationExpression is resolved as a duration-arithmetic expression on every backend rather than only on backends lacking a native duration field.",
+        "subject": "CombinedExpression.resolve_expression / DurationExpression (expressions.py)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "A DurationExpression compiled on a backend that has native duration-field support produces SQL through the standard generic combined-arithmetic path (CombinedExpression.as_sql combining the left and right already-compiled SQL strings), while on a backend without native duration-field support it keeps compiling through the duration-specific path guarded by check_expression_support, which may raise for unsupported backends.",
+        "subject": "DurationExpression.as_sql (expressions.py)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 directly pins the observable behavior: a compound expression that subtracts two equal-typed temporal fields and then adds to a DurationField must be accepted and resolved as a DurationField without an enclosing ExpressionWrapper setting output_field and without the 'Expression contains mixed types' FieldError. R1(S_impl) describes exactly this same behavior (temporal subtraction resolves as DurationField usable as an operand combining with a DurationField/timedelta operand, no FieldError), so it is entailed; the naming of the rewrite mechanism is incidental implementation detail already covered by the observable result."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 concerns temporal subtraction combining with a Duration operand, not DurationField mixed with a non-duration field, nor any DurationExpression or per-backend resolution distinction. Nothing in S_vis speaks to rewriting Duration-with-non-duration arithmetic into a DurationExpression, so R2 is not entailed."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis says nothing about SQL compilation paths, native vs non-native duration-field backends, CombinedExpression.as_sql generic arithmetic, or check_expression_support guards. R3(S_impl) concerns internal SQL generation details entirely absent from visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_duration_mixed_combined_resolves_to_duration_expression",
+      "test_source": "def test_duration_mixed_combined_resolves_to_duration_expression():\n    import django\n    from django.conf import settings\n    settings.configure(\n        DEBUG=True,\n        SECRET_KEY='witness',\n        INSTALLED_APPS=['tests.expressions'],\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\n    django.setup()\n    from django.db.models import F\n    from django.db.models.expressions import DurationExpression\n    from tests.expressions.models import Experiment\n\n    qs = Experiment.objects.annotate(combined=F('start') + F('estimated_time'))\n    resolved = qs.query.annotations['combined']\n    assert isinstance(resolved, DurationExpression)",
+      "gold_result": "PASSED - on gold, resolve_expression of the combined expression F('start')+F('estimated_time') (DateTimeField mixed with DurationField) rewrites the node into a DurationExpression, so the annotation's resolved node is an instance of DurationExpression.",
+      "buggy_result": "FAILED - on buggy, resolve_expression returns a plain CombinedExpression copy (the rewrite only existed in as_sql and only on backends lacking a native duration field), so isinstance(...) is False and the assertion fails.",
+      "explanation": "R2 requires that during CombinedExpression.resolve_expression, a combined arithmetic expression whose two operands resolve to different internal types where at least one is DurationField be rewritten into a DurationExpression and recursively resolved (so the specialized duration-arithmetic path is applied on every backend, not only on databases lacking a native duration field). The gold patch (H1) added this rewrite to resolve_expression; the buggy code never rewrites at resolve time (only as_sql rewrote, and then only when the backend lacked a native duration field). I directly exercise that: I take the realistic Experiment model where start is a DateTimeField and estimated_time is a DurationField, combine them with '+', and check the node actually stored in the annotation after Django resolves/compiles the queryset. On gold the resolved annotation node is a DurationExpression (rewrite performed); on buggy it remains a plain CombinedExpression copy, so isinstance(...) is False. This is precisely R2's behavioral distinction and is not pinned down by any visible oracle test: the visible temporal-subtraction tests all wrap their expressions in ExpressionWrapper(output_field=DurationField()) which bypasses R2's mixed-type rewrite, and none of the visible tests ever asserts that a combined Duration+non-duration expression resolves to a DurationExpression instance. The assertion is verified by run_test: gold PASSED, buggy FAILED against the exact byte-identical source above."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant field types: tests/expressions/models.py defines Experiment with start=models.DateTimeField(), end=models.DateTimeField() (plus assigned/completed DateField and estimated_time DurationField)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/db/models/expressions.py: CombinedExpression.as_sql() special-cases \"TemporalSubtraction\" only when connector == SUB and lhs_type == rhs_type in {DateField, DateTimeField, TimeField}, constructing TemporalSubtraction at SQL-compilation time; TemporalSubtraction declares output_field = fields.DurationField()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/db/models/expressions.py: the output-type path used for annotations is BaseExpression._resolve_output_field (not specialized for subtraction), which raises the 'Expression contains mixed types ... You must set output_field.' FieldError when a node's sources disagree — for a subtraction of two DateTimeField it returns DateTimeField rather than DurationField, which is why a surrounding add of a DurationField value errors."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing temporal-subtraction tests in tests/expressions/tests.py (e.g. test_date_subtraction, test_datetime_subtraction, test_time_subtraction) all wrap the subtraction in ExpressionWrapper(..., output_field=DurationField()) and are gated by @skipUnlessDBFeature('supports_temporal_subtraction')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue example uses an empty datetime.timedelta() only as a minimal repro for combining a temporal subtraction with a DurationField; value arithmetic is incidental."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The type-based routing previously performed inside CombinedExpression.as_sql (special-casing DurationExpression/TemporalSubtraction) was relocated into CombinedExpression.resolve_expression (H0 removes the as_sql branch; H1 adds it to resolve_expression)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The resolve-time rewrite guard skips instances already of type DurationExpression or TemporalSubtraction so a specialized subclass, when its own resolve_expression runs (inherited from CombinedExpression), is not re-rewritten."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 builds the specialized subtypes passing the unresolved original self.lhs/self.rhs, then calls their resolve_expression so resolved copies are produced."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DurationExpression inherits CombinedExpression.resolve_expression and has no instance-level fixed output_field (only TemporalSubtraction declares output_field = fields.DurationField())."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The concrete scenario for the temporal case is Experiment fields start/end DateTimeField and the estimated_time DurationField (per earlier stage notes)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: No [HIDDEN] oracle test asserts R2. I verified the R2 behavioral distinction is real: on the expressions app's Experiment model (start/end DateTimeField, estimated_time DurationField), annotating `x = F('end') - F('start') + F('estimated_time')` passes on gold but raises `FieldError: Expression contains mixed types: DateTimeField, DurationField. You must set output_field.` on buggy. However, every real oracle test that could witness R2 is in [VISIBLE] content: tests/expressions/tests.py (the canonical home of all Django temporal-subtraction/CombinedExpression tests) is [VISIBLE], and crucially its temporal tests (test_date_subtraction/test_datetime_subtraction/test_time_subtraction etc.) all wrap the subtraction in ExpressionWrapper(output_field=DurationField()), which is precisely the construct that bypasses R2's mixed-type trigger and would pass on buggy too — so even ignoring visibility they are not R2 witnesses. The only [HIDDEN] files near the feature (tests/expressions/models.py, tests/test_sqlite.py, tests/runtests.py) contain no test assertions (data model / settings / runner driver). Adjacent areas (expressions test_deprecation.py & test_queryset_values.py, model_fields duration/datetime tests, db_functions datetime tests, lookup time/decimal tests) are all [VISIBLE] and none asserts the combined-Duration scenario. The recorded failing-against-buggy test set is empty. My gold-pass/buggy-fail demonstration is a self-constructed check derived from hidden models content, not an assertion present in any oracle test, so it cannot serve as the needed Witness. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (CombinedExpression.resolve_expression / DurationExpression (expressions.py)): During CombinedExpression.resolve_expression, a combined arithmetic expression whose two operands resolve to different field internal types where at least one is DurationField (a DurationField mixed with a non-duration field) is rewritten, at resolution time, into a DurationExpression and recursively resolved; the rewritten DurationExpression is resolved as a duration-arithmetic expression on every backend rather than only on backends lacking a native duration field. — not entailed by S_vis (S_vis R1 concerns temporal subtraction combining with a Duration operand, not DurationField mixed with a non-duration field, nor any DurationExpression or per-backend resolution distinction. Nothing in S_vis speaks to rewriting Duration-with-non-duration arithmetic into a DurationExpression, so R2 is not entailed.); confirmed by a synthesized witness: R2 requires that during CombinedExpression.resolve_expression, a combined arithmetic expression whose two operands resolve to different internal types where at least one is DurationField be rewritten into a DurationExpression and recursively resolved (so the specialized duration-arithmetic path is applied on every backend, not only on databases lacking a native duration field). The gold patch (H1) added this rewrite to resolve_expression; the buggy code never rewrites at resolve time (only as_sql rewrote, and then only when the backend lacked a native duration field). I directly exercise that: I take the realistic Experiment model where start is a DateTimeField and estimated_time is a DurationField, combine them with '+', and check the node actually stored in the annotation after Django resolves/compiles the queryset. On gold the resolved annotation node is a DurationExpression (rewrite performed); on buggy it remains a plain CombinedExpression copy, so isinstance(...) is False. This is precisely R2's behavioral distinction and is not pinned down by any visible oracle test: the visible temporal-subtraction tests all wrap their expressions in ExpressionWrapper(output_field=DurationField()) which bypasses R2's mixed-type rewrite, and none of the visible tests ever asserts that a combined Duration+non-duration expression resolves to a DurationExpression instance. The assertion is verified by run_test: gold PASSED, buggy FAILED against the exact byte-identical source above.",
+    "confidence": "Medium"
+  }
+}

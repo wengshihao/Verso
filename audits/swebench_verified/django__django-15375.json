@@ -1,0 +1,107 @@
+{
+  "task_id": "django__django-15375",
+  "status": "ok",
+  "duration_seconds": 533.8233767499914,
+  "llm_calls": 47,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15375",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling .aggregate() with an aggregate function that carries a `default` argument (e.g. Sum('id', default=0)) on a QuerySet that has existing annotations from annotate() (e.g. annotate(idx=F('id'))) must succeed, producing valid SQL that returns the aggregated value — it must not crash with a SQL syntax error nor generate the empty-select query `SELECT FROM (...)` as its outer aggregate query.",
+        "subject": "QuerySet.aggregate / Query.get_aggregation with Aggregate(default=...) after annotate()",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"But add the aggregate classes’ default argument (new in 4.0), and it breaks: In [6]: Book.objects.annotate(idx=F(\"id\")).aggregate(Sum(\"id\", default=0)) ... OperationalError: near \"FROM\": syntax error ... The generated SQL: query = 'SELECT FROM (SELECT \"core_book\".\"id\" AS \"idx\", COALESCE(SUM(\"core_book\".\"id\"), ?) AS \"id__sum\" FROM \"core_book\") subquery'\" and \"In [5]: Book.objects.annotate(idx=F(\"id\")).aggregate(Sum(\"id\")) Out[5]: {'id__sum': 4560}\" and \"In [8]: Book.objects.annotate(idx=F(\"id\")).aggregate(x=Coalesce(Sum(\"id\"), 0)) Out[8]: {'x': 4560}\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Aggregate.resolve_expression() resolves an Aggregate that has a non-None `default`, the Coalesce expression it returns (that wraps the resolved aggregate and the resolved default) is assigned the same `is_summary` value as the resolved aggregate expression `c` had before it was wrapped.",
+        "subject": "django.db.models.aggregates.Aggregate.resolve_expression",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "An aggregation performed on a query that must be split into an inner query and an outer AggregateQuery (e.g. a query that already has prior annotate()/values() annotations) and whose aggregate expression is an Aggregate given a non-None `default` correctly retains that expression in the outer query and returns its coalesced (computed-or-default) value, rather than producing an empty/broken result such as `SELECT FROM (...)` with a lost aggregate.",
+        "subject": "QuerySet.aggregate over Query.get_aggregation (Aggregate-with-default in subquery form)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis describes only the observable SQL syntax-error symptom of the bug. Nothing in the visible issue report mentions Aggregate.resolve_expression, is_summary, or the internal Coalesce-wrapping mechanism that S_impl R1 specifies, so the implementation-level requirement is not pinned down by visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down the exact behavior: an aggregate-with-default on an annotated (inner/outer split) query must succeed and return the coalesced value rather than producing the broken empty-select 'SELECT FROM (...)' query or a syntax error, matching S_impl R2."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug is in the interaction between Aggregate.resolve_expression() in django/db/models/aggregates.py (which, when `default` is set, resets c.default=None and returns `Coalesce(c, default, output_field=...)`) and Query.get_aggregation() in django/db/models/sql/query.py (which only moves annotations with expression.is_summary==True out of the inner query into the outer AggregateQuery when it must use a subquery). The Coalesce wrapper returned from resolve_expression does not propagate the is_summary flag, so when the query needs the subquery form (because it has prior annotate() annotations) the wrapped default-aggregate is left in the inner query and never reaches the outer AggregateQuery's annotation_select — producing SQLAggregateCompiler's empty `SELECT FROM (...)` ."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Alternative that works per the issue: annotate+aggregate without default works fine, and annotate then aggregate(x=Coalesce(Sum('id'), 0)) works."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reported as failing on both PostgreSQL and SQLite under Django 4.0.1."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant tests live under tests/aggregation/, tests/aggregation_regress/, and tests/expressions/ (e.g. BasicExpressionsTests.test_annotate_values_aggregate in tests/expressions/tests.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "SQLAggregateCompiler (SQLAggregateCompiler.as_sql in django/db/models/sql/compiler.py) renders the outer SELECT from self.query.annotation_select; it produces the broken `SELECT  FROM (%s) subquery` when annotation_select is empty."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk (django/db/models/aggregates.py, Aggregate.resolve_expression) was previously wrapping a default-bearing Aggregate in Coalesce(c, default, output_field=...) before returning, but never propagated c.is_summary to the wrapper. Query.get_aggregation() (django/db/models/sql/query.py) only hoists annotations with expression.is_summary==True from the inner query into the outer AggregateQuery when the subquery form is needed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The walrus `(default := c.default)` is evaluated only when `default is not None` at the `if` guard; the changed lines run only on that branch (aggregate without default is returned unchanged as `c`)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle test setup for a test that enforces R1 (Aggregate.resolve_expression must assign the returned Coalesce wrapper the same is_summary value as the resolved aggregate `c` when a non-None default is present).\n\nFiles checked (the natural homes for this behavior, as referenced by the task notebook): tests/aggregation/tests.py, tests/aggregation/test_filter_argument.py, tests/aggregation_regress/tests.py, tests/annotations/tests.py, tests/expressions/tests.py, tests/expressions/test_queryset_values.py, tests/db_functions/comparison/test_coalesce.py. Every one of these assertion-bearing test files is marked [VISIBLE], meaning their assertions were part of the material already visible to the repair system and therefore cannot serve as a Witness for R1 regardless of how closely they match. None of them even contains an end-to-end aggregate-with-default-over-an-already-annotated/subquery-form query that would specifically exercise the is_summary propagation to the Coalesce wrapper (the closest default-bearing aggregate tests use plain aggregate() over a filtered queryset, which does not require the subquery hoisting path in Query.get_aggregation).\n\nThe only [HIDDEN] files I encountered within these test families are model definition files (e.g. tests/aggregation/models.py, tests/aggregation_regress/models.py) which contain data-model declarations only and no test assertions. No [HIDDEN] oracle test file enforcing R1 was found. Additionally, no test is recorded as failing against the buggy program (a pre-condition for any witness). I therefore conclude no genuine, hidden oracle Witness for R1 exists in the benchmark."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: gave up after exhausting its exploration budget without concluding (23 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (django.db.models.aggregates.Aggregate.resolve_expression) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

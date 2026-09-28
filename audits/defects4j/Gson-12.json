@@ -1,0 +1,124 @@
+{
+  "task_id": "Gson-12",
+  "status": "ok",
+  "duration_seconds": 118.8989805550001,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "Gson-12",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling skipValue() on a JsonTreeReader constructed over a whole JsonObject that has no members (equivalent to JSON '{}') must complete without throwing, and afterwards peek() must return JsonToken.END_DOCUMENT (it must not throw ArrayIndexOutOfBoundsException).",
+        "subject": "JsonTreeReader.skipValue()",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"skipValue() throws a ArrayIndexOutOfBoundsException\\n...\\ntry (JsonTreeReader in = new JsonTreeReader(new JsonObject())) {\\n    in.skipValue();\\n}\" and test: \"public void testSkipValue_emptyJsonObject() throws IOException {\\n    JsonTreeReader in = new JsonTreeReader(new JsonObject());\\n    in.skipValue();\\n    assertEquals(JsonToken.END_DOCUMENT, in.peek());\\n}\""
+      },
+      {
+        "id": "R2",
+        "statement": "Calling skipValue() on a JsonTreeReader constructed over a whole, populated JsonObject whose members include nested JsonArray, JsonObject, boolean, number, JsonNull, string, and long primitive values must skip the entire structure without throwing and afterwards peek() must return JsonToken.END_DOCUMENT.",
+        "subject": "JsonTreeReader.skipValue()",
+        "hunk_ids": [],
+        "cited_from": "test: \"public void testSkipValue_filledJsonObject() throws IOException {\\n    JsonObject jsonObject = new JsonObject();\\n    JsonArray jsonArray = new JsonArray();\\n    jsonArray.add('c');\\n    jsonArray.add(\\\"text\\\");\\n    jsonObject.add(\\\"a\\\", jsonArray);\\n    jsonObject.addProperty(\\\"b\\\", true);\\n    jsonObject.addProperty(\\\"i\\\", 1);\\n    jsonObject.add(\\\"n\\\", JsonNull.INSTANCE);\\n    JsonObject jsonObject2 = new JsonObject();\\n    jsonObject2.addProperty(\\\"n\\\", 2L);\\n    jsonObject.add(\\\"o\\\", jsonObject2);\\n    jsonObject.addProperty(\\\"s\\\", \\\"text\\\");\\n    JsonTreeReader in = new JsonTreeReader(jsonObject);\\n    in.skipValue();\\n    assertEquals(JsonToken.END_DOCUMENT, in.peek());\\n}\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "skipValue() on a JsonTreeReader positioned at the beginning of a top-level JSON document (e.g. a standalone root JsonObject whose peek() reports BEGIN_OBJECT rather than NAME, so the value being skipped is the entire remaining stack) completes normally and does not throw ArrayIndexOutOfBoundsException, instead consuming the value down to an empty stack.",
+        "subject": "JsonTreeReader.skipValue()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "After popping the skipped value, skipValue() performs the post-pop pathName-=“null” and pathIndex-increment bookkeeping writes only while enclosing container elements remain on the stack (stackSize > 0); when the skipped value is the whole top-level value and the stack is thereby emptied, no such bookkeeping write to the (nonexistent) enclosing scope is performed.",
+        "subject": "JsonTreeReader.skipValue() path bookkeeping",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 and R2 both call skipValue() on a JsonTreeReader positioned over a whole top-level root JsonObject (BEGIN_OBJECT), asserting no AIOOBE and that peek() returns END_DOCUMENT afterward — exactly the 'skip the entire remaining stack to empty' behavior R1 demands."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 specifies an internal implementation detail (guarding pathName/pathIndex bookkeeping writes behind a stackSize>0 check). Neither S_vis entry describes any internal bookkeeping mechanism or stack guard; both only assert observable behavior (no exception, END_DOCUMENT), which does not force this particular code structure."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I enumerated and read all visible material plus gold/buggy implementations. R2 concerns JsonTreeReader.skipValue() path bookkeeping when a whole top-level value is skipped: popStack() lowers stackSize to 0, after which the buggy (pre-fix) code unconditionally performs pathNames[stackSize-1]=\"null\" and pathIndices[stackSize-1]++, an out-of-bounds write (AIOOBE at index -1). The fix (hunk H0) wraps both writes in `if (stackSize > 0)` guards.\n\nThe only trigger for these writes is emptying the stack via a whole-top-level skip where peek() is not NAME (i.e., the root value has no wrapping container iterator). I built candidate witnesses across the distinct concrete root types that share this mechanism. For example, a test that constructs a JsonTreeReader over a standalone top-level JsonPrimitive(\"hello\") (peek() == STRING) and calls skipValue(), then verifies peek() returns END_DOCUMENT: execution-confirmed PASSED against gold and FAILED (AIOOBE Index -1 at JsonTreeReader.skipValue) against buggy.\n\nHowever, this is functionally identical to the visible testSkipValue_emptyJsonObject / testSkipValue_filledJsonObject already present in JsonTreeReaderTest.java (which is [VISIBLE]): those tests also skip a whole top-level value whose peek is not NAME (a root JsonObject yields BEGIN_OBJECT), reaching the same stackSize==0 popStack then asserting no throw and END_DOCUMENT. My JsonPrimitive variant differs only in which concrete root token type is chosen (STRING vs BEGIN_OBJECT) — the same popStack-to-empty crash mechanism is already fully pinned down by the visible tests. Changing the concrete input does not rest on any [HIDDEN] fact; it is just a rewritten form of the already-visible assertion and thus worthless as a Witness. A genuine [HIDDEN] oracle that distinguishes such a scenario does not exist, so no qualifying witness qualifies."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are limited to JsonTreeReader.java, JsonReader.java, and JsonTreeReaderTest.java under gson/src/...; the developer fix and other original Gson sources (JsonArray, JsonObject, JsonNull, JsonPrimitive) are not visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "JsonTreeReader extends JsonReader; its skipValue() at present consumes only the current top token (popStack or nextName) then writes pathNames/pathIndices, which becomes an out-of-bounds write (stackSize==0) when skipValue is applied to a whole top-level JsonObject since peek() reports BEGIN_OBJECT there, not NAME."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report supplies an explicit stacktrace: \"java.lang.ArrayIndexOutOfBoundsException: -1\\n\\tat com.google.gson.internal.bind.JsonTreeReader.skipValue(JsonTreeReader.java:262)\" and states popStack() runs with stackSize 1 leaving stackSize 0 before the failing call."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue contrasts JsonReader.skipValue() on \"{}\" which succeeds without exception (no test assertion beyond absence of throw)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests are JUnit3-style (extends TestCase) under gson/src/test/java/com/google/gson/internal/bind/JsonTreeReaderTest.java and are annotated @SuppressWarnings(\"resource\")."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For a root-level object the JsonTreeReader's constructor pushes the element with stackSize==1, so peek() returns BEGIN_OBJECT (no surrounding container iterator); skipping such a whole document is the failing case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The skipValue() fix (hunk H0) touches only two statements: the pathNames[\"null\"] write inside the else branch and the pathIndices increment after popStack(); both become guarded by stackSize > 0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The observable scenario changed by the fix is uniquely the root-level skip where popStack() lowers stackSize from 1 to 0 (top-level value with non-NAME peek, e.g. a standalone root JsonObject/JsonArray/primitive/null that has no wrapping container iterator). For nested skips where stackSize remains >0 after popStack, the guards do not alter any observable behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix does not address the case where skipValue() is invoked when peek() already reports END_DOCUMENT (stack already empty), since popStack() itself would index negatively there; such behavior is left unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 concerns JsonTreeReader.skipValue() path bookkeeping when skipping a whole top-level value: popStack() lowers stackSize to 0, after which the post-pop pathName/pathIndex bookkeeping writes must NOT be performed (no enclosing scope exists); the buggy observable symptom is the ArrayIndexOutOfBoundsException on that write.\n\nI enumerated and read every oracle test file that could exercise this behavior. The only tests that genuinely cover R2's scenario — constructing a JsonTreeReader over a standalone root value whose peek() is BEGIN_OBJECT (not NAME), calling skipValue(), which pops the sole stack element and empties the stack (otherwise the unguarded bookkeeping write throws AIOOBE) — are exactly the two currently-failing tests `testSkipValue_emptyJsonObject` and `testSkipValue_filledJsonObject`. Both live in gson/src/test/java/com/google/gson/internal/bind/JsonTreeReaderTest.java, which read_test_file labels [VISIBLE]. Since a Witness may only rest on [HIDDEN] content, and the failed-after-fix→passed-before-fix behavior they assert is fully captured by that visible material, they cannot serve as a Witness.\n\nI checked the [HIDDEN] candidates:\n- JsonElementReaderTest.java [HIDDEN]: its testSkipValue() operates strictly inside a root array (already beginArray()'d) and skips nested elements while enclosing containers remain on the stack; it never empties the stack via a whole-top-level skip, so it does not exercise R2's guard.\n- JsonReaderPathTest.java [HIDDEN]: includes the JsonTreeReader via the OBJECT_READER factory and checks path bookkeeping after skipValue (skipArrayElements, skipObjectNames, skipObjectValues, skipNestedStructures, etc.), but every such test first enters the root container (beginArray/beginObject), so the stack is never emptied by the skip; none applies skipValue to a whole top-level value and none can observe the R2 bookkeeping-omission.\n- The remaining files (JsonTreeTest, TreeTypeAdaptersTest, JsonReaderPathTest aside, JsonParserTest, StreamingTypeAdaptersTest, MixedStreamTest, JsonTreeWriterTest, CommentsTest, GsonTypeAdapterTest, etc.) never invoke JsonTreeReader.skipValue on a whole root value.\n\nAdditionally, any genuine hidden Witness for R2 would exhibit the root-skip crash and therefore also currently fail against the buggy program, but the failing set contains only the two visible tests. After examining all relevant files, there is no [HIDDEN] oracle assertion that tests R2, so no qualifying witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: I enumerated and read all visible material plus gold/buggy implementations. R2 concerns JsonTreeReader.skipValue() path bookkeeping when a whole top-level value is skipped: popStack() lowers stackSize to 0, after which the buggy (pre-fix) code unconditionally performs pathNames[stackSize-1]=\"null\" and pathIndices[stackSize-1]++, an out-of-bounds write (AIOOBE at index -1). The fix (hunk H0) wraps both writes in `if (stackSize > 0)` guards.\n\nThe only trigger for these writes is emptying the stack via a whole-top-level skip where peek() is not NAME (i.e., the root value has no wrapping container iterator). I built candidate witnesses across the distinct concrete root types that share this mechanism. For example, a test that constructs a JsonTreeReader over a standalone top-level JsonPrimitive(\"hello\") (peek() == STRING) and calls skipValue(), then verifies peek() returns END_DOCUMENT: execution-confirmed PASSED against gold and FAILED (AIOOBE Index -1 at JsonTreeReader.skipValue) against buggy.\n\nHowever, this is functionally identical to the visible testSkipValue_emptyJsonObject / testSkipValue_filledJsonObject already present in JsonTreeReaderTest.java (which is [VISIBLE]): those tests also skip a whole top-level value whose peek is not NAME (a root JsonObject yields BEGIN_OBJECT), reaching the same stackSize==0 popStack then asserting no throw and END_DOCUMENT. My JsonPrimitive variant differs only in which concrete root token type is chosen (STRING vs BEGIN_OBJECT) — the same popStack-to-empty crash mechanism is already fully pinned down by the visible tests. Changing the concrete input does not rest on any [HIDDEN] fact; it is just a rewritten form of the already-visible assertion and thus worthless as a Witness. A genuine [HIDDEN] oracle that distinguishes such a scenario does not exist, so no qualifying witness qualifies."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (JsonTreeReader.skipValue() path bookkeeping) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I enumerated and read all visible material plus gold/buggy implementations. R2 concerns JsonTreeReader.skipValue() path bookkeeping when a whole top-level value is skipped: popStack() lowers stackSize to 0, after which the buggy (pre-fix) code unconditionally performs pathNames[stackSize-1]=\"null\" and pathIndices[stackSize-1]++, an out-of-bounds write (AIOOBE at index -1). The fix (hunk H0) wraps both writes in `if (stackSize > 0)` guards.\n\nThe only trigger for these writes is emptying the stack via a whole-top-level skip where peek() is not NAME (i.e., the root value has no wrapping container iterator). I built candidate witnesses across the distinct concrete root types that share this mechanism. For example, a test that constructs a JsonTreeReader over a standalone top-level JsonPrimitive(\"hello\") (peek() == STRING) and calls skipValue(), then verifies peek() returns END_DOCUMENT: execution-confirmed PASSED against gold and FAILED (AIOOBE Index -1 at JsonTreeReader.skipValue) against buggy.\n\nHowever, this is functionally identical to the visible testSkipValue_emptyJsonObject / testSkipValue_filledJsonObject already present in JsonTreeReaderTest.java (which is [VISIBLE]): those tests also skip a whole top-level value whose peek is not NAME (a root JsonObject yields BEGIN_OBJECT), reaching the same stackSize==0 popStack then asserting no throw and END_DOCUMENT. My JsonPrimitive variant differs only in which concrete root token type is chosen (STRING vs BEGIN_OBJECT) — the same popStack-to-empty crash mechanism is already fully pinned down by the visible tests. Changing the concrete input does not rest on any [HIDDEN] fact; it is just a rewritten form of the already-visible assertion and thus worthless as a Witness. A genuine [HIDDEN] oracle that distinguishes such a scenario does not exist, so no qualifying witness qualifies.",
+    "confidence": "Medium"
+  }
+}

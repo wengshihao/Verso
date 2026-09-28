@@ -1,0 +1,150 @@
+{
+  "task_id": "scikit-learn__scikit-learn-11281",
+  "status": "ok",
+  "duration_seconds": 480.5714867080096,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-11281",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When the mixture model is fitted on training data X (and, more generally, when a fitted/`fit_predict` call processes X), it exposes the clusterer API the issue identifies as missing: a `fit_predict(X)` method and a stored `labels_` of the training samples, with the label array it returns/holds being the model's per-sample component assignment (its `predict` on those samples), i.e. consistent with the repo's `ClusterMixin.fit_predict = fit(X); return self.labels_` convention.",
+        "subject": "sklearn.mixture.base.BaseMixture (applies also to concrete GaussianMixture and BayesianGaussianMixture)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"they do not store the `labels_` of the training data\", \"they do not have a `fit_predict` method\", \"Should we make the MMs more like clusterers?\".  ClusterMixin convention (sklearn/base.py): \"def fit_predict(self, X, y=None): ... self.fit(X); return self.labels_\".  Current state (sklearn/mixture/base.py): \"class BaseMixture(six.with_metaclass(ABCMeta, DensityMixin, BaseEstimator))\" with only fit/predict/predict_proba/score/score_samples/sample (no labels_/fit_predict anywhere)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "BaseMixture (and the concrete EM subclasses GaussianMixture and BayesianGaussianMixture that inherit from it) gains a new public method fit_predict(X, y=None) that fits the model on X and returns predicted component labels.",
+        "subject": "BaseMixture.fit_predict",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Calling fit_predict leaves the estimator in the same fitted state that fit previously produced: it runs the EM/VB procedure (up to n_init initializations selecting the parameters with maximum lower bound, at most max_iter iterations with a ConvergenceWarning if not converged) and sets the fitted attributes (converged_, lower_bound_, n_iter_, and component parameters), so that score_samples/score/predict/predict_proba work afterward.",
+        "subject": "BaseMixture.fit_predict",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "fit_predict returns an integer component-label array of shape (n_samples,) in which each element is the index of the component with maximum posterior (log) responsibility for the corresponding sample of X — i.e. the most-probable component label for each input data point.",
+        "subject": "BaseMixture.fit_predict",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "fit(X, y=None) remains available and continues to return self, and its observable fitting behavior is unchanged even though the implementation now performs the estimation by delegating to fit_predict(X, y) internally.",
+        "subject": "BaseMixture.fit",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] pins that the model exposes a public fit_predict(X) method that fits on X and returns/associates the per-sample component labels, consistent with the ClusterMixin convention that also gives the y=None signature."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] pins that fit_predict behaves as fit(X); return self.labels_, i.e. it delegates to and runs fit, so the estimator is left in exactly the fitted state fit produces (attributes set, predict/predict_proba/score work afterward)."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] explicitly states the returned/stored label array is the per-sample component assignment equal to predict on those samples, i.e. the most-probable component label for each point of X."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] supports that fit stays available, returns self, and keeps unchanged behavior, but it pins delegation in the fit_predict-calls-fit direction (ClusterMixin), not the claimed fit-delegates-to-fit_predict internal restructuring, which is unpinned and arguably opposite."
+      }
+    ],
+    "target_requirement_id": "R4",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_r4_delegation",
+      "test_source": "def test_witness_r4_delegation():\n    import numpy as np\n    from sklearn.mixture import GaussianMixture\n\n    class CountingGMM(GaussianMixture):\n        def __init__(self, **kwargs):\n            super(CountingGMM, self).__init__(**kwargs)\n            self.fit_predict_calls = 0\n\n        def fit_predict(self, X, y=None):\n            self.fit_predict_calls += 1\n            return super(CountingGMM, self).fit_predict(X, y)\n\n    X = np.stack([np.random.RandomState(0).randn(40, 2) - 2,\n                  np.random.RandomState(1).randn(40, 2) + 2])\n    X = X.reshape(-1, 2)\n    g = CountingGMM(n_components=2, random_state=0, n_init=1, max_iter=200,\n                    reg_covar=0.1)\n    ret = g.fit(X)\n\n    # R4: fit returns self and routes its estimation through fit_predict\n    assert ret is g\n    assert g.fit_predict_calls == 1\n    assert g.converged_ is True",
+      "gold_result": "PASSED — on gold, BaseMixture.fit is `self.fit_predict(X, y); return self`, so the CountingGMM override of fit_predict is invoked exactly once (`fit_predict_calls == 1`), fit still returns self (`ret is g`), and the EM model converges. All three asserts hold.",
+      "buggy_result": "FAILED — on buggy, BaseMixture.fit does NOT delegate; it contains the estimation loop inline and there is no fit_predict method. Calling fit therefore never routes through the subclass's fit_predict override, so `fit_predict_calls == 0`, and `assert g.fit_predict_calls == 1` fails (AssertionError: assert 0 == 1).",
+      "explanation": "R4 asserts that after the fix, `fit(X, y=None)` remains available, still returns self, and performs estimation by delegating internally to `fit_predict(X, y)` — i.e. the observable contract \"fit keeps working by rerouting its computation through fit_predict\". In the gold base.py, BaseMixture.fit is literally `self.fit_predict(X, y); return self`, whereas in the buggy revision fit holds the whole EM loop inline and never calls fit_predict (fit_predict does not even exist). \n\nI first empirically confirmed the surface: a plain GaussianMixture fit test (fit returns self, means/converged/n_iter populated) PASSED on both gold and buggy, proving that simply asserting fit results/self-return can never discriminate — because buggy's inline fit is observationally equivalent. The only fact unique to R4 that distinguishes the fixed program is the internal delegation path itself. So I built a genuine R4 witness that observes that path: a GaussianMixture subclass, CountingGMM, that overrides fit_predict to count invocations. Then calling `fit(X)` exercises the exact R4 contract: on gold, fit delegates to `self.fit_predict` → the override is called once (`fit_predict_calls == 1`), fit still returns self, and the model still converges (observable fitting behavior unchanged). On buggy, fit is inline and never touches fit_predict, so the override is never invoked (`fit_predict_calls == 0`), and the assertion fails. This discriminates buggy/gold in the correct direction (PASS gold, FAIL buggy), is execution-confirmed against both programs, and is not pinned by any visible test (visible tests only exercise fit results and get_params/predict_proba paths; none assert that fit routes through fit_predict via a subclass override). I verified by iteration: the equivalent plain-fit probe passed on both sides, and the delegation probe gave PASSED on gold and FAILED on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue scikit-learn__scikit-learn-11281 is a design/feature question ('Should we make the MMs more like clusterers?'), not a concrete bug with a failing case. No test in the visible tree encodes the proposed feature; existing mixture/cluster tests exercise present behavior only."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseMixture (sklearn/mixture/base.py) subclasses (DensityMixin, BaseEstimator); GaussianMixture and BayesianGaussianMixture are the two concrete non-deprecated estimators and share only `fit` (EM/VB), `predict`, `predict_proba`, `score_samples`, `score`, `sample` from it. Deprecated GMM/DPGMM/VBGMM also exist in sklearn.mixture but were not the discussion focus."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "'Clusterer-compatible interface' has a determinate meaning in this repo: sklearn/base.py ClusterMixin.fit_predict is literally `self.fit(X); return self.labels_`, and sklearn/utils/estimator_checks.py check_clustering requires a clusterer to have integer-dtype `labels_` of shape (n_samples,) and `fit_predict(X) == labels_`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue lists three API gaps but leaves the design open; in particular whether n_components should be renamed/aliased to n_clusters and whether the docs should move under clustering are raised but NOT decided by any visible text, so they are not stated as requirements."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under sklearn/mixture/tests/ (test_gaussian_mixture.py, test_bayesian_mixture.py, test_mixture.py) and sklearn/cluster/tests/common.py; common estimator checks are driven from sklearn/tests/test_common.py via isinstance(estimator, ClusterMixin)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a docstring grammar-only edit ('fit' -> 'fits') with no behavioral effect."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "BaseMixture still inherits from (DensityMixin, BaseEstimator) only — it does NOT gain ClusterMixin in this patch, so adding fit_predict does not by itself route the mixture estimators through sklearn.utils.estimator_checks check_clustering in the common-estimator suite."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "fit_predict accepts an ignored y parameter (signature (self, X, y=None)), mirroring what fit already had."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The labels returned by fit_predict are computed from log_resp of the final EM E-step before _set_parameters(best_params) is applied to the selected best run; this is not asserted (as a requirement) to be identical to the argmax produced by a subsequent predict(X) call."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R4]: R4 is a pure fit-preservation claim: fit(X, y=None) stays available, returns self, and its observable fitting behavior is unchanged after the patch makes it delegate internally to fit_predict. I investigated the oracle thoroughly and could not identify any genuine witness.\n\nEvidence:\n1. Every mixture test file in the oracle read as [VISIBLE], and their full contents (test_gaussian_mixture.py, test_bayesian_mixture.py, test_mixture.py) contain NO test_gaussian_mixture_fit_predict / test_bayesian_mixture_fit_predict functions nor any assertion touching a fit_delegation path. The two reported failing tests are hidden additions whose assertion body I cannot read.\n2. Execution against both programs showed the ONLY behavioral difference is the existence of the new fit_predict method: on buggy, GaussianMixture raises AttributeError for fit_predict even though fit(X) works and returns self; on gold, fit return self and fit_predict exists. Gold's fit therefore behaves identically to buggy's fit (both return self, both fit normally).\n3. Because buggy's fit is intact and gold's fit is observationally unchanged, NO fit-only assertion can fail on buggy while passing on gold — every readable fit test (test_gaussian_mixture_fit, test_gaussian_mixture_attributes, chained .fit(X).score(X), etc.) exercises behavior identical across the two programs. A requirement whose essence is \"fit still returns self / fit results unchanged\" therefore cannot be witnessed by a buggy-failing test; there is no separating assertion available.\n4. A confirmation probe ('fit_predict(X) vs predict(\\u2026) after fit') also revealed gold's fit_predict labels are NOT guaranteed equal to a subsequent predict(), consistent with the S_impl note that fit_predict labels come from the pre-_set_parameters(best_params) EM E-step — unrelated to R4's fit contract.\n\nSince all readable oracle content relevant to fit is [VISIBLE] and exhibits identical buggy/gold behavior, and the only hidden failing tests concern the newly introduced clusterer-style fit_predict API (whose R4-specific fit assertion text is not accessible), I could not locate a genuine [HIDDEN] witness for R4. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R4]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R4] (BaseMixture.fit): fit(X, y=None) remains available and continues to return self, and its observable fitting behavior is unchanged even though the implementation now performs the estimation by delegating to fit_predict(X, y) internally. — not entailed by S_vis (S_vis [1] supports that fit stays available, returns self, and keeps unchanged behavior, but it pins delegation in the fit_predict-calls-fit direction (ClusterMixin), not the claimed fit-delegates-to-fit_predict internal restructuring, which is unpinned and arguably opposite.); confirmed by a synthesized witness: R4 asserts that after the fix, `fit(X, y=None)` remains available, still returns self, and performs estimation by delegating internally to `fit_predict(X, y)` — i.e. the observable contract \"fit keeps working by rerouting its computation through fit_predict\". In the gold base.py, BaseMixture.fit is literally `self.fit_predict(X, y); return self`, whereas in the buggy revision fit holds the whole EM loop inline and never calls fit_predict (fit_predict does not even exist). \n\nI first empirically confirmed the surface: a plain GaussianMixture fit test (fit returns self, means/converged/n_iter populated) PASSED on both gold and buggy, proving that simply asserting fit results/self-return can never discriminate — because buggy's inline fit is observationally equivalent. The only fact unique to R4 that distinguishes the fixed program is the internal delegation path itself. So I built a genuine R4 witness that observes that path: a GaussianMixture subclass, CountingGMM, that overrides fit_predict to count invocations. Then calling `fit(X)` exercises the exact R4 contract: on gold, fit delegates to `self.fit_predict` → the override is called once (`fit_predict_calls == 1`), fit still returns self, and the model still converges (observable fitting behavior unchanged). On buggy, fit is inline and never touches fit_predict, so the override is never invoked (`fit_predict_calls == 0`), and the assertion fails. This discriminates buggy/gold in the correct direction (PASS gold, FAIL buggy), is execution-confirmed against both programs, and is not pinned by any visible test (visible tests only exercise fit results and get_params/predict_proba paths; none assert that fit routes through fit_predict via a subclass override). I verified by iteration: the equivalent plain-fit probe passed on both sides, and the delegation probe gave PASSED on gold and FAILED on buggy.",
+    "confidence": "Medium"
+  }
+}

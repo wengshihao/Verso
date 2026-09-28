@@ -1,0 +1,134 @@
+{
+  "task_id": "django__django-11532",
+  "status": "ok",
+  "duration_seconds": 279.0360251250677,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11532",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When EmailMessage.message() auto-generates the Message-ID header (i.e. no 'message-id' key in extra_headers) with the local hostname DNS_NAME as the domain, and DNS_NAME is a non-ASCII/idna domain (e.g. '漢字'), then even when the email's encoding is a non-unicode charset (e.g. 'iso-8859-1') building the message must not raise UnicodeEncodeError; instead the Message-ID header value must contain the punycode/IDNA-encoded form of the domain (e.g. 'xn--p8s937b' when DNS_NAME is '漢字').",
+        "subject": "django.core.mail.message.EmailMessage.message / DNS_NAME Message-ID domain handling",
+        "hunk_ids": [],
+        "cited_from": "Fix: have django.core.mail.utils or django.core.mail.message convert domain name to punycode before using. Test: from unittest.mock import patch / with patch(\"django.core.mailmessage.DNS_NAME\", \"漢字\"): / \temail = EmailMessage('subject', '', 'from@example.com', ['to@example.com']) / \temail.encoding = 'iso-8859-1' / \tmessage = email.message() / \tself.assertIn('xn--p8s937b', message['Message-ID'])"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "django.utils.encoding.punycode(domain) is a new module-level function that returns the ASCII-compatible (IDNA/Punycode, RFC 3490) form of the given domain via `domain.encode('idna').decode('ascii')`: it returns an ASCII str, leaves pure-ASCII domains unchanged (IDNA is identity on ASCII), maps non-ASCII labels to their `xn--` ACE form (e.g. 'éxample.com' -> 'xn--xample-9ua.com'), and raises UnicodeError for a domain part that IDNA cannot encode (invalid domain part).",
+        "subject": "django.utils.encoding.punycode",
+        "hunk_ids": [
+          "H7"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The cached hostname exposed by django.core.mail.utils DNS_NAME (CachedDnsName) is returned in punycoded ASCII form: get_fqdn() returns punycode(socket.getfqdn()) and __str__() yields that same ASCII form, so a non-ASCII system hostname is rendered as its `xn--` ACE label while an ASCII hostname is returned unchanged.",
+        "subject": "django.core.mail.utils.CachedDnsName / DNS_NAME",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Building EmailMessage.message() and its auto-generated Message-ID header (make_msgid(domain=DNS_NAME)) no longer fails when the system hostname is non-ASCII: because DNS_NAME now yields an ASCII punycoded hostname, generating the message (including under a non-UTF-8/non-ASCII encoding where a non-ASCII header value could otherwise raise a UnicodeEncodeError) succeeds and the Message-ID domain is the ASCII `xn--` hostname form.",
+        "subject": "django.core.mail.message.EmailMessage.message() Message-ID generation",
+        "hunk_ids": [
+          "H0",
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down IDNA/punycode conversion producing the xn-- ACE form of a domain (example xn--p8s937b for 漢字), which is the core behavior of the punycode conversion. However, it does not specify that this is implemented as a new module-level function `django.utils.encoding.punycode(domain)` with the exact implementation domain.encode('idna').decode('ascii'), identity-on-ASCII, or the specific UnicodeError-for-invalid-part semantics, so the full function contract is only partially implied."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains no information about the CachedDnsName/DNS_NAME class internals, get_fqdn(), or __str__(). S_vis only treats DNS_NAME as the local hostname used as a Message-ID domain and states the message must carry the punycode form; nothing in it would lead a system to restructure DNS_NAME to return punycoded ASCII from get_fqdn()/__str__()."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 exactly pins this behavior: when EmailMessage.message() auto-generates the Message-ID with DNS_NAME as domain and DNS_NAME is a non-ASCII/idna domain under a non-unicode charset (iso-8859-1), building the message must succeed (no UnicodeEncodeError) and the Message-ID must contain the ASCII xn-- punycode domain. The implementation mechanism (DNS_NAME returning ASCII) is an internal choice, but the required observable outcome is fully specified."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_dns_name_punycode",
+      "test_source": "def test_dns_name_punycode(monkeypatch):\n    import socket\n    from django.core.mail.utils import CachedDnsName\n\n    monkeypatch.setattr(socket, 'getfqdn', lambda: 'éxample.com')\n    obj = CachedDnsName()\n    assert obj.get_fqdn() == 'xn--xample-9ua.com'\n    assert str(obj) == 'xn--xample-9ua.com'\n\n    # ASCII hostnames are returned unchanged.\n    obj2 = CachedDnsName()\n    monkeypatch.setattr(socket, 'getfqdn', lambda: 'mail.example.com')\n    assert obj2.get_fqdn() == 'mail.example.com'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert '\\u00e9xample.com' == 'xn--xample-9ua.com': buggy get_fqdn returns the raw non-ASCII hostname instead of its punycoded form)",
+      "explanation": "R2 states that django.core.mail.utils CachedDnsName/DNS_NAME exposes the fqdn in punycoded ASCII form: get_fqdn() returns punycode(socket.getfqdn()) and __str__() yields that same ASCII label, so a non-ASCII hostname becomes its xn-- ACE label. The gold change (H3) wraps socket.getfqdn() in punycode(...) while buggy returns it raw.\n\nThe witness constructed a fresh CachedDnsName and (via monkeypatch) forced socket.getfqdn() to return the non-ASCII hostname 'élxample.com' (accurately 'éxample.com'), which cannot happen non-deterministically since it depends on the real machine name. It asserts obj.get_fqdn() == 'xn--xample-9ua.com' and str(obj) == the same ASCII ACE label, plus an ASCII-hostname unchanged case. This directly exercises the changed code path in django/core/mail/utils.py. Confirmed via run_test: PASSES on gold and FAILS on buggy (buggy returns '\\u00e9xample.com' unpunycoded).\n\nThis does not duplicate any visible assertion: I checked the visible tests/mail/tests.py oracle content; test_idn_send/test_sanitize_address pin IDNA punycode only on sanitize_address (ADDRESS-header) domains and never import or exercise CachedDnsName, DNS_NAME, get_fqdn, or the auto Message-ID domain. Nothing in the visible surface predicts this specific input's result, so the witness is genuinely discriminative."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "DNS_NAME is defined in django/core/mail/utils.py as a lazily cached CachedDnsName whose get_fqdn() returns socket.getfqdn() with __str__ returning that hostname."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/core/mail/message.py imports DNS_NAME from django.core.mail.utils and, in EmailMessage.message(), when no 'message-id' appears in extra_headers (case-insensitively), sets msg['Message-ID'] = make_msgid(domain=DNS_NAME)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because 'Message-ID' is not in the ADDRESS_HEADERS set, forbid_multi_line_headers routes its (non-ASCII) value through Header(val, encoding).encode() rather than the sanitize_address punycode branch; the issue traceback shows UnicodeEncodeError raised there for encoding iso-8859-1 with a multibyte hostname."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction test (called test_unicode_dns in the issue, referenced as tests/mail/tests.py#L368 which in this snapshot is test_sanitize_address) is NOT present in the visible test suite; it exists only in the issue text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible mail tests already pin IDNA punycode encoding of non-ASCII domains inside address headers (test_sanitize_address expects 'to@éxample.com' -> 'to@xn--xample-9ua.com') and test_idn_send, but none exercise the auto-generated Message-ID domain that this issue concerns."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's reproduction snippet contains a likely typo 'django.core.mailmessage.DNS_NAME' (missing dot); the practical target is django.core.mail.message.DNS_NAME / django.core.mail.utils.DNS_NAME."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H4/H5, H8/H9, H10 and the label-conversion in H1/H5/H6/H9/H10 are behavior-preserving refactors that route the pre-existing `domain.encode('idna').decode('ascii')` IDNA/ACE conversion of path/netloc/email-domain parts through the new shared `django.utils.encoding.punycode()` helper; they do not by themselves change outward domain behavior. In H1 (sanitize_address) the gold additionally removes the prior ASCII guard so the (unconditional) punycode call now also runs on pure-ASCII domains."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DNS_NAME (django.core.mail.utils) is a lazily cached CachedDnsName whose get_fqdn() was changed to punycode the socket.getfqdn() result; it feeds make_msgid for the auto-generated Message-ID in EmailMessage.message() (when no 'message-id' header is supplied)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "django.core.mail.message imports punycode (H0) solely for reuse in sanitize_address (H1); the DNS/get_fqdn change is in django/core/mail/utils.py (H2/H3)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Searched the oracle's mail and encoding test files. R2 concerns DNS_NAME/CachedDnsName in django.core.mail.utils returning punycode(get_fqdn()), whose value feeds the auto-generated Message-ID domain in EmailMessage.message() via make_msgid(domain=DNS_NAME).\n\ntests/mail/tests.py (the sole substantive mail-test file) was read in full and is [VISIBLE]. It never imports DNS_NAME/CachedDnsName and contains no test of get_fqdn/__str__ punycoding or of the auto-generated Message-ID domain. Its test_idn_send and test_sanitize_address pin IDNA punycode only for the To/From/Cc ADDRESS header domains (sanitize_address path), which is a different behavior than R2 (the auto Message-ID hostname); moreover even those reside in [VISIBLE] content, so none can serve as a witness. The issue's reproduction test (test_unicode_dns) is not present in the oracle — it exists only in the issue text per prior extraction notes.\n\nAlso checked tests/mail/test_sendtestemail.py and tests/utils_tests/test_encoding.py and test_encoding_deprecations.py — none test DNS_NAME, get_fqdn, the punycode helper as used by DNS_NAME, or auto Message-ID generation; no [HIDDEN] test covering R2 exists in the oracle. Therefore no genuine witness can be established, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.core.mail.utils.CachedDnsName / DNS_NAME): The cached hostname exposed by django.core.mail.utils DNS_NAME (CachedDnsName) is returned in punycoded ASCII form: get_fqdn() returns punycode(socket.getfqdn()) and __str__() yields that same ASCII form, so a non-ASCII system hostname is rendered as its `xn--` ACE label while an ASCII hostname is returned unchanged. — not entailed by S_vis (S_vis contains no information about the CachedDnsName/DNS_NAME class internals, get_fqdn(), or __str__(). S_vis only treats DNS_NAME as the local hostname used as a Message-ID domain and states the message must carry the punycode form; nothing in it would lead a system to restructure DNS_NAME to return punycoded ASCII from get_fqdn()/__str__().); confirmed by a synthesized witness: R2 states that django.core.mail.utils CachedDnsName/DNS_NAME exposes the fqdn in punycoded ASCII form: get_fqdn() returns punycode(socket.getfqdn()) and __str__() yields that same ASCII label, so a non-ASCII hostname becomes its xn-- ACE label. The gold change (H3) wraps socket.getfqdn() in punycode(...) while buggy returns it raw.\n\nThe witness constructed a fresh CachedDnsName and (via monkeypatch) forced socket.getfqdn() to return the non-ASCII hostname 'élxample.com' (accurately 'éxample.com'), which cannot happen non-deterministically since it depends on the real machine name. It asserts obj.get_fqdn() == 'xn--xample-9ua.com' and str(obj) == the same ASCII ACE label, plus an ASCII-hostname unchanged case. This directly exercises the changed code path in django/core/mail/utils.py. Confirmed via run_test: PASSES on gold and FAILS on buggy (buggy returns '\\u00e9xample.com' unpunycoded).\n\nThis does not duplicate any visible assertion: I checked the visible tests/mail/tests.py oracle content; test_idn_send/test_sanitize_address pin IDNA punycode only on sanitize_address (ADDRESS-header) domains and never import or exercise CachedDnsName, DNS_NAME, get_fqdn, or the auto Message-ID domain. Nothing in the visible surface predicts this specific input's result, so the witness is genuinely discriminative.",
+    "confidence": "Medium"
+  }
+}

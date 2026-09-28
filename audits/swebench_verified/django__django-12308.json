@@ -1,0 +1,152 @@
+{
+  "task_id": "django__django-12308",
+  "status": "ok",
+  "duration_seconds": 445.07852174993604,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12308",
+    "s_vis": [
+      {
+        "id": "Svis-R1",
+        "statement": "When display_for_field/routing of a read-only or list-display model field receives the value of a django.db.models.JSONField whose stored value is a Python dict or list (e.g. {\"foo\": \"bar\"}), the rendered text must be the valid double-quoted JSON serialization (e.g. {\"foo\": \"bar\"}) rather than Python's str()/repr rendering (e.g. {'foo': 'bar'}).",
+        "subject": "django.contrib.admin.utils.display_for_field(models.JSONField)",
+        "hunk_ids": [],
+        "cited_from": "\"JSONField values are displayed as dict when readonly in the admin. For example, {\"foo\": \"bar\"} would be displayed as {'foo': 'bar'}, which is not valid JSON.\""
+      },
+      {
+        "id": "Svis-R2",
+        "statement": "Displaying a JSONField value that would serialize via the field's form field must reuse that JSON form field's prepare_value logic rather than re-serializing the raw text directly with json.dumps, so that a raw/invalid JSON string represented as forms.InvalidJSONInput is passed through unchanged and not double-encoded into invalid JSON.",
+        "subject": "django.contrib.admin.utils.display_for_field(models.JSONField)",
+        "hunk_ids": [],
+        "cited_from": "\"I believe the fix would be to add a special case in django.contrib.admin.utils.display_for_field to call the prepare_value of the JSONField (not calling json.dumps directly to take care of the InvalidJSONInput case).\""
+      },
+      {
+        "id": "Svis-R3",
+        "statement": "Adding JSONField handling in display_for_field must not change the existing empty-value behavior for a None field value, which currently returns the configured empty_value_display (\"-empty-\" in tests) before any field-type-specific serialization is applied.",
+        "subject": "django.contrib.admin.utils.display_for_field(models.JSONField)",
+        "hunk_ids": [],
+        "cited_from": "Existing tests in tests/admin_utils/tests.py (test_null_display_for_field) assert display_for_field(None, models.CharField(), self.empty_value) == self.empty_value and that None handling runs before per-field-type number/locale formatting; the same None short-circuit precedes value rendering in display_for_field's definition."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In display_for_field, when called with a models.JSONField instance whose (non-None) value is truthy, the returned display value is the value serialized as JSON (the result of field.get_prep_value(value)) instead of falling through to display_for_value — e.g. a non-empty dict {'foo': 'bar'} displays as '{\"foo\": \"bar\"}' (double-quoted JSON) rather than the Python repr, a non-empty string keeps its content, and a non-empty list displays as a JSON array rather than ', '.join of its elements.",
+        "subject": "django.contrib.admin.utils.display_for_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In display_for_field, when JSON serialization (field.get_prep_value) of a truthy value belonging to a models.JSONField raises TypeError (the value is not JSON-serializable), display_for_field returns display_for_value(value, empty_value_display) rather than propagating the TypeError.",
+        "subject": "django.contrib.admin.utils.display_for_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The JSON-serialization path applies only when the models.JSONField value is truthy: falsy values (empty dict/list/string, 0, False) are not sent through get_prep_value and continue through the pre-existing display flow (display_for_value), and a None value still maps to empty_value_display as before.",
+        "subject": "django.contrib.admin.utils.display_for_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis-R1",
+          "Svis-R2",
+          "Svis-R3"
+        ],
+        "rationale": "Svis-R1 directly confirms the core outcome for the primary case (a dict {'foo':'bar'} on a JSONField should render as invalid double-quoted JSON '{\"foo\":\"bar\"}' rather than Python repr), and Svis-R2 sketches the intended JSON-serialization path. But R1 also asserts a specific mechanism (field.get_prep_value) and a truthy scope boundary that Svis never pins down (Svis describes form-field prepare_value instead, and says nothing about when the JSON path applies). Hence not fully entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "Svis-R1",
+          "Svis-R2",
+          "Svis-R3"
+        ],
+        "rationale": "No Svis entry mentions what happens when value serialization raises TypeError (value not JSON-serializable) or a fallback to display_for_value. Svis-R2's mention of InvalidJSONInput passing through unchanged concerns raw invalid JSON string input via the form field, a different scenario. Nothing in the visible evidence would lead to this specific error-fallback behavior."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis-R1",
+          "Svis-R2",
+          "Svis-R3"
+        ],
+        "rationale": "Svis-R3 pins the None → empty_value_display behavior, matching part of R3. However R3 additionally asserts that other falsy non-None values (empty dict/list/string, 0, False) skip the JSON-serialization path and continue through the pre-existing display flow — no Svis entry establishes this falsey/non-falsey boundary, so the compound statement is only partially pinned."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 governs only the branch in display_for_field where a truthy models.JSONField value's get_prep_value raises TypeError, and display_for_field must return display_for_value(value, empty_value_display) instead of propagating the TypeError.\n\nThe gold fix adds `elif isinstance(field, models.JSONField) and value: try: return field.get_prep_value(value) except TypeError: return display_for_value(value, empty_value_display)`. On the exact input R2 governs (a truthy value that is NOT JSON-serializable so get_prep_value raises TypeError), the except clause calls display_for_value(value, empty_value_display). But in the buggy (pre-fix) program there is no JSONField branch at all, so the same value falls through to the final else `return display_for_value(value, empty_value_display)`. Both programs therefore invoke display_for_value on the identical value with the identical empty_value_display and produce byte-identical output.\n\nI empirically confirmed this by running a pytest candidate on both programs: calling display_for_field({1,2,3}, models.JSONField(), '-empty-') with a set (truthy and json.dumps raises TypeError on it). It PASSED on gold AND on buggy with the same assertion (result equals '{1, 2, 3}', the str() repr produced by display_for_value). Because the fallback output is identical, no oracle test can pass on gold yet fail on buggy based on R2's TypeError-fallback scenario.\n\nNote the real gold/buggy divergence for JSONField values occurs only when get_prep_value SUCCEEDS (e.g. a dict -> gold returns JSON text '{\"foo\": \"bar\"}' while buggy returns str '{'foo': 'bar'}') — but that is the successful-serialization scenario (a distinct requirement), not R2's TypeError-raised scenario. R2 itself is not externally witnessable. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix point named by the issue is django.contrib.admin.utils.display_for_field, which currently lets non-special scalar/container values (incl. dict JSONField values) fall through to display_for_value -> str(value), producing Python-style repr like \"{'foo': 'bar'}\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Read-only admin values and changelist columns that reference a concrete model field are routed through display_for_field (AdminReadonlyField.contents in django/contrib/admin/helpers.py; items_for_result in django/contrib/admin/templatetags/admin_list.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "forms.JSONField.prepare_value (django/forms/fields.py) serializes with json.dumps but returns InvalidJSONInput instances unchanged; tests/forms_tests/field_tests/test_jsonfield.py::test_prepare_value pins outputs {'a': 'b'}->'{\"a\": \"b\"}', None->'null', 'foo'->'\"foo\"'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The model JSONField (django/db/models/fields/json.py) defines formfield() producing a forms.JSONField whose prepare_value is the intended serializer; this is the 'prepare_value of the JSONField' the issue proposes reusing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue states the target output for a dict value is valid JSON with double quotes, e.g. {\"foo\": \"bar\"} instead of the Python {'foo': 'bar'} representation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change modifies only django/contrib/admin/utils.py display_for_field, inserting a new branch after the FileField branch and before the final else: `elif isinstance(field, models.JSONField) and value: try: return field.get_prep_value(value) except TypeError: return display_for_value(value, empty_value_display)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "models.JSONField.get_prep_value (django/db/models/fields/json.py) returns the value unchanged if None, otherwise json.dumps(value, cls=self.encoder), which raises TypeError for non-JSON-serializable values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because value is None is handled earlier in display_for_field, the new JSONField branch only ever sees non-None falsy or truthy values; the `and value` guard further restricts it to truthy values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The JSONField dispatch is ordered after the concrete numeric/date/File field branches in display_for_field, so only a field that is actually an instance of models.JSONField reaches it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the oracle test files that could plausibly house a witness for R2 (the TypeError-fallback branch for JSONField in django.contrib.admin.utils.display_for_field). Admin/JSON assertion-bearing files reviewed were: tests/admin_utils/tests.py ([VISIBLE]), tests/model_fields/test_jsonfield.py ([VISIBLE]), tests/forms_tests/field_tests/test_jsonfield.py ([VISIBLE]), tests/admin_changelist/tests.py ([VISIBLE]), tests/admin_utils/test_logentry.py ([VISIBLE]); tests/model_fields/models.py is [HIDDEN] but is only a model-definition file (declares JSONModel/NullableJSONModel) and carries no test assertions.\n\nNone of these contains any assertion about display_for_field on a JSONField value. Critically, R2 is not witnessable at all in this benchmark: the pre-fix (buggy) code never invokes get_prep_value for JSONField values — it falls straight through to the same display_for_value(value, empty_value_display) final branch that the fix's except-TaskTypeError fallback calls. On the exact input R2 governs (a truthy value whose get_prep_value would raise TypeError), the buggy and corrected programs call the identical display_for_value on the identical value and produce identical output. There is therefore no externally observable difference between gold and buggy for R2, so no oracle test can pass on gold yet fail on buggy on the basis of R2. This is corroborated by the task note recording that no tests currently fail against the buggy program. Accordingly, no genuine witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 governs only the branch in display_for_field where a truthy models.JSONField value's get_prep_value raises TypeError, and display_for_field must return display_for_value(value, empty_value_display) instead of propagating the TypeError.\n\nThe gold fix adds `elif isinstance(field, models.JSONField) and value: try: return field.get_prep_value(value) except TypeError: return display_for_value(value, empty_value_display)`. On the exact input R2 governs (a truthy value that is NOT JSON-serializable so get_prep_value raises TypeError), the except clause calls display_for_value(value, empty_value_display). But in the buggy (pre-fix) program there is no JSONField branch at all, so the same value falls through to the final else `return display_for_value(value, empty_value_display)`. Both programs therefore invoke display_for_value on the identical value with the identical empty_value_display and produce byte-identical output.\n\nI empirically confirmed this by running a pytest candidate on both programs: calling display_for_field({1,2,3}, models.JSONField(), '-empty-') with a set (truthy and json.dumps raises TypeError on it). It PASSED on gold AND on buggy with the same assertion (result equals '{1, 2, 3}', the str() repr produced by display_for_value). Because the fallback output is identical, no oracle test can pass on gold yet fail on buggy based on R2's TypeError-fallback scenario.\n\nNote the real gold/buggy divergence for JSONField values occurs only when get_prep_value SUCCEEDS (e.g. a dict -> gold returns JSON text '{\"foo\": \"bar\"}' while buggy returns str '{'foo': 'bar'}') — but that is the successful-serialization scenario (a distinct requirement), not R2's TypeError-raised scenario. R2 itself is not externally witnessable. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (django.contrib.admin.utils.display_for_field) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 governs only the branch in display_for_field where a truthy models.JSONField value's get_prep_value raises TypeError, and display_for_field must return display_for_value(value, empty_value_display) instead of propagating the TypeError.\n\nThe gold fix adds `elif isinstance(field, models.JSONField) and value: try: return field.get_prep_value(value) except TypeError: return display_for_value(value, empty_value_display)`. On the exact input R2 governs (a truthy value that is NOT JSON-serializable so get_prep_value raises TypeError), the except clause calls display_for_value(value, empty_value_display). But in the buggy (pre-fix) program there is no JSONField branch at all, so the same value falls through to the final else `return display_for_value(value, empty_value_display)`. Both programs therefore invoke display_for_value on the identical value with the identical empty_value_display and produce byte-identical output.\n\nI empirically confirmed this by running a pytest candidate on both programs: calling display_for_field({1,2,3}, models.JSONField(), '-empty-') with a set (truthy and json.dumps raises TypeError on it). It PASSED on gold AND on buggy with the same assertion (result equals '{1, 2, 3}', the str() repr produced by display_for_value). Because the fallback output is identical, no oracle test can pass on gold yet fail on buggy based on R2's TypeError-fallback scenario.\n\nNote the real gold/buggy divergence for JSONField values occurs only when get_prep_value SUCCEEDS (e.g. a dict -> gold returns JSON text '{\"foo\": \"bar\"}' while buggy returns str '{'foo': 'bar'}') — but that is the successful-serialization scenario (a distinct requirement), not R2's TypeError-raised scenario. R2 itself is not externally witnessable. found=false.",
+    "confidence": "Medium"
+  }
+}

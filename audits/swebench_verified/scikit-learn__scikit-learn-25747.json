@@ -1,0 +1,83 @@
+{
+  "task_id": "scikit-learn__scikit-learn-25747",
+  "status": "ok",
+  "duration_seconds": 296.20690170896705,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-25747",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "With the global config set via set_config(transform_output=\"pandas\"), FeatureUnion.fit_transform on a union containing a custom transformer whose transform collapses the input (e.g. returns X[\"value\"].groupby(X[\"date\"]).sum(), reducing the 96-row input to a 4-row Series indexed by date) must complete without raising an error — in particular it must not attempt to set the original 96-element input index onto the 4-row aggregate result.",
+        "subject": "sklearn.pipeline.FeatureUnion (transform/fit_transform pandas set_output path)",
+        "hunk_ids": [],
+        "cited_from": "Expected Results: \"No error is thrown when using `pandas` transform output.\"; Actual Results trace end: \"ValueError: Length mismatch: Expected axis has 4 elements, new values have 96 elements\" arising in _wrap_in_pandas_container via \"data_to_wrap.index = index\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When data_to_wrap is already a pandas DataFrame, _wrap_in_pandas_container ignores the index argument and preserves the input DataFrame's own existing index; it never reassigns data_to_wrap.index from the index parameter for DataFrame inputs. Consequently it does not raise a pandas 'Length mismatch' ValueError even when the supplied index is shorter/different in length from the DataFrame's rows. (Columns are still assigned in place when the columns argument is not None.)",
+        "subject": "sklearn.utils._set_output._wrap_in_pandas_container",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "VIS-1"
+        ],
+        "rationale": "VIS-1 only records the observable symptom (a length-mismatch ValueError when wrapping a collapsed Series output inside FeatureUnion) and that the error arises via `data_to_wrap.index = index` in _wrap_in_pandas_container; it does not pin down R1's specific developer fix mechanism of conditionally ignoring the index argument whenever data_to_wrap is already a DataFrame (preserving its existing index while still assigning columns in place). Alternative fixes at that failure point (e.g., caller-side guards, generic length checks) would satisfy the visible requirement without committing to that DataFrame-branch behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_set_output_pandas_keep_index",
+      "test_source": "import pytest\nimport pandas as pd\nfrom numpy.testing import assert_array_equal\nfrom sklearn.utils._set_output import _wrap_in_pandas_container\n\n\ndef test_set_output_pandas_keep_index():\n    \"\"\"When data_to_wrap is a DataFrame its own index is kept even when an\n    index argument of different length is provided.\"\"\"\n    X_train = pd.DataFrame(\n        [[1, 0, 3], [0, 0, 1], [2, 2, 2]],\n        columns=[\"f0\", \"f1\", \"f2\"],\n        index=[\"a\", \"b\", \"c\"],\n    )\n    out = _wrap_in_pandas_container(\n        X_train, columns=[\"col0\", \"col1\", \"col2\"], index=[\"only_one\"]\n    )\n    assert_array_equal(out.columns, [\"col0\", \"col1\", \"col2\"])\n    assert_array_equal(out.index, [\"a\", \"b\", \"c\"])\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED with \"ValueError: Length mismatch: Expected axis has 3 elements, new values have 1 elements\" raised at sklearn/utils/_set_output.py:59 (`data_to_wrap.index = index`)",
+      "explanation": "R1 concerns `_wrap_in_pandas_container` for DataFrame inputs: the supplied `index` argument must be ignored (the input DataFrame's own index preserved), and it must not raise a pandas \"Length mismatch\" even when the supplied index is shorter/different in length; columns are still assigned in place. The oracle's hidden regression test `sklearn/utils/tests/test_set_output.py::test_set_output_pandas_keep_index` (one whose semantics are NOT established by the [VISIBLE] test_set_output.py, which still contains the pre-patch `test__wrap_in_pandas_container_dense_update_columns_and_index` asserting the OLD index-override behavior) exercises exactly this: it calls `_wrap_in_pandas_container` on an already-DataFrame with a shorter (length-1) index argument, and asserts the DataFrame's own index is preserved while columns are still reassigned. I reconstructed that assertion and mechanically confirmed it: against gold the DataFrame keeps index [\"a\",\"b\",\"c\"] and no error is raised (PASSED); against buggy the same call reassigns `data_to_wrap.index = index` and raises `ValueError: Length mismatch: ... new values have 1 elements` at _set_output.py:59, so it FAILS. That pass-on-gold/fail-on-buggy split, targeting precisely the remove-index-assignment branch, makes it a genuine witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "FeatureUnion (sklearn/pipeline.py) inherits TransformerMixin, which extends _SetOutputMixin, so transform/fit_transform defined on FeatureUnion get auto-wrapped by _wrap_method_output (sklearn/utils/_set_output.py) whenever get_feature_names_out exists and global/local config transform_output is 'pandas'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The failure occurs because FeatureUnion._hstack already builds a pandas DataFrame via pd.concat when its config is pandas, and then the outer auto-wrap calls _wrap_in_pandas_container which forcibly reassigns the original input index (96 elements) onto that result. When a component transformer reduces the row count (e.g. the groupby-sum return in the report goes from 96 to 4 rows), that index assignment raises 'Length mismatch'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction's 'This works' branch is the default (numpy) transform output; only the pandas-output branch errors, per the report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing test test_feature_union_set_output (sklearn/tests/test_pipeline.py) documents that for row-preserving transformers FeatureUnion.set_output(transform='pandas') returns a DataFrame whose columns equal union.get_feature_names_out() and whose index equals X_test.index."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only the index-assignment branch for already-DataFrame inputs was removed; the in-place columns reassignment when columns is not None and the creation of a new DataFrame with index/columns for non-DataFrame inputs are unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The original_input index passed into _wrap_in_pandas_container from _wrap_data_with_container (getattr(original_input, 'index', None)) therefore no longer overwrites the index of a DataFrame that an inner transformer (e.g. FeatureUnion._hstack under pandas config) already constructed."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (sklearn.utils._set_output._wrap_in_pandas_container): When data_to_wrap is already a pandas DataFrame, _wrap_in_pandas_container ignores the index argument and preserves the input DataFrame's own existing index; it never reassigns data_to_wrap.index from the index parameter for DataFrame inputs. Consequently it does not raise a pandas 'Length mismatch' ValueError even when the supplied index is shorter/different in length from the DataFrame's rows. (Columns are still assigned in place when the columns argument is not None.) — not entailed by S_vis (VIS-1 only records the observable symptom (a length-mismatch ValueError when wrapping a collapsed Series output inside FeatureUnion) and that the error arises via `data_to_wrap.index = index` in _wrap_in_pandas_container; it does not pin down R1's specific developer fix mechanism of conditionally ignoring the index argument whenever data_to_wrap is already a DataFrame (preserving its existing index while still assigning columns in place). Alternative fixes at that failure point (e.g., caller-side guards, generic length checks) would satisfy the visible requirement without committing to that DataFrame-branch behavior.); confirmed by a oracle witness: R1 concerns `_wrap_in_pandas_container` for DataFrame inputs: the supplied `index` argument must be ignored (the input DataFrame's own index preserved), and it must not raise a pandas \"Length mismatch\" even when the supplied index is shorter/different in length; columns are still assigned in place. The oracle's hidden regression test `sklearn/utils/tests/test_set_output.py::test_set_output_pandas_keep_index` (one whose semantics are NOT established by the [VISIBLE] test_set_output.py, which still contains the pre-patch `test__wrap_in_pandas_container_dense_update_columns_and_index` asserting the OLD index-override behavior) exercises exactly this: it calls `_wrap_in_pandas_container` on an already-DataFrame with a shorter (length-1) index argument, and asserts the DataFrame's own index is preserved while columns are still reassigned. I reconstructed that assertion and mechanically confirmed it: against gold the DataFrame keeps index [\"a\",\"b\",\"c\"] and no error is raised (PASSED); against buggy the same call reassigns `data_to_wrap.index = index` and raises `ValueError: Length mismatch: ... new values have 1 elements` at _set_output.py:59, so it FAILS. That pass-on-gold/fail-on-buggy split, targeting precisely the remove-index-assignment branch, makes it a genuine witness for R1.",
+    "confidence": "High"
+  }
+}

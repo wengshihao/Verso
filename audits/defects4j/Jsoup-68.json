@@ -1,0 +1,126 @@
+{
+  "task_id": "Jsoup-68",
+  "status": "ok",
+  "duration_seconds": 284.06676854499983,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-68",
+    "s_vis": [
+      {
+        "id": "sv1",
+        "statement": "Parsing a body fragment built from 25000 repetitions of \"<dl><dd>\" (each preceded by its loop index) followed by 25000 repetitions of its index plus \"</dd></dl>\" must complete without throwing a StackOverflowError, must produce a body element with exactly 2 child nodes and exactly 25000 <dd> elements, and must finish in under 1000 ms.",
+        "subject": "Parser.parseBodyFragment / HTML tree construction",
+        "hunk_ids": [],
+        "cited_from": "for (int i = 0; i < 25000; i++) { longBody.append(i).append(\"<dl><dd>\"); } for (int i = 0; i < 25000; i++) { longBody.append(i).append(\"</dd></dl>\"); } ... Document doc = Parser.parseBodyFragment(longBody.toString(), \"\"); ... assertEquals(2, doc.body().childNodeSize()); assertEquals(25000, doc.select(\"dd\").size()); assertTrue(System.currentTimeMillis() - start < 1000);"
+      },
+      {
+        "id": "sv2",
+        "statement": "Parsing a body fragment of 25000 repetitions of an index followed by \"<br>\" must not throw and must yield a body element with exactly 50000 child nodes in under 1000 ms.",
+        "subject": "Parser.parseBodyFragment / HTML parser container handling",
+        "hunk_ids": [],
+        "cited_from": "for (int i = 0; i < 25000; i++) { longBody.append(i).append(\"<br>\"); } ... Document doc = Parser.parseBodyFragment(longBody.toString(), \"\"); assertEquals(50000, doc.body().childNodeSize()); assertTrue(System.currentTimeMillis() - start < 1000);"
+      },
+      {
+        "id": "sv3",
+        "statement": "Parsing HTML consisting of 200 unclosed nested \"<span>\" tags followed by \"<p>One</p>\" must not throw and must yield a Document with exactly 200 <span> elements and exactly 1 <p> element.",
+        "subject": "Jsoup.parse / HTML parser deep-unclosed-tag handling",
+        "hunk_ids": [],
+        "cited_from": "for (int i = 0; i < 200; i++) { sb.append(\"<span>\"); } sb.append(\"<p>One</p>\"); Document doc = Jsoup.parse(sb.toString()); assertEquals(200, doc.select(\"span\").size()); assertEquals(1, doc.select(\"p\").size());"
+      },
+      {
+        "id": "sv4",
+        "statement": "Parsing real-world HTML pages with very deep or badly-formed structure, such as those at the cited government URLs, must not throw a java.lang.StackOverflowError (the regression reported for jsoup 1.11.1, where 1.10.3 was unaffected).",
+        "subject": "Jsoup.parse / HTML tree-builder scope & active-formatting handling",
+        "hunk_ids": [],
+        "cited_from": "version 1.11.1 java.lang.StackOverflowError version 1.10.3 no problem version 1.11.1 java.lang.StackOverflowError Example URL：http://szshb.nxszs.gov.cn/ http://www.lnfsfda.gov.cn/ http://www.beihai.gov.cn/ http://www.fsepb.gov.cn/ http://www.bhem.gov.cn"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "When the open-element stack is deeper than MaxScopeSearchDepth+1 (i.e. has more than 101 open elements), an element-in-scope lookup (inSpecificScope, backing inScope/inListItemScope/inButtonScope/inTableScope) determines its result from a search window over the most recently opened (topmost) MaxScopeSearchDepth+1 elements near the current insertion point, capped at the html end of the stack, rather than from a window pinned to the bottom/root region of the stack as before.",
+        "subject": "HtmlTreeBuilder.inSpecificScope (scope determination over the open-element stack used during HTML parsing)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "false",
+        "checked_ids": [
+          "sv1",
+          "sv2",
+          "sv3",
+          "sv4"
+        ],
+        "rationale": "All four S_vis entries are purely end-to-end behavioral/performance tests (deep-nested or malformed parsing must not StackOverflow, must give specific node counts, must run <1000ms). None of them describe the element-in-scope lookup algorithm or whether its search window is anchored to the topmost vs. bottom of the open-element stack when depth exceeds MaxScopeSearchDepth+1, so they do not pin down the specific mechanism SI-1 commits to."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement [SI-1] changes only the internal window anchoring of inSpecificScope: gold searches the topmost (recently-opened) MaxScopeSearchDepth+1 = 101 open elements near the insertion point when the stack exceeds 101 elements, whereas buggy pins the window over the bottom/root region (indices 0..100). inSpecificScope is private and only observable through html parsing output / crash-vs-termination.\n\nI reverse-engineered the only externally observable discriminator by probing with the run_test tool against BOTH revisions:\n- 102..200 nested unclosed `<span>` followed by a `<p>` block: PASSED on gold for every depth (span==N, p==1), FAILED on buggy for every depth (StackOverflowError recursion -> assertion never reached).\n- Deep nested spans with EOF only (no following block): PASSED on BOTH gold and buggy (no divergence).\n- Deep nested fully-closed `<b>...X...</b>`: PASSED on BOTH.\n- Deep nested unclosed `<span>` followed by `<div>After</div>`: PASSED on BOTH.\nSo the ONLY discriminating shape is deep unclosed inline/formatting-style elements (>~101 open) chased by a `<p>` (output-affecting block that runs the scope-based close/reconstruction), i.e. exactly the crash behaviour; there is no structurally separate non-crash regime in which the window anchor flips a scope decision without overflow.\n\nCrucially, that exact discriminating scenario (200 nested unclosed `<span>` then `<p>One</p>` -> 200 spans / 1 p) is the *byte-for-byte content of the [VISIBLE] test* HtmlParserTest.testHandlesDeepSpans in the visible file this repair surface already sees (plus the visible handlesDeepStack 25000 nested &lt;dl&gt;&lt;dd&gt; and handlesManyChildren 25000 &lt;br&gt; deep-stack coverage). The hidden oracle HtmlTreeBuilderTest only contains ensureSearchArraysAreSorted (checks the scope tag-name arrays are sorted), utterly unrelated to the depth-window anchoring. Consequently any constructive witness I could certify with these run_test results would be an independent re-invention in different magnitudes/words of an assertion whose discriminating fact the repair system already has in view, and per the rules such re-phrasings are worthless as hidden witnesses. Every quantity I confirmed (gold PASSED for spans+&lt;p&gt; at depths 102..200, buggy StackOverflows at all those same depths; non-divergence on the EOF, div, and fully-closed variants) reproduces what the visible suite already pins down rather than adding a hidden fact. Hence, no genuine hidden witness exists for [SI-1]."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three source files are visible in this benchmark workspace: src/main/java/org/jsoup/parser/HtmlTreeBuilder.java, src/main/java/org/jsoup/parser/TreeBuilder.java, and the test file src/test/java/org/jsoup/parser/HtmlParserTest.java. A full jsoup build would normally contain far more classes; the repair/analysis surface here is effectively limited to these."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HtmlTreeBuilder.inSpecificScope already contains a bounded search using MaxScopeSearchDepth = 100 (\"prevents the parser bogging down in exceptionally broken pages\"), capping how far up the open-element stack it walks; this depth cap is the code most relevant to avoiding StackOverflow/deep recursive descent."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Class relationship: HtmlTreeBuilder extends TreeBuilder; TreeBuilder owns the reader/tokeniser/parse loop and the open-element stack, and its runParser() reads tokens until an EOF token is processed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant deep/broken-input coverage lives in HtmlParserTest under methods handlesDeepStack (25000 nested <dl><dd>), handlesManyChildren (25000 <br>), and testHandlesDeepSpans (200 nested unclosed <span>)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report (Jsoup-68, upstream #966) gives no concrete minimum-reproducer HTML, only example government URLs, so the only direct issue-level claim is the StackOverflowError regression itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk H0 only changes the computation of the internal variables 'bottom' and 'top' in HtmlTreeBuilder.inSpecificScope(String[], String[], String[]); the loop body and all callers (inScope, inListItemScope, inButtonScope, inTableScope via inSpecificScope(String,String[],String[])) are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MaxScopeSearchDepth is a public constant equal to 100 ('prevents the parser bogging down in exceptionally broken pages')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The behavior of the two versions is identical when stack.size()-1 <= MaxScopeSearchDepth; they diverge only for stacks deeper than 101 open elements, where the gold patch moves the capped search window from the root/bottom end of the stack to the topmost/recently-opened end."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "inSpecificScope is private; the only externally observable consequences are through the resulting parsed DOM / absence of reference-related crashes for deeply nested inputs (cf. handlesDeepStack with 25000 nested <dl><dd> in HtmlParserTest)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This is the Jsoup-68 result tied to a StackOverflowError regression on deeply nested/broken pages (jsoup issue #966)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: Requirement [SI-1] concerns inSpecificScope (and its callers inScope/inListItemScope/inButtonScope/inTableScope) on open-element stacks deeper than MaxScopeSearchDepth+1 (>101 open elements): the search window must be anchored over the topmost (recently-opened) MaxScopeSearchDepth+1 elements near the insertion point, rather than over a window pinned near the bottom/root of the stack.\n\nI searched every oracle test file. The only tests that genuinely exercise this deep-stack scope behavior — i.e. that produce DOM/parse results which change between the gold (top-anchored window) and buggy (bottom-anchored window) versions for stacks deeper than 101 elements — are HtmlParserTest.testHandlesDeepSpans (200 nested <span> plus a <p>) and the related deep-stack helpers in that file. I mechanically confirmed with an extracted copy of testHandlesDeepSpans that it PASSES against the gold program and FAILS against the buggy program (the buggy build recurses/StackOverflows, and the span/p counts diverge), exactly discriminating the [SI-1] window-anchoring change.\n\nHowever, HtmlParserTest.java is labeled [VISIBLE] (its content is byte-for-byte what a repair system already sees). The rules state that an assertion drawn from [VISIBLE] content can never serve as a witness, no matter how faithfully it matches r. The only genuinely relevant [HIDDEN] test file for this parser, HtmlTreeBuilderTest.java, contains only ensureSearchArraysAreSorted (which checks that the *search tag-name arrays* are sorted for inSorted) — completely unrelated to the depth-window anchoring of inSpecificScope that [SI-1] describes. The remaining [HIDDEN] files (ParseTest, XmlTreeBuilderTest, and the many node/selector/cleaner unit tests) do not parse deeply nested (>101 open element) HTML through HtmlTreeBuilder in a way that discriminates the scope-window anchor, and none of them can change result between gold and buggy for this specific hunk.\n\nBecause every genuine discriminating test for [SI-1] lives in the [VISIBLE] test file and there is no [HIDDEN] assertion that tests this requirement, no witness can be built. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: Requirement [SI-1] changes only the internal window anchoring of inSpecificScope: gold searches the topmost (recently-opened) MaxScopeSearchDepth+1 = 101 open elements near the insertion point when the stack exceeds 101 elements, whereas buggy pins the window over the bottom/root region (indices 0..100). inSpecificScope is private and only observable through html parsing output / crash-vs-termination.\n\nI reverse-engineered the only externally observable discriminator by probing with the run_test tool against BOTH revisions:\n- 102..200 nested unclosed `<span>` followed by a `<p>` block: PASSED on gold for every depth (span==N, p==1), FAILED on buggy for every depth (StackOverflowError recursion -> assertion never reached).\n- Deep nested spans with EOF only (no following block): PASSED on BOTH gold and buggy (no divergence).\n- Deep nested fully-closed `<b>...X...</b>`: PASSED on BOTH.\n- Deep nested unclosed `<span>` followed by `<div>After</div>`: PASSED on BOTH.\nSo the ONLY discriminating shape is deep unclosed inline/formatting-style elements (>~101 open) chased by a `<p>` (output-affecting block that runs the scope-based close/reconstruction), i.e. exactly the crash behaviour; there is no structurally separate non-crash regime in which the window anchor flips a scope decision without overflow.\n\nCrucially, that exact discriminating scenario (200 nested unclosed `<span>` then `<p>One</p>` -> 200 spans / 1 p) is the *byte-for-byte content of the [VISIBLE] test* HtmlParserTest.testHandlesDeepSpans in the visible file this repair surface already sees (plus the visible handlesDeepStack 25000 nested &lt;dl&gt;&lt;dd&gt; and handlesManyChildren 25000 &lt;br&gt; deep-stack coverage). The hidden oracle HtmlTreeBuilderTest only contains ensureSearchArraysAreSorted (checks the scope tag-name arrays are sorted), utterly unrelated to the depth-window anchoring. Consequently any constructive witness I could certify with these run_test results would be an independent re-invention in different magnitudes/words of an assertion whose discriminating fact the repair system already has in view, and per the rules such re-phrasings are worthless as hidden witnesses. Every quantity I confirmed (gold PASSED for spans+&lt;p&gt; at depths 102..200, buggy StackOverflows at all those same depths; non-divergence on the EOF, div, and fully-closed variants) reproduces what the visible suite already pins down rather than adding a hidden fact. Hence, no genuine hidden witness exists for [SI-1]."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SI-1] (HtmlTreeBuilder.inSpecificScope (scope determination over the open-element stack used during HTML parsing)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement [SI-1] changes only the internal window anchoring of inSpecificScope: gold searches the topmost (recently-opened) MaxScopeSearchDepth+1 = 101 open elements near the insertion point when the stack exceeds 101 elements, whereas buggy pins the window over the bottom/root region (indices 0..100). inSpecificScope is private and only observable through html parsing output / crash-vs-termination.\n\nI reverse-engineered the only externally observable discriminator by probing with the run_test tool against BOTH revisions:\n- 102..200 nested unclosed `<span>` followed by a `<p>` block: PASSED on gold for every depth (span==N, p==1), FAILED on buggy for every depth (StackOverflowError recursion -> assertion never reached).\n- Deep nested spans with EOF only (no following block): PASSED on BOTH gold and buggy (no divergence).\n- Deep nested fully-closed `<b>...X...</b>`: PASSED on BOTH.\n- Deep nested unclosed `<span>` followed by `<div>After</div>`: PASSED on BOTH.\nSo the ONLY discriminating shape is deep unclosed inline/formatting-style elements (>~101 open) chased by a `<p>` (output-affecting block that runs the scope-based close/reconstruction), i.e. exactly the crash behaviour; there is no structurally separate non-crash regime in which the window anchor flips a scope decision without overflow.\n\nCrucially, that exact discriminating scenario (200 nested unclosed `<span>` then `<p>One</p>` -> 200 spans / 1 p) is the *byte-for-byte content of the [VISIBLE] test* HtmlParserTest.testHandlesDeepSpans in the visible file this repair surface already sees (plus the visible handlesDeepStack 25000 nested &lt;dl&gt;&lt;dd&gt; and handlesManyChildren 25000 &lt;br&gt; deep-stack coverage). The hidden oracle HtmlTreeBuilderTest only contains ensureSearchArraysAreSorted (checks the scope tag-name arrays are sorted), utterly unrelated to the depth-window anchoring. Consequently any constructive witness I could certify with these run_test results would be an independent re-invention in different magnitudes/words of an assertion whose discriminating fact the repair system already has in view, and per the rules such re-phrasings are worthless as hidden witnesses. Every quantity I confirmed (gold PASSED for spans+&lt;p&gt; at depths 102..200, buggy StackOverflows at all those same depths; non-divergence on the EOF, div, and fully-closed variants) reproduces what the visible suite already pins down rather than adding a hidden fact. Hence, no genuine hidden witness exists for [SI-1].",
+    "confidence": "Medium"
+  }
+}

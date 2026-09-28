@@ -1,0 +1,94 @@
+{
+  "task_id": "Gson-18",
+  "status": "ok",
+  "duration_seconds": 331.31157169299877,
+  "llm_calls": 39,
+  "error": null,
+  "record": {
+    "task_id": "Gson-18",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "Deserializing (fromJson) an object whose field is declared as `Map<String, ? extends List<SmallClass>>` (SmallClass having a String field `inSmall`) from JSON `{\"inBig\":{\"key\":[{\"inSmall\":\"hello\"}]}}` must produce inner list elements that deserialize as the wildcard's upper-bound element type SmallClass: `bigClass.inBig.get(\"key\").get(0)` must be a non-null SmallClass whose `inSmall` equals \"hello\" — not an internal map type (no ClassCastException cast of a LinkedTreeMap). In other words, when resolving the map's value type for deserialization, a wildcard upper bound of the form `? extends List<SmallClass>` must be unwrapped to its upper bound so the element type (SmallClass) is honored.",
+        "subject": "Gson.fromJson / $Gson$Types.getMapKeyAndValueTypes (map value type declared as a wildcard ? extends ...)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"class BigClass { Map<String, ? extends List<SmallClass>> inBig; }\" / \"This call will fail with a ClassCastException exception – com.google.gson.internal.LinkedTreeMap cannot be cast to Entry. If we remove ? extends then everything works fine.\" Test: \"public void testIssue1107() {\n    String json = \"{\\n  \\\"inBig\\\": {\\n    \\\"key\\\": [\\n      { \\\"inSmall\\\": \\\"hello\\\" }\\n    ]\\n  }\\n}\";\n    BigClass bigClass = new Gson().fromJson(json, BigClass.class);\n    SmallClass small = bigClass.inBig.get(\"key\").get(0);\n    assertNotNull(small);\n    assertEquals(\"hello\", small.inSmall);\n  }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "$Gson$Types.getSupertype, when its generic `context` argument is a java.lang.reflect.WildcardType, performs its assignability check and its generic-supertype resolution using the wildcard's first upper bound (WildcardType.getUpperBounds()[0]) as the context instead of using the raw wildcard type itself.",
+        "subject": "$Gson$Types.getSupertype",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1's visible evidence (issue #1107 and its test) describes the end-to-end deserialization failure and expected output for a Map with a `? extends List<SmallClass>` value type, but says nothing about $Gson$Types.getSupertype's internal handling, let alone that it must use upper bound[0] as context for its assignability check and generic-supertype resolution. That specific mechanism is an internal implementation detail the visible artifacts do not pin down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Workspace root exposes only gson/src/main/java/com/google/gson/internal/$Gson$Types.java and gson/src/test/java/com/google/gson/functional/CollectionTest.java (all other Gson sources are not visible here)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reference to a Map key-and-value type resolver: $Gson$Types.getMapKeyAndValueTypes returns the raw actual type arguments of the map's parameterized supertype and carries the comment '// TODO: strip wildcards?', indicating where a wildcard in the map value position would leak through unchanged."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testIssue1107 (CollectionTest) reproduces the reported issue using private static-ish inner classes BigClass { Map<String, ? extends List<SmallClass>> inBig; } and SmallClass { String inSmall; }; note the bug-report text uses .get(\"inSmall\") while the test uses .get(\"key\") to index the map."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue notes removing `? extends` (plain Map<String, List<SmallClass>>) already deserializes correctly, establishing the regression is specific to the wildcard value position."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test source also contains pre-existing wildcard-coverage tests (testWildcardPrimitiveCollectionDeserialization, testWildcardCollectionField, ObjectWithWildcardCollection) that constrain wildcard handling for collections, but those concern non-map/collection contexts and are not implicated by this issue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only H0 changes the file; the sole difference between buggy and gold revisions of $Gson$Types.java is the added `if (context instanceof WildcardType) { context = ((WildcardType)context).getUpperBounds()[0]; }` block at the top of getSupertype."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getSupertype is package-private (static Type getSupertype). Its public in-package callers that funnel wildcard-typed contexts into it are getCollectionElementType and getMapKeyAndValueTypes; the latter is reachable through the generic field-adapter creation that drives deserialization of Map-typed values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getSupertype's comment already claimed wildcards were useless for supertype resolution, but the pre-fix code never actually unwrapped the wildcard; the fix makes the unwrapping real, which is what changes downstream behavior (e.g., resolving a map value/collection element whose declared type is a wildcard bound that involves enclosing type-variable references)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 is: $Gson$Types.getSupertype, when its `context` is a WildcardType, must use the wildcard's first upper bound (getUpperBounds()[0]) as the context for its assignability check / generic-supertype resolution rather than the raw wildcard. The only test reported as failing against the buggy program is CollectionTest::testIssue1107 (a BigClass with `Map<String, ? extends List<SmallClass>> inBig` being deserialized — i.e. exactly the map-value-wildcard scenario funneled through $Gson$Types.getMapKeyAndValueTypes -> getSupertype, whose fix is R1). However, the entire CollectionTest.java file content is labeled [VISIBLE], and a Witness may only rest on assertions drawn from [HIDDEN] content. So V testIssue1107 cannot serve as a Witness despite precisely matching R1.\n\nI examined every oracle test file for a separate [HIDDEN] test that both (a) fails against the buggy program and (b) genuinely asserts R1's behavior (map/collection value position with a wildcard bound that itself involves type variables such that getSupertype must unwrap the wildcard). The relevant [HIDDEN] type/wildcard tests inspected are: GsonTypesTest (only tests newParameterizedType/getFirstTypeArgument/canonicalize — no getSupertype-with-wildcard test), RecursiveTypesResolveTest (wildcard member fields Foo1/Foo2 related to `resolve` StackOverflow recursion from issues #440/#603 — pre-existing tests that pass on buggy and don't target R1's map-value getSupertype path), TypeTokenTest (assignability of fields via resolve — no getSupertype-wildcard), and MapTest. MapTest contains the closest thematic tests, testMapSerializationWithWildcardValues / testMapDeserializationWithWildcardValues (Map<String, ? extends Long>/Collection<? extends Integer> wildcard values); I mechanically ran the deserialization one against the buggy program and it PASSED (so it cannot be a witness — a witness must FAIL on buggy), and neither involves an enclosing-type-variable bound requiring getSupertype to unwrap a wildcard (they don't reproduce R1). TypeVariableTest and ParameterizedTypesTest similarly don't exercise the getSupertype-wildcard-unwrap path and are not in the failing set.\n\nTo be exhaustive I confirmed the runtime pass/fail status myself for the distinguishing scenarios. Conclusion: the only test that genuinely tests R1's behavior and fails on buggy/passes on gold is testIssue1107, which is [VISIBLE]; every other test (including all [HIDDEN] wildcard/type-resolution tests) either passes on the buggy program or tests a different behavior. Hence no [HIDDEN] oracle test qualifies as a Witness for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: gave up after exhausting its exploration budget without concluding (21 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] ($Gson$Types.getSupertype) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

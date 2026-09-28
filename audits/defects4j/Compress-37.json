@@ -1,0 +1,102 @@
+{
+  "task_id": "Compress-37",
+  "status": "ok",
+  "duration_seconds": 225.1553951040005,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "Compress-37",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "parsePaxHeaders must not attempt to allocate a negative-length array (i.e., must not throw NegativeArraySizeException) when it encounters a newline byte (10), a value less than the '0' (48) digit, in place of a length digit while reading a header's length field — it should stop/break out of its parsing loop instead of accumulating that byte into the length.",
+        "subject": "TarArchiveInputStream.parsePaxHeaders(InputStream)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The inner loop starts reading the length, but it gets a newline (10) and ends up subtracting '0' (48) from it; the result is a negative length that blows up an attempt to allocate the rest array.\" and \"I would say that a check to see if ch is less the '0' and break the loop if it is.\". Source loop: `len *= 10; len += ch - '0';` followed by `final int restLen = len - read; ... final byte[] rest = new byte[restLen];`"
+      },
+      {
+        "id": "2",
+        "statement": "getNextTarEntry must successfully read the PAX-header-bearing tar produced by `npm pack aws-sdk@2.2.16` (whose PAX headers contain an empty/blank line at the end, COMPRESS-355 case) — returning a first TarArchiveEntry named \"package/package.json\", and returning null for the subsequent getNextTarEntry call, with no NegativeArraySizeException/exception thrown.",
+        "subject": "TarArchiveInputStream.getNextTarEntry()",
+        "hunk_ids": [],
+        "cited_from": "Test `survivesBlankLinesInPaxHeader`: `final TarArchiveEntry entry = is.getNextTarEntry(); assertEquals(\"package/package.json\", entry.getName()); assertNull(is.getNextTarEntry());` (annotated `@link \"https://issues.apache.org/jira/browse/COMPRESS-355\"`), reading the /COMPRESS-355.tar stream. Issue: \"I used npm pack aws-sdk@2.2.16 to generate a tarball with this issue.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When TarArchiveInputStream.parsePaxHeaders scans a PAX header for the decimal length of a record, a newline ('\\n') byte encountered where length digits would otherwise be accumulated is treated as a blank/stray line that is skipped without contributing to the parsed length; parsing then resumes at the start of the next record, so that all valid `length keyword=value\\n` records still populate the returned Map even when blank lines intervene in the header stream (instead of the newline being folded into the length, which yields a corrupt/negative length and garbled results).",
+        "subject": "TarArchiveInputStream.parsePaxHeaders",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis[1] pins down that a newline must not be folded into the record length (avoiding a negative array allocation) and S_vis[2] verifies end-to-end parsing of the COMPRESS-355 npm-pack tar that contains a trailing blank line. However, R1's stronger claim — that a blank/stray line is skipped and parsing then *resumes at the start of the next record* so all valid records populate the Map even when blank lines intervene in the middle of the header stream — is not clearly established: S_vis[1] describes 'breaking out of the loop' on such a byte (which would tend to stop parsing rather than resume after an intervening blank line), and S_vis[2]'s test only exercises a blank line at the end of the header before the getNextTarEntry loop, not subsequent records after a mid-stream blank line."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "blankLineAtLengthPosition",
+      "test_source": "@Test\npublic void blankLineAtLengthPosition() throws Exception {\n    org.apache.commons.compress.archivers.tar.TarArchiveInputStream tais =\n        new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(\n            new java.io.ByteArrayInputStream(new byte[0]));\n    java.lang.reflect.Method m =\n        org.apache.commons.compress.archivers.tar.TarArchiveInputStream.class\n        .getDeclaredMethod(\"parsePaxHeaders\", java.io.InputStream.class);\n    m.setAccessible(true);\n    byte[] pax = \"\\n11 foo=bar\\n\".getBytes(\"UTF-8\");\n    @SuppressWarnings(\"unchecked\")\n    java.util.Map<String,String> headers = (java.util.Map<String,String>)\n        m.invoke(tais, new java.io.ByteArrayInputStream(pax));\n    org.junit.Assert.assertEquals(1, headers.size());\n    org.junit.Assert.assertEquals(\"bar\", headers.get(\"foo\"));\n}",
+      "gold_result": "PASSED: parsePaxHeaders skips the leading '\\n' blank line and parses \"11 foo=bar\\n\", returning {foo=bar}. assertEquals(1,size) and assertEquals(\"bar\",headers.get(\"foo\")) both satisfied.",
+      "buggy_result": "FAILED: without the '\\n' handling, the stray newline is folded into the length decimal while scanning (len becomes negative), and when the value-rest bytes are sized with restLen = len - read it throws java.lang.NegativeArraySizeException: -3797, surfacing as InvocationTargetException at VersoWitnessCandidate.blankLineAtLengthPosition (TarArchiveInputStream.parsePaxHeaders line 474).",
+      "explanation": "R1 is exactly: when parsePaxHeaders is scanning for a record's decimal header length and reads a '\\n' byte (a stray/blank line), gold skips it (break from the inner digit loop, resuming the outer loop at the next record), whereas buggy folds the '\\n' into the running length (len = len*10 + ('\\n'-'0')), making it negative and then corrupting/garbling the value-rest sizing. My candidate feeds a ByteArrayInputStream containing a leading blank line followed by a valid PAX record (\"\\n11 foo=bar\\n\"): on gold the returned Map is {foo=bar} (size 1, value \"bar\"), while on buggy the folded newline produces a negative length and throws NegativeArraySizeException -3797 during the parse, so the same assertions fail. Because the candidate class is compiled in the default (non-archivers.tar) package by the harness and parsePaxHeaders is package-private, direct method calls would not compile, so the test invokes parsePaxHeaders reflectively with setAccessible(true) on a real TarArchiveInputStream - this exercises genuine R1 behavior, not the co-located surrounding logic. The visible TarArchiveInputStreamTest cases (single record, consecutive duplicate-key records, empty-value removal, embedded-newline inside the value, non-ascii path) cover only records that begin immediately with digits; none pins down the '(newline at length-scan position -> skip, resuming next record)' behavior. The only resource-based visible correlation, survivesBlankLinesInPaxHeader (COMPRESS-355 tar), depends on an external .tar file that is not present in the visible tree, so the concrete input-to-output mapping for this stray-newline scenario was not an already-visible fact. Execution confirmed gold PASSED and buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug maps to Jira COMPRESS-355 (Compress-37 in this benchmark's numbering); the regression test `survivesBlankLinesInPaxHeader` referencing it is present in TarArchiveInputStreamTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "parsePaxHeaders decodes records of the form `len keyword=value\\n`, building a Map seeded from globalPaxHeaders; a ' ' after the length separates the keyword, and an '=' separates keyword from value; when restLen==1 (only a trailing NL) it removes the keyword from the map."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getNextTarEntry drives PAX processing: for pax-header entries it calls parsePaxHeaders then applies headers to the current entry; the surrounding parsePaxHeaders is package-private and unit-tested directly with ByteArrayInputStream inputs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The .tar test resource files (/COMPRESS-355.tar etc.) are not present in the visible tree (only .java files are), so resource-based behaviors are grounded only by the embedding test code."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The blank-line-at-end scenario in real npm-pack tarballs is produced because the file content of the pax header ends with a newline that the length-parsing loop treats as a spurious length term producing a negative len."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "parsePaxHeaders is package-private (Map<String,String> return type) and is exercised directly in unit tests with ByteArrayInputStream inputs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The newline branch breaks only out of the inner length-digit scanning loop; the enclosing while(true) then continues from the byte after the newline, treating that byte as the start of a fresh length field."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The removed/unchanged digit accumulation still computes len *= 10; len += ch - '0', so non-length non-space non-newline bytes continue to be hand-led as digits as before."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The target requirement R1 (parsePaxHeaders must treat a '\\n' encountered while scanning for the length decimal as a blank/stray line that is skipped, resuming parsing at the next record so valid records still populate the Map) is exercised by exactly one oracle test: `TarArchiveInputStreamTest.survivesBlankLinesInPaxHeader` (bug COMPRESS-355), which reads /COMPRESS-355.tar and asserts the first entry is \"package/package.json\" followed by null. That test is located in TarArchiveInputStreamTest.java, which read_test_file labels [VISIBLE]. Per the rules, an assertion drawn from [VISIBLE] content can never serve as a Witness regardless of how well it matches R1.\n\nI checked all other test files that could host such behavior. The 'archivers.tar' package (where parsePaxHeaders is package-private and can only be called directly) also contains TarArchiveEntryTest, SparseFilesTest, and TarArchiveOutputStreamTest, all [HIDDEN]; none of them contains any test about stray/blank newline lines between PAX length records — they cover entry-header properties, GNU/Pax sparse parsing, and tar-writing/long-name round-trips respectively. I additionally reviewed the other tar-consuming tests (TarTestCase, ArchiveReadTest, LongPathTest, LongSymLinkTest, ChainingTestCase, ArchiveStreamFactoryTest, JarTestCase, LongPath, etc.) and none tests a blank-line/newline-at-length-position PAX header. Therefore the real oracle contains no [HIDDEN] assertion that genuinely enforces R1, so no genuine witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (TarArchiveInputStream.parsePaxHeaders): When TarArchiveInputStream.parsePaxHeaders scans a PAX header for the decimal length of a record, a newline ('\\n') byte encountered where length digits would otherwise be accumulated is treated as a blank/stray line that is skipped without contributing to the parsed length; parsing then resumes at the start of the next record, so that all valid `length keyword=value\\n` records still populate the returned Map even when blank lines intervene in the header stream (instead of the newline being folded into the length, which yields a corrupt/negative length and garbled results). — not entailed by S_vis (S_vis[1] pins down that a newline must not be folded into the record length (avoiding a negative array allocation) and S_vis[2] verifies end-to-end parsing of the COMPRESS-355 npm-pack tar that contains a trailing blank line. However, R1's stronger claim — that a blank/stray line is skipped and parsing then *resumes at the start of the next record* so all valid records populate the Map even when blank lines intervene in the middle of the header stream — is not clearly established: S_vis[1] describes 'breaking out of the loop' on such a byte (which would tend to stop parsing rather than resume after an intervening blank line), and S_vis[2]'s test only exercises a blank line at the end of the header before the getNextTarEntry loop, not subsequent records after a mid-stream blank line.); confirmed by a synthesized witness: R1 is exactly: when parsePaxHeaders is scanning for a record's decimal header length and reads a '\\n' byte (a stray/blank line), gold skips it (break from the inner digit loop, resuming the outer loop at the next record), whereas buggy folds the '\\n' into the running length (len = len*10 + ('\\n'-'0')), making it negative and then corrupting/garbling the value-rest sizing. My candidate feeds a ByteArrayInputStream containing a leading blank line followed by a valid PAX record (\"\\n11 foo=bar\\n\"): on gold the returned Map is {foo=bar} (size 1, value \"bar\"), while on buggy the folded newline produces a negative length and throws NegativeArraySizeException -3797 during the parse, so the same assertions fail. Because the candidate class is compiled in the default (non-archivers.tar) package by the harness and parsePaxHeaders is package-private, direct method calls would not compile, so the test invokes parsePaxHeaders reflectively with setAccessible(true) on a real TarArchiveInputStream - this exercises genuine R1 behavior, not the co-located surrounding logic. The visible TarArchiveInputStreamTest cases (single record, consecutive duplicate-key records, empty-value removal, embedded-newline inside the value, non-ascii path) cover only records that begin immediately with digits; none pins down the '(newline at length-scan position -> skip, resuming next record)' behavior. The only resource-based visible correlation, survivesBlankLinesInPaxHeader (COMPRESS-355 tar), depends on an external .tar file that is not present in the visible tree, so the concrete input-to-output mapping for this stray-newline scenario was not an already-visible fact. Execution confirmed gold PASSED and buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

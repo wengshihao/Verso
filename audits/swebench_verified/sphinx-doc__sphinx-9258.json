@@ -1,0 +1,120 @@
+{
+  "task_id": "sphinx-doc__sphinx-9258",
+  "status": "ok",
+  "duration_seconds": 322.24741483293474,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-9258",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A docstring type specification may express multiple acceptable types for a parameter/attribute/variable using a vertical-bar `|` separator between type names, e.g. `:type text: bytes | str`, and Sphinx must support such union notation rather than failing to process the spec.",
+        "subject": "Python docstring type-field parsing (parameter/attribute/variable type specs)",
+        "hunk_ids": [],
+        "cited_from": "RFE title: \"Support union types specification using | (vertical bar/pipe)\"; \"Please add a support for specifying multiple types acceptable for a parameter/attribute/variable.\"; use case docstring:\n``` restructuredtext\ndef foo(text):\n    \"\"\"Bar\n\n    :param text: a text\n    :type text: bytes | str\n\n    \"\"\"\n```\n\"Such a syntax is already supported by e.g. PyCharm.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When a doc-field type value such as `bytes | str` is turned into cross-references, each type name on either side of the `|` separator must be handled separately (so the union is not treated as one unresolvable whole `bytes | str` target), matching how existing separators in inline type specs are treated.",
+        "subject": "Python domain inline-type cross-reference splitting (e.g. rendering of union members as separate references)",
+        "hunk_ids": [],
+        "cited_from": "Visual material: PyXrefMixin.make_xrefs in sphinx/domains/python.py splits type targets on delims = r'(\\s*[\\[\\]\\(\\),](?:\\s*or\\s)?\\s*|\\s+or\\s+|\\.\\.\\.)' producing individual make_xref calls, while the issue's supported form is `bytes | str` (vertical bar not present among those delimiters)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When make_xrefs processes a type-specifier target (e.g. a :type:/:rtype:/bodyrolename field value), it now also treats a '|' (pipe) character as an alternative delimiter, so targets written as e.g. 'int | str' (and likewise 'int|str' with no whitespace) are split into separate references for each type named on either side of the '|', rather than the whole string being emitted as one combined xref target.",
+        "subject": "PyXrefMixin.make_xrefs (sphinx.domains.python)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The '|' delimiter, together with any whitespace surrounding it, is preserved in the rendered output as plain non-reference content between the per-alternative references, rather than being dropped or folded into the reftarget of either neighboring type reference.",
+        "subject": "PyXrefMixin.make_xrefs (sphinx.domains.python)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 explicitly requires that each type name on either side of a '|' be handled separately as cross-references rather than emitting the whole 'a | b' as one unresolvable target, which is precisely the 'split into per-alternative references' behavior R1 describes. S_vis R1 additionally establishes that such '|' union specs must be processed at all; given '|' acts as a delimiter, splitting holds regardless of surrounding whitespace (both 'int | str' and 'int|str')."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins down that union members are split into separate references and that existing separator conventions should be matched, from which one could plausibly infer the separator is kept visible in output. However, nothing in S_vis explicitly states that the '|' and surrounding whitespace are preserved as plain non-reference content between the per-alternative references rather than being dropped or folded into a reftarget, so this rendering detail is not firmly pinned."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_make_xrefs_pipe_preserved",
+      "test_source": "from docutils import nodes\n\nfrom sphinx import addnodes\nfrom sphinx.domains.python import PyXrefMixin\n\n\ndef test_make_xrefs_pipe_preserved():\n    class X(PyXrefMixin):\n        def make_xref(self, rolename, domain, target,\n                      innernode=nodes.emphasis, contnode=None, env=None):\n            return addnodes.pending_xref(\n                '', innernode(target, target),\n                refdomain=domain, reftype=rolename, reftarget=target)\n\n    results = X().make_xrefs('class', 'py', 'int | str')\n    xrefs = [n for n in results if isinstance(n, addnodes.pending_xref)]\n    assert [n['reftarget'] for n in xrefs] == ['int', 'str']\n    delimiters = [n.astext() for n in results if isinstance(n, nodes.emphasis)]\n    assert delimiters == [' | ']",
+      "gold_result": "PASSED (delimiters regex includes `\\s*\\|\\s*`, so `'int | str'` splits into xref('int'), emphasis(' | ') and xref('str'))",
+      "buggy_result": "FAILED at xref assertion: xrefs == ['int | str'] (single reftarget), i.e. the pipe delimiter is not split — the assertion `assert ['int','str'] == ['int','str']` fails because buggy make_xrefs returns a lone xref whose reftarget is literally 'int | str'.",
+      "explanation": "Target R2 concerns the one-line change in PyXrefMixin.make_xrefs (sphinx/domains/python.py, hunk H0): the buggy delimiters regex `(...|\\s+or\\s+|\\.\\.\\.)` lacks the pipe alternative, so a PEP-604-style target string like 'int | str' is never split and is emitted as a single pending_xref whose reftarget is the whole literal 'int | str'. The gold regex adds `\\s*\\|\\s*`, so the pipe (with its surrounding whitespace) is captured by re.split and re-emitted as a plain non-reference delimiter node (innernode, here nodes.emphasis with text ' | ') sitting between two per-alternative xrefs ('int' and 'str'). My witness drives this exact method directly: a tiny mixin subclass overrides make_xref to emit pending_xref nodes, then calls `X().make_xrefs('class', 'py', 'int | str')`. On gold this returns two pending_xrefs with reftargets ['int','str'] plus one emphasis node text ' | ' (assertions pass). On buggy it returns one pending_xref with reftarget 'int | str' and no delimiter node, so the assertion `reftargets == ['int','str']` fails. This behavior is NOT already pinned by any visible oracle material: the visible tests/test_domain_py.py type-field tests (test_info_field_list et al.) use non-pipe delimiters, and test_pydata_with_union_type_operator pipes an annotation through the separate _parse_annotation/desc_sig_punctuation path (signature rendering), which this patch does not touch and which behaves identically before/after. My scenario goes through the patched make_xrefs method with a pipe-bearing target, so it genuinely captures R2. Confirmed via run_test: PASSED vs gold, FAILED vs buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Type specifiers in Python info-field-lists/reST doc fields flow: field body text (e.g. from `:type text: ...`/`:param type name:`) becomes a nodes.Text which PyXrefMixin.make_xrefs (sphinx/domains/python.py) splits on delimiters `[]()`, `,`, and `or`/`...` to emit separate pending_xref nodes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Real PEP-604 union annotations (`int | str`) in signatures are already handled: sphinx/domains/python._parse_annotation has an ast.BitOr/ast.BinOp branch emitting `desc_sig_punctuation('|')`, and sphinx/util/typing.restify/stringify test & render types.Union (py3.10+) as `X | Y`; test_util_typing.py has `test_restify_type_union_operator`/`test_stringify_type_union_operator` for that."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CHANGES (4.1.0 in development) lists related but distinct prior work: #9224 (`:param:`/`:type:` fields do not support types containing whitespace like `Dict[str, str]`), and 3.5.0 #8775 (PEP-604 union operator for autodoc and py domain signatures). None mention #9258, which is the open union-type-in-docstring RFE."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Napoleon's NumPy-style type preprocessor (`_convert_numpy_type_spec`/`_tokenize_type_spec`/`_token_type` in sphinx/ext/napoleon/docstring.py) tokenizes specs on keywords (or/and/of/to), commas, braces, quotes etc., but has no splitting on the `|` separator either."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Behavioral outputs for type fields ultimately render via TypedField.make_field -> make_xrefs with typerolename='class' (Python domain), so valid alternatives should be emitted as references."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 is a one-line change to the delimiters regex inside PyXrefMixin.make_xrefs in sphinx/domains/python.py. The prior top-level alternative '\\s+or\\s+' was replaced (not supplemented) by '\\s*\\|\\s*', adding pipe (|) with optional surrounding whitespace as a delimiter. The ' or ' handling that remains exists only within the '(?:\\s*or\\s)?' sub-group that must directly follow a bracket/comma/paren; a top-level 'A or B' (no preceding delimiter char) is therefore no longer split by make_xrefs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change affects every caller of make_xrefs, notably doc-field type specifiers (TypedField/PyTypedField/PyField with typerolename='class', e.g. :type:/:rtype: values and the 'class' bodyrolename) in the Python domain; the emitted '|' end up as delimiter (innernode/contnode text) nodes rather than pending_xref nodes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The surrounding signature-annotation path (_parse_annotation) already emitted PEP-604 '|' punctuation for real annotations and is untouched by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target R2 concerns the Python-domain PyXrefMixin.make_xrefs change (adding '|' as a top-level delimiter with optional surrounding whitespace, preserving that delimiter + whitespace as plain non-reference content between per-alternative references in doc-field/type-specifier rendering). The failing regression test named by the runner is tests/test_domain_py.py::test_info_field_list_piped_type.\n\nI investigated the oracle:\n1. tests/test_domain_py.py — the only oracle file that exercises PyXrefMixin.make_xrefs / Python-domain info-field-list type specifiers — is labeled [VISIBLE] (its content is exactly what a repair agent already saw), and it does NOT even contain a test named test_info_field_list_piped_type. Its type-field tests (test_info_field_list, test_info_field_list_var, test_pydata_with_union_type_operator) use non-pipe forms (Tuple[str,...], Optional[str], Dict[str,str]) or the real-signature _parse_annotation path; the visible test_pydata_with_union_type_operator does render an 'int | str' annotation but via the :type: path on py:data and asserts plain text/punctuation around the '|' — however, this whole file is [VISIBLE], so none of its assertions can serve as a Witness per the content-based rule.\n\n2. The actual '|'-preserving regression test (test_info_field_list_piped_type) is only reachable by the name reported (failing vs buggy); its assertion body is not present in any file I can read, so I cannot reconstruct/confirmation-run a real [HIDDEN] assertion for R2.\n\n3. The other relevant tests described in the notes (test_util_typing union-operator restify/stringify, and _parse_annotation union handling) exercise the already-handled signature-annotation / typing.restify path, which this patch does not touch — those behaviors behave identically before and after the fix, so they could not be witnesses for R2 regardless.\n\nBecause the only content that enforces the patched | delimiter behavior is not accessible as [HIDDEN] oracle material (the relevant file is [VISIBLE], and the specific failing regression test's source is unreadable), I could not find, build, and execution-confirm a genuine [HIDDEN]-backed witness. Conclusion: found = false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (PyXrefMixin.make_xrefs (sphinx.domains.python)): The '|' delimiter, together with any whitespace surrounding it, is preserved in the rendered output as plain non-reference content between the per-alternative references, rather than being dropped or folded into the reftarget of either neighboring type reference. — not entailed by S_vis (S_vis pins down that union members are split into separate references and that existing separator conventions should be matched, from which one could plausibly infer the separator is kept visible in output. However, nothing in S_vis explicitly states that the '|' and surrounding whitespace are preserved as plain non-reference content between the per-alternative references rather than being dropped or folded into a reftarget, so this rendering detail is not firmly pinned.); confirmed by a synthesized witness: Target R2 concerns the one-line change in PyXrefMixin.make_xrefs (sphinx/domains/python.py, hunk H0): the buggy delimiters regex `(...|\\s+or\\s+|\\.\\.\\.)` lacks the pipe alternative, so a PEP-604-style target string like 'int | str' is never split and is emitted as a single pending_xref whose reftarget is the whole literal 'int | str'. The gold regex adds `\\s*\\|\\s*`, so the pipe (with its surrounding whitespace) is captured by re.split and re-emitted as a plain non-reference delimiter node (innernode, here nodes.emphasis with text ' | ') sitting between two per-alternative xrefs ('int' and 'str'). My witness drives this exact method directly: a tiny mixin subclass overrides make_xref to emit pending_xref nodes, then calls `X().make_xrefs('class', 'py', 'int | str')`. On gold this returns two pending_xrefs with reftargets ['int','str'] plus one emphasis node text ' | ' (assertions pass). On buggy it returns one pending_xref with reftarget 'int | str' and no delimiter node, so the assertion `reftargets == ['int','str']` fails. This behavior is NOT already pinned by any visible oracle material: the visible tests/test_domain_py.py type-field tests (test_info_field_list et al.) use non-pipe delimiters, and test_pydata_with_union_type_operator pipes an annotation through the separate _parse_annotation/desc_sig_punctuation path (signature rendering), which this patch does not touch and which behaves identically before/after. My scenario goes through the patched make_xrefs method with a pipe-bearing target, so it genuinely captures R2. Confirmed via run_test: PASSED vs gold, FAILED vs buggy.",
+    "confidence": "Medium"
+  }
+}

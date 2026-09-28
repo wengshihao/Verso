@@ -1,0 +1,107 @@
+{
+  "task_id": "django__django-12470",
+  "status": "ok",
+  "duration_seconds": 590.8418388329446,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12470",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a concrete model Parent declares Meta.ordering = [\"-pk\"] and a child model Child extends Parent via multi-table inheritance (so Child inherits Parent's ordering as [\"-pk\"]), a plain Child.objects.all() must order its results in DESCENDING order by that primary key, so that the generated SQL includes an ORDER BY on the underlying parent pk column with DESC (not ASC).",
+        "subject": "django.db.models.options / SQL compiler ordering resolution for multi-table inheritance",
+        "hunk_ids": [],
+        "cited_from": "Given the following model definition: from django.db import models\nclass Parent(models.Model):\n\tclass Meta:\n\t\tordering = [\"-pk\"]\nclass Child(Parent):\n\tpass\nQuerying the Child class results in the following:\n>>> print(Child.objects.all().query)\nSELECT \"myapp_parent\".\"id\", \"myapp_child\".\"parent_ptr_id\" FROM \"myapp_child\" INNER JOIN \"myapp_parent\" ON (\"myapp_child\".\"parent_ptr_id\" = \"myapp_parent\".\"id\") ORDER BY \"myapp_parent\".\"id\" ASC\nThe query is ordered ASC but I expect the order to be DESC."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When resolving a 'pk' ordering lookup (the pk shortcut), if the model's pk is a relation field (e.g. the parent pointer under multi-table inheritance) pointing to a model that declares its own Meta.ordering, SQLCompiler.find_ordering_name treats the lookup as an order-by-the-pk-column clause rather than substituting the referenced model's Meta.ordering in its place.",
+        "subject": "SQLCompiler.find_ordering_name",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Ordering a queryset by '-pk' on a model whose primary key is a relation to a parent table (multi-table inheritance, e.g. via an inherited Meta.ordering = ['-pk']) emits a DESCENDING ORDER BY on that pk column — not ASCENDING (the direction requested by the '-' prefix is preserved because the pk is ordered directly rather than being redirected into the parent model's ordering).",
+        "subject": "SQLCompiler.find_ordering_name",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down the observable outcome (DESC ORDER BY on the parent pk column, not ASC) in the concrete Child/Parent scenario, but S_impl R1 asserts a general compiler-level resolution rule inside find_ordering_name (treat pk shortcut as order-by-the-pk-column rather than substituting the referenced model's Meta.ordering). The visible evidence does not dictate that this specific internal mechanism is the way the fix is realized, so it is not fully pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 directly states that querying with the inherited ['-pk'] ordering must emit ORDER BY on the parent pk column in DESCENDING direction, not ASC, which matches S_impl R2's behavioral claim that ordering '-pk' via a relation pk preserves the '-' direction and orders the pk column directly."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_pk_relation_ordering_not_substituted",
+      "test_source": "import sys\nsys.path.insert(0, '/testbed/tests')\n\n\ndef test_witness_pk_relation_ordering_not_substituted():\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=['django.contrib.contenttypes', 'ordering'],\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n            SECRET_KEY='x',\n        )\n        django.setup()\n    from ordering.models import ChildArticle\n    # ChildArticle's primary key is the relation field article_ptr (an MTI\n    # parent pointer) pointing at Article, which defines its own Meta.ordering\n    # (('-pub_date', F('headline'), ... )). Ordering the queryset by the 'pk'\n    # shortcut must NOT substitute Article's default ordering; it must order\n    # directly by the pk column instead.\n    assert ChildArticle._meta.pk.is_relation, 'expected relation pk'\n    qs = ChildArticle.objects.order_by('pk')\n    sql = str(qs.query)\n    order_clause = sql.partition('ORDER BY')[2].strip()\n    assert order_clause == '\"ordering_childarticle\".\"article_ptr_id\" ASC', order_clause\n",
+      "gold_result": "PASSED (ORDER BY \"ordering_childarticle\".\"article_ptr_id\" ASC — single pk column, no substitution)",
+      "buggy_result": "FAILED (buggy expands Article's own Meta.ordering: ORDER BY \"ordering_article\".\"pub_date\" DESC, \"ordering_article\".\"headline\" ASC, \"ordering_author\".\"name\" ASC, T4.\"name\" ASC)",
+      "explanation": "R1 is about SQLCompiler.find_ordering_name wrongly substituting a referenced model's Meta.ordering when the ordering lookup is the 'pk' shortcut and the model's pk is a relation (an MTI parent pointer). The loader-verified witness uses the existing test-suite model ChildArticle(Article): ChildArticle's pk IS the `article_ptr` parent-pointer relation (asserted via _meta.pk.is_relation), and the pointed-to Article declares its own Meta.ordering in ordering/models.py. Ordering ChildArticle.objects.order_by('pk') drives find_ordering_name('pk', ...). On gold, the new `name != 'pk'` guard fires and the query orders directly by the pk column (ORDER BY \"ordering_childarticle\".\"article_ptr_id\" ASC). On buggy, the guard is absent and the query instead substitutes Article's own Meta.ordering (ORDER BY ...pub_date DESC, headline ASC, author__name ASC, T4.name ASC). This discriminates the exact behavior gap: gold passes the assertion, buggy fails it. It does not rest on any visible assertion: the visible test test_order_by_ptr_field_with_default_ordering_by_expression orders by the explicit attribute name 'article_ptr', not by the 'pk' shortcut, and so never hits the newly added guard (that guard was already covered by the pre-existing attname check); the pk-shortcut-to-relation-of-ordered-parent case asserted here is otherwise unpinned and differs from what the visible files establish."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Multi-table inheritance child._meta.ordering is copied from its non-abstract parent in django/db/models/base.py (ModelBase.__new__: if not hasattr(meta, 'ordering'): new_class._meta.ordering = base_meta.ordering), so querying the child uses the inherited '-pk'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy SQL (ORDER BY ... ASC instead of DESC) surfaces when the pk lives on the joined parent table (myapp_parent.id) reached via the child's parent-pointer link."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The Django test-suite paths that most directly exercise ordering through model Meta under inheritance are tests/model_inheritance/tests.py (e.g. test_meta_fields_and_ordering asserts Restaurant._meta.ordering == ['-rating']) and tests/model_inheritance_regress/. No existing visible test asserts the specific '-pk'-on-concrete-parent DESC case from this ticket, so the load-bearing requirement comes from the issue description itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Parent/Child used in the models under tests/model_inheritance and the Report's MyApp-style Parent/Child naming are distinct definitions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The entire fix is a single guard addition inside SQLCompiler.find_ordering_name (compiler.py): the condition that appends a referenced model's Meta.ordering when the ordering field is a relation now also requires `name != 'pk'`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This affects the same method used by get_order_by (both explicit order_by() and Meta.ordering) and, transitively, get_distinct for consistent result ordering/comparison."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing guard `getattr(field, 'attname', None) != name` (matching the field's explicit attribute name) is unchanged; only the pk-shortcut case is newly excluded."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle test suite for any test that genuinely asserts requirement R1: that when 'pk' is used as an ordering lookup and the model's pk is a relation field (the parent pointer under multi-table inheritance) pointing at a model declaring its own Meta.ordering, SQLCompiler.find_ordering_name must NOT substitute the referenced model's Meta.ordering but instead order by the pk column directly.\n\nWhat I checked:\n- tests/ordering/tests.py ([VISIBLE]) — the primary home for order_by/Meta.ordering behavior. It contains test_order_by_pk (orders Author, whose pk is an AutoField, not a relation), test_order_by_fk_attname (#19195, about the attname guard), and test_order_by_ptr_field_with_default_ordering_by_expression (explicit 'article_ptr' ordering when the parent uses F-expression ordering). None of these uses the 'pk' shortcut against a relation-to-ordered-parent, nor asserts the referenced-model-ordering-vs-pk-column distinction that R1 describes. It is also [VISIBLE] content, so none of its assertions could serve as a hidden witness regardless.\n- tests/ordering/models.py ([HIDDEN]) and ChildArticle — I verified these are data/definition files (no test assertions); ChildArticle's pk is the article_ptr relation but the only related test orders by the explicit 'article_ptr' attribute name, not by the 'pk' shortcut, and is visible.\n- tests/model_inheritance/tests.py ([VISIBLE]) — test_meta_fields_and_ordering asserts Restaurant._meta.ordering == ['-rating'] but never issues a query whose ordering resolution goes through the pk-shortcut-to-relation-of-ordered-parent case; other tests exercise inheritance joins/values but not the R1 ordering behavior.\n- tests/model_inheritance_regress/tests.py + models.py ([VISIBLE]/[HIDDEN]) and queries tests, distinct_on_fields tests, m2m_through_regress — none assert the R1 ordering-resolution behavior.\n\nAlso relevant: the Tests-failing list recorded against the buggy program is empty, consistent with there being no oracle test that exercises this path, and the task notebook independently records that \"No existing visible test asserts the specific '-pk'-on-concrete-parent DESC case from this ticket, so the load-bearing requirement comes from the issue description itself.\" After reading the ordering and model-inheritance test files (the only plausible homes for such a regression), I found no [HIDDEN] assertion matching R1. A Witness cannot rest on [VISIBLE] content, and none of the visible ordering/MTI tests tests the same behavior anyway. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (SQLCompiler.find_ordering_name): When resolving a 'pk' ordering lookup (the pk shortcut), if the model's pk is a relation field (e.g. the parent pointer under multi-table inheritance) pointing to a model that declares its own Meta.ordering, SQLCompiler.find_ordering_name treats the lookup as an order-by-the-pk-column clause rather than substituting the referenced model's Meta.ordering in its place. — not entailed by S_vis (S_vis pins down the observable outcome (DESC ORDER BY on the parent pk column, not ASC) in the concrete Child/Parent scenario, but S_impl R1 asserts a general compiler-level resolution rule inside find_ordering_name (treat pk shortcut as order-by-the-pk-column rather than substituting the referenced model's Meta.ordering). The visible evidence does not dictate that this specific internal mechanism is the way the fix is realized, so it is not fully pinned down.); confirmed by a synthesized witness: R1 is about SQLCompiler.find_ordering_name wrongly substituting a referenced model's Meta.ordering when the ordering lookup is the 'pk' shortcut and the model's pk is a relation (an MTI parent pointer). The loader-verified witness uses the existing test-suite model ChildArticle(Article): ChildArticle's pk IS the `article_ptr` parent-pointer relation (asserted via _meta.pk.is_relation), and the pointed-to Article declares its own Meta.ordering in ordering/models.py. Ordering ChildArticle.objects.order_by('pk') drives find_ordering_name('pk', ...). On gold, the new `name != 'pk'` guard fires and the query orders directly by the pk column (ORDER BY \"ordering_childarticle\".\"article_ptr_id\" ASC). On buggy, the guard is absent and the query instead substitutes Article's own Meta.ordering (ORDER BY ...pub_date DESC, headline ASC, author__name ASC, T4.name ASC). This discriminates the exact behavior gap: gold passes the assertion, buggy fails it. It does not rest on any visible assertion: the visible test test_order_by_ptr_field_with_default_ordering_by_expression orders by the explicit attribute name 'article_ptr', not by the 'pk' shortcut, and so never hits the newly added guard (that guard was already covered by the pre-existing attname check); the pk-shortcut-to-relation-of-ordered-parent case asserted here is otherwise unpinned and differs from what the visible files establish.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,166 @@
+{
+  "task_id": "django__django-14077",
+  "status": "ok",
+  "duration_seconds": 490.0141717910301,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14077",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a JSONField column, when a JSON boolean scalar value stored under a key is retrieved through a key-transform (e.g. the lookup 'data__value' on data={'value': True}) and projected via QuerySet.values()/values_list(), the backend must return a Python bool (True for JSON true, False for JSON false) rather than the SQLite-typed integer (1/0) — that is, the extracted type must match what PostgreSQL returns for the same query.",
+        "subject": "JSONField key-transform value de-serialization (django/db/models/fields/json.py JSONField.from_db_value and KeyTransform), evaluated on the sqlite3 backend",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"For this query, sqlite3 wrongly returns: ({'value': True}, 1) whereas postgres correctly returns ({'value': True}, True)\"; \"Same behavior with False/0.\"; code comment in from_db_value: \"# Some backends (SQLite at least) extract non-string values in their SQL datatypes.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Extracting a JSON boolean that lives under a key of a JSONField and returning it through values_list must equal the Python boolean (True/False) for both JSON true and JSON false, on DB backends including SQLite (the default test backend), for at least the keys h/i in the shared TestQuerying dataset {'h': True, 'i': False}.",
+        "subject": "JSONField key-transform value de-serialization (tests/model_fields/test_jsonfield.py test_key_values expectations for 'value__h' / 'value__i')",
+        "hunk_ids": [],
+        "cited_from": "tests/model_fields/test_jsonfield.py test_key_values: \"for lookup, expected in tests: ... ('value__h', True), ('value__i', False), ... self.assertEqual(qs.values_list(lookup, flat=True).get(), expected)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On the SQLite backend, reading a JSON member at a key/index path via a KeyTransform (e.g. values()/values_list/annotation of field__key) returns Python True, False, or None preserving the boolean/None type when the stored JSON document's value at that path is the JSON literal true, false, or null respectively — i.e. a stored boolean is not returned as an integer 0/1.",
+        "subject": "django.db.models.fields.json.KeyTransform (JSONField member extraction on SQLite)",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "On the SQLite backend, an exact-equality filter on a JSON member against one of the JSON literals true, false, or null (field__key=True / field__key=False / field__key=None) selects exactly the rows whose stored JSON value at that key equals that JSON literal, and does not additionally match rows storing a different JSON literal or an integer of equal SQL value, or rows lacking that key.",
+        "subject": "django.db.models.fields.json.KeyTransformExact (field__key=<literal> equality on SQLite)",
+        "hunk_ids": [
+          "H0",
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "On the SQLite backend, an IN lookup on a JSON member whose membership list contains the JSON literals true, false, or null (e.g. field__key__in=[...True...]) matches rows by comparing against the actual stored JSON literal values rather than via JSON_EXTRACT coercion, and the special literal values are not mishandled by the JSON_EXTRACT wrapping applied to ordinary JSON values.",
+        "subject": "django.db.models.fields.json.KeyTransformIn (field__key__in membership on SQLite)",
+        "hunk_ids": [
+          "H0",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "The SQLite backend special-cases exactly the JSON datatype values 'null', 'false', and 'true' as values that cannot be extracted with JSON_EXTRACT and must instead be handled with JSON_TYPE; the observable contract is that these three JSON literals (and only these) receive the dedicated literal handling in key extraction, exact-equality, and IN lookups.",
+        "subject": "django.db.backends.sqlite3.operations.DatabaseOperations.jsonfield_datatype_values (JSON literal special-casing scope)",
+        "hunk_ids": [
+          "H0",
+          "H2",
+          "H5",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 directly pin the boolean-not-integer behavior for key-transform extraction on SQLite via values/values_list. But S_impl R1 additionally asserts null→None type preservation for a stored JSON null, which neither S_vis test data (h=True, i=False) nor its cited quote covers, so the exact full behavior is not fully pinned."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern only value read/extraction through values/values_list and say nothing about equality-filter selection on JSON members, so nothing would lead to the field__key=<literal> row-matching semantics R2 describes."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry mentions IN lookups, membership lists, or JSON_EXTRACT coercion avoidance, so there is no visible basis for the IN-membership behavior R3 specifies."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis never references the DatabaseOperations.jsonfield_datatype_values method nor the special-casing of only null/false/true via JSON_TYPE, so the exact scope of the literal handling R4 describes is entirely absent from visible information."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_key_exact_json_true_excludes_equal_integer",
+      "test_source": "import os\nimport sys\nimport django\nfrom django.conf import settings\n\n\ndef _boot():\n    if not settings.configured:\n        sys.path.insert(0, '/testbed/tests')\n        settings.configure(\n            SECRET_KEY='x',\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': 'file:verso?mode=memory&cache=shared'}},\n            INSTALLED_APPS=['django.contrib.contenttypes', 'model_fields'],\n            DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n        )\n    django.setup()\n\n\ndef test_key_exact_json_true_excludes_equal_integer():\n    _boot()\n    from django.db import connection\n    from model_fields.models import NullableJSONModel\n    with connection.schema_editor() as se:\n        se.create_model(NullableJSONModel)\n    try:\n        NullableJSONModel.objects.all().delete()\n        bool_true = NullableJSONModel.objects.create(value={'h': True})\n        int_one = NullableJSONModel.objects.create(value={'h': 1})\n        bool_false = NullableJSONModel.objects.create(value={'h': False})\n        no_key = NullableJSONModel.objects.create(value={'x': 1})\n        got = sorted(\n            NullableJSONModel.objects.filter(value__h=True).values_list('id', flat=True)\n        )\n        assert got == sorted([bool_true.id]), got\n    finally:\n        with connection.schema_editor() as se2:\n            se2.delete_model(NullableJSONModel)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError [1, 2] == [1] - the buggy query value__h=True matched both the {'h': True} row (id=1) and the {'h': 1} integer row (id=2), i.e. it additionally matched a row storing an integer of equal SQL value.",
+      "explanation": "R2 states that on SQLite an exact-equality filter field__key=True must select exactly the rows whose stored JSON member equals the JSON literal true, and must NOT additionally match a row storing an integer (1) of equal SQL value, a different literal (false), or a row lacking the key. In the buggy (pre-fix) code, KeyTransform.as_sqlite wrapped the member in JSON_EXTRACT, which returns the SQLite integer 1 for both stored JSON `true` and JSON `1`, so a value__h=True filter spuriously matches the {'h': 1} row. The gold patch replaces the extraction with a CASE WHEN JSON_TYPE ... IN datatype_values (covering 'true'/'false'/'null') so only genuine JSON literals match. My witness builds fresh NullableJSONModel rows: {'h': True}, {'h': 1}, {'h': False}, {'x': 1} (no h key), and asserts filter(value__h=True) returns exactly the True row (distinguishing row identity via id). Against gold it selects only the True row (PASS); against buggy it also selects the {'h': 1} integer row ([1,2], FAIL). This is a hidden fact: the visible/oracle TestQuerying dataset contains no key storing both a bool and an integer of equal SQL value, and its assertions are equality/sequence based (where Python bool==int), so none of the existing visible tests discriminates the SQLite int-vs-bool type loss that this patch fixes. I executed this exact test_source against both gold (PASSED) and buggy (FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The JSONField is decoder/serializer defined in django/db/models/fields/json.py; on SQLite the column stores JSON text and the top-level document is re-parsed by JSONField.from_db_value via json.loads, whereas a KeyTransform expression (e.g. 'data__value') whose DB-extracted value is a non-string native SQLite type (int for JSON 1/0/boolean) is passed through unchanged (see the 'Some backends (SQLite at least) extract non-string values' branch), which is where the int-vs-bool type loss occurs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test models JSONModel/NullableJSONModel/RelatedJSONModel live in tests/model_fields/models.py; shared querying test data (NullableJSONModel rows) includes keys 'h': True and 'i': False used by test_key_values, runnable on the default SQLite test backend (the Django test suite's default backend is sqlite)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Per docs (docs/ref/models/fields.txt JSONField section), stored data is represented in Python native format 'dictionaries, lists, strings, numbers, booleans and None'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Careful: Python equality makes bool==int (1 == True, 0 == False), so several existing equality-based assertions (e.g. assertEqual(qs.get(), True)) can pass even when the returned type is int; the distinguishing check is the Python type (isinstance(x, bool)) / identity, which the issue report itself uses when showing ({'value': True}, 1) vs ({'value': True}, True)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch is entirely source-level (django/db/models/fields/json.py and django/db/backends/sqlite3/operations.py); the test files are identical between buggy and gold revisions in this snapshot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SQLite JSON1 stores JSON as text; JSON_EXTRACT returns JSON true/false as integers 1/0 and JSON null as SQL NULL, losing types. The patch consolidates the previously scattered 'null'-only handling (in JSONExact.process_lhs, KeyTransformExact.process_lhs) into a shared jsonfield_datatype_values frozenset={'null','false','true'} on sqlite DatabaseOperations, covering true/false too."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "JSONField.from_db_value passes non-str values through unchanged for a KeyTransform expression (the old int loss path); the fix instead returns the JSON_TYPE text ('true'/'false'/'null') for members whose stored type is one of the three literals, so the db value is decoded via json.loads."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 removes JSONExact.process_lhs and H4 removes KeyTransformExact.process_lhs (the former sqlite null special-cases); H5 broadens the sqlite branch of KeyTransformExact.process_rhs from only 'null' to all jsonfield_datatype_values, and H3 similarly updates KeyTransformIn. H2 replaces KeyTransform.as_sqlite with a CASE WHEN JSON_TYPE IN (datatype_values) THEN JSON_TYPE ELSE JSON_EXTRACT END."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The exact/int-vs-bool distinction matters because Python equality treats bool==int (1==True), so equality-based assertions alone cannot discriminate; type identity checks are needed (noted also by the S_vis extractor)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Investigated the JSONField/KeyTransform lookup tests. The only oracle file exercising value__key=<literal> exact-equality behavior on the SQLite JSONField is tests/model_fields/test_jsonfield.py (class TestQuerying; models in tests/model_fields/models.py). That file is labeled entirely [VISIBLE], so no assertion in it can serve as a Witness for R2 regardless of content match. Moreover, none of its tests actually isolate R2's distinguishing semantics: R2 requires that an exact filter value__h=True (or False/None) select exactly the row storing that JSON literal and NOT rows storing a different literal / an integer of equal SQL value / rows lacking the key, and that the decoded Python type be preserved (bool, not int). The existing tests are all equality/sequence assertions (BooleanField-style equality where bool==int), and the shared dataset contains no row whose key stores both a boolean and an equal integer, so nothing in the suite discriminates the SQLite int-vs-bool JSON type loss. No tests were recorded failing against the buggy program, and no other hidden test module covering JSONField key-transform exact lookups exists in the oracle file set (test files are identical between buggy and gold revisions). Hence there is no [HIDDEN] oracle test that genuinely witnesses R2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.models.fields.json.KeyTransformExact (field__key=<literal> equality on SQLite)): On the SQLite backend, an exact-equality filter on a JSON member against one of the JSON literals true, false, or null (field__key=True / field__key=False / field__key=None) selects exactly the rows whose stored JSON value at that key equals that JSON literal, and does not additionally match rows storing a different JSON literal or an integer of equal SQL value, or rows lacking that key. — not entailed by S_vis (Both S_vis entries concern only value read/extraction through values/values_list and say nothing about equality-filter selection on JSON members, so nothing would lead to the field__key=<literal> row-matching semantics R2 describes.); confirmed by a synthesized witness: R2 states that on SQLite an exact-equality filter field__key=True must select exactly the rows whose stored JSON member equals the JSON literal true, and must NOT additionally match a row storing an integer (1) of equal SQL value, a different literal (false), or a row lacking the key. In the buggy (pre-fix) code, KeyTransform.as_sqlite wrapped the member in JSON_EXTRACT, which returns the SQLite integer 1 for both stored JSON `true` and JSON `1`, so a value__h=True filter spuriously matches the {'h': 1} row. The gold patch replaces the extraction with a CASE WHEN JSON_TYPE ... IN datatype_values (covering 'true'/'false'/'null') so only genuine JSON literals match. My witness builds fresh NullableJSONModel rows: {'h': True}, {'h': 1}, {'h': False}, {'x': 1} (no h key), and asserts filter(value__h=True) returns exactly the True row (distinguishing row identity via id). Against gold it selects only the True row (PASS); against buggy it also selects the {'h': 1} integer row ([1,2], FAIL). This is a hidden fact: the visible/oracle TestQuerying dataset contains no key storing both a bool and an integer of equal SQL value, and its assertions are equality/sequence based (where Python bool==int), so none of the existing visible tests discriminates the SQLite int-vs-bool type loss that this patch fixes. I executed this exact test_source against both gold (PASSED) and buggy (FAILED).",
+    "confidence": "Medium"
+  }
+}

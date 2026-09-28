@@ -1,0 +1,224 @@
+{
+  "task_id": "astropy__astropy-12825",
+  "status": "ok",
+  "duration_seconds": 742.4151717919158,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "astropy__astropy-12825",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Calling .groups.aggregate(func) on a grouped Table whose non-key columns include a SkyCoord mixin column must complete instead of raising AttributeError: 'SkyCoord' object has no attribute 'groups', regardless of the aggregation function func.",
+        "subject": "TableGroups.aggregate (astropy/table/groups.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: \"table = Table([str_col, coords], names=['col1', 'col2'])\" then \"table.group_by('col1').groups.aggregate(np.mean)\"; traceback: \"File \"astropy/table/groups.py\", line 357, in aggregate\\n    new_col = col.groups.aggregate(func)\\n  File \"astropy/coordinates/sky_coordinate.py\", line 835, in __getattr__\\n    raise AttributeError(\"'{}' object has no attribute '{}'\"\\nAttributeError: 'SkyCoord' object has no attribute 'groups'\"; \"This happens irregardless of the aggregation function.\""
+      },
+      {
+        "id": "S2",
+        "statement": "For each column of a grouped Table for which the aggregation operation does not make sense (e.g. a SkyCoord column aggregated with np.mean), TableGroups.aggregate must treat it like any other non-aggregatable column - warn and drop it from the output - rather than aborting the whole aggregation, so that the aggregation works for the columns it can reduce.",
+        "subject": "TableGroups.aggregate (astropy/table/groups.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue expected behavior: \"Aggregation works, only fails to aggregate columns where operation does not make sense.\"; operations docs: \"Since the ``obs_date`` column is a string-type array, the :func:`numpy.mean` function failed and raised an exception. Any time this happens :meth:`~astropy.table.groups.TableGroups.aggregate` will issue a warning and then drop that column from the output result.\"; and groups.py, in TableGroups.aggregate: \"try:\\n    new_col = col.groups.aggregate(func)\\nexcept TypeError as err:\\n    warnings.warn(str(err), AstropyUserWarning)\\n    continue\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "TableGroups.aggregate reduces each grouped table's non-key columns by accessing the per-column groups through that column's info (col.info.groups.aggregate) rather than through a column-level .groups attribute, so that a grouped table (e.g. a QTable) whose non-key columns are mixin columns that support the aggregation operation (but do not expose a top-level .groups attribute) now aggregates successfully into output columns preserving the mixin column type instead of failing/being skipped.",
+        "subject": "groups.TableGroups.aggregate",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H5",
+          "H7"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a mixin column (an object whose info descriptor derives from MixinInfo), reading info.groups yields a read-only ColumnGroups bound to that column (constructed from the column itself); grouping the containing table therefore makes aggregation of the mixin column operate over the table's groups.",
+        "subject": "MixinInfo/MixinInfo.groups (astropy.utils.data_info)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H7"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "For a native Column/MaskedColumn, the 'groups' attribute is exposed through the column's own info descriptor as an attribute resolved from the column, so col.info.groups is usable (equal in grouping to col.groups) for per-column table aggregation.",
+        "subject": "column.ColumnInfo / Column.info grouped access",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "Constructing a ColumnGroups from a column determines that column's membership in (and therefore its group indices/keys inherited from) a Table through the column's info (parent_column.info.parent_table), so a column that lives in a grouped Table but lacks a directly-tracked parent_table attribute still aggregates according to the table's groups.",
+        "subject": "groups.ColumnGroups.__init__",
+        "hunk_ids": [
+          "H1",
+          "H7"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R5",
+        "statement": "ColumnGroups.aggregate returns an output column that is an instance of the parent column's class (par_col.__class__) whose values are the per-group reduction, and it then copies the parent column's info attributes 'name', 'unit', 'format', 'description' and 'meta' onto the output column's .info; each attribute is copied individually so that an attribute that cannot be read from or assigned to the output column's info (e.g. for a mixin lacking that metadata attribute) is silently skipped rather than failing the whole aggregation.",
+        "subject": "groups.ColumnGroups.aggregate",
+        "hunk_ids": [
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R6",
+        "statement": "If ColumnGroups.aggregate fails while performing the reduction or while constructing/validating the output column, it raises a TypeError whose message takes the form \"Cannot aggregate column '<name>' with type '<dtype>': <reported error>\", i.e. it now appends the text of the underlying exception, and a construction failure of the output column is converted to that same TypeError (which TableGroups.aggregate turns into an AstropyUserWarning and a dropped column).",
+        "subject": "groups.ColumnGroups.aggregate",
+        "hunk_ids": [
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R7",
+        "statement": "When running under numpy < 1.20, ColumnGroups.aggregate that takes the reduceat/sum/mean fast path on a non-masked, non-empty, non-native-Column (mixin) column first applies the function directly to a 2-element sample of the column, so that a mixin column which does not actually support the reduction now raises a TypeError (surfaced as a Cannot-aggregate TypeError/AstropyUserWarning at the caller) rather than silently not erroring due to the old numpy reduceat bug.",
+        "subject": "groups.ColumnGroups.aggregate",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1/S2 pin down that aggregation on a grouped table with a non-aggregatable mixin (SkyCoord) column should not abort the whole aggregation but drop/warn. However R1 claims the remedy of routing through col.info.groups and that mixin columns *supporting* aggregation now produce output columns preserving the mixin type — neither the mechanism nor the success-case preserving type is visible in S1/S2; the visible scenario is only the failing SkyCoord case."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Nothing in S_vis mentions MixinInfo, info.groups exposing a read-only ColumnGroups bound to the column, or constructing ColumnGroups from the column for mixins. S1/S2 only describe the aggregate-level failure/expected behavior."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_vis says nothing about native Column/MaskedColumn exposing 'groups' through col.info as an attribute resolved from the column, or about col.info.groups being equal to col.groups for native columns."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_vis contains no ColumnGroups.__init__ logic, nothing about parent_column.info.parent_table or how a column inherits group indices/keys from the containing table."
+      },
+      {
+        "requirement_id": "R5",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_vis does not describe ColumnGroups.aggregate returning a par_col.__class__ instance or copying the specific info attributes (name/unit/format/description/meta) individually with silent skipping of unavailable attributes."
+      },
+      {
+        "requirement_id": "R6",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S2's quoted code does show multiple TypeError from a column aggregation call being converted into an AstropyUserWarning and dropped at the TableGroups level, which partially aligns with R6. But the exact message format 'Cannot aggregate column ... with type ...: <err>' and the conversion of output-column construction failures into that same TypeError are patch-level behaviors never shown in the visible material, so the specific behavior isn't pinned down."
+      },
+      {
+        "requirement_id": "R7",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Nothing in S_vis mentions the numpy < 1.20 reduceat/sum/mean fast path, pre-applying the function to a 2-element sample, or the old numpy reduceat bug that silently does not error."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mixin_aggregate_over_groups",
+      "test_source": "from astropy.table import QTable\nimport numpy as np\nimport astropy.units as u\n\ndef test_t():\n    dq = [1., 2., 2., 3.] * u.m\n    key = np.array([0, 1, 0, 1])\n    t = QTable([key, dq], names=['key', 'data'])\n    tg = t.group_by('key')\n    out = tg.groups.aggregate(np.sum)\n    assert np.all(out['data'] == np.array([3., 5.]) * u.m)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AttributeError: 'Quantity' object has no 'groups' member in astropy/table/groups.py TableGroups.aggregate)",
+      "explanation": "R2 requires that a mixin data column (info descriptor deriving from MixinInfo, here a Quantity with unit meters) can be aggregated over the groups of its containing table, i.e. reading .groups/info.groups yields a working ColumnGroups that lets TableGroups.aggregate reduce the mixin column per table group. The witness builds a QTable whose non-key 'data' column is a Quantity mixin and whose key 'key' is a plain numpy array, then calls tg.groups.aggregate(np.sum) and checks the per-group sums [3., 5.] m (groups for key=0 contain rows 1.0+2.0, key=1 contain 2.0+3.0). This path is not covered by any visible test: test_group_mixins (visible test_groups.py) only uses mixins as group KEYS and never aggregates a non-key mixin data column, and test_table_aggregate (visible) aggregates only native columns. Execution confirms: gold -> PASSED (the Quantity aggregates correctly over the table groups); buggy -> FAILED with AttributeError: 'Quantity' object has no 'groups' member, because the pre-fix MixinInfo had no groups property so col.groups/info.groups lookup raised. Both run_test invocations used the identical submitted source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The aggregate entry point is astropy/table/groups.py TableGroups.aggregate (issue traceback points at 'stream groups.py', line 357, 'new_col = col.groups.aggregate(func)'). In that method only TypeError is caught for a failing column; the .groups lookup itself raising AttributeError (as with SkyCoord) is not caught."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "``.groups``/``.group_by`` are provided on the native column classes in column.py (BaseColumn groups property / column_group_by), but a mixin column like SkyCoord (a ShapedLikeNDArray carrying a MixinInfo ``info`` descriptor, sky_coordinate.py) exposes no ``groups`` attribute, so accessing ``col.groups`` inside TableGroups.aggregate triggers SkyCoord.__getattr__ -> AttributeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ColumnGroups.aggregate (groups.py) raises TypeError with message \"Cannot aggregate column 'NAME' with type 'TYPE'\" on aggregation failures, which TableGroups.aggregate converts to an AstropyUserWarning and a skip/continue of that column."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing group tests live under astropy/table/tests/test_groups.py; test_group_mixins tests group_by/grouping with SkyCoord as a KEY column but does not exercise aggregate() over a non-key mixin column."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/table/operations.rst (Aggregation section) documents that a column unreducible by the supplied function causes an AstropyUserWarning and the column is dropped from the aggregate output."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H2 (adding 'from astropy.utils.compat import NUMPY_LT_1_20' and Column import in ColumnGroups.aggregate) and H6 (rewriting BaseColumnInfo.attr_names union as set-union syntax) are purely cosmetic/import changes with no behavior impact."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H7 actually inserts the 'groups' property into class MixinInfo (astropy/utils/data_info.py), the shared base of the info descriptors used by mixin columns such as Quantity/Longitude/Latitude/Time/SkyCoord/etc.; the hunk annotation labels the neighbouring class ParentDtypeInfo."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing 'attrs_from_parent'/'_attrs_no_copy' mechanism on BaseColumnInfo already registered 'parent_table' and 'indices' as info attributes stored on the parent column; H0 extends that 'no-copy/from-parent' treatment of group state to ColumnInfo so a column's grouping isn't transferred when its info is copied."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In TableGroups.aggregate only a TypeError raised by a column's aggregate is converted to an AstropyUserWarning (column dropped); H5 does not alter which exception types are tolerated, so the new fix works by making aggregation of groupable mixins succeed rather than raising AttributeError."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "test_groups.py existing coverage (test_group_mixins, test_table_aggregate) groups native-column tables and groups with mixins as key columns; the aggregation-of-mixin-non-key-column path is the newly enabled one exercised by this change."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Investigated requirement R2: for a mixin column (info derived from MixinInfo), col.groups must yield a read-only ColumnGroups bound to the column so that grouping a table lets aggregate() operate over the table's groups for the mixin column.\n\nFiles inspected (all relevant oracle content): astropy/table/tests/test_groups.py ([VISIBLE]), astropy/table/tests/test_column.py ([VISIBLE]), astropy/table/tests/test_mixin.py ([VISIBLE]), astropy/table/tests/conftest.py ([HIDDEN] but it is only fixtures, no tests), astropy/table/tests/test_info.py ([VISIBLE]), astropy/utils/tests/test_data_info.py ([VISIBLE]).\n\nThe only oracle tests that exercise table/column grouping + aggregation live in test_groups.py, which is labelled [VISIBLE]. I read the complete file: it contains no test that aggregates a NON-key mixin column over table groups. `test_group_mixins` only uses mixin columns as *group keys* (group_by / unique / column group_by) and never calls aggregate on the data columns; `test_table_aggregate` only aggregates native columns ('a','c','d' from the T1 fixture). The reported failing IDs `test_table_aggregate[False]/[True]` and `test_group_mixins_unsupported[col0/1/2]` do not correspond to any test present in the accessible oracle file test_groups.py (whose listed helpers/fixtures were completely read). I additionally verified mechanically that aggregating native columns only passes against the buggy program, so the native `test_table_aggregate` cannot be the failing (R2) test.\n\nI confirmed empirically that the R2 behavior gap exists: a QTable grouped by a key column and aggregated with a Quantity (mixin) data column passes against gold yet raises `AttributeError: 'Quantity' object has no 'groups' member` (from groups.py aggregate -> col.groups) against buggy. However, that was a test I authored, not an assertion contained in any [HIDDEN] oracle test file. Per the audit rules, an assertion drawn from [VISIBLE] content can never serve as a witness, and I could not locate any [HIDDEN] oracle test whose genuine assertion tests the aggregation-of-mixin-over-table-groups behavior of R2. Conclusion: no accessible witness; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (MixinInfo/MixinInfo.groups (astropy.utils.data_info)): For a mixin column (an object whose info descriptor derives from MixinInfo), reading info.groups yields a read-only ColumnGroups bound to that column (constructed from the column itself); grouping the containing table therefore makes aggregation of the mixin column operate over the table's groups. — not entailed by S_vis (Nothing in S_vis mentions MixinInfo, info.groups exposing a read-only ColumnGroups bound to the column, or constructing ColumnGroups from the column for mixins. S1/S2 only describe the aggregate-level failure/expected behavior.); confirmed by a synthesized witness: R2 requires that a mixin data column (info descriptor deriving from MixinInfo, here a Quantity with unit meters) can be aggregated over the groups of its containing table, i.e. reading .groups/info.groups yields a working ColumnGroups that lets TableGroups.aggregate reduce the mixin column per table group. The witness builds a QTable whose non-key 'data' column is a Quantity mixin and whose key 'key' is a plain numpy array, then calls tg.groups.aggregate(np.sum) and checks the per-group sums [3., 5.] m (groups for key=0 contain rows 1.0+2.0, key=1 contain 2.0+3.0). This path is not covered by any visible test: test_group_mixins (visible test_groups.py) only uses mixins as group KEYS and never aggregates a non-key mixin data column, and test_table_aggregate (visible) aggregates only native columns. Execution confirms: gold -> PASSED (the Quantity aggregates correctly over the table groups); buggy -> FAILED with AttributeError: 'Quantity' object has no 'groups' member, because the pre-fix MixinInfo had no groups property so col.groups/info.groups lookup raised. Both run_test invocations used the identical submitted source.",
+    "confidence": "Medium"
+  }
+}

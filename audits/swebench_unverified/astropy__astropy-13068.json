@@ -1,0 +1,143 @@
+{
+  "task_id": "astropy__astropy-13068",
+  "status": "ok",
+  "duration_seconds": 1151.900693750009,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "astropy__astropy-13068",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Constructing a Time from a high-precision 'isot' time string and then expressing/round-tripping it through the 'jd' format must not lose the input's fractional-second instant: converting such a Time back to its 'isot' representation with sufficient output precision must recover the same time as the original input string rather than a shifted instant.",
+        "subject": "Time isot<->jd round-trip precision preservation",
+        "hunk_ids": [],
+        "cited_from": "let's do an exemple: ``` t1 = '2022-03-24T23:13:41.390999' ... I would like to fall back on the original one."
+      },
+      {
+        "id": "R2",
+        "statement": "Because a single float64 JD (the default 'subfmt=\"float\"' output of to_value with format 'jd') cannot represent sub-microsecond precision near JD ~2.4e6, obtaining a lossless numeric value of a Time instant for later reconstruction must go through the higher-precision numeric output forms (e.g. subformats 'long', 'str', 'decimal') or the jd1/jd2 pair, which retain the time accurately.",
+        "subject": "Time internal double-pair (jd1/jd2) representation and numeric to_value subformats",
+        "hunk_ids": [],
+        "cited_from": "The |Time| object maintains sub-nanosecond precision over times spanning the age of the universe. ... For the ``'str'`` and ``'bytes'`` subformats, the number of digits is also chosen such that time values are represented accurately. ... >>> tm.to_value('mjd', subfmt='str') '51544.000000000000001'"
+      },
+      {
+        "id": "R3",
+        "statement": "Time.to_value(format='jd', subfmt='float') (or the equivalent t.jd attribute) returns the naive float64 sum of the internal jd1/jd2 pair, so it does not, in general, carry digits finer than what a 64-bit float at that JD magnitude can hold; a round trip that re-parses only that float64 value into a new Time cannot be expected to recover the full microsecond precision of the original high-precision input.",
+        "subject": "Time.to_value float64 output loses sub-64-bit precision",
+        "hunk_ids": [],
+        "cited_from": ">>> tm.mjd  # float64 output loses last digit but Decimal gets it 51544.0 >>> tm.to_value('mjd', subfmt='decimal')  # doctest: +SKIP Decimal('51544.00000000000000099920072216264') >>> tm.to_value('mjd', subfmt='str') '51544.000000000000001'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "Assigning a valid integer precision between 0 and 9 (inclusive) to a Time/TimeDelta object (via the public `precision` property setter, which forwards to the underlying time format) succeeds, and subsequently reading that object's `precision` property returns the assigned integer.",
+        "subject": "astropy.time.TimeBase.precision / Time.Time(TimeDelta).precision property",
+        "hunk_ids": [
+          "H1",
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-2",
+        "statement": "Assigning to a Time/TimeDelta's precision a value that is not a Python int, or is an int below 0 or above 9, raises ValueError with message 'precision attribute must be an int between 0 and 9'; this rejection occurs even on routes that previously bypassed the TimeBase-level check, e.g. constructing a Time with a `precision` argument (which funnels into the format object's constructor) rather than only via the standalone precision property assignment.",
+        "subject": "astropy.time.TimeBase.precision / Time.Time(TimeDelta).precision property",
+        "hunk_ids": [
+          "H1",
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "All three S_vis requirements concern numerical round-trip precision of Time representations (isot/jd/mjd conversion and float64 loss), but none mention a public `precision` property setter that validates/stores/returns an assigned integer between 0 and 9 on Time/TimeDelta objects. S_vis says nothing about that API surface."
+      },
+      {
+        "requirement_id": "S_impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the S_vis requirements address validation of the `precision` property value (int type, 0–9 range) or the specific ValueError message 'precision attribute must be an int between 0 and 9', nor a rejection route through the constructor's precision argument. S_vis only concerns floating-point/date-string representation fidelity, not precision-argument validation."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement S_impl-1: assigning a valid integer precision 0..9 through the public Time/TimeDelta `precision` property setter (which forwards to the underlying time-format object) succeeds, and reading `precision` back returns the assigned integer. I analyzed the fix: the patch only relocates precision validation from `TimeBase.precision.setter` (core.py) into the new validated `TimeFormat.precision` property backed by `self._precision` (formats.py). In BOTH the buggy and gold programs, `TimeBase.precision` (getter) reads from `self._time.precision`, and both the direct TimeBase.setter's forwarding and the internal TimeFormat.__init__ route set exactly that value; the only material change is *where* the 0-9/int check lives, and for a *valid* in-range integer the observable assign→read-back behavior is identical (I confirmed by constructing fresh Time objects on both programs and by asking run_test directly). I empirically confirmed the canonical witness PASSES on buggy AND on gold: (a) `t=Time('2000-01-01T12:00:00',format='isot'); t.precision=5; assert t.precision==5`; (b) `td=TimeDelta(86400.,format='sec'); td.precision=3; assert td.precision==3`. I additionally probed many value/format/scale-reconstruction variants (iso/isot/yday/jd/mjd replicate, scale conversion `t.tai`, TimeDelta round trips) all of which also PASSED on buggy because the pre-fix code already validated and forwarded valid ints identically. Since no input within the requirement (a valid 0..9 integer coupled with the assign-then-read property) behaves differently between the buggy and gold programs, and a genuine witness must PASS gold and FAIL buggy, no discriminating test exists; found=false. (The run_test harness is pytest-based, collecting `test_*` functions, which is why the recorded test_source deviates from the generic JUnit prose.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Reported values in the issue are internally inconsistent (e.g. '23:13:41.390999' parses to a JD with day-fraction ~0.9678, but the reporter's stated JD shows ~0.4678, and their reverse-conversion output shows .055... starting from that JD), so the exact magnitudes quoted in the issue should not be treated as a crisp, reproducible input/output pair."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "astropy.time stores each instant internally as two doubles (jd1 integer days, jd2 fraction), giving sub-nanosecond precision; most string/numeric format toggling between Time objects preserves the instant, but pulling the value out as a single float64 (default to_value('jd', subfmt='float')) is lossy at ~46 microseconds near JD 2.4e6."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing precision tests live in astropy/time/tests/test_precision.py and document round-trip guarantees for arithmetic (e.g. test_addition: addition at the 2^-52 limit is 'exactly reversed by the corresponding subtraction') but no test there exercises the exact isot->jd->isot string round-trip from issue #13068."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible code trunk for format conversion is TimeBase.to_value/time.format setter in astropy/time/core.py and TimeNumeric.to_value / Time.format classes in astropy/time/formats.py; jd is a TimeNumeric with subfmts float/long/decimal/str/bytes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/time/index.rst (Subformat section) documents that str/bytes/decimal subformats represent times accurately to full precision while float64 loses the last digit."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/changes/time contains no entry for #13068, consistent with this being the pre-fix snapshot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This patch is a precision-storage refactor: `precision` moves from being a plain, un-validated instance attribute on `TimeFormat` to a validated property backed by `self._precision`, and the redundant validation in `core.TimeBase.precision.setter` is removed, leaving the setter as `del self.cache; self._time.precision = val`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because every Time/TimeDelta construction, format change, scale change, and replicate() constructs a new `TimeFormat` that assigns `self.precision = precision` in `__init__`, the validation now fires on all of those routes; previously only a direct `Time.precision` attribute assignment went through a validation path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The exact 'precision attribute must be an int between 0 and 9' message string is preserved verbatim from the old TimeBase validation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The underlying format object reachable as e.g. `t._time` is private; observable behavior of the fix is best witnessed through the public `precision` property and constructor/format-setting routes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getter `TimeBase.precision` returns `self._time.precision`, so the Time-level stored value is entirely the format object's validated `_precision`."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: I audited the full oracle test suite. I read all test files under astropy/time/tests that could possibly touch precision behavior: test_basic.py, test_precision.py, test_delta.py, test_methods.py, test_custom_formats.py, test_comparisons.py, test_corrs.py, test_fast_parser.py, test_functions.py, test_guess.py, test_mask.py, test_pickle.py, test_quantity_interaction.py, test_sidereal.py, test_update_leap_seconds.py, and test_ut1.py. Every one of these files is labelled [VISIBLE], i.e. its content is byte-for-byte material a repair system already saw, so none of its assertions could ever serve as a Witness (per the fundamental [HIDDEN]-only rule).\n\nNo [HIDDEN] content exists in the oracle for this behavior. Moreover, none of the visible files actually contains a test asserting the S_impl-1 requirement: assigning a valid integer precision (0..9) through the public `Time.precision`/`TimeDelta.precision` property setter (forwarding to the underlying time format object) succeeds and that subsequently reading back `precision` returns the assigned integer while the set value round-trips. The closest visible tests (e.g., `TestBasic.test_precision`, `test_precision.py`) only exercise that assigning precision changes the *output formatting* of iso/isot strings, not the assign-then-read-back of the property itself, and in any case come from [VISIBLE] files.\n\nThe failing test `test_empty_value[jd]` concerns empty (size-zero) Time creation and has nothing to do with precision-property assignment. The test named `test_precision_input`, which one would expect to be the natural regression test for this fix, is not present in any file I was able to read in the oracle (test_basic.py contains `test_precision` but no `test_precision_input`), so I could not obtain any [HIDDEN] assertion to build a witness from. Because a genuine witness must be built solely from [HIDDEN] oracle assertions and mechanically confirmed, and no such hidden test for S_impl-1 can be located, the correct conclusion is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: Requirement S_impl-1: assigning a valid integer precision 0..9 through the public Time/TimeDelta `precision` property setter (which forwards to the underlying time-format object) succeeds, and reading `precision` back returns the assigned integer. I analyzed the fix: the patch only relocates precision validation from `TimeBase.precision.setter` (core.py) into the new validated `TimeFormat.precision` property backed by `self._precision` (formats.py). In BOTH the buggy and gold programs, `TimeBase.precision` (getter) reads from `self._time.precision`, and both the direct TimeBase.setter's forwarding and the internal TimeFormat.__init__ route set exactly that value; the only material change is *where* the 0-9/int check lives, and for a *valid* in-range integer the observable assign→read-back behavior is identical (I confirmed by constructing fresh Time objects on both programs and by asking run_test directly). I empirically confirmed the canonical witness PASSES on buggy AND on gold: (a) `t=Time('2000-01-01T12:00:00',format='isot'); t.precision=5; assert t.precision==5`; (b) `td=TimeDelta(86400.,format='sec'); td.precision=3; assert td.precision==3`. I additionally probed many value/format/scale-reconstruction variants (iso/isot/yday/jd/mjd replicate, scale conversion `t.tai`, TimeDelta round trips) all of which also PASSED on buggy because the pre-fix code already validated and forwarded valid ints identically. Since no input within the requirement (a valid 0..9 integer coupled with the assign-then-read property) behaves differently between the buggy and gold programs, and a genuine witness must PASS gold and FAIL buggy, no discriminating test exists; found=false. (The run_test harness is pytest-based, collecting `test_*` functions, which is why the recorded test_source deviates from the generic JUnit prose.)"
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_impl-1] (astropy.time.TimeBase.precision / Time.Time(TimeDelta).precision property) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement S_impl-1: assigning a valid integer precision 0..9 through the public Time/TimeDelta `precision` property setter (which forwards to the underlying time-format object) succeeds, and reading `precision` back returns the assigned integer. I analyzed the fix: the patch only relocates precision validation from `TimeBase.precision.setter` (core.py) into the new validated `TimeFormat.precision` property backed by `self._precision` (formats.py). In BOTH the buggy and gold programs, `TimeBase.precision` (getter) reads from `self._time.precision`, and both the direct TimeBase.setter's forwarding and the internal TimeFormat.__init__ route set exactly that value; the only material change is *where* the 0-9/int check lives, and for a *valid* in-range integer the observable assign→read-back behavior is identical (I confirmed by constructing fresh Time objects on both programs and by asking run_test directly). I empirically confirmed the canonical witness PASSES on buggy AND on gold: (a) `t=Time('2000-01-01T12:00:00',format='isot'); t.precision=5; assert t.precision==5`; (b) `td=TimeDelta(86400.,format='sec'); td.precision=3; assert td.precision==3`. I additionally probed many value/format/scale-reconstruction variants (iso/isot/yday/jd/mjd replicate, scale conversion `t.tai`, TimeDelta round trips) all of which also PASSED on buggy because the pre-fix code already validated and forwarded valid ints identically. Since no input within the requirement (a valid 0..9 integer coupled with the assign-then-read property) behaves differently between the buggy and gold programs, and a genuine witness must PASS gold and FAIL buggy, no discriminating test exists; found=false. (The run_test harness is pytest-based, collecting `test_*` functions, which is why the recorded test_source deviates from the generic JUnit prose.)",
+    "confidence": "Medium"
+  }
+}

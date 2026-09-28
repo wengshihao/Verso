@@ -1,0 +1,124 @@
+{
+  "task_id": "Closure-95",
+  "status": "ok",
+  "duration_seconds": 286.89402975600024,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "Closure-95",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A qualified-name property declaration (e.g. a JSDoc-typed assignment like `ns.foo = function(x) {}`) made inside a function body must still put the corresponding variable (e.g. `ns.foo`) into the global scope whose root name (`ns`) is defined globally, with the declared function type retained, so that referencing that qualified name from a different function body sees the same variable with the correct type.",
+        "subject": "TypedScopeCreator.defineSlot/maybeDeclareQualifiedName — qualified-name declaration scope",
+        "hunk_ids": [],
+        "cited_from": "TypedScopeCreatorTest.testGlobalQualifiedNameInLocalScope: testSame(\"var ns = {}; \" + \"(function() { \" + \"    /** @param {number} x */ ns.foo = function(x) {}; })();\" + \"(function() { ns.foo(3); })();\"); ... assertNotNull(globalScope.getVar(\"ns.foo\")); assertEquals(\"function (number): undefined\", globalScope.getVar(\"ns.foo\").getType().toString()); AND TypeCheckTest.testQualifiedNameInference5: testTypes(\"var ns = {}; \" + \"(function() { \" + \"    /** @param {number} x */ ns.foo = function(x) {}; })();\" + \"(function() { ns.foo(true); })();\", \"actual parameter 1 of ns.foo does not match formal parameter\\nfound   : boolean\\nrequired: number\"); AND source comment in defineSlot: \"If n is a property, then we should really declare it in the scope where the root object appears. This helps out people who declare \\\"global\\\" names in an anonymous namespace.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When the same globally-exposed qualified-name function (declared inside a function body, as in R1) is called from a different function body with an argument of a wrong type, the type checker must report the standard argument-mismatch warning naming the qualified name (e.g. \"actual parameter 1 of ns.foo does not match formal parameter ... found: boolean ... required: number\").",
+        "subject": "TypeCheck — qualified-name type violation reporting",
+        "hunk_ids": [],
+        "cited_from": "TypeCheckTest.testQualifiedNameInference5 quoted above."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ_I1",
+        "statement": "While building a non-global (local) scope, when defineSlot is asked to declare a GETPROP qualified-name property whose root object (the leftmost NAME) is a variable whose scope slot is in the global scope, and the global scope has not yet declared that fully-qualified property name, the property's slot is declared in the global scope rather than in the current local scope. Observable consequence: the declared slot is reachable via getVar on the global scope (e.g. globalScope.getVar(\"ns.foo\") is non-null with the fully resolved/inferred type) even though the declaring assignment appears inside a nested/anonymous function, so references to that qualified property from other scopes are type-checked against that global slot.",
+        "subject": "TypedScopeCreator.AbstractScopeBuilder#defineSlot (qualified-name / property scope-slot placement)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ_I2",
+        "statement": "The redirection described in REQ_I1 does not occur when the fully-qualified variable name (the full GETPROP qname such as \"ns.foo\") is already declared (isDeclared(name,false)) in the global scope; in that case the declaration is left in the current enclosing local scope, i.e. an existing global symbol under that name is not re-declared/clobbered from inside the local scope and normal local-scope redeclaration handling proceeds.",
+        "subject": "TypedScopeCreator.AbstractScopeBuilder#defineSlot (qualified-name / property scope-slot placement)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ_I1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 (via its cited tests) pins exactly this behavior: a qualified-name declaration assigned inside a nested/anonymous function whose root name is global and whose fully-qualified name is not yet in the global scope results in the slot being declared in the global scope — globalScope.getVar(\"ns.foo\") is non-null with the fully inferred type — even though the assignment is local. R2 is consistent (type-check consequence) but not needed for this."
+      },
+      {
+        "requirement_id": "REQ_I2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither R1 nor R2 says anything about the case where the fully-qualified name is already declared in the global scope, nor about not re-declaring/clobbering an existing global symbol from a local scope. That negative guard behavior is entirely absent from the visible evidence, so S_vis provides no basis for this requirement."
+      }
+    ],
+    "target_requirement_id": "REQ_I2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "REQ_I2 is the guard/else-branch of TypedScopeCreator.AbstractScopeBuilder#defineSlot: when a fully-qualified GETPROP name (e.g. \"ns.foo\") that is rooted in the global scope is ALREADY declared in the global scope (isDeclared(variableName,false)==true), the gold code does NOT redirect; it leaves scopeToDeclareIn = the current local scope, so the new declaration stays in the enclosing local scope without clobbering the existing global symbol, and normal local re-declaration proceeds.\n\nComparing the two revisions at [H0]:\n- GOLD: redirect (scopeToDeclareIn = globalScope) fires ONLY when n is GETPROP, scope is local, the qname's root is in the global scope, AND globalScope.isDeclared(qname,false)==FALSE.\n- BUGGY: the redirect block is entirely removed, so scopeToDeclareIn always stays == the local scope.\n\nREQ_I2 is precisely the case where globalScope.isDeclared(qname,false)==TRUE. In that case the gold inner `if` is false and gold leaves the declaration local, exactly as buggy always does. Therefore in the already-declared-globally scenario (REQ_I2/guard branch), gold and buggy coincide on every observable outcome: the existing global symbol is untouched in both, and the fresh declaration lands in the local scope in both. The only build divergence (REQ_I1, not-yet-declared-globally) is the opposite branch whose behavior is already pinned down by the [VISIBLE] tests testGlobalQualifiedNameInLocalScope/testQualifiedNameInference5, so it cannot serve as a Witness either. In other words, there is no requirement-faithful input on which gold PASSES and buggy FAILS while genuinely exercising REQ_I2's exclusion branch; any test that exercises that branch passes identically on both builds.\n\nI additionally confirmed empirically that the run_test harness compiles each candidate as a single method in a default-package class (it resolved an unqualified `Compiler` to java.lang.Compiler and rejected package-private jscomp classes such as TypedScopeCreator, MemoizedScopeCreator, TypeInferencePass, and compiler.parseInputs()). Consequently TypedScopeCreator/scoping internals that REQ_I2 touches are not reachable from the default-package harness at all, and a plain `assertTrue(true)` method was the only self-contained candidate that compiled and executed cleanly against gold — it exercises no code path under test. Between the intrinsic build-equivalence of the REQ_I2 branch and this packaging restriction, no genuine Witness exists here."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo is the closure-compiler jscomp sources; the fix region per the visible description is src/com/google/javascript/jscomp/TypedScopeCreator.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No free-text issue report was available; the visible description only names the file touched. My extraction is grounded in the checkable behaviors asserted by TypedScopeCreatorTest (extends CompilerTestCase) and TypeCheckTest (extends CompilerTypeTestCase)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant behavior centers on AbstractScopeBuilder.defineSlot / maybeDeclareQualifiedName, which decide where a property-name declaration is put when its root object is a global name declared in an anonymous/inner scope."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for this behavior: testGlobalQualifiedNameInLocalScope (TypedScopeCreatorTest) and testQualifiedNameInference5 (TypeCheckTest)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypeCheckTest and TypedScopeCreatorTest share the code path via the TypeInferencePass / TypeCheck machinery."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to AbstractScopeBuilder.defineSlot in TypedScopeCreator.java; in the buggy revision the 'declare in global scope' logic had been reduced to dead commentary (a block removed so scopeToDeclareIn stayed equal to the local scope); the gold revision restores it behind a gated condition."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Restored behavior re-uses the pre-existing helper isQnameRootedInGlobalScope (root NAME's var.isGlobal()) and scope.getGlobalScope()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "defineSlot is reached for property declarations via maybeDeclareQualifiedName (for GETPROP ASSIGN/EXPR_RESULT nodes); the guard additionally requires n.getType()==GETPROP and !scope.isGlobal(), so the change only affects property (qualified-name) declarations made from within local scopes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Visible tests exercising these behaviors empirically: testGlobalQualifiedNameInLocalScope (TypedScopeCreatorTest, asserts globalScope.getVar(\"ns.foo\") exists) and testQualifiedNameInference5 (TypeCheckTest, expects an argument-type error on ns.foo(true) in a second IIFE)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ_I2]: I investigated all test files in the oracle for a Witness to REQ_I2 — the defineSlot guard that the \"declare in current local scope / redirect to global scope\" behavior in TypedScopeCreator.AbstractScopeBuilder#defineSlot should NOT be redirected when the fully‑qualified GETPROP name (e.g. \"ns.foo\") is already declared in the global scope (isDeclared(name,false)).\n\nReading and classifying the oracle files:\n- The two tests that actually pass on gold and fail on the buggy build are TypeCheckTest#testQualifiedNameInference5 and TypedScopeCreatorTest#testGlobalQualifiedNameInLocalScope. Both are labelled [VISIBLE] (their full content is what the environment already exposes), so neither may serve as a Witness regardless of how well they match the behavior.\n- More fundamentally, both of those visible tests exercise the *other* behavior (REQ_I1: a qualified name whose root is a global var but that has NOT yet been introduced globally is redeclared into the GLOBAL scope so later sibling local scopes can see its type). In each case ns.foo is not declared in the global scope before the inner declaration, so the redirect fires. Neither test has a pre-existing global \"ns.foo\", i.e. neither reaches REQ_I2's distinguishing guard branch.\n- I read every other oracle file that touches this code path or that could plausibly duplicate the check: TypeInferenceTest, DisambiguatePropertiesTest, AmbiguatePropertiesTest and the hidden LooseTypeCheckTest mirror (which, notably, was forked from TypeCheckTest but does NOT carry the QualifiedNameInference5/6 / global-qualified-in-local-scope cases at all). None of these asserts the REDIRECT-guard placement of a qualified-name declaration made from within a local scope, and none fails on the buggy build.\n- Conceptually REQ_I2's scenario cannot be an execution witness for this benchmark: the buggy revision removed the redirect block entirely, so in the \"already declared globally\" case the gold guard (decline redirect, keep the definition in the current local scope) yields exactly the same outcome as the buggy build (which also keeps it local, since it never redirects anything). Gold and buggy therefore coincide precisely on REQ_I2's already-declared case, whereas they only diverge on the not-yet-declared REQ_I1 case. Consequently there can be no oracle test that passes gold and fails buggy while genuinely exercising REQ_I2's exclusion branch.\n\nI therefore could not locate (or construct from real assertions) any hidden oracle test that genuinely demonstrates REQ_I2, and submitted found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ_I2]: REQ_I2 is the guard/else-branch of TypedScopeCreator.AbstractScopeBuilder#defineSlot: when a fully-qualified GETPROP name (e.g. \"ns.foo\") that is rooted in the global scope is ALREADY declared in the global scope (isDeclared(variableName,false)==true), the gold code does NOT redirect; it leaves scopeToDeclareIn = the current local scope, so the new declaration stays in the enclosing local scope without clobbering the existing global symbol, and normal local re-declaration proceeds.\n\nComparing the two revisions at [H0]:\n- GOLD: redirect (scopeToDeclareIn = globalScope) fires ONLY when n is GETPROP, scope is local, the qname's root is in the global scope, AND globalScope.isDeclared(qname,false)==FALSE.\n- BUGGY: the redirect block is entirely removed, so scopeToDeclareIn always stays == the local scope.\n\nREQ_I2 is precisely the case where globalScope.isDeclared(qname,false)==TRUE. In that case the gold inner `if` is false and gold leaves the declaration local, exactly as buggy always does. Therefore in the already-declared-globally scenario (REQ_I2/guard branch), gold and buggy coincide on every observable outcome: the existing global symbol is untouched in both, and the fresh declaration lands in the local scope in both. The only build divergence (REQ_I1, not-yet-declared-globally) is the opposite branch whose behavior is already pinned down by the [VISIBLE] tests testGlobalQualifiedNameInLocalScope/testQualifiedNameInference5, so it cannot serve as a Witness either. In other words, there is no requirement-faithful input on which gold PASSES and buggy FAILS while genuinely exercising REQ_I2's exclusion branch; any test that exercises that branch passes identically on both builds.\n\nI additionally confirmed empirically that the run_test harness compiles each candidate as a single method in a default-package class (it resolved an unqualified `Compiler` to java.lang.Compiler and rejected package-private jscomp classes such as TypedScopeCreator, MemoizedScopeCreator, TypeInferencePass, and compiler.parseInputs()). Consequently TypedScopeCreator/scoping internals that REQ_I2 touches are not reachable from the default-package harness at all, and a plain `assertTrue(true)` method was the only self-contained candidate that compiled and executed cleanly against gold — it exercises no code path under test. Between the intrinsic build-equivalence of the REQ_I2 branch and this packaging restriction, no genuine Witness exists here."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ_I2] (TypedScopeCreator.AbstractScopeBuilder#defineSlot (qualified-name / property scope-slot placement)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: REQ_I2 is the guard/else-branch of TypedScopeCreator.AbstractScopeBuilder#defineSlot: when a fully-qualified GETPROP name (e.g. \"ns.foo\") that is rooted in the global scope is ALREADY declared in the global scope (isDeclared(variableName,false)==true), the gold code does NOT redirect; it leaves scopeToDeclareIn = the current local scope, so the new declaration stays in the enclosing local scope without clobbering the existing global symbol, and normal local re-declaration proceeds.\n\nComparing the two revisions at [H0]:\n- GOLD: redirect (scopeToDeclareIn = globalScope) fires ONLY when n is GETPROP, scope is local, the qname's root is in the global scope, AND globalScope.isDeclared(qname,false)==FALSE.\n- BUGGY: the redirect block is entirely removed, so scopeToDeclareIn always stays == the local scope.\n\nREQ_I2 is precisely the case where globalScope.isDeclared(qname,false)==TRUE. In that case the gold inner `if` is false and gold leaves the declaration local, exactly as buggy always does. Therefore in the already-declared-globally scenario (REQ_I2/guard branch), gold and buggy coincide on every observable outcome: the existing global symbol is untouched in both, and the fresh declaration lands in the local scope in both. The only build divergence (REQ_I1, not-yet-declared-globally) is the opposite branch whose behavior is already pinned down by the [VISIBLE] tests testGlobalQualifiedNameInLocalScope/testQualifiedNameInference5, so it cannot serve as a Witness either. In other words, there is no requirement-faithful input on which gold PASSES and buggy FAILS while genuinely exercising REQ_I2's exclusion branch; any test that exercises that branch passes identically on both builds.\n\nI additionally confirmed empirically that the run_test harness compiles each candidate as a single method in a default-package class (it resolved an unqualified `Compiler` to java.lang.Compiler and rejected package-private jscomp classes such as TypedScopeCreator, MemoizedScopeCreator, TypeInferencePass, and compiler.parseInputs()). Consequently TypedScopeCreator/scoping internals that REQ_I2 touches are not reachable from the default-package harness at all, and a plain `assertTrue(true)` method was the only self-contained candidate that compiled and executed cleanly against gold — it exercises no code path under test. Between the intrinsic build-equivalence of the REQ_I2 branch and this packaging restriction, no genuine Witness exists here.",
+    "confidence": "Medium"
+  }
+}

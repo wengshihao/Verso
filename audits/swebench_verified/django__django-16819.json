@@ -1,0 +1,128 @@
+{
+  "task_id": "django__django-16819",
+  "status": "ok",
+  "duration_seconds": 391.236682125018,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16819",
+    "s_vis": [
+      {
+        "id": "req1",
+        "statement": "The migration optimizer must be able to reduce AddIndex/RemoveIndex migration operations during operation optimization, such that a redundant combination (an index operation contradicted or cancelling another on the same model) does not remain as a separate operation in the optimized plan.",
+        "subject": "MigrationOptimizer.optimize / AddIndex.reduce / RemoveIndex.reduce",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"We should reduce AddIndex/RemoveIndex operations when optimizing migration operations.\" Title: \"Reduce Add/RemoveIndex migration operations.\" In django/db/migrations/operations/models.py, AddIndex and RemoveIndex (subclasses of IndexOperation) do not override Operation.reduce, so they cannot currently be merged/removed by MigrationOptimizer (unlike e.g. CreateModel+DeleteModel and RenameIndex+IndexOperation which do define reduce)."
+      },
+      {
+        "id": "req2",
+        "statement": "Any reduction/collapse performed on AddIndex/RemoveIndex by the optimizer must preserve the net schema effect of the original operation sequence (indexes that are both added and later removed for the same named index on the same model net out), matching how existing reduce() results must keep migration state equivalent.",
+        "subject": "MigrationOptimizer / AddIndex.state_forwards + RemoveIndex.state_forwards consistency",
+        "hunk_ids": [],
+        "cited_from": "AddIndex.state_forwards -> state.add_index(app_label, self.model_name_lower, self.index); RemoveIndex.state_forwards -> state.remove_index(app_label, self.model_name_lower, self.name); and optimizer.py docstring \"you are provided a list of equal or shorter length - operations are merged into one if possible\" together with existing reduction examples such as \"a CreateModel and an AddField can be optimized into a new CreateModel, and CreateModel and DeleteModel can be optimized into nothing.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "Django's migration optimizer (via AddIndex.reduce) reduces away an AddIndex operation paired with a subsequent RemoveIndex operation whose name equals the AddIndex's index.name (i.e., AddIndex.reduce returns an empty operation list for such a pair), so that both the AddIndex and that RemoveIndex are dropped from the optimized migration list.",
+        "subject": "django.db.migrations.operations.models.AddIndex.reduce / MigrationOptimizer",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "The above cancellation matches purely on the index name (self.index.name == operation.name) without constraining that the paired RemoveIndex targets the same model as the AddIndex or that it immediately follows it, so an AddIndex is also cancelled by a RemoveIndex naming that index even when the two operations name different models and/or have other operations in between.",
+        "subject": "django.db.migrations.operations.models.AddIndex.reduce / MigrationOptimizer",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "req1",
+          "req2"
+        ],
+        "rationale": "S_vis conveys the general intent that an AddIndex paired with a RemoveIndex for the same named index/ model nets away so both are dropped from the optimized list, but it does not pin down the exact implementation detail that AddIndex.reduce returns an empty operation list triggered specifically by name-equality with a subsequent RemoveIndex. The outcome is consistent yet the precise mechanism is a patch-side commit not inferable from the visible issue/docstring evidence."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "req1",
+          "req2"
+        ],
+        "rationale": "impl-2 asserts cancellation matches purely on index name with no model or adjacency constraint (cross-model, non-adjacent cancellation). S_vis instead frames the redundancy as occurring 'on the same model' with schema-preserving netting, giving no visible evidence for and in fact suggesting the opposite of unconstrained name-only matching across different models."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_add_and_remove_index_different_models",
+      "test_source": "def test_add_and_remove_index_different_models():\n    from django.db import migrations, models\n    from django.db.migrations.optimizer import MigrationOptimizer\n\n    def optimize(operations):\n        return MigrationOptimizer().optimize(operations, \"test_app\")\n\n    result = optimize(\n        [\n            migrations.AddIndex(\n                \"Pony\",\n                models.Index(fields=[\"weight\"], name=\"my_index\"),\n            ),\n            migrations.RemoveIndex(\"Unicorn\", \"my_index\"),\n        ]\n    )\n    assert result == []",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: optimizer left [<AddIndex 'Pony',<Index name='my_index'>>, <RemoveIndex 'Unicorn'...'my_index'>] unchanged instead of cancelling to [])",
+      "explanation": "Requirement [impl-2] states that the (gold) AddIndex.reduce cancels a RemoveIndex purely on index-name equality, so an AddIndex on one model is cancelled even by a RemoveIndex that targets a *different* model (its reduce does not compare model names). Gold adds that AddIndex.reduce; the buggy pre-fix AddIndex has no reduce override, so it falls through to Operation.reduce (returns False) and MigrationOptimizer never collapses the pair.\n\nMy witness feeds MigrationOptimizer.optimize with an AddIndex on model \"Pony\" and a RemoveIndex on a different model \"Unicorn\" that shares the same index name \"my_index\", asserting the pair reduces to []. On gold the new AddIndex.reduce returns [] for the name-matching different-model RemoveIndex, so it cancels and the assertion passes. On buggy the operations are left unchanged, so `assert result == []` fails. Verified by running the identical test_source against both revisions: gold PASSED, buggy FAILED.\n\nThe visible tests (tests/migrations/test_optimizer.py) only pin down RenameIndex chain-collapsing and have no AddIndex/RemoveIndex cancellation test; test_operations.py only exercises single-operation state/DB semantics. No visible oracle assertion pins down that an AddIndex is cancelled by a name-matching RemoveIndex on a different model, so this is a genuine (non-reinvented) hidden witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible issue report is a sparse one-line enhancement request; there is no developer-written failing test or detailed acceptance criteria visible for this feature."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant visible code lives in django/db/migrations/operations/models.py (class IndexOperation; subclasses AddIndex, RemoveIndex, RenameIndex, AddConstraint, RemoveConstraint) and the optimizer loop in django/db/migrations/optimizer.py (MigrationOptimizer)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AddIndex and RemoveIndex do NOT override Operation.reduce / references_model (Operation.references_model defaults to True and base Operation.reduce only handles the elidable flags), so MigrationOptimizer currently never merges/cancels a redundant AddIndex+RemoveIndex on the same model/index."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "RenameIndex DOES provide a reduce() in the visible code (collapses chained RenameIndex ops), and test_optimizer.py (tests/migrations/test_optimizer.py) encodes RenameIndex reduction expectations but has no AddIndex/RemoveIndex optimizer-reduction tests yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests in tests/migrations/test_optimizer.py exercise the optimizer via assertOptimizesTo which serializes results and compares exact operation lists, indicating any added Add/RemoveIndex-reduction test would assert exact reduced output lists; tests/migrations/test_operations.py covers the individual Add/RemoveIndex operation semantics (state and database forwards/backwards), which must keep working."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because the acceptance criteria are not disclosed beyond the one-line description, only broad capability-level requirements can be stated as S_vis; concrete pairing conditions for the reduction (which pairs/net effects) remain underspecified by the visible material."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds an AddIndex.reduce override (the only new behavior); RemoveIndex gets no reduce override, and AddIndex previously fell through to the base Operation.reduce, which returns False for non-elidable operations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "AddIndex.reduce delegates to super().reduce for any later operation that is not a name-matching RemoveIndex, preserving the prior (no-cancellation) behavior for all other pairs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "RemoveIndex carries self.model_name and self.name while AddIndex carries self.model_name and self.index (with .name); the new reduction checks only the index-name equality and never the model names."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In MigrationOptimizer.optimize_inner, a list result such as this reduce()'s [] triggers a right reduction that drops operation i (the AddIndex) and the matched other (RemoveIndex) while preserving any purely in-between operations."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: Target [impl-2] concerns django.db.migrations.operations.models.AddIndex.reduce / MigrationOptimizer: that an AddIndex is cancelled by a name-matching RemoveIndex purely on index-name equality, without constraining that the RemoveIndex targets the same model or immediately follows.\n\nI checked every plausible oracle location. The only test file that exercises the MigrationOptimizer is tests/migrations/test_optimizer.py, and it is labeled [VISIBLE]. It contains no AddIndex/RemoveIndex reduction-or-cancellation test at all (its index-related test is only test_rename_index, which tests RenameIndex chain-collapsing, a different operation). tests/migrations/test_operations.py (also [VISIBLE]) likewise only tests AddIndex/RemoveIndex as standalone single-operation database/state semantics (forwards/backwards), never feeding an AddIndex+RemoveIndex pair through MigrationOptimizer.reduce, and it does not exercise the name-match cross-model/non-adjacent cancellation semantics at issue. A search of the full test-file roster surfaced no other file that drives the migration optimizer's handling of AddIndex/RemoveIndex pairs.\n\nSince (a) the sole domain-relevant test file is [VISIBLE] and cannot serve as a witness, and (b) that file does not even contain assertions about the described cross-model/non-adjacent index cancellation, the real pre-existing oracle contains no test whose assertion genuinely corresponds to [impl-2]. No witness can be constructed from [HIDDEN] content, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-2] (django.db.migrations.operations.models.AddIndex.reduce / MigrationOptimizer): The above cancellation matches purely on the index name (self.index.name == operation.name) without constraining that the paired RemoveIndex targets the same model as the AddIndex or that it immediately follows it, so an AddIndex is also cancelled by a RemoveIndex naming that index even when the two operations name different models and/or have other operations in between. — not entailed by S_vis (impl-2 asserts cancellation matches purely on index name with no model or adjacency constraint (cross-model, non-adjacent cancellation). S_vis instead frames the redundancy as occurring 'on the same model' with schema-preserving netting, giving no visible evidence for and in fact suggesting the opposite of unconstrained name-only matching across different models.); confirmed by a synthesized witness: Requirement [impl-2] states that the (gold) AddIndex.reduce cancels a RemoveIndex purely on index-name equality, so an AddIndex on one model is cancelled even by a RemoveIndex that targets a *different* model (its reduce does not compare model names). Gold adds that AddIndex.reduce; the buggy pre-fix AddIndex has no reduce override, so it falls through to Operation.reduce (returns False) and MigrationOptimizer never collapses the pair.\n\nMy witness feeds MigrationOptimizer.optimize with an AddIndex on model \"Pony\" and a RemoveIndex on a different model \"Unicorn\" that shares the same index name \"my_index\", asserting the pair reduces to []. On gold the new AddIndex.reduce returns [] for the name-matching different-model RemoveIndex, so it cancels and the assertion passes. On buggy the operations are left unchanged, so `assert result == []` fails. Verified by running the identical test_source against both revisions: gold PASSED, buggy FAILED.\n\nThe visible tests (tests/migrations/test_optimizer.py) only pin down RenameIndex chain-collapsing and have no AddIndex/RemoveIndex cancellation test; test_operations.py only exercises single-operation state/DB semantics. No visible oracle assertion pins down that an AddIndex is cancelled by a name-matching RemoveIndex on a different model, so this is a genuine (non-reinvented) hidden witness.",
+    "confidence": "Medium"
+  }
+}

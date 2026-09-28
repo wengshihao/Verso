@@ -1,0 +1,106 @@
+{
+  "task_id": "django__django-16667",
+  "status": "ok",
+  "duration_seconds": 323.815298291971,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16667",
+    "s_vis": [
+      {
+        "id": "R-SV-1",
+        "statement": "SelectDateWidget.value_from_datadict must not raise an OverflowError (which would crash via an uncaught exception) when it is given a user-controlled year/month/day whose int value is too large for datetime.date to convert (e.g. year '1234567821345678' with month '1' and day '1'); instead such input must be handled so that the date value never reaches the constructor unguarded and form validation completes without an unhandled overflow error.",
+        "subject": "django.forms.widgets.SelectDateWidget.value_from_datadict",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"File \"[...]/site-packages/django/forms/widgets.py\", line 1160, in value_from_datadict\\n\\tdate_value = datetime.date(int(y), int(m), int(d))\\nOverflowError: signed integer is greater than maximum\" ... repro URL: \"http://127.0.0.1:8000/repro/?my_date_day=1&my_date_month=1&my_date_year=1234567821345678\" ... \"the user-controlled value is converted into a date without guarding against a possible OverflowError\" / \"datetime.date(sys.maxsize+1, 3, 4)\" \"OverflowError: Python int too large to convert to C long\""
+      },
+      {
+        "id": "R-SV-2",
+        "statement": "SelectDateWidget.value_from_datadict, when all three submitted year/month/day values are empty strings (''), returns None.",
+        "subject": "django.forms.widgets.SelectDateWidget.value_from_datadict",
+        "hunk_ids": [],
+        "cited_from": "test_value_from_datadict: values (('', '', '', ''), None) with comment-free tuple meaning \"all empty -> None\"; also source \"if y == m == d == '':\\n            return None\""
+      },
+      {
+        "id": "R-SV-3",
+        "statement": "SelectDateWidget.value_from_datadict, when the parsed (year,month,day) triple is invalid and raises ValueError from datetime.date, returns a pseudo-ISO string built as '%s-%s-%s' % (y or 0, m or 0, d or 0) — substituting 0 for any empty/unselected component (documented examples: partial empty day -> '2000-12-0'; ('--','12','1') -> '0-12-1'), so that partially-filled or invalid dates are represented without crashing.",
+        "subject": "django.forms.widgets.SelectDateWidget.value_from_datadict",
+        "hunk_ids": [],
+        "cited_from": "Source comment: \"# Return pseudo-ISO dates with zeros for any unselected values, e.g. '2017-0-23'.\\nreturn \\\"%s-%s-%s\\\" % (y or 0, m or 0, d or 0)\"; tests: (('2000', '12', '1'), '2000-12-01'), (('', '12', '1'), '0-12-1'), (('2000', '', '1'), '2000-0-1'), (('2000', '12', ''), '2000-12-0')"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "SelectDateWidget.value_from_datadict does not raise OverflowError when the submitted year/month/day values are integers that cause datetime.date(int(y), int(m), int(d)) to raise OverflowError (rather than ValueError); instead it returns the string \"0-0-0\".",
+        "subject": "SelectDateWidget.value_from_datadict",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R-SV-1",
+          "R-SV-3",
+          "R-SV-2"
+        ],
+        "rationale": "R-SV-1 pins down that OverflowError-producing year/month/day input must be guarded so no OverflowError escapes (matching the 'does not raise' half of R1), but it does not state that the result is the string '0-0-0'. R-SV-3 pins the pseudo-ISO return only for the ValueError path based on the '%s-%s-%s' % (y or 0,...) formula, which would retain the actual non-empty values rather than yield '0-0-0'; the second half of R1 (exactly returning '0-0-0' on OverflowError) is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_huge_year_overflow",
+      "test_source": "def test_witness_huge_year_overflow():\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            DEBUG=False,\n            USE_TZ=False,\n            USE_I18N=True,\n            USE_L10N=True,\n            LANGUAGE_CODE=\"en-us\",\n            LANGUAGES=[(\"en-us\", \"English\")],\n            FORMAT_MODULE_PATH=None,\n            SECRET_KEY=\"x\",\n            INSTALLED_APPS=[],\n            DATE_INPUT_FORMATS=[\"%Y-%m-%d\"],\n            DATETIME_INPUT_FORMATS=[\"%Y-%m-%d %H:%M:%S\"],\n            TIME_INPUT_FORMATS=[\"%H:%M:%S\"],\n        )\n    django.setup()\n    from django.forms import SelectDateWidget\n    w = SelectDateWidget(years=(\"2016\",))\n    res = w.value_from_datadict(\n        {\"mydate_year\": \"100000000000000000000\",\n         \"mydate_month\": \"12\", \"mydate_day\": \"1\"},\n        {},\n        \"mydate\",\n    )\n    assert res == \"0-0-0\"",
+      "gold_result": "PASSED — value_from_datadict with year \"100000000000000000000\" (=10**20, whose int is too large for datetime.date and raises OverflowError) returns \"0-0-0\" because the OverflowError is caught by the new except branch.",
+      "buggy_result": "FAILED — the uncaught OverflowError \"Python int too large to convert to C long\" propagates out of datetime.date(int(y), int(m), int(d)) at widgets.py:1159, since the buggy code only guards `except ValueError:` and has no OverflowError handler.",
+      "explanation": "The target R1 is exactly that SelectDateWidget.value_from_datadict must not propagate OverflowError from datetime.date(int(y), int(m), int(d)) and instead return the string \"0-0-0\". I verified with real probes that datetime.date(10**20, 1, 1) raises OverflowError (while merely-too-large-but-representable years such as 10**8 or 2**31-1 raise ValueError, which the pre-existing code already catches and converts to the pseudo-ISO fallback). So supplying year 1e20 via the '_year' form field (with valid month/day) exercises a data path whose datetime.date construction genuinely raises OverflowError. On the gold (fixed) code the new `except OverflowError: return \"0-0-0\"` handles it and the method returns \"0-0-0\" (test PASSES); on the buggy code the OverflowError is uncaught and propagates (test FAILS). I confirmed neither of the [VISIBLE] SelectDateWidget tests (empty/None/in-range years, '0-12-1'/'2000-0-1' style fallback, no OverflowError cases) or the DateField tests remote-pin this: the '0-0-0' return for an out-of-platform integer year is only entailed by the hidden change, and my concrete input is distinct from any visible scenario, so it is a genuine (non-redundant) witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "SelectDateWidget is defined in django/forms/widgets.py; its tests live in tests/forms_tests/widget_tests/test_selectdatewidget.py (under class SelectDateWidgetTest/widget behavior tests)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code in value_from_datadict currently guards datetime.date(int(y), int(m), int(d)) only with 'except ValueError:' — it returns pseudo-ISO strings for ValueError but has no OverflowError guard, which is precisely what the issue reports as the crash."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "value_from_datadict returns the localized date string (via strftime of DATE_INPUT_FORMATS) only when the triple forms a valid date; the byte field validation that surfaces 'not ok' happens upstream via DateField/form.is_valid once the widget no longer raises."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The widget's input parts are submitted under names '<field>_year', '<field>_month', '<field>_day' (e.g. my_date_year / my_date_month / my_date_day as in the repro URL)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "value_from_datadict's ValueError branch (returning pseudo-ISO zeros, e.g. '2017-0-23') is pre-existing and unchanged by this patch; only a sibling OverflowError branch (returning \"0-0-0\") is newly added."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "OverflowError arises from datetime.date when a component (typically an out-of-range year) exceeds the platform's representable range, distinct from ValueError (month/day out of 1-12/1-31)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard wraps datetime.date(int(y), int(m), int(d)) inside a try block that also covers the subsequent strftime return path."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the oracle for a test that serves as a witness for R1 (SelectDateWidget.value_from_datadict returning \"0-0-0\" rather than raising OverflowError for out-of-range year/month/day ints).\n\nThe only test files that exercise SelectDateWidget.value_from_datadict are:\n- tests/forms_tests/widget_tests/test_selectdatewidget.py — the dedicated SelectDateWidget unit test file ([VISIBLE], whole file).\n- tests/forms_tests/field_tests/test_datefield.py — uses SelectDateWidget within a DateField ([VISIBLE]).\n- tests/forms_tests/widget_tests/base.py — test scaffolding only ([VISIBLE]).\n\nI read all three in full. In test_selectdatewidget.py, test_value_from_datadict covers only empty-string/None component cases that fall into the ValueError-style pseudo-ISO path (returning strings such as \"0-12-1\", \"2000-0-1\", \"2000-12-0\", or None). There is no test supplying out-of-range integer components that would trigger OverflowError from datetime.date, and no assertion anywhere of the \"0-0-0\" return string that R1 commits to. test_datefield.py only exercises in-range years (e.g. 2008). No test currently fails against the buggy program (the failing-test list is empty).\n\nMoreover, every one of these files is [VISIBLE], so per the rule no assertion drawn from them could ever serve as a Witness regardless of how well it matched — an R1 Witness must rest on [HIDDEN] content, and no [HIDDEN] oracle content tests the OverflowError → \"0-0-0\" behavior of value_from_datadict. I found no genuine witness and therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (SelectDateWidget.value_from_datadict): SelectDateWidget.value_from_datadict does not raise OverflowError when the submitted year/month/day values are integers that cause datetime.date(int(y), int(m), int(d)) to raise OverflowError (rather than ValueError); instead it returns the string \"0-0-0\". — not entailed by S_vis (R-SV-1 pins down that OverflowError-producing year/month/day input must be guarded so no OverflowError escapes (matching the 'does not raise' half of R1), but it does not state that the result is the string '0-0-0'. R-SV-3 pins the pseudo-ISO return only for the ValueError path based on the '%s-%s-%s' % (y or 0,...) formula, which would retain the actual non-empty values rather than yield '0-0-0'; the second half of R1 (exactly returning '0-0-0' on OverflowError) is not pinned down.); confirmed by a synthesized witness: The target R1 is exactly that SelectDateWidget.value_from_datadict must not propagate OverflowError from datetime.date(int(y), int(m), int(d)) and instead return the string \"0-0-0\". I verified with real probes that datetime.date(10**20, 1, 1) raises OverflowError (while merely-too-large-but-representable years such as 10**8 or 2**31-1 raise ValueError, which the pre-existing code already catches and converts to the pseudo-ISO fallback). So supplying year 1e20 via the '_year' form field (with valid month/day) exercises a data path whose datetime.date construction genuinely raises OverflowError. On the gold (fixed) code the new `except OverflowError: return \"0-0-0\"` handles it and the method returns \"0-0-0\" (test PASSES); on the buggy code the OverflowError is uncaught and propagates (test FAILS). I confirmed neither of the [VISIBLE] SelectDateWidget tests (empty/None/in-range years, '0-12-1'/'2000-0-1' style fallback, no OverflowError cases) or the DateField tests remote-pin this: the '0-0-0' return for an out-of-platform integer year is only entailed by the hidden change, and my concrete input is distinct from any visible scenario, so it is a genuine (non-redundant) witness.",
+    "confidence": "Medium"
+  }
+}

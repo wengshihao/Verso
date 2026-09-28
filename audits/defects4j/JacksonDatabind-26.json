@@ -1,0 +1,110 @@
+{
+  "task_id": "JacksonDatabind-26",
+  "status": "ok",
+  "duration_seconds": 235.03981548200318,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-26",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "After ObjectMapper has written an EnumPOJO as JSON (loading the enum property serializers bound by the EnumPOJO BeanPropertyWriter instances), JDK-serializing and then JDK-deserializing the ObjectMapper obtained via a reader/writer binding must succeed and yield non-null mapper/reader/writer objects without throwing.",
+        "subject": "ObjectMapper/BeanPropertyWriter JDK serialization (databind#899)",
+        "hunk_ids": [],
+        "cited_from": "// for [databind#899]\npublic void testEnumHandlers() throws IOException {\n  ... ObjectMapper mapper = new ObjectMapper();\n  String json = mapper.writerFor(EnumPOJO.class).writeValueAsString(new EnumPOJO());\n  EnumPOJO result = mapper.readerFor(EnumPOJO.class).readValue(json);\n  assertNotNull(result);\n  byte[] bytes = jdkSerialize(mapper);\n  ObjectMapper mapper2 = jdkDeserialize(bytes);\n  assertNotNull(mapper2);\n  bytes = jdkSerialize(mapper.readerFor(EnumPOJO.class));\n  ObjectReader r = jdkDeserialize(bytes);\n  assertNotNull(r);\n  /* 14-Aug-2015, tatu: Looks like pre-loading JsonSerializer is problematic at this point; comment out for now. Try to fix later on. */\n  bytes = jdkSerialize(mapper.writerFor(EnumPOJO.class));\n  ObjectWriter w = jdkDeserialize(bytes);\n  assertNotNull(w);"
+      },
+      {
+        "id": "R2",
+        "statement": "When a JsonSerializer has been pre-loaded for EnumPOJO properties (so a BeanPropertyWriter references such a loaded serializer), JDK-serializing and JDK-deserializing the ObjectWriter returned by mapper.writerFor(EnumPOJO.class) must succeed (no exception) and produce a non-null ObjectWriter.",
+        "subject": "ObjectWriter/BeanPropertyWriter JDK serialization (databind#899)",
+        "hunk_ids": [],
+        "cited_from": "/* 14-Aug-2015, tatu: Looks like pre-loading JsonSerializer is problematic at this point; comment out for now. Try to fix later on. */\nbytes = jdkSerialize(mapper.writerFor(EnumPOJO.class));\nObjectWriter w = jdkDeserialize(bytes);\nassertNotNull(w);"
+      },
+      {
+        "id": "R3",
+        "statement": "A thawed ObjectWriter that survived a JDK serialization round-trip after enum serializers were pre-loaded must remain usable: writing a fresh EnumPOJO instance through it must produce JSON byte-identical to the JSON produced before the writer was frozen, and that JSON must be readable back into a non-null EnumPOJO by the round-tripped reader.",
+        "subject": "ObjectWriter usability after JDK round-trip (databind#899)",
+        "hunk_ids": [],
+        "cited_from": "// plus, ensure objects are usable:\nString json2 = w.writeValueAsString(new EnumPOJO());\nassertEquals(json, json2);\nEnumPOJO result2 = r.readValue(json2);\nassertNotNull(result2);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "A BeanPropertyWriter instance can be round-tripped through standard JDK serialization (java.io.ObjectOutputStream/java.io.ObjectInputStream) without throwing (NotSerializableException or otherwise): the class now implements java.io.Serializable.",
+        "subject": "com.fasterxml.jackson.databind.ser.BeanPropertyWriter (JDK serializability of the class)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "The S_vis requirements only pin down observable test-level behavior: that a JDK round-trip of the ObjectMapper and of mapper.writerFor(EnumPOJO.class)/readerFor succeeds without exception and remains usable. Successfully JDK-serializing that writer graph would require the underlying BeanPropertyWriter instances to be Serializable, so this is suggestive of the fix, but S_vis never directly states that 'BeanPropertyWriter implements java.io.Serializable' nor confirms that the cached/pre-loaded serializer state (the very part the fix targets) actually survives the round-trip — the cited test even shows the problematic pre-loading was commented out ('Looks like pre-loading JsonSerializer is problematic...'). The class-level implementation commitment is only an inference, not directly entailed by the visible behavioral evidence, so I judge it uncertain."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "writerRoundTripsThroughJdkSerialization",
+      "test_source": "@Test\npublic void writerRoundTripsThroughJdkSerialization() throws Exception {\n    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();\n    java.io.ObjectOutputStream obOut = new java.io.ObjectOutputStream(bytes);\n    obOut.writeObject(new com.fasterxml.jackson.databind.ObjectMapper().writerFor(EnumPOJO.class));\n    obOut.close();\n    java.io.ObjectInputStream objIn = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray()));\n    java.lang.Object w;\n    try {\n        w = objIn.readObject();\n    } finally {\n        objIn.close();\n    }\n    org.junit.Assert.assertNotNull(w);\n}\n\nstatic enum EnumPOJO2 { A, B, C }\nstatic class EnumPOJO {\n    public EnumPOJO2 value = EnumPOJO2.B;\n}",
+      "gold_result": "PASSED — ObjectWriter built from writerFor(EnumPOJO.class) (carrying a resolved BeanPropertyWriter) serializes/deserializes through raw JDK ObjectOutputStream/ObjectInputStream successfully.",
+      "buggy_result": "FAILED — java.io.NotSerializableException: com.fasterxml.jackson.databind.ser.BeanPropertyWriter thrown from ObjectOutputStream.writeObject while serializing that same ObjectWriter, exactly the behavior the hunk (adding `implements Serializable` + serialVersionUID) is meant to enable.",
+      "explanation": "R1 requires that BeanPropertyWriter become JDK-serializable so that a Jackson ObjectWriter whose writer graph holds a resolved BeanPropertyWriter can be round-tripped through standard ObjectOutputStream/ObjectInputStream. The sole hunk H0 implements this by adding `implements java.io.Serializable` (and a serialVersionUID) to BeanPropertyWriter; the buggy revision lacks those.\n\nMy witness serializes (raw JDK ObjectOutputStream) an ObjectMapper().writerFor(EnumPOJO.class) where EnumPOJO is my own self-contained POJO whose only field is a custom enum. Because enums carry an enum value (JsonFormat-aware resolution path that yields a BeanSerializer bound to a BeanPropertyWriter whose _dynamicSerializers/serializer have been resolved — the category databind#899 targets), serializing that ObjectWriter forces BeanPropertyWriter into the serialization graph: on gold the object round-trips and assertNotNull passes; on buggy the write throws NotSerializableException: com.fasterxml.jackson.databind.ser.BeanPropertyWriter, which the failure stack trace pins directly to the BeanPropertyWriter node. This precisely isolates the behavioral content of R1/H0.\n\nThe scenario is re-derived independently for the audit: it does not depend on the visible TestJDKSerialization test's EnumPOJO/ABC/base-test helper classes; it defines its own enum+POJO and drives the JDK serialization API directly inside the method body (no reliance on jdkSerialize/jdkDeserialize helpers or BaseTest fixture Enums). Both outcomes were execution-confirmed via run_test: PASSED against gold, FAILED against buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug databind#899 is exercised by testEnumHandlers() in src/test/java/.../TestJDKSerialization.java; the same file declares the fix's touch point is com.fasterxml.jackson.databind.ser.BeanPropertyWriter (whose JDK-serializability / readResolve handling is the relevant surface)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The ObjectWriter freeze/thaw half of testEnumHandlers is currently commented out with note 'Looks like pre-loading JsonSerializer is problematic at this point; comment out for now. Try to fix later on.' — this is the portion the BeanPropertyWriter fix is expected to enable."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BeanPropertyWriter.java declares _accessorMethod, _field, and _dynamicSerializers as transient, and readResolve() restores _accessorMethod/_field from _member and re-inits _dynamicSerializers only when _serializer == null."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Base test utilities (BaseTest/BaseMapTest) provide jdkSerialize/jdkDeserialize helper methods in the same test file."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ABC enum (A, B, C) is defined in BaseMapTest."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The buggy revision already contained all serialization-support machinery: transient fields _accessorMethod/_field/_dynamicSerializers and readResolve() that restores _accessorMethod/_field from _member and re-inits _dynamicSerializers when _serializer==null. The only change in hunk H0 is declaring the class Serializable (plus a serialVersionUID), so the sole introduced behavioral commitment is JDK-serializability of BeanPropertyWriter."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "serialVersionUID value (4603296144163950020L) is not independently observable and is not stated as a separate requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 is the only hunk in the catalogue."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires that BeanPropertyWriter be JDK-serializable round-trippable (databind#899 behavior that the sole hunk H0 introduces by adding `implements Serializable` + serialVersionUID). The only oracle test that exercises this behavior is `testEnumHandlers` in com/fasterxml/jackson/databind/TestJDKSerialization.java (the test currently failing on the buggy program), which serializes an ObjectWriter/reader/mapper that carries a resolved EnumPOJO BeanPropertyWriter and hits `NotSerializableException: BeanPropertyWriter` on the buggy side and passes on the fixed side. I independently confirmed this behavior with a standalone reproduction: the serialization of an ObjectWriter holding an EnumPOJO BeanPropertyWriter fails on buggy with `java.io.NotSerializableException: com.fasterxml.jackson.databind.ser.BeanPropertyWriter` and passes on gold — so testEnumHandlers genuinely corresponds to R1 (not merely co-located code).\n\nHowever, the entire source file TestJDKSerialization.java (including testEnumHandlers and all of its assertions/helper setup EnumPOJO/ABC) is labeled [VISIBLE] — byte-for-byte material the repair system already saw. Per the audit rule, a Witness may only rest on [HIDDEN] oracle assertions; a [VISIBLE]-derived assertion can never qualify regardless of how well it matches R1. I also inspected the plausible [HIDDEN] serialization / ObjectWriter / BeanSerializer / ObjectReader round-trip tests in the suite (ObjectWriterTest, TestBeanSerializer, RoundtripTest, TestExternalizable, ObjectReaderTest, SequenceWriterTest, and the broader serialization-oriented files), and none of them exercises BeanPropertyWriter JDK round-trip serialization. No [HIDDEN] oracle test asserts the serializability introduced by the BeanPropertyWriter fix, so no genuine oracle witness for R1 exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (com.fasterxml.jackson.databind.ser.BeanPropertyWriter (JDK serializability of the class)): A BeanPropertyWriter instance can be round-tripped through standard JDK serialization (java.io.ObjectOutputStream/java.io.ObjectInputStream) without throwing (NotSerializableException or otherwise): the class now implements java.io.Serializable. — not entailed by S_vis (The S_vis requirements only pin down observable test-level behavior: that a JDK round-trip of the ObjectMapper and of mapper.writerFor(EnumPOJO.class)/readerFor succeeds without exception and remains usable. Successfully JDK-serializing that writer graph would require the underlying BeanPropertyWriter instances to be Serializable, so this is suggestive of the fix, but S_vis never directly states that 'BeanPropertyWriter implements java.io.Serializable' nor confirms that the cached/pre-loaded serializer state (the very part the fix targets) actually survives the round-trip — the cited test even shows the problematic pre-loading was commented out ('Looks like pre-loading JsonSerializer is problematic...'). The class-level implementation commitment is only an inference, not directly entailed by the visible behavioral evidence, so I judge it uncertain.); confirmed by a synthesized witness: R1 requires that BeanPropertyWriter become JDK-serializable so that a Jackson ObjectWriter whose writer graph holds a resolved BeanPropertyWriter can be round-tripped through standard ObjectOutputStream/ObjectInputStream. The sole hunk H0 implements this by adding `implements java.io.Serializable` (and a serialVersionUID) to BeanPropertyWriter; the buggy revision lacks those.\n\nMy witness serializes (raw JDK ObjectOutputStream) an ObjectMapper().writerFor(EnumPOJO.class) where EnumPOJO is my own self-contained POJO whose only field is a custom enum. Because enums carry an enum value (JsonFormat-aware resolution path that yields a BeanSerializer bound to a BeanPropertyWriter whose _dynamicSerializers/serializer have been resolved — the category databind#899 targets), serializing that ObjectWriter forces BeanPropertyWriter into the serialization graph: on gold the object round-trips and assertNotNull passes; on buggy the write throws NotSerializableException: com.fasterxml.jackson.databind.ser.BeanPropertyWriter, which the failure stack trace pins directly to the BeanPropertyWriter node. This precisely isolates the behavioral content of R1/H0.\n\nThe scenario is re-derived independently for the audit: it does not depend on the visible TestJDKSerialization test's EnumPOJO/ABC/base-test helper classes; it defines its own enum+POJO and drives the JDK serialization API directly inside the method body (no reliance on jdkSerialize/jdkDeserialize helpers or BaseTest fixture Enums). Both outcomes were execution-confirmed via run_test: PASSED against gold, FAILED against buggy.",
+    "confidence": "Medium"
+  }
+}

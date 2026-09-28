@@ -1,0 +1,87 @@
+{
+  "task_id": "Cli-32",
+  "status": "ok",
+  "duration_seconds": 346.68046394999965,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Cli-32",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "HelpFormatter.findWrapPos must not throw StringIndexOutOfBoundsException: in its final forward force-chop while loop it must never evaluate text.charAt(pos) when pos == text.length() — the loop's comparison of pos against text.length() must use '<' rather than '<=' so that scanning stops before an out-of-range charAt call.",
+        "subject": "HelpFormatter.findWrapPos(String,int,int)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"In the last while loop in HelpFormatter.findWrapPos, it can pass text.length() to text.charAt(int), which throws a StringIndexOutOfBoundsException. The first expression in that while loop condition should use a <, not a <=.\" Source: `while ((pos <= text.length()) && ((c = text.charAt(pos)) != ' ') && (c != '\\n') && (c != '\\r'))"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "HelpFormatter.findWrapPos chops an overlong run of text at exactly column startPos+width: when no whitespace (space, '\\n', or '\\r') occurs anywhere in the window from startPos up to startPos+width (i.e., text there is a continuous non-whitespace run) and startPos+width is within the string (startPos+width < text.length()), findWrapPos returns startPos+width as the wrap position rather than advancing forward to the next whitespace character located beyond startPos+width.",
+        "subject": "HelpFormatter.findWrapPos",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "HelpFormatter.findWrapPos does not throw StringIndexOutOfBoundsException when a continuous run of non-whitespace characters spans startPos+width and extends to the very end of text: it returns startPos+width (since startPos+width < text.length() in that fallback case) instead of scanning to the end of the string.",
+        "subject": "HelpFormatter.findWrapPos",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down only that the final force-chop loop must avoid an out-of-range charAt by using '<' vs 'text.length()'; it says nothing about findWrapPos returning exactly startPos+width when no whitespace appears in the window, vs. advancing beyond it. The visible fix oversimplifies the S_impl R1 fallback-return semantics, so it is not decisively entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis directly addresses not throwing StringIndexOutOfBoundsException when a continuous run reaches the text end (the '<' fix), overlapping R2's non-throwing claim. However, R2 additionally asserts findWrapPos returns startPos+width in that case, which the visible note never states, leaving genuine ambiguity about the return value."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "findWrapLongRunChopTest",
+      "test_source": "    @Test\n    public void findWrapLongRunChopTest() {\n        int result = new org.apache.commons.cli.HelpFormatter() {\n            int wrap(String t, int w, int s) { return findWrapPos(t, w, s); }\n        }.wrap(\"abcdefg hi\", 5, 0);\n        if (result != 5) {\n            throw new RuntimeException(\"expected 5 but got \" + result);\n        }\n    }",
+      "gold_result": "PASSED (findWrapPos returns 5)",
+      "buggy_result": "FAILED (findWrapPos returns 7 due to forward-scan advancing to the space at index 7)",
+      "explanation": "R1 targets the fallback branch of HelpFormatter.findWrapPos: when there is no whitespace (space, '\\n', or '\\r') anywhere in the window [startPos, startPos+width] and startPos+width < text.length(), gold chops at exactly startPos+width whereas the buggy code forward-scans to the next whitespace beyond startPos+width and returns that instead.\n\nMy witness calls findWrapPos(\"abcdefg hi\", 5, 0) — a continuous non-whitespace run 'abcde' occupying window [0,5], with startPos+width=5 < length 10, and a space present later at index 7. It reaches the fallback branch (backward scan over [0,5] finds no whitespace, and no '\\n'/'\\t'/end-of-text guards fire). Gold returns exactly 5 (POS == text.length()? 5 != 10, so returns 5). Buggy, after the backward scan fails, forward-scans from pos=5 through 'f','g' until it hits the space at index 7, returning 7. These values differ, so the witness PASSES on gold (5) and FAILS on buggy (7). Confirmed by running the identical source against both programs.\n\nThis assertion is not pinned by the visible HelpFormatterTest (its findWrapPos cases cover \"This is a test.\", \"aaaa aa\", and \"aaaaaa aaaaaa\" with other widths/starts) nor in any hidden file — it is a distinct input/outcome exercising precisely R1."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed hunk lies in findWrapPos, inside the fallback branch reached only when the earlier guards did not fire: no '\\n'/'\\t' within width of startPos, startPos+width < text.length(), and the backward whitespace scan over [startPos, startPos+width] found nothing."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The removed code vacated the local variables 'c' and the forward-scan loop; the resulting branch is now just 'pos = startPos + width; return pos == text.length() ? -1 : pos;' — and in that branch the preceding 'else if (startPos + width >= text.length()) return -1;' guard already guarantees startPos+width < text.length(), so the fallback always returns startPos+width, never -1."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 is HelpFormatter.findWrapPos chopping a continuous non-whitespace run at exactly startPos+width (the fallback branch). The two tests that genuinely target this behavior and currently fail against the buggy program are testFindWrapPos and testRenderWrappedTextWordCut, both in HelpFormatterTest.java — which is labeled [VISIBLE], so their assertions cannot serve as a Witness regardless of how well they match R1.\n\nI examined every oracle test file. The only [HIDDEN] files are ApplicationTest, BugsTest, BugCLI162Test, BugCLI18Test. Among these, the only assertions that exercise findWrapPos's hard-cut behavior through public rendering are in BugCLI162Test (testLongLineChunking and testLongLineChunkingIndentIgnored), which render descriptions containing long continuous words chopped at width boundaries. I reproduced both faithfully and ran them against gold (PASSED) and against the buggy program (also PASSED) — neither discriminates gold from buggy, so they do not witness R1. The remaining [HIDDEN] tests (BugsTest.test13666 printHelp, ApplicationTest.testMan printHelp with no assertion, BugCLI18Test.testCLI18 with no assertion) either make no exact assertion on long-run wrap positions or do not hit a discriminating continuous-nonwhitespace-run boundary.\n\nConsequently no [HIDDEN] oracle assertion genuinely and discriminatingly tests R1; the only discriminating tests are visible. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (HelpFormatter.findWrapPos): HelpFormatter.findWrapPos chops an overlong run of text at exactly column startPos+width: when no whitespace (space, '\\n', or '\\r') occurs anywhere in the window from startPos up to startPos+width (i.e., text there is a continuous non-whitespace run) and startPos+width is within the string (startPos+width < text.length()), findWrapPos returns startPos+width as the wrap position rather than advancing forward to the next whitespace character located beyond startPos+width. — not entailed by S_vis (S_vis pins down only that the final force-chop loop must avoid an out-of-range charAt by using '<' vs 'text.length()'; it says nothing about findWrapPos returning exactly startPos+width when no whitespace appears in the window, vs. advancing beyond it. The visible fix oversimplifies the S_impl R1 fallback-return semantics, so it is not decisively entailed.); confirmed by a synthesized witness: R1 targets the fallback branch of HelpFormatter.findWrapPos: when there is no whitespace (space, '\\n', or '\\r') anywhere in the window [startPos, startPos+width] and startPos+width < text.length(), gold chops at exactly startPos+width whereas the buggy code forward-scans to the next whitespace beyond startPos+width and returns that instead.\n\nMy witness calls findWrapPos(\"abcdefg hi\", 5, 0) — a continuous non-whitespace run 'abcde' occupying window [0,5], with startPos+width=5 < length 10, and a space present later at index 7. It reaches the fallback branch (backward scan over [0,5] finds no whitespace, and no '\\n'/'\\t'/end-of-text guards fire). Gold returns exactly 5 (POS == text.length()? 5 != 10, so returns 5). Buggy, after the backward scan fails, forward-scans from pos=5 through 'f','g' until it hits the space at index 7, returning 7. These values differ, so the witness PASSES on gold (5) and FAILS on buggy (7). Confirmed by running the identical source against both programs.\n\nThis assertion is not pinned by the visible HelpFormatterTest (its findWrapPos cases cover \"This is a test.\", \"aaaa aa\", and \"aaaaaa aaaaaa\" with other widths/starts) nor in any hidden file — it is a distinct input/outcome exercising precisely R1.",
+    "confidence": "Medium"
+  }
+}

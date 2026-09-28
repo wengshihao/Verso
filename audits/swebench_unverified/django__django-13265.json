@@ -1,0 +1,129 @@
+{
+  "task_id": "django__django-13265",
+  "status": "ok",
+  "duration_seconds": 676.5933812499279,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13265",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a model (here LookImage, with a ForeignKey `look` to posts.Look) whose Meta sets `order_with_respect_to` and whose Meta/indexes include an Index such as `models.Index(fields=['look', '_order'])` whose field list references the auto-created `_order` column, the alteration that materializes `_order` (the AlterOrderWithRespectTo operation, or the CreateModel path that captures order_with_respect_to) must be placed/run before the AddIndex operation on `_order`, so that applying the generated migration does not crash with the reported error caused by `_order` not having been created yet when the index is added.",
+        "subject": "MigrationAutodetector operation ordering (alter_order_with_respect_to vs. add index on _order) + generated migration applicability",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I added orders_with_respect_to in new model class's Meta class and also made index for '_order' field by combining with other field... The problem is operation AlterOrderWithRespectTo after AddIndex of '_order' raising error because '_order' field had not been created yet. It seems to be AlterOrderWithRespectTo has to proceed before AddIndex of '_order'.\"; reproduction Meta `indexes = [ models.Index(fields=['look', '_order']), ...]` with `order_with_respect_to = 'look'`"
+      },
+      {
+        "id": "R2",
+        "statement": "An AddIndex operation whose index references the auto-synthesized `_order` field (a field that only exists as a real database column after order_with_respect_to is applied) must not be executed against a database snapshot that has not yet had that column created; i.e. the migration applying this index must run only after the `_order` column exists.",
+        "subject": "AddIndex database_forwards on a to-be-created `_order` column",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"AlterOrderWithRespectTo() with ForeignKey crash when _order is included in Index()... error because '_order' field had not been created yet.\"; AlterOrderWithRespectTo.database_forwards adds the `_order` field via schema_editor.add_field(from_model, field) only when to_model._meta.order_with_respect_to is set and from_model's is not."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When autodetection adds a brand-new model whose ModelState carries the `order_with_respect_to` option, the resulting per-model operation sequence places the generated `AlterOrderWithRespectTo` operation (declaring that model name and the order_with_respect_to target, and depending on the target field being present and the model being created) before any of that model's `AddIndex`, `AddConstraint`, `AlterUniqueTogether`, or `AlterIndexTogether` operations — so that an index/constraint referencing the auto-created OrderWrt `_order` column is not emitted ahead of the operation that creates that column.",
+        "subject": "MigrationAutodetector.generate_created_models (order_with_respect_to on newly created model)",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When autodetection changes an already-existing (kept) model whose `order_with_respect_to` option changes and which simultaneously has index/unique/index_together/constraint/db-table changes to emit, the `AlterOrderWithRespectTo` operation for that model is generated (and therefore ordered) before the added-index, altered-unique-together, altered-index-together, added-constraint, and altered-db-table operations belonging to the same autodetection run, so schema referencing the ordering's `_order` column is not added ahead of the ordering operation.",
+        "subject": "MigrationAutodetector._detect_changes operation-generation order for kept models with order_with_respect_to change",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries describe exactly the newly-created-model (CreateModel/generate_created_models) scenario: a fresh model whose Meta sets order_with_respect_to and that carries an index/ops over the auto-created `_order` column crashes unless the op materializing `_order` is placed before the add op. S_vis R1 explicitly states the CreateModel-captured order_with_respect_to (AlterOrderWithRespectTo) must be placed/run before the AddIndex on `_order`, pinning the specific per-model operation-ordering behavior R1 requires (the additional listed op types follow the same ordering principle as the evidenced index case)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis and its cited issue concern only a brand-new model created via the CreateModel path; neither entry mentions an already-existing (kept) model whose order_with_respect_to option *changes*, nor the _detect_changes operation-generation ordering for such updates. There is no visible evidence leading to or pinning the kept-model behavior R2 describes."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_kept_order_wrt_before_index_ops",
+      "test_source": "import django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(INSTALLED_APPS=[], DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}, SECRET_KEY='x')\ndjango.setup()\n\nfrom django.db import models\nfrom django.db.migrations.autodetector import MigrationAutodetector\nfrom django.db.migrations.state import ModelState, ProjectState\n\ndef _ps(states):\n    ps = ProjectState()\n    for s in states:\n        ps.add_model(s.clone())\n    return ps\n\ndef test_kept_order_wrt_before_index_ops():\n    bar_before = ModelState(\"regapp\", \"Bar\", [\n        (\"id\", models.AutoField(primary_key=True)),\n        (\"label\", models.CharField(max_length=20)),\n        (\"prio\", models.CharField(max_length=20)),\n    ])\n    bar_after = ModelState(\"regapp\", \"Bar\", [\n        (\"id\", models.AutoField(primary_key=True)),\n        (\"label\", models.CharField(max_length=20)),\n        (\"prio\", models.CharField(max_length=20)),\n    ], {\n        \"order_with_respect_to\": \"prio\",\n        \"db_table\": \"bar_custom\",\n        \"unique_together\": {(\"prio\", \"id\")},\n        \"index_together\": {(\"prio\", \"id\")},\n        \"indexes\": [models.Index(fields=[\"label\"], name=\"bar_label_idx\")],\n        \"constraints\": [],\n    })\n    changes = MigrationAutodetector(_ps([bar_before]), _ps([bar_after]))._detect_changes()\n    ops = [type(o).__name__ for m in changes[\"regapp\"] for o in m.operations]\n    assert ops == [\"AlterOrderWithRespectTo\", \"AlterUniqueTogether\", \"AlterIndexTogether\", \"AddIndex\", \"AlterModelTable\"], repr(ops)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED -- AssertionError: buggy produced ['AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable', 'AlterOrderWithRespectTo'] (AlterOrderWithRespectTo emitted last), while gold emits it first => ['AlterOrderWithRespectTo', 'AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable']",
+      "explanation": "The target requirement R2 concerns operation-generation order inside MigrationAutodetector._detect_changes() (H0 touches django/db/migrations/autodetector.py): for an already-existing (kept) model whose `order_with_respect_to` option changes in the same autodetection run that also emits added-index / altered-unique-together / altered-index-together / altered-db-table operations, the `AlterOrderWithRespectTo` operation must be generated (and hence ordered) before those index/together/db-table operations for that model.\n\nThe witness sets up a kept model `Bar` in app `regapp` present both before and after. Only its options change: `order_with_respect_to` is toggled on AND the same run adds an `Index`, changes `unique_together`/`index_together`, and changes `db_table` (`\"bar_custom\"`). Driving `MigrationAutodetector(from_state, to_state)._detect_changes()` and flattening the emitted operations, the gold (post-fix) run yields `['AlterOrderWithRespectTo', 'AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable']` (AlterOrderWithRespectTo first, as R2 requires), which the assertion accepts (PASSED). The buggy (pre-fix) run yields `['AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable', 'AlterOrderWithRespectTo']` — i.e. `AlterOrderWithRespectTo` is emitted last because buggy code calls generate_altered_order_with_respect_to() at the end, after the index/together/db-table generators — so the assertion FAILS. The ops have no cross-op `_auto_deps` forcing reordering in this configuration, so the stable topological sort preserves each generator's insertion order, making the gold/buggy divergence observable.\n\nThis scenario genuinely corresponds to R2 and is not pinned down by visible content: the existing visible tests which touch order_with_respect_to each exercise a disjoint scenario — `test_set_alter_order_with_respect_to` changes only the ordering option (no index/together/db-table sibling); `test_add_alter_order_with_respect_to`/`test_remove_alter_order_with_respect_to` combine the ordering change only with an AddField/RemoveField (added-FK), not with altered-unique/index-together/added-index/db-table ops; and `test_add_model_order_with_respect_to` covers the NEW-model CreateModel path (a different code path than `generate_altered_order_with_respect_to`, which R2 concerns). None of the pre-existing (all-visible) tests construct the combination asserted here, so the ordering fact is not derivable from the visible oracle and the test serves as a genuine discriminator (confirmed by actual run_test against both real program revisions)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is the Django 3.2-era migration autodetector (django/db/migrations/autodetector.py). Operation ordering is produced by generate_created_models / generate_altered_order_with_respect_to / generate_added_indexes feeding into _sort_migrations (stable_topological_sort over each op's _auto_deps) and into _build_migration_list; dependencies between ops are resolved in check_dependency()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction involves a NEW model (CreateModel path): in tests/migrations/test_autodetector.py, test_add_model_order_with_respect_to asserts that when adding a whole model with order_with_respect_to, `_order` is NOT among the CreateModel fields (it is created separately by the order-with-respect-to handling), which is the source of the AddIndex-on-_order ordering hazard."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Auto-created `_order` is an OrderWrt private field always named '_order'; ModelState.from_model skips OrderWrt fields but keeps Meta indexes that reference '_order', so an Index(fields=[..., '_order']) survives into state and gets emitted as its own AddIndex."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AlterOrderWithRespectTo is defined in django/db/migrations/operations/models.py; its database_forwards adds/removes the `_order` column via schema_editor.add_field/remove_field depending on whether from/to model states have order_with_respect_to set."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test in the checked-out tree directly asserts this ordering fix (the regression test would be added by the fix commit); the two requirements are grounded in the issue reproduction plus the operation/ordering code described."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing autodetector tests live in tests/migrations/test_autodetector.py; order_with_respect_to model fixtures in tests/order_with_respect_to/models.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "generate_altered_order_with_respect_to() only handles kept models (kept_model_keys, from old_model_keys & new_model_keys); wholly-new models' order_with_respect_to handling lives inside generate_created_models, where H1 places the AlterOrderWithRespectTo op. Hence H0 and H1/H2 patch two disconnected code paths and are independently checkable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "AlterOrderWithRespectTo's _auto_deps (target field created True / model created None True) do not establish any dependency relative to a same-model AddIndex/AddConstraint/AlterFooTogether op, so relative final order is determined by the position at which each operation was appended (before the stable topological sort); this is why the patch's reordering is behaviorally meaningful."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Auto-created ordering field is named '_order'; ModelState.from_model skips OrderWrt fields but preserves Meta indexes that reference '_order', so an index referencing '_order' can surface as its own AddIndex op needing the ordering column to already exist."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The checked-out tests/migrations/test_autodetector.py file is identical at the buggy and gold revisions (only django/db/migrations/autodetector.py changed)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Investigated the full oracle for target [R2] — the autodetection operation-ordering requirement where a KEPT (already-existing) model gets its `order_with_respect_to` option changed while the same run also emits index/unique_together/index_together/constraint/db-table changes, and `AlterOrderWithRespectTo` must be generated before those added/altered operations for that model.\n\nEvidence gathered:\n1. The only source exercising `MigrationAutodetector._detect_changes()` ordering is `tests/migrations/test_autodetector.py`. I read it in full. Every order_with_respect_to-related test it contains operates on a different scenario than R2: `test_set_alter_order_with_respect_to` (only the ordering option changes, no index/constraint/db-table sibling), `test_add_alter_order_with_respect_to` and `test_remove_alter_order_with_respect_to` (combine the ordering op with a plain field AddField/RemoveField, not with added-index/altered-unique-together/added-constraint/altered-db-table ops), and `test_add_model_order_with_respect_to` (a wholly NEW model / CreateModel path, which per the impl notes occupies a different code path from `generate_altered_order_with_respect_to()` that R2 concerns — R2 is the kept-model path). None asserts the R2 constraint that `AlterOrderWithRespectTo` is ordered ahead of same-model `AddIndex`/`AlterUniqueTogether`/`AlterIndexTogether`/`AddConstraint`/`AlterModelTable` ops. There are no tests combining a kept-model `order_with_respect_to` change with an index/constraint/together change.\n2. `tests/migrations/test_autodetector.py` is labeled [VISIBLE] (it ships with the Django repo and is identical at the buggy and gold revisions — only autodetector.py changed). Per the rules, an assertion drawn from [VISIBLE] content can never serve as a Witness regardless of its shape, because it was never hidden from the repair system.\n3. I also read the other order_with_respect_to test modules (`tests/order_with_respect_to/tests.py`, `base_tests.py`); they are likewise [VISIBLE] and exercise only runtime queryset ordering behavior, not autodetector op-generation order. There is no second autodetector test file in the oracle.\n4. The ticket states no tests currently fail against the buggy program, consistent with the checked-out suite containing no assertion of R2's ordering, and with the R2 regression test only being introduced by the fix commit itself (not part of the pre-existing oracle).\n\nBecause the oracle's pre-existing content that could possibly cover R2 is entirely [VISIBLE] and additionally none of it actually encodes R2's kept-model ordering scenario, no genuine witness exists. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (MigrationAutodetector._detect_changes operation-generation order for kept models with order_with_respect_to change): When autodetection changes an already-existing (kept) model whose `order_with_respect_to` option changes and which simultaneously has index/unique/index_together/constraint/db-table changes to emit, the `AlterOrderWithRespectTo` operation for that model is generated (and therefore ordered) before the added-index, altered-unique-together, altered-index-together, added-constraint, and altered-db-table operations belonging to the same autodetection run, so schema referencing the ordering's `_order` column is not added ahead of the ordering operation. — not entailed by S_vis (S_vis and its cited issue concern only a brand-new model created via the CreateModel path; neither entry mentions an already-existing (kept) model whose order_with_respect_to option *changes*, nor the _detect_changes operation-generation ordering for such updates. There is no visible evidence leading to or pinning the kept-model behavior R2 describes.); confirmed by a synthesized witness: The target requirement R2 concerns operation-generation order inside MigrationAutodetector._detect_changes() (H0 touches django/db/migrations/autodetector.py): for an already-existing (kept) model whose `order_with_respect_to` option changes in the same autodetection run that also emits added-index / altered-unique-together / altered-index-together / altered-db-table operations, the `AlterOrderWithRespectTo` operation must be generated (and hence ordered) before those index/together/db-table operations for that model.\n\nThe witness sets up a kept model `Bar` in app `regapp` present both before and after. Only its options change: `order_with_respect_to` is toggled on AND the same run adds an `Index`, changes `unique_together`/`index_together`, and changes `db_table` (`\"bar_custom\"`). Driving `MigrationAutodetector(from_state, to_state)._detect_changes()` and flattening the emitted operations, the gold (post-fix) run yields `['AlterOrderWithRespectTo', 'AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable']` (AlterOrderWithRespectTo first, as R2 requires), which the assertion accepts (PASSED). The buggy (pre-fix) run yields `['AlterUniqueTogether', 'AlterIndexTogether', 'AddIndex', 'AlterModelTable', 'AlterOrderWithRespectTo']` — i.e. `AlterOrderWithRespectTo` is emitted last because buggy code calls generate_altered_order_with_respect_to() at the end, after the index/together/db-table generators — so the assertion FAILS. The ops have no cross-op `_auto_deps` forcing reordering in this configuration, so the stable topological sort preserves each generator's insertion order, making the gold/buggy divergence observable.\n\nThis scenario genuinely corresponds to R2 and is not pinned down by visible content: the existing visible tests which touch order_with_respect_to each exercise a disjoint scenario — `test_set_alter_order_with_respect_to` changes only the ordering option (no index/together/db-table sibling); `test_add_alter_order_with_respect_to`/`test_remove_alter_order_with_respect_to` combine the ordering change only with an AddField/RemoveField (added-FK), not with altered-unique/index-together/added-index/db-table ops; and `test_add_model_order_with_respect_to` covers the NEW-model CreateModel path (a different code path than `generate_altered_order_with_respect_to`, which R2 concerns). None of the pre-existing (all-visible) tests construct the combination asserted here, so the ordering fact is not derivable from the visible oracle and the test serves as a genuine discriminator (confirmed by actual run_test against both real program revisions).",
+    "confidence": "Medium"
+  }
+}

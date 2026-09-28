@@ -1,0 +1,152 @@
+{
+  "task_id": "scikit-learn__scikit-learn-14629",
+  "status": "ok",
+  "duration_seconds": 295.30981066590175,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-14629",
+    "s_vis": [
+      {
+        "id": "sv_req_1",
+        "statement": "cross_val_predict invoked on a MultiOutputClassifier with method='predict_proba' (on multilabel data, cv=5) must return the per-label prediction probabilities instead of raising an AttributeError about a missing 'classes_' on the MultiOutputClassifier.",
+        "subject": "sklearn.model_selection.cross_val_predict / _fit_and_predict",
+        "hunk_ids": [],
+        "cited_from": "Issue 'Steps/Code to Reproduce': \"mo_lda = MultiOutputClassifier(LinearDiscriminantAnalysis())\\npred = cross_val_predict(mo_lda, X, Y, cv=5) # Works fine\\npred_proba =  cross_val_predict(mo_lda, X, Y, cv=5, method='predict_proba') # Returns error\"; 'Expected Results': \"Array with prediction probabilities.\"; 'Actual Results': \"AttributeError: 'MultiOutputClassifier' object has no attribute 'classes_'\""
+      },
+      {
+        "id": "sv_req_2",
+        "statement": "In _fit_and_predict, when the fitted estimator produces a list of per-label outputs but is a MultiOutputClassifier (which exposes no top-level classes_), the per-label class arrays used for column-order alignment must be read from the fitted per-output sub-estimators estimators_[i].classes_ rather than from the nonexistent estimator.classes_.",
+        "subject": "sklearn.model_selection._validation._fit_and_predict",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I think the problem is in the use of `estimator.classes_` here: ...#L857-L866 ... To obtain the `classes_` attribute of a `MultiOutputClassifier`, you need `mo_clf.estimators_[i].classes_` instead.\" Combined with _validation.py code: \"if isinstance(predictions, list): predictions = [_enforce_prediction_order(estimator.classes_[i_label], predictions[i_label], n_classes=len(set(y[:, i_label])), method=method) for i_label in range(len(predictions))]\""
+      },
+      {
+        "id": "sv_req_3",
+        "statement": "The default cross_val_predict path (method='predict', as opposed to 'predict_proba') with the same MultiOutputClassifier setup must keep working without error, i.e. the regression must be specific to the class-column-producing methods and must not break the already-working predict path.",
+        "subject": "sklearn.multioutput.MultiOutputClassifier",
+        "hunk_ids": [],
+        "cited_from": "Issue repro: \"pred = cross_val_predict(mo_lda, X, Y, cv=5) # Works fine\\npred_proba =  cross_val_predict(mo_lda, X, Y, cv=5, method='predict_proba') # Returns error\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "After MultiOutputClassifier.fit(X, Y[, sample_weight]) succeeds, the fitted instance exposes a classes_ attribute that is a list with one entry per output column, whose i-th element is the classes_ attribute of the i-th fitted sub-estimator (estimators_[i]) — i.e., the class labels observed for output column i, aligned with the order of the columns in Y.",
+        "subject": "MultiOutputClassifier.classes_ / MultiOutputClassifier.fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "MultiOutputClassifier.fit accepts an optional sample_weight parameter and, when it is provided (and the underlying base estimator supports sample weights), fits each output sub-estimator using those sample weights by delegating to the inherited MultiOutputEstimator.fit.",
+        "subject": "MultiOutputClassifier.fit(sample_weight)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "MultiOutputClassifier.fit sets self.classes_ after super().fit has populated self.estimators_ and returns self (the fitted instance).",
+        "subject": "MultiOutputClassifier.fit return value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "sv_req_1",
+          "sv_req_2",
+          "sv_req_3"
+        ],
+        "rationale": "Visible evidence identifies the root cause (MultiOutputClassifier exposes no top-level classes_) and that per-label classes must come from the sub-estimators, but it does not pin whether the fix exposes a list-of-arrays classes_ attribute on the MOC itself (R1) or reads sub-estimators' classes_ directly at the _fit_and_predict call site (the design sv_req_2's statement describes). Genuinely ambiguous which implementation commits to."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "sv_req_1",
+          "sv_req_2",
+          "sv_req_3"
+        ],
+        "rationale": "No S_vis entry mentions sample_weight or any change to MultiOutputClassifier.fit's handling/delegation of sample weights; nothing in the visible issue/evidence would lead to this behavior."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "sv_req_1",
+          "sv_req_2",
+          "sv_req_3"
+        ],
+        "rationale": "R3 is the concrete mechanism (fit sets self.classes_ from sub-estimators after super().fit). Whether fit itself is modified to set a top-level classes_ attribute is not established by the visible evidence, which is ambiguous between adding such an attribute and reading sub-estimators' classes_ at the call site."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 describes MultiOutputClassifier.fit accepting an optional sample_weight and, when provided (and the base estimator supports weights), fitting each output sub-estimator with those weights by delegating to the inherited MultiOutputEstimator.fit. In the buggy revision MultiOutputClassifier has no fit of its own and simply inherits MultiOutputEstimator.fit; in the gold revision it gains a fit whose body is `super().fit(X, Y, sample_weight)` followed by `self.classes_ = [...]`. The inherited MultiOutputEstimator.fit (which does all the real work: has_fit_parameter check, _fit_estimator with sample_weight, estimators_ population) is byte-identical in both revisions.\n\nI empirically verified this. A test that exercises the sample-weight delegation semantics directly (fit with sample_weight, then compare weighted-vs-repeated-samples predictions with SGDClassifier) produced byte-identical outputs on gold and buggy (identical probability arrays 0.00850932/0.99149068) — no discrimination on sample-weight handling. The only test I could construct that discriminates gold from buggy keyed on the newly-populated `classes_` attribute of the new gold fit method. But per the S_vis/impl extractors and the Task Notebook, that classes_ population is a distinct behavior tied to the cross_val_predict class-alignment path (the currently-failing test_multi_output_classes_, reading estimator.classes_[i_label] in _validation.py), and is co-located with rather than the subject of R2's sample-weight-delegation semantics. Also, no part of classes_-being-set-after-a-plain-fit is an observed/oracle requirement that is genuinely R2's delegation observable.\n\nSince R2's actual described behavior — sample-weight delegation to sub-estimators through MultiOutputEstimator.fit — is behaviorally identical on both revisions (working identically via inheritance before the fix), no input's observable output can discriminate gold from buggy on R2's own semantics. The genuine behavioral change introduced by the patch (classes_ population) belongs to a distinct requirement, so no honest witness for R2 exists. I attempted several candidates (classes_-assertion fit with sample_weight: PASSES gold / FAILS buggy, but only via the non-R2 classes_ artifact; direct sample-weight propagation equivalence test: identical on both), none of which genuinely maps to R2's described delegation behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The failing path is in _fit_and_predict in sklearn/model_selection/_validation.py, which for method in {'decision_function','predict_proba','predict_log_proba'} accesses estimator.classes_[i_label] when predictions come back as a list; estimator here is the fitted estimator passed through CrossValPredict."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cross_val_predict only enters the per-label classes_ alignment branch when method is one of the 'encode' methods and the estimator returns a list of outputs; MultiOutputClassifier.predict_proba returns a list (one proba array per fitted sub-estimator in self.estimators_)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MultiOutputClassifier (sklearn/multioutput.py) never defines a classes_ attribute, whereas ClassifierChain sets self.classes_ = [estimator.classes_ for ...] in its fit — so classes are stored per sub-estimator estimators_[i].classes_ for the former and top-level classes_ (a list) for the latter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant value/label bookkeeping in sklearn/model_selection/_validation.py: when encode is true, a 2-D y is per-column LabelEncoder-transformed (y_enc)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible tests (test_cross_val_predict_with_method_multilabel_rf using RFWithDecisionFunction, check_cross_val_predict_multilabel in test_validation.py) already establish the general contract that list-output multioutput/multilabel estimators get per-label concatenated, column-order-aligned outputs from cross_val_predict; the fix is expected to extend this to MultiOutputClassifier."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 is purely cosmetic: it re-indents the body of the 'elif sorted(self.order_) != list(range(Y.shape[1]))' branch in _BaseChain.fit from an over-indented level to the correct block level. Both before and after raise ValueError('invalid order') under identical conditions, so it introduces no behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MultiOutputClassifier.fit delegates to the inherited MultiOutputEstimator.fit via super().fit(X, Y, sample_weight), so the existing validation (y.ndim == 1 error, sample_weight support check, classification-target checks) and the population of estimators_ are unchanged; the only new behavior in H0 is the setting of classes_ afterward."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MultiOutputClassifier previously had no classes_ attribute (it inherited fit from MultiOutputEstimator which never set classes_), whereas ClassifierChain already set self.classes_ = [estimator.classes_ for ...] in its own fit. H0 brings MultiOutputClassifier into parity with ClassifierChain."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Classes_ is set only in MultiOutputClassifier.fit (the non-incremental path); partial_fit (inherited) is not modified by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 describes MultiOutputClassifier.fit delegating an optional sample_weight to the inherited MultiOutputEstimator.fit. This inheritance existed identically in both the buggy and gold programs; the actual patch change (per H0/H1 extractor notes) only adds setting self.classes_ after delegating and re-indents a branch in _BaseChain.fit — it does not alter sample-weight handling. A witness must be a test that fails against the buggy program and passes on gold while genuinely testing R2's sample-weight delegation. The only currently failing test is test_multi_output_classes_[estimator1], which (per the Task Notebook's extractor analysis in _fit_and_predict/_validation.py accessing estimator.classes_[i_label]) verifies the classes_ attribute for cross_val_predict alignment — a distinct behavior, not sample-weight delegation. The natural home for any R2 sample-weight test is sklearn/tests/test_multioutput.py; I read it in full and it is [VISIBLE], containing only pre-existing tests (test_multi_target_sample_weights_api, test_multi_output_classification_sample_weights, test_multi_output_classification_partial_fit_sample_weights) that already passed on both buggy and gold because weighting is inherited before and after the fix — they neither discriminate gold/buggy nor can [VISIBLE] content serve as a witness. I also checked model_selection/tests/common.py ([HIDDEN] but merely a CV splitter helper with no behavioral assertions) and tests/test_metaestimators.py ([VISIBLE], none relevant). No hidden oracle test asserts R2's sample-weight delegation in a gold-passing/buggy-failing way, so no witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 describes MultiOutputClassifier.fit accepting an optional sample_weight and, when provided (and the base estimator supports weights), fitting each output sub-estimator with those weights by delegating to the inherited MultiOutputEstimator.fit. In the buggy revision MultiOutputClassifier has no fit of its own and simply inherits MultiOutputEstimator.fit; in the gold revision it gains a fit whose body is `super().fit(X, Y, sample_weight)` followed by `self.classes_ = [...]`. The inherited MultiOutputEstimator.fit (which does all the real work: has_fit_parameter check, _fit_estimator with sample_weight, estimators_ population) is byte-identical in both revisions.\n\nI empirically verified this. A test that exercises the sample-weight delegation semantics directly (fit with sample_weight, then compare weighted-vs-repeated-samples predictions with SGDClassifier) produced byte-identical outputs on gold and buggy (identical probability arrays 0.00850932/0.99149068) — no discrimination on sample-weight handling. The only test I could construct that discriminates gold from buggy keyed on the newly-populated `classes_` attribute of the new gold fit method. But per the S_vis/impl extractors and the Task Notebook, that classes_ population is a distinct behavior tied to the cross_val_predict class-alignment path (the currently-failing test_multi_output_classes_, reading estimator.classes_[i_label] in _validation.py), and is co-located with rather than the subject of R2's sample-weight-delegation semantics. Also, no part of classes_-being-set-after-a-plain-fit is an observed/oracle requirement that is genuinely R2's delegation observable.\n\nSince R2's actual described behavior — sample-weight delegation to sub-estimators through MultiOutputEstimator.fit — is behaviorally identical on both revisions (working identically via inheritance before the fix), no input's observable output can discriminate gold from buggy on R2's own semantics. The genuine behavioral change introduced by the patch (classes_ population) belongs to a distinct requirement, so no honest witness for R2 exists. I attempted several candidates (classes_-assertion fit with sample_weight: PASSES gold / FAILS buggy, but only via the non-R2 classes_ artifact; direct sample-weight propagation equivalence test: identical on both), none of which genuinely maps to R2's described delegation behavior."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (MultiOutputClassifier.fit(sample_weight)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 describes MultiOutputClassifier.fit accepting an optional sample_weight and, when provided (and the base estimator supports weights), fitting each output sub-estimator with those weights by delegating to the inherited MultiOutputEstimator.fit. In the buggy revision MultiOutputClassifier has no fit of its own and simply inherits MultiOutputEstimator.fit; in the gold revision it gains a fit whose body is `super().fit(X, Y, sample_weight)` followed by `self.classes_ = [...]`. The inherited MultiOutputEstimator.fit (which does all the real work: has_fit_parameter check, _fit_estimator with sample_weight, estimators_ population) is byte-identical in both revisions.\n\nI empirically verified this. A test that exercises the sample-weight delegation semantics directly (fit with sample_weight, then compare weighted-vs-repeated-samples predictions with SGDClassifier) produced byte-identical outputs on gold and buggy (identical probability arrays 0.00850932/0.99149068) — no discrimination on sample-weight handling. The only test I could construct that discriminates gold from buggy keyed on the newly-populated `classes_` attribute of the new gold fit method. But per the S_vis/impl extractors and the Task Notebook, that classes_ population is a distinct behavior tied to the cross_val_predict class-alignment path (the currently-failing test_multi_output_classes_, reading estimator.classes_[i_label] in _validation.py), and is co-located with rather than the subject of R2's sample-weight-delegation semantics. Also, no part of classes_-being-set-after-a-plain-fit is an observed/oracle requirement that is genuinely R2's delegation observable.\n\nSince R2's actual described behavior — sample-weight delegation to sub-estimators through MultiOutputEstimator.fit — is behaviorally identical on both revisions (working identically via inheritance before the fix), no input's observable output can discriminate gold from buggy on R2's own semantics. The genuine behavioral change introduced by the patch (classes_ population) belongs to a distinct requirement, so no honest witness for R2 exists. I attempted several candidates (classes_-assertion fit with sample_weight: PASSES gold / FAILS buggy, but only via the non-R2 classes_ artifact; direct sample-weight propagation equivalence test: identical on both), none of which genuinely maps to R2's described delegation behavior.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "task_id": "django__django-14007",
+  "status": "ok",
+  "duration_seconds": 141.52482754189987,
+  "llm_calls": 15,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14007",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a model is created via the normal save path (e.g. Model.objects.create() / save with a fresh PK) on a backend that fetches returning/auto-PK columns on insert, each db-returning field whose field class defines a database converter (e.g. from_db_value) must have that converter applied to the database-returned value before it is stored on the instance, so the instance attribute equals the converter's output (the wrapper type) just as it does for queried instances — not the raw returned integer.",
+        "subject": "Model._save_table / insert returning-field assignment",
+        "hunk_ids": [],
+        "cited_from": "Making a subclass of BigAutoField... unlike all other query pathways, on insert the returned integer is not passed through any database converters defined for the field - including the from_db_value hook... \"Queried instances have the wrapper class for id: >>> am = AutoModel.objects.first(); >>> am.id; <MyIntWrapper: 1>\" ... \"But on creation, the returned integer is directly set as an attribute on the class: >>> am2 = AutoModel.objects.create(); >>> am2.id; 2\""
+      },
+      {
+        "id": "R2",
+        "statement": "When QuerySet.bulk_create is used on a backend that supports fetching returned primary-key/returning columns (can_return_rows_from_bulk_insert), each database converter (e.g. from_db_value) defined on those db-returning fields must be applied to each fetched column value before it is assigned to the corresponding attribute of the passed-in model instance, so each inserted instance's field holds the converter-wrapped value rather than the raw integer.",
+        "subject": "QuerySet.bulk_create / returning-field assignment",
+        "hunk_ids": [],
+        "cited_from": "This also affects bulk_create on backends that support fetching the primary key value: >>> ams = [AutoModel()]; >>> AutoModel.objects.bulk_create(ams); [<AutoModel: AutoModel object (2)>]; >>> ams[0].id; 2"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When SQLInsertCompiler.execute_sql returns rows carrying database-generated values for fields in returning_fields (whether fetched via fetch_returned_insert_rows for a multi-row bulk insert, via fetch_returned_insert_columns for a single-row insert on a backend supporting returning columns, or via the last_insert_id fallback for the primary key), the fetched values are passed through the standard converter machinery — get_converters over the returning fields' columns (the backend ops.get_db_converters plus each returning field's get_db_converters/from_db_value converters) applied via apply_converters — before the rows are returned, so that the values subsequently assigned to the created model instance attributes (as in Model.save returning-field assignment and QuerySet.bulk_create) are the converted Python values rather than the raw database values.",
+        "subject": "SQLInsertCompiler.execute_sql returning rows",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For inserts that do not request returned fields (execute_sql called without returning_fields), SQLInsertCompiler.execute_sql still executes the pending SQL statement(s) in the cursor and returns the empty list [], unaffected by any returning-field converter processing.",
+        "subject": "SQLInsertCompiler.execute_sql no returning_fields",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins down the desired outcome (returning insert values must be converter-wrapped before being stored on the instance), but never specifies that this happens inside SQLInsertCompiler.execute_sql via get_converters/apply_converters over the fetched rows before they are returned. The fix location/mechanism is left underdetermined, though S_vis does point toward conversion being applied. Conservative: uncertain."
+      },
+      {
+        "requirement_id": "S_impl R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis requirement addresses execute_sql being called without returning_fields, nor that the pending statements still execute and the empty list [] is returned in that case. S_vis is entirely concerned with returning-field conversion and says nothing that would lead to this specific no-returning-fields behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for returning insert columns live under tests/queries/test_db_returning.py (models in tests/queries/models.py) gated by skipUnlessDBFeature('can_return_columns_from_insert') / 'can_return_rows_from_bulk_insert'; separate from_db_value coverage is in tests/from_db_value/ which only covers load/values/aggregation/defer, not the insert path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Field-level converters come from Field.get_db_converters(), which returns [self.from_db_value] when from_db_value exists; field class Field.db_returning is a private API (AutoFieldMixin sets db_returning = True; tests/queries/models.py adds a custom DateField subclass CreatedField with db_returning = True)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the query SELECT path, converters are applied in SQLCompiler.results_iter via get_converters/apply_converters, but the insert/SQLInsertCompiler.execute_sql returning path and QuerySet.bulk_create/_batched_insert assign fetched returning-column values via direct setattr without any converter application (django/db/models/sql/compiler.py, django/db/models/base.py, django/db/models/query.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only the PostgreSQL-like backends expose the relevant feature flags; returning rows on bulk inserts and returning columns from insert are what makke the insert/returning data path reachable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 only hoists opts = self.query.get_meta() (used by H1's converter/Col construction and the last_insert_id branch) out of execute_sql; it has no independently observable behavioral effect of its own."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The converter application added in the returning path reuses the exact same get_converters/apply_converters machinery already used by SQLCompiler.results_iter (the SELECT path); apply_converters is a generator so the gold code wraps it in list(...) before returning."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Returned rows' converted values flow into model instances via setattr in Model._save_table (results[0] zip returning_fields) and QuerySet.bulk_create (setattr over db_returning_fields); e.g. a db_returning auto-DateField with a custom from_db_value will now have that from_db_value applied to inserted values."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

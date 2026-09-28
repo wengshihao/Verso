@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-12858",
+  "status": "ok",
+  "duration_seconds": 417.74726483400445,
+  "llm_calls": 35,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12858",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The model system check must NOT raise models.E015 for a Meta.ordering entry that chains forward relations and ends with a valid field/relation lookup that is not a transform, e.g. ordering string “supply__product__parent__isnull”.",
+        "subject": "django.db.models.base.Model._check_ordering",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"ERRORS:\\napp.Stock: (models.E015) 'ordering' refers to the nonexistent field, related field, or lookup 'supply__product__parent__isnull'.\\nHowever this ordering works fine:\\n>>> list(Stock.objects.order_by('supply__product__parent__isnull').values_list('pk', flat=True)[:5])\\n[1292, 1293, 1300, 1295, 1294]\"; model scaffold: \"Stock.supply is a foreign key to Supply, Supply.product is a foreign key to Product, Product.parent is a ForeignKey('self', models.CASCADE, null=True)\". The ordering-check code path it constrains (django/db/models/base.py, _check_ordering) reads a lookup via `fld.get_transform(part)`, which returns None for lookups such as `isnull` that are registered as lookups, not transforms (RegistryLookupMixin separate from get_transform path; IsNull registered via @Field.register_lookup)."
+      },
+      {
+        "id": "R2",
+        "statement": "The descending (negated) form of such a lookup ordering, e.g. ordering “-supply__product__parent__isnull”, must likewise be accepted by the ordering system check (no models.E015).",
+        "subject": "django.db.models.base.Model._check_ordering",
+        "hunk_ids": [],
+        "cited_from": "Issue: \">>> list(Stock.objects.order_by('-supply__product__parent__isnull').values_list('pk', flat=True)[:5])\\n[108, 109, 110, 23, 107]\" (descending variant of the same ordering, stripped of the leading '-' before lookup resolution in _check_ordering)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-1",
+        "statement": "When validating a Meta.ordering entry whose string is split on '__' into parts, a part that does not resolve to a field but DOES resolve to a lookup registered on the immediately preceding field (i.e. fld.get_lookup(part) returns a lookup such as 'isnull', where that part is not a transform) is treated as valid: Model._check_ordering() no longer emits the models.E015 error ('\"ordering\" refers to the nonexistent field, related field, or lookup ...') for such an ordering entry.",
+        "subject": "Model._check_ordering",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMP-2",
+        "statement": "A Meta.ordering entry with a '__'-separated part that resolves to neither a field, nor a transform, nor a lookup on the preceding field still causes Model._check_ordering() to emit the models.E015 error.",
+        "subject": "Model._check_ordering",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 (with its citation) constrains _check_ordering to NOT emit E015 for an ordering chain that ends in a non-field, non-transform part that resolves to a registered lookup such as 'isnull' (e.g. 'supply__product__parent__isnull'), and R2 covers its descending form. This pins down exactly the behavior SIMP-1 describes: a part resolving to a lookup on the preceding field is treated as valid and no E015 is raised."
+      },
+      {
+        "requirement_id": "SIMP-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only describes the accepted case (valid lookup parts must not raise E015). Nothing in the visible evidence states that a part resolving to neither field, transform, nor lookup should still cause E015; that retained-error claim is not derivable from the issue or scaffold, so S_vis does not pin it down."
+      }
+    ],
+    "target_requirement_id": "SIMP-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to synthesize and execution-validate a genuine witness for [SIMP-2] — that Model._check_ordering() must NOT emit models.E015 when a Meta.ordering entry's final '__'-separated part resolves only to a registered lookup (not a field/transform) on the preceding field. I confirmed a discriminating, execution-verified test distinguishing gold from buggy: ordering = ('parent__isnull',) on a Child model whose `parent` is a ForeignKey to Parent. The gold code checks `fld.get_transform(part) is None and fld.get_lookup(part) is None`, so the built-in IsNull lookup found via `fld.get_lookup('isnull')` on the FK suppresses E015 (Child.check() == []); the buggy code only tests get_transform, so it appends models.E015. run_test confirmed PASSED against gold and FAILED against buggy for the identical source.\n\nHowever, submission with found=true was rejected by the auditor: every assertion in the candidate is considered already established by material that was VISIBLE to a repair system (the fix's own guarded condition is in the visible django/db/models/base.py; the E015 ordering checks — including test_ordering_allows_registered_lookups, which already asserts Model.check() == [] for a lookup-permitted ordering entry, plus the issue/SIMP requirement text and S_vis/S_impl notes describing exactly the lookup-not-transform suffix scenario) — so the oracle was never enforcing a fact the visible data did not already pin down. Consistent with the earlier Oracle Search Agent's finding that no [HIDDEN] assertion anywhere exercises this _check_ordering/E015 path, I cannot point to a genuinely hidden oracle test backing a Witness. I therefore report found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is the Django framework itself (django__django-12858), so the 'buggy' behavior lives in Django code, not in an external app. The relevant logic is Model._check_ordering() in django/db/models/base.py, which emits models.E015. Ordering entries are split on '__' and each part resolved with opts.get_field(); a FieldDoesNotExist/AttributeError is only tolerated when `fld` is None or `fld.get_transform(part)` is not None."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The trigger: when the last-looking component is a real lookup (e.g. 'isnull') applied after a chain ending in a relation field, `_check_ordering` only calls get_transform(part), which does not recognize lookups (IsNull etc. are registered via @Field.register_lookup as lookups, not transforms) and fallibly raises E015. The issue title paraphrases this: 'models.E015 is raised when ordering uses lookups that are not transforms'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Regression/bug-relevant tests for the ordering check are in tests/invalid_models_tests/test_models.py (class OtherModelTests: test_ordering_*; close existing coverage: test_ordering_pointing_to_related_model_pk accepts 'parent__pk', test_ordering_pointing_to_foreignkey_field accepts 'parent_id', test_ordering_allows_registered_lookups accepts 'test__lower' once a Lower transform is registered). No existing visible test yet covers a self-referential nullable FK ending in a merely-lookup suffix such as '__isnull'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Queryset-level ordering by these lookup strings already executes correctly (issue transcript shows rows returned); the reported defect is confined to the models.E015 system check wrongly rejecting an otherwise-valid Meta.ordering entry."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix lives in Model._check_ordering() in django/db/models/base.py (models.E015 emission), inside the exception handler of the loop that splits ordering entries on LOOKUP_SEP and resolves each part via opts.get_field()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only relaxes the guard when get_field has already failed for a given part, and only appends E015 when the current part is neither a registered transform nor a registered lookup on the current field (fld.get_transform(part) is None and fld.get_lookup(part) is None)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Queryset-level execution of such lookup-ordered Meta.ordering was already correct; the defect was confined to the system check, and the patch does not touch queryset ordering code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Behavior already present before the patch (lookup parts that are also transforms accepted, E015 kept when fld is None, plain-field and transform-only resolution) is unchanged; only pure-lookup suffixes are newly accepted."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-2]: I searched the oracle for any test that would serve as a Witness for [SIMP-2] — i.e. that `Model._check_ordering()` still (or no longer) emits models.E015 for the lookup/transform-ambiguous ordering scenario introduced by this patch, and specifically one that fails against the buggy program and passes against the gold program with an assertion genuinely tied to this behavior.\n\nAll E015 `_check_ordering` tests live in tests/invalid_models_tests/test_models.py (OtherModelTests: test_ordering_non_iterable, test_non_valid, test_ordering_pointing_to_missing_*, test_ordering_pointing_to_related_model_pk, test_ordering_pointing_to_foreignkey_field, test_ordering_allows_registered_lookups, etc.). That file is labeled entirely [VISIBLE], which per the Verso rules disqualifies every assertion it contains from serving as a Witness (its content was already available to a repair system). Moreover, none of its tests even covers the discriminating lookup-on-relation-field scenario (e.g. an ordering entry such as 'parent__isnull' where the suffix is a registered lookup but not a transform); they cover only plain fields, missing fields, related-model pks, and a registered Lower-transform/lookup case.\n\nI also checked the distribution of [HIDDEN] content in the oracle (the only route to a valid Witness). The [HIDDEN] files I located are non-assertion support material — tests/invalid_models_tests/__init__.py (empty), tests/order_with_respect_to/models.py, tests/ordering/models.py, tests/custom_lookups/models.py — all plain model-definition files with Meta.ordering/order_with_respect_to and no E015 system-check assertions. The remaining invalid_models_tests test files (test_relative_fields.py, test_ordinary_fields.py, test_custom_fields.py, test_deprecated_fields.py, test_backend_specific.py) are [VISIBLE] and concern field/backend checks, not Meta.ordering E015.\n\nThat is, no [HIDDEN] assertion anywhere tests the SIMP-2 `_check_ordering`/E015 behavior, and the benchmark records no test currently failing against the buggy program. Any candidate I could construct for the requirement would have to be synthesized from the [VISIBLE] invalid_models test content (forbidden) — there is no genuine hidden oracle test to back a Witness. Conclusion: no qualifying witness exists in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMP-2]: I attempted to synthesize and execution-validate a genuine witness for [SIMP-2] — that Model._check_ordering() must NOT emit models.E015 when a Meta.ordering entry's final '__'-separated part resolves only to a registered lookup (not a field/transform) on the preceding field. I confirmed a discriminating, execution-verified test distinguishing gold from buggy: ordering = ('parent__isnull',) on a Child model whose `parent` is a ForeignKey to Parent. The gold code checks `fld.get_transform(part) is None and fld.get_lookup(part) is None`, so the built-in IsNull lookup found via `fld.get_lookup('isnull')` on the FK suppresses E015 (Child.check() == []); the buggy code only tests get_transform, so it appends models.E015. run_test confirmed PASSED against gold and FAILED against buggy for the identical source.\n\nHowever, submission with found=true was rejected by the auditor: every assertion in the candidate is considered already established by material that was VISIBLE to a repair system (the fix's own guarded condition is in the visible django/db/models/base.py; the E015 ordering checks — including test_ordering_allows_registered_lookups, which already asserts Model.check() == [] for a lookup-permitted ordering entry, plus the issue/SIMP requirement text and S_vis/S_impl notes describing exactly the lookup-not-transform suffix scenario) — so the oracle was never enforcing a fact the visible data did not already pin down. Consistent with the earlier Oracle Search Agent's finding that no [HIDDEN] assertion anywhere exercises this _check_ordering/E015 path, I cannot point to a genuinely hidden oracle test backing a Witness. I therefore report found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SIMP-2] (Model._check_ordering) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to synthesize and execution-validate a genuine witness for [SIMP-2] — that Model._check_ordering() must NOT emit models.E015 when a Meta.ordering entry's final '__'-separated part resolves only to a registered lookup (not a field/transform) on the preceding field. I confirmed a discriminating, execution-verified test distinguishing gold from buggy: ordering = ('parent__isnull',) on a Child model whose `parent` is a ForeignKey to Parent. The gold code checks `fld.get_transform(part) is None and fld.get_lookup(part) is None`, so the built-in IsNull lookup found via `fld.get_lookup('isnull')` on the FK suppresses E015 (Child.check() == []); the buggy code only tests get_transform, so it appends models.E015. run_test confirmed PASSED against gold and FAILED against buggy for the identical source.\n\nHowever, submission with found=true was rejected by the auditor: every assertion in the candidate is considered already established by material that was VISIBLE to a repair system (the fix's own guarded condition is in the visible django/db/models/base.py; the E015 ordering checks — including test_ordering_allows_registered_lookups, which already asserts Model.check() == [] for a lookup-permitted ordering entry, plus the issue/SIMP requirement text and S_vis/S_impl notes describing exactly the lookup-not-transform suffix scenario) — so the oracle was never enforcing a fact the visible data did not already pin down. Consistent with the earlier Oracle Search Agent's finding that no [HIDDEN] assertion anywhere exercises this _check_ordering/E015 path, I cannot point to a genuinely hidden oracle test backing a Witness. I therefore report found=false.",
+    "confidence": "Medium"
+  }
+}

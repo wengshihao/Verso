@@ -1,0 +1,141 @@
+{
+  "task_id": "django__django-13708",
+  "status": "ok",
+  "duration_seconds": 472.18708125001285,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13708",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "transaction.atomic() (and the Atomic context manager/decorator it returns) must accept a new boolean 'durable' flag so callers can opt in to a guarantee that the wrapped operations are committed, not merely deferred to a possibly-outer atomic block. The flag must default to a value that preserves the existing nesting/allowed behaviors for ordinary atomic() calls (no durable key and durable=False behave like current atomic()).",
+        "subject": "django.db.transaction.atomic / django.db.transaction.Atomic",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Add a 'durable' flag to transaction.atomic()\"\n\"In some situations it's also useful to guarantee that the wrapped operations are *durable* - at the end of the wrapped block, all operations have definitely been committed. atomic() doesn't guarantee this at the moment since its use may be wrapped by *another* atomic() higher in the stack, delaying the commit.\" ... \"On Twitter, Ian Foote suggested adding a durable flag to atomic() to add this behaviour to Django.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When an atomic(durable=True) block is entered while an atomic() block is already active for the current database connection — detected as connection.get_autocommit() returning False at entry — an error is raised rather than the block silently nesting (via a savepoint, or otherwise awaiting a commit by an outer atomic), because such nesting is precisely what makes durability unguaranteed.",
+        "subject": "django.db.transaction.Atomic.__enter__ (durable behavior)",
+        "hunk_ids": [],
+        "cited_from": "David Seddon's technique to guarantee durability is to wrap atomic() to first check if an atomic() is already active for the current connection (in other words, connection.get_autocommit() returns False), and raise an error if so."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "The public factory django.db.transaction.atomic accepts a new keyword argument durable (defaulting to False), and forwards it to the returned Atomic context manager / decorator instance — both when used explicitly (atomic(using=..., savepoint=..., durable=...) / with atomic(..., durable=...):) and when used as a bare decorator (@atomic(durable=True) and @atomic(durable=...)).",
+        "subject": "django.db.transaction.atomic",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Entering the context/evaluating the wrap of an atomics block tagged durable=True raises RuntimeError with message 'A durable atomic block cannot be nested within another atomic block.' on __enter__ iff the target connection is already inside an atomic block (connection.in_atomic_block is True); a durable=True block entered when not already in an atomic block does not raise.",
+        "subject": "transaction.Atomic.__enter__ (durable atomic block nesting guard)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The durability nesting check of Atomic is subject to the class-level private flag Atomic._ensure_durability (True by default) such that when a subclass (or instance class) sets _ensure_durability to False, entering a durable=True atomic block nested inside another atomic block no longer raises RuntimeError.",
+        "subject": "transaction.Atomic._ensure_durability",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly states atomic() must accept a boolean durable flag whose default preserves existing behavior, and that durable=False behaves like current atomic() — pinning the acceptance and the False default. The forwarding to the Atomic instance and decorator-usage forms are consequences of the same single factory call path described."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 pins the core nesting-guard behavior: entering durable=True while already inside an active atomic block raises an error, and not raising when not nested. However it does not specify RuntimeError, the exact message 'A durable atomic block cannot be nested within another atomic block.', nor the in_atomic_block probe (R2 instead described get_autocommit()==False detection), so the exact behavior stated is not fully pinned."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry mentions any class-level Atomic._ensure_durability flag nor any mechanism by which a subclass could disable the nesting guard. This detail comes solely from the developer's patch and is not inferable from the visible issue/technique evidence."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_nested_durable_allowed_when_flag_off",
+      "test_source": "import unittest\nimport django\nfrom django.conf import settings\n\nsettings.configure(\n    DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n    INSTALLED_APPS=['django.contrib.contenttypes'],\n)\ndjango.setup()\n\nfrom django.db import DEFAULT_DB_ALIAS, transaction\nfrom django.db.transaction import Atomic\n\n\nclass NoDurabilityAtomic(Atomic):\n    _ensure_durability = False\n\n\nclass TestDurabilityDisabledSubclass(unittest.TestCase):\n    def test_nested_durable_allowed_when_flag_off(self):\n        outer = transaction.atomic()\n        outer.__enter__()\n        try:\n            durable = NoDurabilityAtomic(DEFAULT_DB_ALIAS, savepoint=True, durable=True)\n            # Must not raise RuntimeError because _ensure_durability is False.\n            durable.__enter__()\n            durable.__exit__(None, None, None)\n        finally:\n            outer.__exit__(None, None, None)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (TypeError: __init__() got an unexpected keyword argument 'durable' — buggy Atomic has no durable parameter at all, since the durability feature is not implemented)",
+      "explanation": "Full class text of the target requirement [R3] is about Atomic._ensure_durability defaulting to True so that an Atomic subclass that overrides it to False can enter a durable=True atomic block nested inside another atomic block without RuntimeError. The test constructs exactly that scenario: it opens an outer transaction.atomic() block (connection.in_atomic_block becomes True), then defines a NoDurabilityAtomic subclass of django.db.transaction.Atomic with _ensure_durability=False, and enters a durable=True instance of it nested in the outer block.\n\nOn the GOLD revision, Atomic.__enter__ contains `if self.durable and self._ensure_durability and connection.in_atomic_block: raise RuntimeError`, and since the subclass sets _ensure_durability=False, the guard is bypassed and the nested durable __enter__/__exit__ succeed, so the test PASSES.\n\nOn the BUGGY revision this whole feature is absent: Atomic.__init__ accepts only (using, savepoint), so constructing the durable block with durable=True fails with TypeError before any check happens; the R3 behavior (subclass flag allowing nested durable) cannot occur, so the test FAILS. I verified the oracle-sensitive facts: no reference to 'durable' or '_ensure_durability' exists anywhere in the visible repo (tests/transactions/tests.py and co-located transaction/atomic tests are durable-free), so nothing visible can pin down the R3 nested-durable-flag relaxation; the witness therefore corresponds to R3's actual newly-added behavior rather than restating a visible fact. Both run_test invocations used this exact source (PASS on gold, FAIL on buggy)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The feature does not exist yet in this snapshot: grep of the whole visible repo finds no occurrence of 'durable' anywhere — it must be added to django/db/transaction.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "transaction.py exposes the public `atomic(using=None, savepoint=True)` factory (also usable as bare decorator) returning an `Atomic(ContextDecorator)` whose `__init__(self, using, savepoint)` and `__enter__/__exit__` implement all behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant signals for the requested guard already exist on the connection: `connection.get_autocommit()`, `connection.in_atomic_block`, `connection.commit_on_exit`, `connection.needs_rollback`, `connection.savepoint_ids` (see django/db/backends/base/base.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing regression tests live in tests/transactions/tests.py (transaction.py and tests both under a Django 3.x-era layout)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's parenthetical ties 'an atomic() is already active' to 'connection.get_autocommit() returns False', i.e. the proposed guard keyed on autocommit state on entry; it does not discuss what a durable block should do for the separate autocommit-disabled-via-manual set_autocommit(False) case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The `durable` nesting guard is keyed on connection.in_atomic_block at __enter__ time, not on connection.get_autocommit()/manual set_autocommit(False) as the issue's parenthetical suggested."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Atomic gains a required third __init__ parameter durable; all construction sites inside django.db.transaction (both branches of atomic()) were updated in the same patch, so externally a changed Atomic signature is only reached through atomic()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch does not modify __exit__; durability is enforced purely at entry time. A durable block exited without error still relies on the existing outermost-block commit-on-exit path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Class attribute _ensure_durability is documented as a private hook intended to let TestCase disable the durability checks."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: R3 concerns a brand-new capability introduced by the developer's patch: the durability nesting guard conditioned on the class-level private flag Atomic._ensure_durability (True by default), such that setting it to False on a subclass makes a nested durable=True atomic block no longer raise RuntimeError. There is no mention of 'durable' anywhere in the visible repository (established by earlier extraction stages), confirming this is an entirely new behavior rather than a change to pre-existing semantics.\n\nI searched the natural homes for any such test in the real oracle. The primary and most likely location, tests/transactions/tests.py, is fully [VISIBLE] and contains no durable reference — it has only the standard atomic/savepoint/autocommit tests. I also checked the other transaction/atomic-bearing locations: tests/test_utils/test_testcase.py, tests/test_utils/test_transactiontestcase.py, django/test/testcases.py, tests/backends/tests.py — all [VISIBLE] and likewise free of any durable/_ensure_durability assertion. Since the feature does not exist in the buggy snapshot and no visible/hidden test in these files (the repository's only atomic-semantics tests) references durable atomic nesting or the _ensure_durability flag, no pre-existing oracle assertion can restrict this newly-added behavior. Additionally, no test is currently recorded as failing against the buggy program.\n\nI even used run_test to confirm the gold program implements the R3 behavior (nested durable raises by default; entering it after setting Atomic._ensure_durability=False succeeds), but I could not locate any oracle test — [HIDDEN] or otherwise — that asserts this specific behavior. A witness must embody the hidden assertion of r rather than be synthesized from inspection; absent such an oracle test, nothing qualifies. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (transaction.Atomic._ensure_durability): The durability nesting check of Atomic is subject to the class-level private flag Atomic._ensure_durability (True by default) such that when a subclass (or instance class) sets _ensure_durability to False, entering a durable=True atomic block nested inside another atomic block no longer raises RuntimeError. — not entailed by S_vis (Neither S_vis entry mentions any class-level Atomic._ensure_durability flag nor any mechanism by which a subclass could disable the nesting guard. This detail comes solely from the developer's patch and is not inferable from the visible issue/technique evidence.); confirmed by a synthesized witness: Full class text of the target requirement [R3] is about Atomic._ensure_durability defaulting to True so that an Atomic subclass that overrides it to False can enter a durable=True atomic block nested inside another atomic block without RuntimeError. The test constructs exactly that scenario: it opens an outer transaction.atomic() block (connection.in_atomic_block becomes True), then defines a NoDurabilityAtomic subclass of django.db.transaction.Atomic with _ensure_durability=False, and enters a durable=True instance of it nested in the outer block.\n\nOn the GOLD revision, Atomic.__enter__ contains `if self.durable and self._ensure_durability and connection.in_atomic_block: raise RuntimeError`, and since the subclass sets _ensure_durability=False, the guard is bypassed and the nested durable __enter__/__exit__ succeed, so the test PASSES.\n\nOn the BUGGY revision this whole feature is absent: Atomic.__init__ accepts only (using, savepoint), so constructing the durable block with durable=True fails with TypeError before any check happens; the R3 behavior (subclass flag allowing nested durable) cannot occur, so the test FAILS. I verified the oracle-sensitive facts: no reference to 'durable' or '_ensure_durability' exists anywhere in the visible repo (tests/transactions/tests.py and co-located transaction/atomic tests are durable-free), so nothing visible can pin down the R3 nested-durable-flag relaxation; the witness therefore corresponds to R3's actual newly-added behavior rather than restating a visible fact. Both run_test invocations used this exact source (PASS on gold, FAIL on buggy).",
+    "confidence": "Medium"
+  }
+}

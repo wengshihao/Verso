@@ -1,0 +1,102 @@
+{
+  "task_id": "django__django-12754",
+  "status": "ok",
+  "duration_seconds": 621.2936725000618,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12754",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When makemigrations auto-detects a change in which an existing model (e.g. Readable) loses a field (e.g. title) because that same-named field is moved onto a brand-new concrete multi-table-inheritance subclass of it (e.g. Book(Readable)) created in the same run, the migration operations it produces must be ordered so that applying them (migrate) does not raise FieldError about the new subclass's local field clashing with an inherited field of the same name from the base class — i.e. the field's removal from the base must be scheduled before the step that creates the subclass carrying that field.",
+        "subject": "django.db.migrations.autodetector.MigrationAutodetector (CreateModel/RemoveField ordering for a newly created subclass of a kept base model)",
+        "hunk_ids": [],
+        "cited_from": "from issue: 'If creating a model subclass and moving a field onto it in the same step, makemigrations works but migrate dies with django.core.exceptions.FieldError: Local field 'title' in class 'Book' clashes with field of the same name from base class 'Readable'.' ... 'The migration generates with CreateModel for Book, then RemoveField for Readable.title. But running it produces the error.' ... 'Reversing the order of the migration operations makes it pass. The auto-detector should be able to use this order.'"
+      },
+      {
+        "id": "R2",
+        "statement": "For the old/new model-state transition Readable{title} -> (Readable without fields) + Book(Readable){title}, the generated migration plan must run an operation that removes field 'title' from model 'Readable' before/prior to the operation that creates model 'Book' (so the intermediate rendered state at Book's creation has no inherited Readable.title with which Book.title clashes).",
+        "subject": "MigrationAutodetector output ordering: RemoveField(Readable.title) scheduled before CreateModel(Book)",
+        "hunk_ids": [],
+        "cited_from": "from issue: 'class Readable(models.Model):\\n\\ttitle = models.CharField(max_length=200)' changed to 'class Readable(models.Model):\\n\\tpass\\nclass Book(Readable):\\n\\ttitle = models.CharField(max_length=200)'; 'The migration generates with CreateModel for Book, then RemoveField for Readable.title. But running it produces the error.' / 'Reversing the order of the migration operations makes it pass.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When autodetecting changes, if a newly created model's base is given as a dotted string 'app.Model' and that base model is present in both the from_state and to_state project states, and the base model has removed a field (the field name is present in the old base model state's fields but not in the new base model state's fields) whose name is also redeclared among the newly created model's own fields, then the generated creation is made dependent on the removal of that same-named base field (a removed-field dependency on (base_app_label, base_model_name, field, False)).",
+        "subject": "MigrationAutodetector.generate_created_models",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis establishes the observable ordering constraint (removal of Readable.title scheduled before CreateModel(Book)) for exactly this model-state transition, and would lead a solver toward ensuring removal precedes creation. However, S_impl specifies an internal mechanism inside generate_created_models (a removed-field dependency tuple (base_app_label, base_model_name, field, False)) with precise preconditions (dotted-string base, base in both states) that the visible issue text never mentions — S_vis does not force this particular dependency-based implementation over other orderings of the same operations."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_moved_base_field_dependency",
+      "test_source": "import django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DEBUG=False, INSTALLED_APPS=[], DATABASES={}, SECRET_KEY='x',\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\n    django.setup()\n\nfrom django.db import models\nfrom django.db.migrations.autodetector import MigrationAutodetector\nfrom django.db.migrations.operations.models import CreateModel, RemoveField\nfrom django.db.migrations.state import ModelState, ProjectState\nfrom django.test import SimpleTestCase\n\n\nclass DemoTests(SimpleTestCase):\n    def test_moved_base_field_dependency(self):\n        def make_state(model_states):\n            ps = ProjectState()\n            for ms in model_states:\n                ps.add_model(ms.clone())\n            return ps\n\n        # Base model Author exists in both before and after; it loses \"name\".\n        author_before = ModelState(\"testapp\", \"Author\", [\n            (\"id\", models.AutoField(primary_key=True)),\n            (\"name\", models.CharField(max_length=200)),\n        ])\n        author_after = ModelState(\"testapp\", \"Author\", [\n            (\"id\", models.AutoField(primary_key=True)),\n        ])\n        # A brand-new concrete subclass of the still-present base Author\n        # (dotted string base) takes over the very field the base just dropped.\n        subclass = ModelState(\n            \"testapp\", \"AuthorProfile\",\n            [(\"name\", models.CharField(max_length=200))],\n            bases=(\"testapp.author\",),\n        )\n        before = make_state([author_before])\n        after = make_state([author_after, subclass])\n        changes = MigrationAutodetector(before, after)._detect_changes()\n\n        ops = []\n        for mig in changes.get(\"testapp\", []):\n            ops.extend(mig.operations)\n        remove_idx = None\n        create_idx = None\n        for i, op in enumerate(ops):\n            if isinstance(op, RemoveField) and op.model_name_lower == \"author\" and op.name_lower == \"name\":\n                remove_idx = i\n            if isinstance(op, CreateModel) and op.name == \"AuthorProfile\":\n                create_idx = i\n        # Drop base field first so the new subclass can be created afterwards.\n        self.assertIsNotNone(create_idx, \"CreateModel for AuthorProfile not generated: %r\" % ops)\n        self.assertIsNotNone(remove_idx, \"RemoveField for Author.name not generated: %r\" % ops)\n        self.assertLess(remove_idx, create_idx,\n                        \"CreateModel for AuthorProfile must run after RemoveField of Author.name: %r\" % ops)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: 1 not less than 0 : CreateModel for AuthorProfile must run after RemoveField of Author.name: [CreateModel AuthorProfile, RemoveField author.name])",
+      "explanation": "Witness for R1 (MigrationAutodetector.generate_created_models). Constructed a delta where base model `testapp.Author` exists in BOTH from_state and to_state, and in to_state it has dropped field `name`. Simultaneously a brand-new concrete model `testapp.AuthorProfile` (not in from_state) is created whose base is the dotted string `testapp.author`, and AuthorProfile redeclares a local field `name` — i.e., it takes over the very same-named field removed from the still-present base. In gold, generate_created_models detects old_base/new_base both present, computes removed_base_fields = (old Author fields {id,name}) − (new Author fields {id}) = {name}, intersects with the new model's fields ({name}), and therefore appends the removed-field dependency (testapp, author, name, False) onto the CreateModel. That dependency makes check_dependency/(stable) intra-app topo sort place RemoveField(author,name) before CreateModel(AuthorProfile). In buggy, that branch is absent, so the dependency is never added and CreateModel(AuthorProfile) precedes RemoveField(author,name) in the returned operation list — the very reordering bug the fix introduces. The test PASSES against gold (RemoveField index < CreateModel index) and FAILS against buggy (CreateModel precedes RemoveField). Verified by actual run_test executions against both revisions with this exact source. This scenario (new subclass of a base kept in both states while redeclaring a field the base just dropped) is genuinely specific to R1 and not pinned down by any existing visible assertion in tests/migrations/test_autodetector.py."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Core logic lives in django/db/migrations/autodetector.py; main unit-test file is tests/migrations/test_autodetector.py (helpers assertOperationTypes/assertOperationAttributes etc.)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant generation paths: model creation runs before field removal in _detect_changes (generate_created_models inserts CreateModel with beginning=True; generate_removed_fields runs later), so a newly created subclass's CreateModel currently precedes the RemoveField of the base-class field it took over."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CreateModel operations carry their own fields (django/db/migrations/operations/models.py), and when a concrete base (Readable) still has that field in intermediate state, rendering the subclass raises 'Local field ... clashes with field of the same name from base class ...' during CreateModel application."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Found no existing test in the repo that exercises this exact 'move field onto newly created model subclass' scenario (no 12754/21890-related test is present in the visible tests/migrations/test_autodetector.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue body references django #21890 as analogous. No dedicated migration/model files exist for this scenario among visible files."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "generate_created_models runs (via _detect_changes) before generate_removed_fields and inserts CreateModel operations at the beginning via add_operation(..., beginning=True); the previously default create-before-remove ordering caused a 'Local field ... clashes with field of the same name from base class' state-render error when a concrete subclass took over a field its base still declared in intermediate state. check_dependency treats a (app_label, model, field, False) tuple as complete only when a RemoveField on that model with that field name is present, which the added dependency exploits to reorder CreateModel after the corresponding RemoveField."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The added code is gated on both old and new base model states existing in self.from_state/self.to_state.models, and on the base field being removed AND redeclared on the new subclass (set(old_base.fields) minus set(new_base.fields) intersected with model_state.fields)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new dependency logic only applies to bases given as dotted strings (the 'app.Model' branch), the same branch that already appends the (base_app_label, base_name, None, True) create dependency."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated the full oracle for a test witnessing R1 (generate_created_models emitting a removed-field dependency (base_app, base_model, field, False) when a new subclass with a dotted-string base takes over a field removed from a base present in both states). The only autodetector test file, tests/migrations/test_autodetector.py, is labeled [VISIBLE], so none of its assertions could serve as a hidden witness regardless of content. Reading it confirms it has many model-creation ordering/dependency tests (test_bases_first, test_multiple_bases, test_fk_dependency, test_mti_inheritance_model_removal, etc.) but none that simultaneously create a NEW model subclassing a base that still exists in both states while removing a same-named field from that base. Additionally, the task reports no tests currently failing against the buggy program, which is the necessary precondition for any witness; and a scan of the other migration test files (test_operations, test_state, test_graph, test_executor, test_writer, test_optimizer, etc.) shows none target generate_created_models' dependency logic. Since the entire relevant oracle content is visible and no hidden test supplies this precise scenario, no genuine witness exists: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (MigrationAutodetector.generate_created_models): When autodetecting changes, if a newly created model's base is given as a dotted string 'app.Model' and that base model is present in both the from_state and to_state project states, and the base model has removed a field (the field name is present in the old base model state's fields but not in the new base model state's fields) whose name is also redeclared among the newly created model's own fields, then the generated creation is made dependent on the removal of that same-named base field (a removed-field dependency on (base_app_label, base_model_name, field, False)). — not entailed by S_vis (S_vis establishes the observable ordering constraint (removal of Readable.title scheduled before CreateModel(Book)) for exactly this model-state transition, and would lead a solver toward ensuring removal precedes creation. However, S_impl specifies an internal mechanism inside generate_created_models (a removed-field dependency tuple (base_app_label, base_model_name, field, False)) with precise preconditions (dotted-string base, base in both states) that the visible issue text never mentions — S_vis does not force this particular dependency-based implementation over other orderings of the same operations.); confirmed by a synthesized witness: Witness for R1 (MigrationAutodetector.generate_created_models). Constructed a delta where base model `testapp.Author` exists in BOTH from_state and to_state, and in to_state it has dropped field `name`. Simultaneously a brand-new concrete model `testapp.AuthorProfile` (not in from_state) is created whose base is the dotted string `testapp.author`, and AuthorProfile redeclares a local field `name` — i.e., it takes over the very same-named field removed from the still-present base. In gold, generate_created_models detects old_base/new_base both present, computes removed_base_fields = (old Author fields {id,name}) − (new Author fields {id}) = {name}, intersects with the new model's fields ({name}), and therefore appends the removed-field dependency (testapp, author, name, False) onto the CreateModel. That dependency makes check_dependency/(stable) intra-app topo sort place RemoveField(author,name) before CreateModel(AuthorProfile). In buggy, that branch is absent, so the dependency is never added and CreateModel(AuthorProfile) precedes RemoveField(author,name) in the returned operation list — the very reordering bug the fix introduces. The test PASSES against gold (RemoveField index < CreateModel index) and FAILS against buggy (CreateModel precedes RemoveField). Verified by actual run_test executions against both revisions with this exact source. This scenario (new subclass of a base kept in both states while redeclaring a field the base just dropped) is genuinely specific to R1 and not pinned down by any existing visible assertion in tests/migrations/test_autodetector.py.",
+    "confidence": "Medium"
+  }
+}

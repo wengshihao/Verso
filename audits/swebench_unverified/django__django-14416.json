@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-14416",
+  "status": "ok",
+  "duration_seconds": 681.7769059999846,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14416",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "When LocaleMiddleware turns a 404 on a non-language-prefixed i18n path into an HttpResponseRedirect that prepends the detected active language code to the path (response.status_code == 404, no language_from_path, i18n_patterns_used, prefixed_default_language, and the language-prefixed path is valid), the returned redirect response must carry a Vary header naming Accept-Language, so that HTTP/CDN caches key the redirect on the request's Accept-Language instead of serving one cached redirect to clients with different Accept-Language values.",
+        "subject": "LocaleMiddleware.process_response (django/middleware/locale.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Fetch https://example.com/some-page/ with Accept-Language header 'de-DE,de;q=0.9'. A redirect to https://example.com/de/some-page/ is returned. Fetch it again with Accept-Language header 'fr-FR,fr;q=0.9'. The cached redirect is returned by HTTP caches and the German page is displayed instead of the French one.\" and \"LocaleMiddleware is issuing a redirect based on the detected language from the Accept-Language header ... but is not telling caches that it has used these headers. Adding a Vary header fixes this.\" Code context: in django/middleware/locale.py process_response the redirect branch does `return self.response_redirect_class(language_url)` before reaching the existing `if not (i18n_patterns_used and language_from_path): patch_vary_headers(response, ('Accept-Language',))` line."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "When LocaleMiddleware.process_response() issues the 'add missing language prefix' redirect (404 response, no language prefix in path, i18n_patterns in use with modified/prefixed default language, and the language-prefixed URL or its trailing-slash variant is valid), the returned redirect response carries a Vary header that includes both 'Accept-Language' and 'Cookie' (in addition to any Vary fields already present on the redirect).",
+        "subject": "LocaleMiddleware.process_response",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "false",
+        "checked_ids": [
+          "VIS-1"
+        ],
+        "rationale": "VIS-1 covers only adding 'Accept-Language' to the Vary header of the language-prefix redirect; there is no visible evidence anywhere that the redirect should also add 'Cookie' to the Vary header. Since SI-1 conjunctively requires both 'Accept-Language' and 'Cookie', visible info does not pin down the full behavior."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "WitnessRedirectVaryTest.test_en_redirect_carries_vary",
+      "test_source": "import os\nimport sys\n\n# Global settings for standalone Django test under pytest.\nsys.path.insert(0, '/testbed/tests')\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'test_sqlite')\n\nfrom django.conf import settings\nif not settings.configured:\n    import django\n    django.setup()\n\nfrom django.test import SimpleTestCase, override_settings\nfrom django.urls import clear_url_caches\n\n\n@override_settings(\n    USE_I18N=True,\n    ALLOWED_HOSTS=['testserver'],\n    LOCALE_PATHS=[os.path.join('/testbed/tests/i18n/patterns', 'locale')],\n    LANGUAGE_CODE='en-us',\n    LANGUAGES=[('nl', 'Dutch'), ('en', 'English'), ('pt-br', 'Brazilian Portuguese')],\n    MIDDLEWARE=[\n        'django.middleware.locale.LocaleMiddleware',\n        'django.middleware.common.CommonMiddleware',\n    ],\n    ROOT_URLCONF='i18n.patterns.urls.default',\n    TEMPLATES=[{\n        'BACKEND': 'django.template.backends.django.DjangoTemplates',\n        'DIRS': [os.path.join('/testbed/tests/i18n/patterns', 'templates')],\n        'OPTIONS': {\n            'context_processors': [\n                'django.template.context_processors.i18n',\n            ],\n        },\n    }],\n)\nclass WitnessRedirectVaryTest(SimpleTestCase):\n    def test_en_redirect_carries_vary(self):\n        clear_url_caches()\n        client = self.client_class()\n        response = client.get('/account/register/', HTTP_ACCEPT_LANGUAGE='en')\n        # It must be the 'add missing language prefix' redirect.\n        self.assertEqual(response.status_code, 302)\n        self.assertEqual(response['Location'], '/en/account/register/')\n        vary = response.get('Vary', '')\n        self.assertIn('Accept-Language', vary)\n        self.assertIn('Cookie', vary)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError: 'Accept-Language' not found in '' (the redirect response carries no Vary header on the buggy build)",
+      "explanation": "Requirement SI-1 targets LocaleMiddleware.process_response's 'add missing language prefix' redirect: when a request hits a 404 with no language prefix under i18n_patterns with a prefixed default language, and the language-prefixed URL (or slash variant) is valid, the returned redirect response must carry a Vary header containing both 'Accept-Language' and 'Cookie'.\n\nThis witness reproduces that exact scenario: under ROOT_URLCONF='i18n.patterns.urls.default' (i18n_patterns + prefixed default) with LocaleMiddleware/CommonMiddleware, GET /account/register/ with HTTP_ACCEPT_LANGUAGE='en' returns a 302 redirect to /en/account/register/ (the language-prefix redirect). It then asserts the redirect's Vary header contains both Accept-Language and Cookie.\n\nI confirmed by running execution: against the gold (fixed) code this PASSES (the redirect now has Vary among Accept-Language & Cookie). Against the buggy (pre-fix) code this FAILS with \"AssertionError: 'Accept-Language' not found in ''\" — the blank Vary header proves the pre-fix buggy code returns the redirect with no Vary at all (it returned self.response_redirect_class(language_url) before the trailing patch_vary_headers line). This differentiates the two builds exactly on the code the fix changed.\n\nThe only visible oracle coverage for this redirect's Vary (tests/i18n/patterns/tests.py URLVaryAcceptLanguageTests.test_en_redirect) asserts the OPPOSITE pre-fix behavior (assertFalse(response.get('Vary'))), i.e. no Vary header — so it could never pin down the requirement that the redirect DOES carry both Accept-Language and Cookie. No visible/enforced-oracle fact entails this behavior, making it a genuine hidden-fact witness rather than a re-invention of visible coverage."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code is LocaleMiddleware in django/middleware/locale.py. Its process_response() method returns self.response_redirect_class(language_url) (an early `return`) while handling the 'add missing language prefix' redirect for i18n_patterns, and that early return happens BEFORE the trailing `patch_vary_headers(response, ('Accept-Language',))` line, so the redirect gains no Vary header."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing code already adds Vary: Accept-Language to ordinary (non-redirect, non-language-prefixed) responses and sets Content-Language; tests live in tests/i18n/patterns/tests.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/i18n/patterns/tests.py class URLVaryAcceptLanguageTests currently asserts the pre-fix behavior for these redirects, e.g. test_en_redirect ends with `self.assertFalse(response.get('Vary'))` after the /account/register/ redirect."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The redirect-vs-content distinction emphasized in the i18n/patterns tests: direct responses on already-prefixed URLs (e.g. /en/...) legitimately have no Vary header; it is the 404->language-prefix redirect whose target depends on Accept-Language."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk H0 reshapes the early-return redirect branch of LocaleMiddleware.process_response: instead of `return self.response_redirect_class(language_url)` on its own line, it now builds `redirect = self.response_redirect_class(language_url)`, adds a Vary header via patch_vary_headers(redirect, ('Accept-Language', 'Cookie')), then returns redirect."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two Vary tokens (Accept-Language and Cookie) are added together in one patch_vary_headers call on the same redirect object, so a test observing the redirect's Vary header sees them jointly; they are modeled as one requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'add language prefix' redirect only fires for i18n_patterns with a prefixed default language; when used with the subclass PermanentRedirectLocaleMiddleWare the same Vary header logic applies to the 301 redirect response."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch to this branch is independent of the pre-existing trailing Vary:Accept-Language logic applied to ordinary (non-redirect) responses."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: Target requirement SI-1: the LocaleMiddleware \"add missing language prefix\" redirect response must carry a Vary header including both 'Accept-Language' and 'Cookie'.\n\nI investigated the oracle's i18n/middleware test files. The one cluster that actually exercises LocaleMiddleware.process_response()'s language-prefix redirect (via i18n_patterns, 404-with-no-prefix, and following the Location to the prefixed URL) is tests/i18n/patterns/tests.py. Its class URLVaryAcceptLanguageTests is the only place the redirect's Vary header is examined, and it is labeled [VISIBLE]. Crucially, its redirect test (test_en_redirect) asserts the PRE-fix behavior — `self.assertFalse(response.get('Vary'))` — i.e. that the redirect carries NO Vary header, which is precisely the behavior the fix removes. That assertion would FAIL against the fixed (gold) program, so it cannot be a witness for SI-1 regardless of visibility. Also, all content in that file is [VISIBLE], and the rules bar [VISIBLE] assertions from serving as a witness for a requirement not entailed by visible information.\n\nI also read tests/i18n/tests.py (LocaleMiddleware / redirect-free and general i18n tests, no redirect-Vary assertions), tests/view_tests/tests/test_i18n.py (set_language view / JS catalog tests, unrelated), and tests/middleware/tests.py (CommonMiddleware/ConditionalGet/GZip/XFrame Vary handling — a different middleware, not LocaleMiddleware). None tests the redirect's Accept-Language+Cookie Vary header. No oracle test asserting that the language-prefix redirect carries Vary: Accept-Language, Cookie was found, and none is recorded as failing against the buggy program. Consequently no [HIDDEN] oracle test enforces SI-1; the oracle either lacks such a test or its corresponding test (in the VISIBLE patterns file) still encodes the opposite, pre-fix expectation. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-1] (LocaleMiddleware.process_response): When LocaleMiddleware.process_response() issues the 'add missing language prefix' redirect (404 response, no language prefix in path, i18n_patterns in use with modified/prefixed default language, and the language-prefixed URL or its trailing-slash variant is valid), the returned redirect response carries a Vary header that includes both 'Accept-Language' and 'Cookie' (in addition to any Vary fields already present on the redirect). — not entailed by S_vis (VIS-1 covers only adding 'Accept-Language' to the Vary header of the language-prefix redirect; there is no visible evidence anywhere that the redirect should also add 'Cookie' to the Vary header. Since SI-1 conjunctively requires both 'Accept-Language' and 'Cookie', visible info does not pin down the full behavior.); confirmed by a synthesized witness: Requirement SI-1 targets LocaleMiddleware.process_response's 'add missing language prefix' redirect: when a request hits a 404 with no language prefix under i18n_patterns with a prefixed default language, and the language-prefixed URL (or slash variant) is valid, the returned redirect response must carry a Vary header containing both 'Accept-Language' and 'Cookie'.\n\nThis witness reproduces that exact scenario: under ROOT_URLCONF='i18n.patterns.urls.default' (i18n_patterns + prefixed default) with LocaleMiddleware/CommonMiddleware, GET /account/register/ with HTTP_ACCEPT_LANGUAGE='en' returns a 302 redirect to /en/account/register/ (the language-prefix redirect). It then asserts the redirect's Vary header contains both Accept-Language and Cookie.\n\nI confirmed by running execution: against the gold (fixed) code this PASSES (the redirect now has Vary among Accept-Language & Cookie). Against the buggy (pre-fix) code this FAILS with \"AssertionError: 'Accept-Language' not found in ''\" — the blank Vary header proves the pre-fix buggy code returns the redirect with no Vary at all (it returned self.response_redirect_class(language_url) before the trailing patch_vary_headers line). This differentiates the two builds exactly on the code the fix changed.\n\nThe only visible oracle coverage for this redirect's Vary (tests/i18n/patterns/tests.py URLVaryAcceptLanguageTests.test_en_redirect) asserts the OPPOSITE pre-fix behavior (assertFalse(response.get('Vary'))), i.e. no Vary header — so it could never pin down the requirement that the redirect DOES carry both Accept-Language and Cookie. No visible/enforced-oracle fact entails this behavior, making it a genuine hidden-fact witness rather than a re-invention of visible coverage.",
+    "confidence": "Medium"
+  }
+}

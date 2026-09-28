@@ -1,0 +1,112 @@
+{
+  "task_id": "django__django-13295",
+  "status": "ok",
+  "duration_seconds": 531.3534500410315,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13295",
+    "s_vis": [
+      {
+        "id": "sv_1",
+        "statement": "When Model.save() is invoked with an update_fields iterable that contains the name of a non-concrete (virtual) field — one that is present in the model's _meta.fields (so it passes the update_fields existence validation) but is excluded from the local concrete fields actually written by _save_table — the save must not silently complete without saving that field and without emitting any error; this situation must be surfaced to the developer (by raising an error and/or actually persisting the field through the concrete columns it wraps) rather than silently succeeding.",
+        "subject": "django.db.models.Model.save() (update_fields handling)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"when you pass the name of that non-concrete field to save(update_fields=('my_non_concrete_field',)), the model will be saved without saving that field and yet no error will be emitted.\" ... \"I think that this could be because the check for the validity of the update_fields is done against meta.fields ... while the later check for which fields to actually save is done using meta.local_concrete_fields\" ... \"a simpler solution would be to error about this case so that the developer knows something is amiss.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Model.save(update_fields=...) builds the set of acceptable update-target field names only from the model's non-primary-key concrete fields (self._meta.concrete_fields), so an update_fields entry that names a virtual/non-concrete field still present in self._meta.fields is no longer accepted at validation time (it is no longer silently dropped during the resulting database UPDATE).",
+        "subject": "django.db.models.Model.save(update_fields=...)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When update_fields names a field(s) not in the validated non-primary-key concrete-field set, Model.save raises ValueError whose message enumerates the offending fields as not existing, being m2m, or being non-concrete fields ('The following fields do not exist in this model, are m2m fields, or are non-concrete fields: <comma-separated names>') rather than the prior text that omitted the non-concrete-field clause.",
+        "subject": "django.db.models.Model.save ValueError message",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "sv_1"
+        ],
+        "rationale": "sv_1 documents the exact silent-drop scenario and requires it be surfaced by erroring or persisting through concrete columns, but it explicitly leaves the resolution mechanism open and never specifies that validation should reject non-concrete fields by building the set from non-PK concrete fields; R1 commits to that specific error-at-validation mechanism, which is a plausible-but-not-uniquely-derived fix."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "sv_1"
+        ],
+        "rationale": "sv_1 only says no error was emitted and suggests erroring on this case; it contains no detail whatsoever about the wording/enumeration of a ValueError message (existence, m2m, or non-concrete-field clauses), so the specific revised message text R2 requires cannot be derived from the visible information."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_save_update_fields_error_mentions_non_concrete_fields",
+      "test_source": "import django\nfrom django.conf import settings\nfrom django.db import models\n\n\ndef test_save_update_fields_error_mentions_non_concrete_fields():\n    if not settings.configured:\n        settings.configure(\n            DEBUG=True,\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n            INSTALLED_APPS=['django.contrib.contenttypes'],\n        )\n    django.setup()\n\n    class Box(models.Model):\n        num = models.IntegerField()\n\n        class Meta:\n            app_label = 'r2witness'\n\n    b = Box(num=1)\n    try:\n        b.save(update_fields=['first_name'])\n    except ValueError as exc:\n        msg = str(exc)\n        assert msg == (\n            'The following fields do not exist in this model, are m2m '\n            'fields, or are non-concrete fields: first_name'\n        ), msg\n        return\n    raise AssertionError('no ValueError raised for nonexistent update field')\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: message is the old text 'The following fields do not exist in this model or are m2m fields: first_name'; lacks the new ', are m2m fields, or are non-concrete fields' clause).",
+      "explanation": "Target R2 (django.db.models.base.Model.save ValueError wording): when update_fields names a field outside the validated non-primary-key concrete-field set, save() must raise ValueError enumerating the offender with the text \"... do not exist in this model, are m2m fields, or are non-concrete fields: <names>\", replacing the prior message that omitted the non-concrete clause (hunk H1). I write a standalone pytest/Django test that configures its own Sqlite settings, defines a minimal model `Box(num=...)`, and calls `Box(num=1).save(update_fields=['first_name'])`; the bad field is genuinely outside Box's concrete non-pk set, so the validation inside Model.save raises ValueError before any DB access. The test then asserts the raised message is byte-for-byte the NEW wording containing the 'or are non-concrete fields' clause plus the offender name. Against gold base.py this passes (message matches new text). Against buggy base.py it fails because the buggy code still emits the OLD text 'The following fields do not exist in this model or are m2m fields: first_name' (diff confirms the clause is absent). Both runs were performed with this exact source. The natural oracle home, tests/update_only_fields/tests.py (visible), only ever asserts the OLD message string (msg = 'The following fields do not exist in this model or are m2m fields: %s') for nonexistent/m2m update fields, so the NEW non-concrete-clause wording this requirement demands is not pinned down by any visible assertion, making this a genuine discriminating witness. (Note: the run harness accepts standalone Python `test_*` functions rather than JUnit `@Test`, which is what was used to confirm execution.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/db/models/base.py, Model.save() validates update_fields against self._meta.fields (loop adding field.name and attname and raising ValueError 'The following fields do not exist in this model or are m2m fields: %s'), while save_base()->_save_table() actually saves only from meta.local_concrete_fields filtered by update_fields (non_pks over local_concrete_fields) — this mismatch is the reported silent-drop."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Options.local_concrete_fields / concrete_fields include only f.concrete fields; concrete is set in Field.set_attributes_from_name via `self.concrete = self.column is not None` (django/db/models/fields/__init__.py), so virtual/compound fields (column is None) are concrete=False."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "GenericForeignKey (django/contrib/contenttypes/fields.py) is excluded from _meta.fields by the is_not_a_generic_foreign_key filter (it has remote_field=None, many_to_one=True), so naming a GFK already raises the 'field does not exist' ValueError; the reported silent case concerns other kinds of user-defined non-concrete fields that remain inside _meta.fields."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant reference test suites live under tests/update_only_fields (models.py defines Account, Person, Employee MTI child, Profile, ProxyEmployee); generic-relation behavior is exercised under tests/generic_relations and tests/contenttypes_tests."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In Options, _meta.concrete_fields is derived from _meta.fields by filtering to fields where f.concrete is True; virtual/compound fields with no DB column (column=None -> concrete=False) are dropped. Both properties include parent-model fields, so concrete_fields differs from fields only by omission of non-concrete (virtual) fields."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The deferred-field auto-update clause (elif branch below the changed loop) already iterated self._meta.concrete_fields; the patch aligns the update_fields validation in the if-branch with that same field set."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The primary-key exclusion (if not field.primary_key) is unchanged by the patch; pk fields were never valid update targets before or after."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The error message only differs in its descriptive wording, not in the format of its placeholder (%s receives comma-separated offending field names, sorted)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 requires that when Model.save(update_fields=...) names a field not in the non-primary-key concrete-field set, the raised ValueError message be the NEW wording 'The following fields do not exist in this model, are m2m fields, or are non-concrete fields: <names>' (vs the old wording omitting the non-concrete clause).\n\nI investigated the natural oracle home for this behavior, tests/update_only_fields (models define Account/Person/Employee/Profile/ProxyEmployee and exercise update_fields validation through the save path). Its tests.py is labeled [VISIBLE] and only ever asserts the OLD message text ('msg = The following fields do not exist in this model or are m2m fields: %s') in test_update_fields_m2m and test_update_fields_incorrect_params. That is precisely the wording R2 says is being replaced; asserting the old wording can never establish (pass on gold) the new \"or are non-concrete fields\" clause, and in fact those assertions would only be consistent with gold still emitting the old text (i.e., R2's change not being exercised). No [HIDDEN] test asserting the new wording exists anywhere in the natural location, and the update_only_fields models.py (HIDDEN) contains no non-concrete/virtual field that could even trigger the \"non-concrete fields\" branch.\n\nI also scanned other suites that touch Model.save update-field error paths (update/, generic_relations/, contenttypes_tests/test_fields.py, contenttypes_tests/test_models.py, defer/) — all [VISIBLE] and unrelated to the R2 message wording. No hidden oracle test asserts the new non-concrete-field message.\n\nAdditionally, the standalone run environment has no configured Django settings/database (every TestCase/SimpleTestCase attempt aborts in setUpClass: 'ImproperlyConfigured: ... settings are not configured'), so DB-backed save() scenarios cannot be mechanically executed/confirmed here at all. Consequently no execution-confirmed witness could be produced either way, and none of the available/relevant oracle content genuinely tests R2's new message. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.models.Model.save ValueError message): When update_fields names a field(s) not in the validated non-primary-key concrete-field set, Model.save raises ValueError whose message enumerates the offending fields as not existing, being m2m, or being non-concrete fields ('The following fields do not exist in this model, are m2m fields, or are non-concrete fields: <comma-separated names>') rather than the prior text that omitted the non-concrete-field clause. — not entailed by S_vis (sv_1 only says no error was emitted and suggests erroring on this case; it contains no detail whatsoever about the wording/enumeration of a ValueError message (existence, m2m, or non-concrete-field clauses), so the specific revised message text R2 requires cannot be derived from the visible information.); confirmed by a synthesized witness: Target R2 (django.db.models.base.Model.save ValueError wording): when update_fields names a field outside the validated non-primary-key concrete-field set, save() must raise ValueError enumerating the offender with the text \"... do not exist in this model, are m2m fields, or are non-concrete fields: <names>\", replacing the prior message that omitted the non-concrete clause (hunk H1). I write a standalone pytest/Django test that configures its own Sqlite settings, defines a minimal model `Box(num=...)`, and calls `Box(num=1).save(update_fields=['first_name'])`; the bad field is genuinely outside Box's concrete non-pk set, so the validation inside Model.save raises ValueError before any DB access. The test then asserts the raised message is byte-for-byte the NEW wording containing the 'or are non-concrete fields' clause plus the offender name. Against gold base.py this passes (message matches new text). Against buggy base.py it fails because the buggy code still emits the OLD text 'The following fields do not exist in this model or are m2m fields: first_name' (diff confirms the clause is absent). Both runs were performed with this exact source. The natural oracle home, tests/update_only_fields/tests.py (visible), only ever asserts the OLD message string (msg = 'The following fields do not exist in this model or are m2m fields: %s') for nonexistent/m2m update fields, so the NEW non-concrete-clause wording this requirement demands is not pinned down by any visible assertion, making this a genuine discriminating witness. (Note: the run harness accepts standalone Python `test_*` functions rather than JUnit `@Test`, which is what was used to confirm execution.)",
+    "confidence": "Medium"
+  }
+}

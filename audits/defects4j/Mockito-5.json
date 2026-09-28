@@ -1,0 +1,120 @@
+{
+  "task_id": "Mockito-5",
+  "status": "ok",
+  "duration_seconds": 361.77545512300003,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Mockito-5",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The timeout-verification API path (Mockito.timeout(...)/after(...) built on org.mockito.internal.verification.VerificationOverTimeImpl) must be loadable and executable without throwing a JVM linkage error (VerifyError/NoClassDefFoundError/LinkageError) when JUnit is absent from — or present only in an incompatible version such as 3.x on — the runtime classpath. In particular, class VerficationOverTimeImpl's 'verify' method must not force a link/usages of 'org.mockito.exceptions.verification.junit.ArgumentsAreDifferent', the JUnit subtype 'junit.framework.ComparisonFailure', so that code like the issue's test (verify(mock(Observable.class), timeout(500)).countObservers() running under a non-JUnit runner) completes normally instead of raising a LinkageError during verification set-up.",
+        "subject": "org.mockito.internal.verification.VerificationOverTimeImpl#verify and org.mockito.Mockito#timeout/after",
+        "hunk_ids": [],
+        "cited_from": "\"In this specific case the issue is that the `Timeout` class wraps a `VerficationOverTimeImpl` that uses in try/catch block the exception `org.mockito.exceptions.verification.junit.ArgumentsAreDifferent` which extends `junit.framework.ComparisonFailure`.\" PLUS issue's sample: \"@Test public void should_not_throw_VerifyError() { verify(mock(Observable.class), timeout(500)).countObservers(); }\" PLUS provided stacks \"java.lang.VerifyError: (class: org/mockito/internal/verification/VerificationOverTimeImpl, ...) Incompatible argument to function\" and \"java.lang.NoClassDefFoundError: junit/framework/ComparisonFailure ... at org.mockito.verification.Timeout.<init>(Timeout.java:32)\". Source file retains the catch: \"catch (org.mockito.exceptions.verification.junit.ArgumentsAreDifferent e) { error = handleVerifyException(e); }\""
+      },
+      {
+        "id": "R2",
+        "statement": "Every pure-Mockito API class (Mockito's own owned classes excluding those in 'runners' and 'junit' packages, e.g. org.mockito.verification.Timeout and org.mockito.internal.verification.VerificationOverTimeImpl) must load successfully via Class.forName(className, true, aClassLoader) when that classloader loads Mockito together with its hamcrest/cglib/objenesis dependencies but excludes every class under package prefixes 'junit' and 'org.junit' — i.e. none of Mockito's pure API classes may carry a JUnit type dependency (such as on junit.framework.ComparisonFailure via ArgumentsAreDifferent) that fails at class-linking time when JUnit is excluded.",
+        "subject": "org.mockitointegration.NoJUnitDependenciesTest pure Mockito API classes (classloading without junit dependency)",
+        "hunk_ids": [],
+        "cited_from": "\"pure_mockito_should_not_depend_JUnit() throws Exception\" ... \".without(\"junit\", \"org.junit\").build();\" ... \"for (String pureMockitoAPIClass : pureMockitoAPIClasses) { checkDependency(classLoader_without_JUnit, pureMockitoAPIClass); }\" ... \"Class.forName(pureMockitoAPIClass, true, classLoader_without_JUnit);\" with failure message \"'%s' has some dependency to JUnit\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "During VerificationOverTimeImpl.verify's polling loop, an AssertionError thrown by delegate.verify(data) that is NOT a MockitoAssertionError (e.g. a plain java.lang.AssertionError or any AssertionError subtype other than MockitoAssertionError and the JUnit-flavoured ArgumentsAreDifferent) is no longer allowed to propagate immediately out of verify; it is now passed to handleVerifyException and thereby subjected to the recoverability/retry logic — i.e. stored as the accumulated error and, if the delegate can recover, slept/retried until the timer elapses (only then rethrown), rather than escaping from the very first polling iteration it occurs in.",
+        "subject": "VerificationOverTimeImpl.verify(VerificationData)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "VerificationOverTimeImpl.verify no longer references (catches) org.mockito.exceptions.verification.junit.ArgumentsAreDifferent, thereby eliminating the bytecode/class-link dependency of this unit on the JUnit-flavoured ArgumentsAreDifferent type and on junit.framework.ComparisonFailure which that catch clause's type requirement previously forced; loading/verifying this class therefore does not pull in that JUnit-dependent exception class.",
+        "subject": "VerificationOverTimeImpl class linkage (NoJUnitDependencies)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only establishes that VerificationOverTimeImpl.verify must not link the JUnit-flavoured ArgumentsAreDifferent/ComparisonFailure so the naive timeout test completes without a LinkageError; it says nothing about the recoverability/retry semantics for a plain (non-MockitoAssertionError) AssertionError being routed through handleVerifyException. That precise behavioral refinement is not pinned down by the visible issue/test evidence, which never even triggers an assertion failure."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly states that the 'verify' method must not force link/usages of org.mockito.exceptions.verification.junit.ArgumentsAreDifferent (and its JUnit subtype ComparisonFailure) so the class loads without JUnit, and S_vis R2 demands VerificationOverTimeImpl load via Class.forName with junit/org.junit excluded. The only JUnit-derived type referenced comes from the ArgumentsAreDifferent catch in verify, so removing that catch-type dependency is entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "plainAssertionError_is_retried_not_immediately_thrown",
+      "test_source": "import org.mockito.internal.verification.VerificationOverTimeImpl;\nimport org.mockito.internal.verification.api.VerificationData;\nimport org.mockito.verification.VerificationMode;\n\n@Test\npublic void plainAssertionError_is_retried_not_immediately_thrown() throws Exception {\n    final int[] calls = {0};\n    VerificationMode delegate = new VerificationMode() {\n        public void verify(VerificationData data) {\n            if (calls[0]++ == 0) {\n                // plain java.lang.AssertionError, NOT a MockitoAssertionError subclass\n                throw new AssertionError(\"plain assertion error from first poll\");\n            }\n        }\n    };\n    VerificationOverTimeImpl v = new VerificationOverTimeImpl(5, 2000, delegate, true);\n    // On gold the plain AssertionError from the first poll is routed through\n    // handleVerifyException/retry, so the second poll succeeds and verify returns.\n    // On buggy the plain AssertionError escapes immediately from the first poll.\n    v.verify(null); // must NOT throw\n}",
+      "gold_result": "PASSED — v.verify(null) returns normally: the plain AssertionError from poll #1 is caught by the widened `catch (AssertionError e)` in the gold impl, routed to handleVerifyException, retried on poll #2 where the delegate succeeds, and (returnOnSuccess) verify returns.",
+      "buggy_result": "FAILED — java.lang.AssertionError(\"plain assertion error from first poll\") propagated out of verify: under the buggy impl only MockitoAssertionError and the JUnit-flavoured ArgumentsAreDifferent are caught, so the plain AssertionError escapes immediately from the very first polling iteration (exactly the bug R1 removed).",
+      "explanation": "R1 is precisely about VerificationOverTimeImpl.verify's polling loop treating a delegate-thrown AssertionError that is NEITHER a MockitoAssertionError NOR ArgumentsAreDifferent: under the buggy code such a plain java.lang.AssertionError propagates immediately out of the first poll; under the gold code it is caught by the newly-widened `catch (AssertionError e)` branch, passed to handleVerifyException (recoverable since the fake delegate is not AtMost/NoMoreInteractions → sleeps and retries), and on a subsequent success verify returns normally. My test drives exactly this path: a VerificationOverTimeImpl(5ms poll, 2000ms duration, returnOnSuccess) whose delegate throws a plain `java.lang.AssertionError` on its first call and succeeds on the second. Against gold verify returns (PASSED); against buggy the AssertionError escapes from the first poll (FAILED). This behavior is not pinned down by any of the visible material (the two disclosed files are only VerificationOverTimeImpl.java source itself and NoJUnitDependenciesTest.java, a bytecode/class-loading JUnit-dependency check that says nothing about this retry semantics), and no oracle test drives a plain/non-Mockito AssertionError on this path. The test was run with the exact submitted source against both gold (PASSED) and buggy (FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible repository is minimal: only src/org/mockito/internal/verification/VerificationOverTimeImpl.java and test/org/mockitointegration/NoJUnitDependenciesTest.java are disclosed (plus the issue text); the rest of Mockito (Timeout, Mockito#timeout, VerificationWithTimeout, ArgumentsAreDifferent, junit-exception machinery) is referenced but not present as files, so requirements about it are grounded only via the issue's class/stack names."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "VerificationOverTimeImpl.verify is the concrete offender: its try/catch block references org.mockito.exceptions.verification.junit.ArgumentsAreDifferent only in a catch branch, which produces the class-link dependency on junit.framework.ComparisonFailure once any method/class touches it ('catch' clause type checking forces the superclass link)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "NoJUnitDependenciesTest uses org.mockitoutil.ClassLoaders helpers (excludingClassLoader, withCodeSourceUrlOf, without, in/omit/listOwnedClasses) which are not themselves disclosed as source files."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The verification-over-time feature's genuine runtime semantics (polling delegate.verify until success or until the duration elapses, honoring returnOnSuccess, throwing the accumulated error if the timeout elapses) are untouched by this bug and are preserved in the source, but are not independently challenged by the disclosed regression material, so no separate requirement was derived for them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Mockito's own Commented description of the issue names only Mockito.timeout(...)/... as the affected public API (the visible text is truncated at 'Mo')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The MockitoAssertionError catch clause (first branch) is unchanged by this patch; only the second catch branch changed from the JUnit ArgumentsAreDifferent subtype to java.lang.AssertionError. For the original code to compile, ArgumentsAreDifferent must not have been a subtype of MockitoAssertionError (an unreachable catch would be a compile error) — both are distinct AssertionError subtypes, which is why broadening to AssertionError both preserves handling of the JUnit exception (it remains an AssertionError) and adds coverage of other AssertionError subtypes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The retry/recoverability semantics (handleVerifyException checks canRecoverFromFailure against AtMost/NoMoreInteractions, sleeps pollingPeriodMillis, else rethrows) are unchanged by the patch; the new catch lets any AssertionError reach that same path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The file declares imports for MockitoAssertionError, Timer, VerificationData, VerificationMode only — the deleted code used a fully-qualified reference to org.mockito.exceptions.verification.junit.ArgumentsAreDifferent inline, which was the only linkage to the JUnit-flavoured type."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined all seven oracle test files. R1 concerns the runtime retry semantics of VerificationOverTimeImpl.verify specifically for AssertionError subtypes that are neither MockitoAssertionError nor ArgumentsAreDifferent (i.e. plain/other java.lang.AssertionError), which under the buggy code propagated immediately out of the first polling iteration but under the gold code are routed to handleVerifyException/retry. I confirmed via run_test that this discrimination is real (throwing plain java.lang.AssertionError on the first poll then success on the second FAILS on buggy and PASSES on gold). However, no oracle test throws such a plain/non-standard AssertionError from delegate.verify.\n\nFiles checked (all [HIDDEN] content): VerificationOverTimeImplTest (4 tests: success, MockitoAssertionError, ArgumentsAreDifferent, RuntimeException — none uses a plain/other AssertionError; the ArgumentsAreDifferent and MockitoAssertionError tests both PASS on buggy AND gold when run, since both versions handle those two types identically), TimeoutTest (throws only MockitoAssertionError), VerificationWithTimeoutTest, VerificationAfterDelayTest, TimeoutWithAtMostOrNeverShouldBeDisabledTest (FriendlyReminderException), ConcurrentModificationExceptionOnMultiThreadedVerificationTest (mock-interaction verification errors = MockitoAssertionError subclass), and NoJUnitDependenciesTest (the only currently-failing test — it is [VISIBLE] and tests bytecode/class-level JUnit dependency, not R1's retry semantics, and cannot be a witness anyway).\n\nNone of these tests exercises the plain/other-AssertionError-retry path that R1 uniquely describes, so no genuine witness exists in the oracle for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (VerificationOverTimeImpl.verify(VerificationData)): During VerificationOverTimeImpl.verify's polling loop, an AssertionError thrown by delegate.verify(data) that is NOT a MockitoAssertionError (e.g. a plain java.lang.AssertionError or any AssertionError subtype other than MockitoAssertionError and the JUnit-flavoured ArgumentsAreDifferent) is no longer allowed to propagate immediately out of verify; it is now passed to handleVerifyException and thereby subjected to the recoverability/retry logic — i.e. stored as the accumulated error and, if the delegate can recover, slept/retried until the timer elapses (only then rethrown), rather than escaping from the very first polling iteration it occurs in. — not entailed by S_vis (S_vis only establishes that VerificationOverTimeImpl.verify must not link the JUnit-flavoured ArgumentsAreDifferent/ComparisonFailure so the naive timeout test completes without a LinkageError; it says nothing about the recoverability/retry semantics for a plain (non-MockitoAssertionError) AssertionError being routed through handleVerifyException. That precise behavioral refinement is not pinned down by the visible issue/test evidence, which never even triggers an assertion failure.); confirmed by a synthesized witness: R1 is precisely about VerificationOverTimeImpl.verify's polling loop treating a delegate-thrown AssertionError that is NEITHER a MockitoAssertionError NOR ArgumentsAreDifferent: under the buggy code such a plain java.lang.AssertionError propagates immediately out of the first poll; under the gold code it is caught by the newly-widened `catch (AssertionError e)` branch, passed to handleVerifyException (recoverable since the fake delegate is not AtMost/NoMoreInteractions → sleeps and retries), and on a subsequent success verify returns normally. My test drives exactly this path: a VerificationOverTimeImpl(5ms poll, 2000ms duration, returnOnSuccess) whose delegate throws a plain `java.lang.AssertionError` on its first call and succeeds on the second. Against gold verify returns (PASSED); against buggy the AssertionError escapes from the first poll (FAILED). This behavior is not pinned down by any of the visible material (the two disclosed files are only VerificationOverTimeImpl.java source itself and NoJUnitDependenciesTest.java, a bytecode/class-loading JUnit-dependency check that says nothing about this retry semantics), and no oracle test drives a plain/non-Mockito AssertionError on this path. The test was run with the exact submitted source against both gold (PASSED) and buggy (FAILED).",
+    "confidence": "Medium"
+  }
+}

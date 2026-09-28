@@ -1,0 +1,114 @@
+{
+  "task_id": "django__django-10914",
+  "status": "ok",
+  "duration_seconds": 347.8105703329202,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-10914",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The default value of the FILE_UPLOAD_PERMISSIONS setting (currently None in django/conf/global_settings.py) should be changed to 0o644, so that when no FILE_UPLOAD_PERMISSIONS is explicitly configured, newly-uploaded/stored files get permission mode 0o644 rather than being left to operating-system/umask-dependent behavior.",
+        "subject": "django.conf.global_settings FILE_UPLOAD_PERMISSIONS; FileSystemStorage.file_permissions_mode",
+        "hunk_ids": [],
+        "cited_from": "Ticket title: \"Set default FILE_UPLOAD_PERMISSION to 0o644.\"; django/conf/global_settings.py currently has: \"# The numeric mode to set newly-uploaded files to. The value should be a mode you'd pass directly to os.chmod; ...\\nFILE_UPLOAD_PERMISSIONS = None\" and docs/ref/settings.txt says: \"Default: None ... If this isn't given or is None, you'll get operating-system dependent behavior. On most platforms, temporary files will have a mode of 0o600, and files saved from memory will be saved using the system's standard umask.\""
+      },
+      {
+        "id": "R2",
+        "statement": "For a file whose upload content is a TemporaryUploadedFile (the stream-to-disk path in FileSystemStorage._save that moves the file with file_move_safe/os.rename, invoked when content has temporary_file_path), when FILE_UPLOAD_PERMISSIONS is left unconfigured the final stored file must not retain the temporary file's restrictive mode (0o600): its permissions must match/be made consistent with the configured default upload permissions rather than depending on which upload handler (memory vs temporary) was used.",
+        "subject": "FileSystemStorage._save temporary-file-move path",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"the permissions for a file uploaded to FileSystemStorage might not be consistent depending on whether a MemoryUploadedFile or a TemporaryUploadedFile was used for temporary storage of the uploaded data ... The tempfile.NamedTemporaryFile + os.rename sequence causes the resulting file permissions to be 0o0600 on some systems ... In all probability, the implementation of Python's built-in tempfile module explicitly sets such permissions for temporary files due to security considerations.\"; FileSystemStorage._save: \"if hasattr(content, 'temporary_file_path'):\\n    file_move_safe(content.temporary_file_path(), full_path)\\nelse:\\n    ... fd = os.open(full_path, self.OS_OPEN_FLAGS, 0o666) ...\" and \"if self.file_permissions_mode is not None:\\n    os.chmod(full_path, self.file_permissions_mode)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When FILE_UPLOAD_PERMISSIONS is left at its default and a FileSystemStorage is constructed without an explicit file_permissions_mode, a file saved through that storage is chmod'd to permission mode 0o644 after being stored (in both the file-move and streamed-write save paths), rather than retaining the source temp-file mode or the umask-derived creation mode.",
+        "subject": "FileSystemStorage._save / settings.FILE_UPLOAD_PERMISSIONS",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins down that the FILE_UPLOAD_PERMISSIONS setting default becomes 0o644, and S_vis R2 pins down that in the temporary-file-move (_save file-move) path the stored file must be made consistent with the configured default (0o644) rather than retain 0o600. However, S_vis evidence concentrates on the setting default and the file-move path; it does not explicitly establish that a FileSystemStorage constructed without an explicit file_permissions_mode propagates the 0o644 default and chmods the streamed-write/else save path to 0o644 as a distinct promise, even though R2 hints at cross-handler consistency. That leaves the full 'both save paths' claim not unambiguously pinned."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_default_upload_permissions",
+      "test_source": "import os\nimport sys\nimport tempfile\nimport unittest\n\nfrom django.conf import settings\nfrom django.core.files.base import ContentFile\nfrom django.core.files.storage import FileSystemStorage\nfrom django.core.files.uploadedfile import TemporaryUploadedFile\n\n\n@unittest.skipIf(sys.platform.startswith('win'),\n                 'Windows only partially supports umasks and chmod.')\ndef test_witness_default_upload_permissions():\n    with tempfile.TemporaryDirectory() as tmp:\n        storage_dir = os.path.join(tmp, 'storage')\n        os.makedirs(storage_dir)\n        if not settings.configured:\n            settings.configure(\n                MEDIA_ROOT=os.path.join(tmp, 'media'),\n                DEFAULT_FILE_STORAGE='django.core.files.storage.FileSystemStorage',\n            )\n\n        # Streamed-write path.  Use an umask that would make the default\n        # (non-chmod'd) creation mode differ from the 0o644 target.\n        old_umask = os.umask(0o077)\n        try:\n            storage = FileSystemStorage(storage_dir)\n            name = storage.save('streamed.txt', ContentFile('data'))\n            mode = os.stat(storage.path(name)).st_mode & 0o777\n            assert mode == 0o644, 'streamed path mode is %o' % mode\n        finally:\n            os.umask(old_umask)\n\n        # File-move path via a TemporaryUploadedFile (temp file starts 0o600).\n        tuf = TemporaryUploadedFile('moved.txt', 'text/plain', 4, 'utf8')\n        try:\n            tuf.write(b'data')\n            tuf.seek(0)\n            storage = FileSystemStorage(storage_dir)\n            name2 = storage.save('moved.txt', tuf)\n            mode2 = os.stat(storage.path(name2)).st_mode & 0o777\n            assert mode2 == 0o644, 'moved path mode is %o' % mode2\n        finally:\n            tuf.close()\n",
+      "gold_result": "PASSED (compiled & ran: both FileSystemStorage._save sub-paths; stored files chmod'd to 0o644)",
+      "buggy_result": "FAILED: AssertionError \"streamed path mode is 600\" — on buggy FILE_UPLOAD_PERMISSIONS defaults to None so the chmod is skipped and the streamed file retains its umask-derived 0o600 mode rather than being set to 0o644.",
+      "explanation": "R1 requires that with FILE_UPLOAD_PERMISSIONS at its (patched) default and a FileSystemStorage built without explicit file_permissions_mode, a saved file is chmod'd to 0o644 in BOTH FileSystemStorage._save sub-paths. The only fix (H0) changes the module-level default in django/conf/global_settings.py from None to 0o644; storage.py is identical and already performs os.chmod only when file_permissions_mode is not None (which here is settings.FILE_UPLOAD_PERMISSIONS). The witness constructs fresh Django settings via settings.configure() so FILE_UPLOAD_PERMISSIONS is NOT explicitly set and must fall back to the revision's global default (0o644 on gold, None on buggy). It then exercises both sub-paths with inputs whose unbounded modes are distinguishable from 0o644: (1) the streamed-write path via ContentFile under umask 0o077 (buggy leaves mode 0o600, gold chmods to 0o644), and (2) the file-move path via TemporaryUploadedFile whose temp file carries a 0o600 mode (buggy moves it preserving that mode; gold chmods to 0o644). os.stat is used to read the resulting on-disk modes and assert both equal 0o644. This genuinely corresponds to R1 (a real behavioral witness, not just co-located code): the S_vis extractor and oracle search confirmed no visible/hidden existing test leaves FILE_UPLOAD_PERMISSIONS unoverridden while checking for the 0o644 default behavior — the visible FileStoragePermissions tests deliberately force explicit 0o654/None overrides that bypass this default, so they pass identically on both revisions. Nothing in the visible material (including the None default shown there, which differs from the hidden fixed value) already pins down the post-fix behavior. Execution confirms discrimination: PASSED on gold, FAILED on buggy (\"streamed path mode is 600\", 384 != 420). Guarded with the standard Windows skip (mode/umask semantics are POSIX-only) consistent with existing storage-permission tests."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The default file storage is django.core.files.storage.FileSystemStorage (DEFAULT_FILE_STORAGE); Storage.save() delegates to self._save(name, content)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FileSystemStorage._save branches: if the content exposes temporary_file_path (i.e. is a TemporaryUploadedFile / simple-content large upload) it moves the file via file_move_safe(old, full_path) which uses os.rename and preserves the source (temp) file mode; otherwise it creates a fresh file with os.open(full_path, OS_OPEN_FLAGS, 0o666) and streams chunks — so absent a non-None file_permissions_mode the two paths produce different modes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "After the write the chmod only runs when file_permissions_mode is not None: 'if self.file_permissions_mode is not None: os.chmod(full_path, self.file_permissions_mode)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FileSystemStorage already respects an explicit per-instance file_permissions_mode or the FILE_UPLOAD_PERMISSIONS setting via the @cached_property file_permissions_mode = self._value_or_setting(self._file_permissions_mode, settings.FILE_UPLOAD_PERMISSIONS)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/topics/http/file-uploads.txt has no mention of upload-file permissions; the settings documentation in docs/ref/settings.txt currently documents default None behavior (temp files 0o600 vs. memory files per-umask), which is the inconsistency the ticket is about."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for storage permissions live in tests/file_storage/tests.py in class FileStoragePermissions (skipIf Windows) and exercise explicit FILE_UPLOAD_PERMISSIONS=0o654 and FILE_UPLOAD_PERMISSIONS=None; no existing test covers the temp-file-move/permission default consistency."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/core/files/temp.py on non-Windows simply aliases Python's tempfile.NamedTemporaryFile, which is what creates the 0o600 temp file referenced in the report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "This tree is django master around Django 3.0 development (docs/releases/3.0.txt present with release notes stubs such as 'File Uploads')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch consists of a single hunk (H0) in django/conf/global_settings.py changing only the module-level default of FILE_UPLOAD_PERMISSIONS from None to 0o644; django/core/files/storage.py is byte-identical between the buggy and gold revisions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "FileSystemStorage already (in both revisions) applies os.chmod(full_path, self.file_permissions_mode) after _save whenever file_permissions_mode is not None, and file_permissions_mode defaults to settings.FILE_UPLOAD_PERMISSIONS via _value_or_setting when no per-instance mode is passed; therefore the fix's entire effect flows from making that cached_property non-None by default."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Behavioral consequence spans both FileSystemStorage._save sub-paths: content with temporary_file_path moved via os.rename would previously retain the ~0o600 temp-file mode, while streamed content previously got a umask-derived mode; after the patch both get chmod'd to 0o644."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 asserts that with FILE_UPLOAD_PERMISSIONS at its (patched) default of 0o644 and no explicit file_permissions_mode, a FileSystemStorage-saved file is chmod'd to 0o644 in both _save sub-paths. For a witness, the oracle must contain a test that, without overriding FILE_UPLOAD_PERMISSIONS, asserts the resulting file mode is 0o644 — failing on buggy (default None → 0o600/copy or umask mode) and passing on gold (default 0o644).\n\nI examined every relevant oracle test file. tests/file_storage/tests.py (the natural home, FileStoragePermissions) is fully [VISIBLE] and contains only: test_file_upload_permissions (explicit override 0o654 — passes on both revisions) and test_file_upload_default_permissions (explicit override FILE_UPLOAD_PERMISSIONS=None — forces None so it behaves identically on buggy and gold, deliberately bypassing the new 0o644 default). Neither exercises the default-value behavior; no test leaves FILE_UPLOAD_PERMISSIONS un-set and checks the stored mode equals 0o644. tests/files/tests.py ([VISIBLE]) covers TemporaryUploadedFile and file_move_safe but asserts nothing about default permission modes. tests/file_uploads/tests.py ([VISIBLE]) and settings_tests/tests.py ([VISIBLE]) contain no default-permission assertion. The only [HIDDEN] file with file_storage content, models.py, is not a test at all (model/FileField definitions plus temp_storage) and carries no assertion that could witness R1.\n\nThis matches the recorded fact that no tests currently fail against the buggy program. Additionally, even the closest existing permission tests live in [VISIBLE] content, which can never serve as a Witness. Every candidate assertion I could read either does not discriminate the buggy/gold default change or resides in [VISIBLE] material, so no genuine Witness exists for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (FileSystemStorage._save / settings.FILE_UPLOAD_PERMISSIONS): When FILE_UPLOAD_PERMISSIONS is left at its default and a FileSystemStorage is constructed without an explicit file_permissions_mode, a file saved through that storage is chmod'd to permission mode 0o644 after being stored (in both the file-move and streamed-write save paths), rather than retaining the source temp-file mode or the umask-derived creation mode. — not entailed by S_vis (S_vis R1 pins down that the FILE_UPLOAD_PERMISSIONS setting default becomes 0o644, and S_vis R2 pins down that in the temporary-file-move (_save file-move) path the stored file must be made consistent with the configured default (0o644) rather than retain 0o600. However, S_vis evidence concentrates on the setting default and the file-move path; it does not explicitly establish that a FileSystemStorage constructed without an explicit file_permissions_mode propagates the 0o644 default and chmods the streamed-write/else save path to 0o644 as a distinct promise, even though R2 hints at cross-handler consistency. That leaves the full 'both save paths' claim not unambiguously pinned.); confirmed by a synthesized witness: R1 requires that with FILE_UPLOAD_PERMISSIONS at its (patched) default and a FileSystemStorage built without explicit file_permissions_mode, a saved file is chmod'd to 0o644 in BOTH FileSystemStorage._save sub-paths. The only fix (H0) changes the module-level default in django/conf/global_settings.py from None to 0o644; storage.py is identical and already performs os.chmod only when file_permissions_mode is not None (which here is settings.FILE_UPLOAD_PERMISSIONS). The witness constructs fresh Django settings via settings.configure() so FILE_UPLOAD_PERMISSIONS is NOT explicitly set and must fall back to the revision's global default (0o644 on gold, None on buggy). It then exercises both sub-paths with inputs whose unbounded modes are distinguishable from 0o644: (1) the streamed-write path via ContentFile under umask 0o077 (buggy leaves mode 0o600, gold chmods to 0o644), and (2) the file-move path via TemporaryUploadedFile whose temp file carries a 0o600 mode (buggy moves it preserving that mode; gold chmods to 0o644). os.stat is used to read the resulting on-disk modes and assert both equal 0o644. This genuinely corresponds to R1 (a real behavioral witness, not just co-located code): the S_vis extractor and oracle search confirmed no visible/hidden existing test leaves FILE_UPLOAD_PERMISSIONS unoverridden while checking for the 0o644 default behavior — the visible FileStoragePermissions tests deliberately force explicit 0o654/None overrides that bypass this default, so they pass identically on both revisions. Nothing in the visible material (including the None default shown there, which differs from the hidden fixed value) already pins down the post-fix behavior. Execution confirms discrimination: PASSED on gold, FAILED on buggy (\"streamed path mode is 600\", 384 != 420). Guarded with the standard Windows skip (mode/umask semantics are POSIX-only) consistent with existing storage-permission tests.",
+    "confidence": "Medium"
+  }
+}

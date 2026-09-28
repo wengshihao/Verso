@@ -1,0 +1,134 @@
+{
+  "task_id": "django__django-12273",
+  "status": "ok",
+  "duration_seconds": 734.9645120420028,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12273",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a model instance obtained through multi-table inheritance (a child Derived extending a concrete parent Item, retrieved here via the ancestor row, e.g. item.derived), resetting the instance's primary-key attribute to None (Derived.uid = None) together with other field values, and then calling save(), must not overwrite/update the existing persisted object; the save() must instead create fresh rows (INSERT) for both the parent and child so that the previously-existing object remains untouched.",
+        "subject": "django.db.models.base.Model.save_base / _save_parents / _save_table (multi-table inheritance child whose pk is derived from an ancestor)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Resetting primary key for a child model doesn't work.\" Body: \"In the attached example code setting the primary key to None does not work (so that the existing object is overwritten on save()).\" def reset(self): self.uid = None self.f = False / class SaveTestCase(TestCase): def setUp(self): self.derived = Derived.objects.create(f=True) # create the first object item = Item.objects.get(pk=self.derived.pk) obj1 = item.derived obj1.reset() obj1.save() # the first object is overwritten"
+      },
+      {
+        "id": "R2",
+        "statement": "After the described sequence — create a Derived (parent Item) with f=True, obtain that child from the ancestor row, reset it (uid=None, f=False), and save() it — the Item row keyed by pk=self.derived.pk (the original object's pk) must still have f=True (i.e., the reset+save created a new copy rather than overwriting f of the original object to False).",
+        "subject": "django.db.models.base.Model.save (effect on persisted rows of multi-table-inheritance child)",
+        "hunk_ids": [],
+        "cited_from": "def test_f_true(self): obj = Item.objects.get(pk=self.derived.pk) self.assertTrue(obj.f)  ... # in setUp, after obj1.reset(); obj1.save() comment \"# the first object is overwritten\" (the issue asserts this document overwrite is the bug, so the correct behavior leaves obj.f True)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "Assigning a value to the pk attribute on a multi-table-inheritance (concrete-parent) model instance, in addition to setting the instance's own local primary-key attribute, also sets the instance attribute for the remote (parent) pk of every parent link registered in _meta.parents whose field is not the model's own primary-key field to that same assigned value. Non-parent-linked, single-table models are unaffected: pk assignment still only sets the local pk attribute.",
+        "subject": "django.db.models.base.Model.pk (setter _set_pk_val)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "After a previously-saved multi-table-inheritance child instance is assigned pk = None, its ancestor parent-link values (and its own pk) are both None, so a subsequent save() issues an INSERT that creates fresh rows for the child and each concrete ancestor (duplicating the row) rather than an UPDATE of the existing rows.",
+        "subject": "django.db.models.base.Model.pk setter -> save allocation",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S3",
+        "statement": "When a parent link in the inheritance chain coincides with the model's own primary key (the pk is the ancestor link itself), pk assignment is not additionally propagated to a separate link attribute beyond the normal pk assignment (no distinct second attribute is overwritten over and above the model's own pk).",
+        "subject": "django.db.models.base.Model.pk",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S1 specifies an internal mechanism of the pk setter (_set_pk_val) that propagates an assigned pk to every non-pk parent-link attribute across _meta.parents. The visible evidence (R1/R2 and their citations) only reports the observable save-time bug/expected behavior (reset pk + save creates fresh INSERT rows); it never mentions the pk setter, parent-link attribute propagation, or _meta.parents internals, so the specific mechanism is not pinned down."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The end observable behavior in S2 (after pk=None on a previously-saved MTI child, save() issues an INSERT creating fresh child+ancestor rows rather than an UPDATE) is directly supported by R1/R2. However, S2 additionally asserts that pk assignment itself makes the ancestor parent-link values None — a causal/mechanism claim the visible evidence never states (the issue only records the user resetting the own pk and the resulting fresh INSERT), so full entailment is ambiguous."
+      },
+      {
+        "requirement_id": "S3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S3 concerns a setter-internal edge case: when a parent link coincides with the model's own primary key, pk assignment is not additionally propagated to a separate link attribute beyond normal pk assignment. No S_vis entry speaks to pk-setter propagation behavior or this coincident-parent-link scenario at all; visible evidence only describes observable save() outcomes, so S3 is not entailed."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_pk_sets_every_registered_parent_link_target_id",
+      "test_source": "def test_pk_sets_every_registered_parent_link_target_id():\n    from django.db.models.base import Model\n\n    class WeirdAutoPk(object):\n        attname = 'uuid_col_own'\n\n    class ParentTarget(object):\n        attname = 'uid_parent_pk_col'\n\n    class ParentLink(object):\n        def __init__(self):\n            self.target_field = ParentTarget()\n\n    class Meta(object):\n        def __init__(self):\n            self.pk = WeirdAutoPk()\n            self.parents = {'Parent': ParentLink()}\n\n    class Bag(object):\n        def __init__(self):\n            self.__dict__['_meta'] = Meta()\n            self.__dict__['vals'] = {}\n\n        def __setattr__(self, name, value):\n            if name == '_meta':\n                self.__dict__['_meta'] = value\n            else:\n                self.__dict__['vals'][name] = value\n\n    b = Bag()\n    Model._set_pk_val(b, 7)\n\n    # The assigned pk value must be recorded on the instance's OWN pk column...\n    assert b.vals.get('uuid_col_own') == 7\n    # ...and, for multi-table inheritance parent links whose field is not the\n    # model's own pk, on the remote parent pk column the link targets.\n    assert b.vals.get('uid_parent_pk_col') == 7\n",
+      "gold_result": "PASSED (assertion that the parent-link target column 'uid_parent_pk_col' was also set to 7 holds on gold).",
+      "buggy_result": "FAILED (AssertionError: assert None == 7 — buggy only recorded 'uuid_col_own': 7 and never wrote the parent-link target column).",
+      "explanation": "Requirement S1 states that Model._set_pk_val / the `pk` property setter on an MTI (concrete-parent) child additionally propagates the assigned value to the remote (parent) pk attname of every registered _meta.parents link whose field is not the model's own pk field (`parent_link.target_field.attname`), while the local pk attname is still set.\n\nThe test directly exercises the changed method (the `pk` property's fset, i.e. Model._set_pk_val), driving it with a Bag object whose `_meta` mirrors precisely the MTI scenario: an own pk column ('uuid_col_own') plus one registered parent link whose `target_field.attname` is a distinct parent-pk column ('uid_parent_pk_col'). After Model._set_pk_val(bag, 7):\n- Buggy (pre-fix; method body just `return setattr(self, self._meta.pk.attname, value)`) records ONLY 'uuid_col_own': 7, leaving the parent-link target column unset => the assert on 'uid_parent_pk_col' fails.\n- Gold (fixed; method iterates _meta.parents and setattrs each parent_link.target_field.attname) records BOTH columns => the assert passes.\n\nThis was confirmed by real run_test executions against each program (gold PASSED, buggy FAILED with `assert None == 7`). It is not duplicating any visible assertion: the visible oracle tests only cover the alias resolved when assigning the explicit parent-link FK (e.g. `restaurant.place_ptr = None`), never the `pk`-setter propagation of the assigned value into the parent-link target pk column for a parent whose pk column name differs from the child's own pk column, which is the specific behavior the gold patch adds. I could not reach the real Django test-model layer because the harness runs each candidate without Django settings configured and the test apps under tests/ are not on sys.path / not in INSTALLED_APPS, so a faithful in-app model run was not achievable; instead I exercised the exact method under test with an instance structure reflecting the real MTI meta (`_meta.pk`, `_meta.parents` link with `target_field`), which runs identically under both gold and buggy and yields a clean discriminating outcome."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug scenario lives in Django ORM: child Derived extends concrete parent Item that declares uid = AutoField(primary_key=True); the multi-table-inheritance child gets an auto parent-link (item_ptr) whose value is the parent pk, and Django behavior is that setting the ancestor/parent pk attribute to None is meant to turn a later save() into an INSERT of a fresh copy. See django/db/models/base.py: _save_table regenerates pk when pk_val is None (meta.pk.get_pk_value_on_save), _save_parents walks meta.parents, and pk=None makes pk_set False so an INSERT runs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing visible regression test: tests/model_inheritance_regress/tests.py::test_id_field_update_on_ancestor_change shows child pk is aliased to the ancestor link — e.g. 'restaurant1.place_ptr = None; self.assertIsNone(restaurant1.pk)' — i.e. the ancestor-chain pk semantics that this ticket exercises."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Django code (main/source) is under django/db/models/base.py (Model.save / save_base / _save_parents / _save_table); inheritance regression tests live in tests/model_inheritance*/."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch is entirely in django/db/models/base.py, method Model._set_pk_val (the pk property setter), lines ~569+."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The propagation targets self._meta.parents.values() parent-link fields, setting parent_link.target_field.attname on the instance when the parent link exists and is not self._meta.pk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Setting pk to None on an MTI child is the mechanism by which an existing row is cloned via save() (parent and child links become None -> pk_set False -> INSERT path in unchanged _save_table/_save_parents)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A parent link equal to self._meta.pk yields no observable extra assignment (its target field is the pk field again); guarded by the parent_link != self._meta.pk check."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: I systematically looked for an oracle test that genuinely exercises [S1] — the behavior whereby assigning the `pk` attribute on an MTI (concrete-parent) instance also updates the *remote (parent) pk attribute* of every registered parent link whose field is not the instance's own primary-key field (`Model._set_pk_val` iterating `_meta.parents`), while single-table/non-parent-link models remain unaffected (only the local pk attr changes).\n\nScope reviewed:\n- All multi-table-inheritance test apps: model_inheritance (tests.py + models.py), model_inheritance_regress (tests.py + models.py), proxy_models/tests.py, proxy_model_inheritance, m2m_through_regress.\n- Related pk/generic pk areas: basic (models+tests), model_regress (models+tests), custom_pk (models+tests), one_to_one (models+tests), model_meta/tests.py, model_fields (tests.py & test_autofield.py), force_insert_update (models+InheritanceTests), serializers multi_table, queryset_pickle.\n\nFindings:\n- In the inheritance test files, the only methods that touch MTI pk/parent-link/ancestor semantics are `test_id_field_update_on_ancestor_change`, `test_issue_6755`, `test_ptr_accessor_assigns_state`, `test_related_filtering_query_efficiency_ticket_15844`, `test_reverse_object_cache`, etc. I read them in full. They all assert the *aliasing* behavior obtained by assigning the explicit OneToOne/parent-link field (e.g. `restaurant.place_ptr = None` → `pk` becomes None), i.e. Django's existing ancestor-link FK assignment resolver — NOT the `pk` setter propagating a value into the remote parent pk's own attname (`parent_link.target_field.attname`) for a parent whose pk column is distinct from the child's pk. Every one of these files is labeled [VISIBLE]; a witness cannot rest on their assertions.\n- I found NO [HIDDEN] test file (in these relevant apps or the broader scans) whose assertion checks \"set instance.pk = X => remote parent-link pk attr (or *_id) on an MTI child with a distinct parent pk column is updated / set to None,\" and no [HIDDEN] test distinguishing MTI parent-link models from non-parent-linked single-table models on pk assignment. There is likewise no model definition (e.g. the hypothetical `Item(uid=AutoField(pk))` → `Derived`) actually present to drive such a test.\n- The benchmark recorded \"Tests currently failing against the buggy program: (none recorded)\", and every repo-relative oracle test touching this code path lives in [VISIBLE] files whose hidden analogs don't exist in the oracle I could inspect.\n\nSince a genuine Witness must come from a [HIDDEN] oracle assertion that passes on gold and fails on buggy for this exact [S1] behavior — and no such hidden test exists in the oracle — I conclude found=false. I did not run/submit any test source because there was no real hidden oracle test to run; constructing a standalone synthetic test (even one that would exhibit the gold/buggy difference) would not constitute a genuine oracle witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (django.db.models.base.Model.pk (setter _set_pk_val)): Assigning a value to the pk attribute on a multi-table-inheritance (concrete-parent) model instance, in addition to setting the instance's own local primary-key attribute, also sets the instance attribute for the remote (parent) pk of every parent link registered in _meta.parents whose field is not the model's own primary-key field to that same assigned value. Non-parent-linked, single-table models are unaffected: pk assignment still only sets the local pk attribute. — not entailed by S_vis (S1 specifies an internal mechanism of the pk setter (_set_pk_val) that propagates an assigned pk to every non-pk parent-link attribute across _meta.parents. The visible evidence (R1/R2 and their citations) only reports the observable save-time bug/expected behavior (reset pk + save creates fresh INSERT rows); it never mentions the pk setter, parent-link attribute propagation, or _meta.parents internals, so the specific mechanism is not pinned down.); confirmed by a synthesized witness: Requirement S1 states that Model._set_pk_val / the `pk` property setter on an MTI (concrete-parent) child additionally propagates the assigned value to the remote (parent) pk attname of every registered _meta.parents link whose field is not the model's own pk field (`parent_link.target_field.attname`), while the local pk attname is still set.\n\nThe test directly exercises the changed method (the `pk` property's fset, i.e. Model._set_pk_val), driving it with a Bag object whose `_meta` mirrors precisely the MTI scenario: an own pk column ('uuid_col_own') plus one registered parent link whose `target_field.attname` is a distinct parent-pk column ('uid_parent_pk_col'). After Model._set_pk_val(bag, 7):\n- Buggy (pre-fix; method body just `return setattr(self, self._meta.pk.attname, value)`) records ONLY 'uuid_col_own': 7, leaving the parent-link target column unset => the assert on 'uid_parent_pk_col' fails.\n- Gold (fixed; method iterates _meta.parents and setattrs each parent_link.target_field.attname) records BOTH columns => the assert passes.\n\nThis was confirmed by real run_test executions against each program (gold PASSED, buggy FAILED with `assert None == 7`). It is not duplicating any visible assertion: the visible oracle tests only cover the alias resolved when assigning the explicit parent-link FK (e.g. `restaurant.place_ptr = None`), never the `pk`-setter propagation of the assigned value into the parent-link target pk column for a parent whose pk column name differs from the child's own pk column, which is the specific behavior the gold patch adds. I could not reach the real Django test-model layer because the harness runs each candidate without Django settings configured and the test apps under tests/ are not on sys.path / not in INSTALLED_APPS, so a faithful in-app model run was not achievable; instead I exercised the exact method under test with an instance structure reflecting the real MTI meta (`_meta.pk`, `_meta.parents` link with `target_field`), which runs identically under both gold and buggy and yields a clean discriminating outcome.",
+    "confidence": "Medium"
+  }
+}

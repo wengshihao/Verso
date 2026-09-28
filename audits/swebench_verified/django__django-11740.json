@@ -1,0 +1,88 @@
+{
+  "task_id": "django__django-11740",
+  "status": "ok",
+  "duration_seconds": 122.24674258299638,
+  "llm_calls": 9,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11740",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "When the migration autodetector keeps a model field in place but changes it so that it becomes a related field pointing at another model — e.g. replacing a UUIDField with a ForeignKey — and therefore emits an AlterField through generate_altered_fields(), the emitted AlterField operation must carry the same automatic inter-app/inter-model dependencies that adding a relation would (the ones _get_dependencies_for_foreign_key() supplies for AddField/CreateModel and for a model targeted in another app). As a consequence, the generated migration must declare a dependency on the referenced model's app; otherwise, when the referenced model lives in a different app than the field-bearing model, the resulting migration does not create any 'dependencies' for the referenced app and migrating raises 'ValueError: Related model 'testapp2.App2' cannot be resolved.'",
+        "subject": "django.db.migrations.autodetector.MigrationAutodetector.generate_altered_fields",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"After some time i change field from UUID to FK, like this: another_app = models.ForeignKey(App2, null=True, blank=True, on_delete=models.SET_NULL, verbose_name=_('another app')) And as result i create new migration, but Migration class was unexpected result, because it does not create any 'dependencies' for App2, because of FK.\" and \"you will get exception like this: ValueError: Related model 'testapp2.App2' cannot be resolved.\" Code contrast: autodetector.generate_added_fields/_generate_added_field and generate_created_models call add_operation(..., dependencies=...) via _get_dependencies_for_foreign_key when a field is a relation, whereas autodetector.generate_altered_fields' plain-AlterField branch calls 'self.add_operation(app_label, operations.AlterField(...))' with no dependencies argument."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the migration autodetector alters an existing field in place via the AlterField path (a field present in both the old and new model states whose new deconstruction differs from the old, where both old and new fields are many-to-many or both are non-many-to-many), and the new field has a remote_field whose model is resolved, the autodetector attaches to that AlterField operation the relation dependencies computed for the new field (the referenced model, its through model when a non-auto-created through is present, resolving swappable settings appropriately). Observable consequence: autodetecting a change where a field in one app is altered from a non-relation field to a ForeignKey (or similar relation) referencing a model in another app produces a migration for the referencing app that depends on the target app's model being created, so the generated/applied migrations succeed rather than failing with a 'Related model ... cannot be resolved' error.",
+        "subject": "MigrationAutodetector.generate_altered_fields via changes() output (AlterField operation ordering for in-place relation alterations)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "VIS-1"
+        ],
+        "rationale": "VIS-1 states directly that when generate_altered_fields() emits an AlterField for a field changed in place into a relation to another model, the AlterField must carry the same relation dependencies that _get_dependencies_for_foreign_key() supplies for adding a relation, so the generated migration declares a dependency on the referenced app rather than failing with 'Related model ... cannot be resolved'. R1's observable consequence and core mechanism are exactly this: attach the new field's relation dependencies so migrations succeed instead of raising that error. R1's extra detail (m2m gating, through model, swappable resolution) all falls within the behavior of the AlterField path and _get_dependencies_for_foreign_key that VIS-1 already pins down."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The report's scenario is two apps in one project: testapp1.App1 gets field 'another_app' changed from models.UUIDField(null=True, blank=True) to models.ForeignKey(App2, null=True, blank=True, on_delete=SET_NULL); testapp2.App2 is the referenced model in a separate app."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant code location: django/db/migrations/autodetector.py, in generate_altered_fields() where, for a kept field whose deconstruction changed and where both old and new fields are non-M2M ('neither_m2m' branch), the AlterField op is added with no dependencies; the change from UUIDField to ForeignKey is exactly that case."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Dependency machinery exists: _get_dependencies_for_foreign_key() returns [(dep_app_label, dep_object_name, None, True)] (plus optional through deps) and is already wired into added fields / created models; check_dependency() already understands 'alter'-type field dependencies, but no generator path attaches FK deps to plain AlterField ops for a field-type change to a relation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Migration autodetector tests live in tests/migrations/test_autodetector.py (class AutodetectorTests, with helpers assertMigrationDependencies/assertOperationTypes); related field e.g. author_with_book and cross-app tests like test_fk_dependency_other_app and test_swappable_changed exercise FK-dependency generation for AddField but not the field-type->FK AlterField case."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Field ValueError source: the 'Related model %r cannot be resolved' error is raised in django/db/models/fields/related.py ForeignObject.resolve_related_fields when remote_field.model is still a string (rendering state before the target app's migration has run)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Where old and new field types are incompatible (m2m vs concrete), generate_altered_fields falls back to _generate_removed_field + _generate_added_field; that else-branch already handled FK dependencies via _generate_added_field and is untouched by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The dependencies computed for relation fields in this path reuse _get_dependencies_for_foreign_key, the same helper already used for AddField / created-model relation fields, and check_dependency already understands 'alter'-type and model-creation dependencies."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only affects fields that live in both model states (kept fields, generate_altered_fields); renamed targets/models are proxied through self.renamed_models/renamed_fields earlier in generate_altered_fields before dependencies are computed."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

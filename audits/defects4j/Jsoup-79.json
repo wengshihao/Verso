@@ -1,0 +1,127 @@
+{
+  "task_id": "Jsoup-79",
+  "status": "ok",
+  "duration_seconds": 181.70634370799962,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-79",
+    "s_vis": [
+      {
+        "id": "L1",
+        "statement": "On a leaf whose value is a plain string (no attribute map), attr(key) returns the stored string value when key equals the leaf's nodeName, and returns the empty string (EmptyString, not null) for any other key.",
+        "subject": "LeafNode.attr(String)",
+        "hunk_ids": [],
+        "cited_from": "LeafNode.java: 'if (!hasAttributes()) { return key.equals(nodeName()) ? (String) value : EmptyString; }'"
+      },
+      {
+        "id": "L2",
+        "statement": "On a leaf holding only a string core value, setting attr(nodeName(), value) overwrites the stored core value with the supplied value rather than moving it into an attribute map.",
+        "subject": "LeafNode.attr(String, String)",
+        "hunk_ids": [],
+        "cited_from": "LeafNode.java: 'if (!hasAttributes() && key.equals(nodeName())) { this.value = value; }' AND TextNodeTest.testTextBean: 'tn.attr(tn.nodeName(), \"kablam &\"); assertEquals(\"kablam &\", tn.text());'"
+      },
+      {
+        "id": "L3",
+        "statement": "Setting an attribute whose key does not equal the leaf's nodeName (or setting any attribute once the leaf already holds an attribute map) first ensures the node holds an Attributes map and delegates the put to the superclass, preserving the existing core value under the nodeName key when the upgrade happens.",
+        "subject": "LeafNode.attr(String, String)",
+        "hunk_ids": [],
+        "cited_from": "LeafNode.java: '} else { ensureAttributes(); super.attr(key, value); }' AND 'private void ensureAttributes() { if (!hasAttributes()) { Object coreValue = value; ... if (coreValue != null) attributes.put(nodeName(), (String) coreValue); } }'"
+      },
+      {
+        "id": "L4",
+        "statement": "hasAttr(key), removeAttr(key), and absUrl(key) on any leaf trigger ensureAttributes(), i.e. they upgrade a plain-string-valued leaf into one backed by an Attributes map (storing the prior core value under the nodeName key) before performing their operation.",
+        "subject": "LeafNode.hasAttr/removeAttr/absUrl",
+        "hunk_ids": [],
+        "cited_from": "LeafNode.java: 'public boolean hasAttr(String key) { ensureAttributes(); return super.hasAttr(key); }' / 'public Node removeAttr(String key) { ensureAttributes(); ... }' / 'public String absUrl(String key) { ensureAttributes(); return super.absUrl(key); }'"
+      },
+      {
+        "id": "L5",
+        "statement": "LeafNodes hold no child nodes: childNodeSize() always returns 0, and ensureChildNodes() throws UnsupportedOperationException. Consequently childNodes() on a text node returns an empty list.",
+        "subject": "LeafNode.childNodeSize/ensureChildNodes",
+        "hunk_ids": [],
+        "cited_from": "LeafNode.java: 'public int childNodeSize() { return 0; }' / 'protected List<Node> ensureChildNodes() { throw new UnsupportedOperationException(\"Leaf Nodes do not have child nodes.\"); }' AND TextNodeTest.testLeadNodesHaveNoChildren: 'List<Node> nodes = tn.childNodes(); assertEquals(0, nodes.size());'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "A LeafNode (e.g. a TextNode or other leaf) now behaves as a node with zero child nodes for every Node operation that queries or traverses child nodes: child-enumeration operations that previously raised UnsupportedOperationException ('Leaf Nodes do not have child nodes.') from ensureChildNodes() now return/act on an empty child-node list instead — concretely childNodes() and childNodesCopy() return an empty list, childNode(index) accesses an empty list, and unwrap()/childNodesAsArray() treat the leaf as having no children rather than throwing.",
+        "subject": "org.jsoup.nodes.LeafNode child-node list behavior (via Node.ensureChildNodes-based ops)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "false",
+        "checked_ids": [
+          "L5",
+          "L1",
+          "L2",
+          "L3",
+          "L4"
+        ],
+        "rationale": "The only relevant S_vis entry (L5) documents the current code where ensureChildNodes() still throws UnsupportedOperationException and only childNodes()/childNodeSize() are shown as empty/zero; it does not commit to the developer's patch behavior that childNodesCopy(), childNode(index), unwrap(), and childNodesAsArray() act on empty lists instead of throwing. S_vis actually reflects the pre-patch throwing state (or is silent on those operations), so it does not pin down the exact empty-list, non-throwing behavior S_impl_1 commits to."
+      }
+    ],
+    "target_requirement_id": "S_impl_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "leafChildNodeOpsReturnEmptyNotThrow",
+      "test_source": "@Test public void leafChildNodeOpsReturnEmptyNotThrow() throws Exception {\n    org.jsoup.nodes.TextNode tn = new org.jsoup.nodes.TextNode(\"hi there\");\n    // childNodesCopy must not throw; must reflect an empty child set\n    java.util.List<org.jsoup.nodes.Node> copy = tn.childNodesCopy();\n    org.junit.Assert.assertEquals(0, copy.size());\n}\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — java.lang.UnsupportedOperationException: Leaf Nodes do not have child nodes. at org.jsoup.nodes.LeafNode.ensureChildNodes(LeafNode.java:94) called from Node.childNodesCopy(Node.java:218)",
+      "explanation": "Target requirement [S_impl_1] mandates that a LeafNode act as a zero-child node for every Node child-node query/traversal op that routes through ensureChildNodes(): childNodesCopy(), childNodes(), childNode(int), unwrap(), childNodesAsArray() must all run against an empty child list instead of throwing UnsupportedOperationException. I wrote a fresh test that constructs a plain TextNode (a leaf) and calls the public Node method childNodesCopy() on it, asserting the returned list has size 0. This specifically targets childNodesCopy(), a public method that the single visible oracle test (testLeadNodesHaveNoChildren in TextNodeTest.java) never invokes — it only asserts tn.childNodes().size()==0. My candidate thus independently covers a distinct, un-pinned-down operation entry point for the same bug. Execution confirmed: gold PASSED (empty list returned, size 0) and buggy FAILED because Node.childNodesCopy() -> LeafNode.ensureChildNodes() still throws UnsupportedOperationException('Leaf Nodes do not have child nodes.'). This is a genuine behavioral discriminator between the buggy and fixed programs."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files are visible: src/main/java/org/jsoup/nodes/LeafNode.java, src/main/java/org/jsoup/nodes/Node.java, and src/test/java/org/jsoup/nodes/TextNodeTest.java. TextNode.java, Attributes.java, Element.java, Document.java etc. (referenced by the code and tests) are NOT visible to the repair system, so text()/isBlank() semantics and the html() production relied on by testTextBean are only indirectly constrained."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The authoritative bug description could not be retrieved from the tracker: the visible description is a citation-only fallback ('This bug's fix touches: org.jsoup.nodes.LeafNode' / original GitHub issue 1032). No failing input/output pair for the bug itself is disclosed, so requirements here are grounded in LeafNode's intrinsic semantics and the assertions in the single visible test file that route through LeafNode (testTextBean's 'tn.attr(tn.nodeName(), ...)' flow, and testLeadNodesHaveNoChildren)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "LeafNode.attr(key, value) short-circuits a direct core-value write only when the node is not attribute-backed AND key == nodeName(); every other write path goes through ensureAttributes(), which is also invoked unconditionally by hasAttr/removeAttr/absUrl so those calls convert string-valued leaves into Attributes-backed nodes; this split fast-path is the most likely seam that any LeafNode fix in this bug touches."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "baseUri() of an unparented LeafNode returns \"\" (LeafNode.baseUri: 'return hasParent() ? parent().baseUri() : \"\";'), and doSetBaseUri is a no-op on leaves (leaf tracks no base URI of its own)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "LeafNode.childNodeSize() already returned 0 before this fix; it was inconsistent with ensureChildNodes() throwing. The patch resolves that inconsistency by making ensureChildNodes() return the shared field EmptyNodes = Collections.emptyList()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "EmptyNodes is a single shared static emptyList; Node.childNodes() still additionally wraps it with Collections.unmodifiableList before returning to callers."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is observable only indirectly, since LeafNode.ensureChildNodes() is protected and LeafNode is abstract; the entry points that expose it are the public Node methods childNodes(), childNodesCopy(), childNode(int) and protected unwrap()/childNodesAsArray(), unchanged in this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "jsoup-79 corresponds to upstream GitHub issue 1032; this patch is the single-method behavior normalization described (bug and gold hunks are adjacent in LeafNode.java)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_1]: I searched the entire oracle (all 27 test files) for a test that enforces requirement [S_impl_1]: a LeafNode acting as a zero-child node for Node's child-enumeration ops (childNodes(), childNodesCopy(), childNode(index), unwrap()/childNodesAsArray() returning/using an empty list instead of throwing UnsupportedOperationException from ensureChildNodes()).\n\nThe ONLY oracle test that exercises this exact leaf behavior is `TextNodeTest.testLeadNodesHaveNoChildren`, which parses \"<div>Hello there</div>\", grabs the TextNode leaf as div.childNode(0), and asserts `tn.childNodes().size() == 0`. This is precisely the sole test currently failing against the buggy program, and it matches r's semantics exactly.\n\nHowever, TextNodeTest.java is labeled [VISIBLE] by read_test_file, and a Witness may only rest on [HIDDEN] assertions. A [VISIBLE] assertion is material the repair system already saw, so it cannot serve as an oracle witness for this fix no matter how well it matches r. I therefore mechanically cannot use it.\n\nI also checked every other test in the oracle for a behaviour that would genuinely assert that a *leaf* has no children via Node child ops. The relevant node-bearing HIDDEN files (NodeTest, ElementTest, XmlTreeBuilderTest, HtmlParserTest, TokeniserTest, TokeniserStateTest, ElementsTest, etc.) always invoke childNodes()/childNode()/childNodesCopy()/unwrap() on Element (or Document) parents — never directly on a LeafNode, and their assertions concern text extraction/html output/traversal counts, not the leaf-as-empty-children contract. There is no HIDDEN test that tests child enumeration on a leaf node in any form.\n\nConclusion: the requirement's only oracle enforcement is [VISIBLE] content, which by the Verso rule cannot constitute a witness, so no qualifying hidden oracle witness exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_1] (org.jsoup.nodes.LeafNode child-node list behavior (via Node.ensureChildNodes-based ops)): A LeafNode (e.g. a TextNode or other leaf) now behaves as a node with zero child nodes for every Node operation that queries or traverses child nodes: child-enumeration operations that previously raised UnsupportedOperationException ('Leaf Nodes do not have child nodes.') from ensureChildNodes() now return/act on an empty child-node list instead — concretely childNodes() and childNodesCopy() return an empty list, childNode(index) accesses an empty list, and unwrap()/childNodesAsArray() treat the leaf as having no children rather than throwing. — not entailed by S_vis (The only relevant S_vis entry (L5) documents the current code where ensureChildNodes() still throws UnsupportedOperationException and only childNodes()/childNodeSize() are shown as empty/zero; it does not commit to the developer's patch behavior that childNodesCopy(), childNode(index), unwrap(), and childNodesAsArray() act on empty lists instead of throwing. S_vis actually reflects the pre-patch throwing state (or is silent on those operations), so it does not pin down the exact empty-list, non-throwing behavior S_impl_1 commits to.); confirmed by a synthesized witness: Target requirement [S_impl_1] mandates that a LeafNode act as a zero-child node for every Node child-node query/traversal op that routes through ensureChildNodes(): childNodesCopy(), childNodes(), childNode(int), unwrap(), childNodesAsArray() must all run against an empty child list instead of throwing UnsupportedOperationException. I wrote a fresh test that constructs a plain TextNode (a leaf) and calls the public Node method childNodesCopy() on it, asserting the returned list has size 0. This specifically targets childNodesCopy(), a public method that the single visible oracle test (testLeadNodesHaveNoChildren in TextNodeTest.java) never invokes — it only asserts tn.childNodes().size()==0. My candidate thus independently covers a distinct, un-pinned-down operation entry point for the same bug. Execution confirmed: gold PASSED (empty list returned, size 0) and buggy FAILED because Node.childNodesCopy() -> LeafNode.ensureChildNodes() still throws UnsupportedOperationException('Leaf Nodes do not have child nodes.'). This is a genuine behavioral discriminator between the buggy and fixed programs.",
+    "confidence": "Medium"
+  }
+}

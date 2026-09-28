@@ -1,0 +1,100 @@
+{
+  "task_id": "pylint-dev__pylint-7114",
+  "status": "ok",
+  "duration_seconds": 363.47621383401565,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "pylint-dev__pylint-7114",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When pylint is invoked with a directory argument (e.g. `pylint a`) whose directory contains a Python module file sharing the directory's own name (`a/a.py`) and has no `__init__.py`, the lint run must succeed without emitting an F0010 parse-error message that arose from trying to load `<dir>/__init__.py` (`a/__init__.py`), which does not exist.",
+        "subject": "expand_modules / namespace-package directory argument resolution",
+        "hunk_ids": [],
+        "cited_from": "\"Running `pylint a` if `a/a.py` is present fails while searching for an `__init__.py` file.\" ... \"$ pylint a\\n************* Module a\\na/__init__.py:1:0: F0010: error while code parsing: Unable to load file a/__init__.py:\\n[Errno 2] No such file or directory: 'a/__init__.py' (parse-error)\" ... \"### Expected behavior\\n\\nRunning `pylint a` if `a/a.py` is present should succeed.\" ... \"However, if I rename `a.py`, `pylint a` succeeds:\" ... \"Alternatively, I can also `touch a/__init__.py`, but that shouldn't be necessary anymore.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When a separate file (e.g. `r.py` containing `from a import b`) is linted together with such a layout (`pylint -E r a`, where directory `a/` has `a/a.py`, `a/b.py` and no `__init__.py`), the `from a import b` import in `r` must still resolve `b` correctly: `pylint` must not emit `E0611: No name 'b' in module 'a'` for `r`, and must not otherwise fail for `r`. (Running `pylint -E r` alone already works; passing `a` additionally must not break `r`.)",
+        "subject": "imports checker module resolution (E0611 no-name-in-module) interplay with same-named namespace-package submodule",
+        "hunk_ids": [],
+        "cited_from": "\"This also has some side-effects in module resolution. For example, if I create another file `r.py`: ... With the content: `from a import b` Running `pylint -E r` will run fine, but `pylint -E r a` will fail. Not just for module a, but for module r as well.\" ... \"************* Module r\\nr.py:1:0: E0611: No name 'b' in module 'a' (no-name-in-module)\\n************* Module a\\na/__init__.py:1:0: F0010: error while code parsing: Unable to load file a/__init__.py: ...\" ... \"Again, if I rename `a.py` to `c.py`, `pylint -E r a` will work perfectly.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In expand_modules, an existing target directory is treated by the file/package-directory handling (modname derived from the file path and filepath computed as <dir>/__init__.py) only when the directory actually contains an explicit __init__.py file; an existing directory lacking __init__.py (a namespace-package-style directory) is instead handled as a module/package resolved by name, which changes which files (e.g. namespace-package submodules) get discovered and expanded.",
+        "subject": "pylint.lint.expand_modules.expand_modules",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In expand_modules, while resolving a target given by module name, only an ImportError is swallowed and recorded as a fatal error entry; a SyntaxError raised during that resolution is no longer caught, so it propagates out of expand_modules instead of being added to the reported errors.",
+        "subject": "pylint.lint.expand_modules.expand_modules",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins the negative outcome: a directory lacking __init__.py must not be treated via file-package handling that computes <dir>/__init__.py (which caused F0010), and S_vis R2 requires namespace submodules remain discoverable. But S_impl R1 commits to a precise mechanism (such a dir is handled as a module/package resolved by name, altering discovery) that is only one possible implementation of that outcome, so the exact branch logic is not fully pinned down by visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions exception-type handling (swallowing ImportError vs propagating SyntaxError) within expand_modules' module-name resolution; the visible issue reports only describe user-visible error/outcome symptoms, giving no evidence bearing on which exceptions are caught and recorded as fatal."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_syntax_error_during_module_resolution_propagates",
+      "test_source": "import pytest\nfrom unittest.mock import patch\nfrom pylint.lint.expand_modules import expand_modules\n\n\ndef test_syntax_error_during_module_resolution_propagates():\n    with patch(\n        \"astroid.modutils.file_from_modpath\",\n        side_effect=SyntaxError(\"simulated resolution SyntaxError\"),\n    ):\n        with pytest.raises(SyntaxError):\n            expand_modules([\"some_missing_module_name_abc\"], [], [], [])\n",
+      "gold_result": "PASSED — expand_modules let the SyntaxError raised by modutils.file_from_modpath during module-name resolution propagate out of the function (the try/except only catches ImportError).",
+      "buggy_result": "FAILED — \"DID NOT RAISE <class 'SyntaxError'>\": the buggy program's except (ImportError, SyntaxError) swallowed the SyntaxError into the reported errors list, so expand_modules returned normally instead of propagating.",
+      "explanation": "Requirement R2 states that in expand_modules, while resolving a module-name target, only an ImportError is swallowed/recorded as a fatal error and a SyntaxError raised during file_from_modpath resolution propagates out of expand_modules (it is no longer caught). I exercised exactly the else-branch (module-name) resolution path by passing a module-name target (a string that is neither a file nor a directory with __init__.py, so control reaches the `modname = something; filepath = modutils.file_from_modpath(...)` try). Patching astroid.modutils.file_from_modpath (the function that `modutils.file_from_modpath(...)` invokes at that exact call site) to raise a SyntaxError reproduces the changed behavior. The test asserts the SyntaxError propagates (pytest.raises(SyntaxError)): it passes on gold (which catches only ImportError) and fails on buggy (which catches (ImportError, SyntaxError) and records it as a fatal error). This is the exact distinguishing behavior of R2, and no [VISIBLE] oracle test pins down SyntaxError propagation (the visible test_identically_named_nested_module concerns the companion module-file/directory resolution behavior of R1, not SyntaxError swallowing). The exact submitted source ran PASSED against gold and FAILED against buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "Both changes are confined to the per-target loop of expand_modules in pylint/lint/expand_modules.py; neither touches get_python_path or the namespace-expansion block below."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The surrounding code still treats a target that is an actual regular file as a file regardless of any directory/__init__.py check (H0 keeps isfile(...) as one disjunct)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Namespace expansion of such a directory still ultimately depends on the later file_info_from_modpath / is_namespace logic, unaffected by these hunks."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated whether the oracle already contains a test that enforces R2 — i.e. that in expand_modules, while resolving a target given by module name, a SyntaxError raised during resolution is NOT caught (only ImportError is), and so propagates out of expand_modules rather than being added to the reported errors.\n\nInvestigation performed:\n- Read tests/lint/unittest_lint.py, tests/lint/unittest_expand_modules.py, tests/lint/test_pylinter.py, tests/lint/test_utils.py, tests/lint/test_caching.py, and tests/test_self.py. All are labeled **[VISIBLE]**, and none contains a hidden assertion that a SyntaxError escapes expand_modules. unittest_lint.py and unittest_expand_modules.py (the two files that actually exercise expand_modules) are fully in VISIBLE content.\n- The only test currently failing against the buggy program is tests/lint/unittest_lint.py::test_identically_named_nested_module. A genuine witness for R2 would have to be in the failing set, since a witness always fails against the buggy build. That test is (a) located in a [VISIBLE] file and thus, by rule, its assertions can never serve as a witness (visible content was already available to the repair system, so it cannot demonstrate an un-entailed requirement), and (b) its name/context concerns resolution of an identically-named nested *module* (the module-name target resolution / file-vs-directory handling described in the task notes, i.e. the companion behavior — R1), not the swallowing-vs-propagation of a SyntaxError. I found no assertion anywhere that a SyntaxError raised during module-name resolution is expected to propagate out of expand_modules with only ImportError recorded.\n- Read access to that far tail of unittest_lint.py was not possible (the file read is bounded), and I therefore could not even construct/execute that test's real source to confirm via run_test, which is required for found=true.\n\nBecause no [HIDDEN] assertion tests R2's distinguishing behavior, and the only candidate failing test lives in [VISIBLE] content (and appears to target the companion module-name-resolution behavior rather than SyntaxError propagation), there is no valid oracle witness for R2. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (pylint.lint.expand_modules.expand_modules): In expand_modules, while resolving a target given by module name, only an ImportError is swallowed and recorded as a fatal error entry; a SyntaxError raised during that resolution is no longer caught, so it propagates out of expand_modules instead of being added to the reported errors. — not entailed by S_vis (No S_vis entry mentions exception-type handling (swallowing ImportError vs propagating SyntaxError) within expand_modules' module-name resolution; the visible issue reports only describe user-visible error/outcome symptoms, giving no evidence bearing on which exceptions are caught and recorded as fatal.); confirmed by a synthesized witness: Requirement R2 states that in expand_modules, while resolving a module-name target, only an ImportError is swallowed/recorded as a fatal error and a SyntaxError raised during file_from_modpath resolution propagates out of expand_modules (it is no longer caught). I exercised exactly the else-branch (module-name) resolution path by passing a module-name target (a string that is neither a file nor a directory with __init__.py, so control reaches the `modname = something; filepath = modutils.file_from_modpath(...)` try). Patching astroid.modutils.file_from_modpath (the function that `modutils.file_from_modpath(...)` invokes at that exact call site) to raise a SyntaxError reproduces the changed behavior. The test asserts the SyntaxError propagates (pytest.raises(SyntaxError)): it passes on gold (which catches only ImportError) and fails on buggy (which catches (ImportError, SyntaxError) and records it as a fatal error). This is the exact distinguishing behavior of R2, and no [VISIBLE] oracle test pins down SyntaxError propagation (the visible test_identically_named_nested_module concerns the companion module-file/directory resolution behavior of R1, not SyntaxError swallowing). The exact submitted source ran PASSED against gold and FAILED against buggy.",
+    "confidence": "Medium"
+  }
+}

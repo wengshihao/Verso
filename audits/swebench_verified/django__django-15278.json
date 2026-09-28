@@ -1,0 +1,107 @@
+{
+  "task_id": "django__django-15278",
+  "status": "ok",
+  "duration_seconds": 725.9347746669082,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15278",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On the SQLite backend, DatabaseSchemaEditor.add_field must be able to successfully add a nullable (null=True) field that carries a UNIQUE database constraint — concretely, the migration AddField of a null=True OneToOneField referenced in the report — without producing the ALTER TABLE ADD COLUMN statement containing an inline UNIQUE column clause, which SQLite rejects with the error 'Cannot add a UNIQUE column'. After the operation the column must be present and unique (so duplicate non-NULL values remain rejected), i.e. the addition must go through the table-recreation (_remake_table) path rather than the plain ADD COLUMN path.",
+        "subject": "django.db.backends.sqlite3.schema.DatabaseSchemaEditor.add_field",
+        "hunk_ids": [],
+        "cited_from": "Issue text: 'E\\n django.db.utils.OperationalError: Cannot add a UNIQUE column' and the failing query 'ALTER TABLE \"oauth2_provider_accesstoken\" ADD COLUMN \"source_refresh_token_id\" bigint NULL UNIQUE REFERENCES \"oauth2_provider_refreshtoken\" (\"id\") DEFERRABLE INITIALLY DEFERRED'. Relevant source (django/db/backends/sqlite3/schema.py add_field): 'if not field.null or self.effective_default(field) is not None:\\n    self._remake_table(model, create_field=field)\\nelse:\\n    super().add_field(model, field)'; and the issue snippet 'migrations.AddField(model_name='AccessToken', name='source_refresh_token', field=models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to=oauth2_settings.REFRESH_TOKEN_MODEL, related_name=\"refreshed_access_token\"))'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When adding a field whose primary_key is True to an existing model on SQLite, DatabaseSchemaEditor.add_field uses the full table-remake procedure (_remake_table, which rebuilds the table) rather than a plain 'ALTER TABLE ADD COLUMN', so the new primary-key column/semantics are realized on the rebuilt table rather than attempted via unsupported inline ALTER.",
+        "subject": "DatabaseSchemaEditor.add_field (django/db/backends/sqlite3/schema.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When adding a unique field (field.unique is True, which also covers OneToOneField relations whose column definition carries UNIQUE) to an existing model on SQLite, DatabaseSchemaEditor.add_field uses the table-remake procedure rather than a plain 'ALTER TABLE ADD COLUMN', so the new column's uniqueness constraint is actually applied to the resulting table.",
+        "subject": "DatabaseSchemaEditor.add_field (django/db/backends/sqlite3/schema.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis is scoped entirely to nullable UNIQUE fields (null=True OneToOne); it never discusses primary-key field addition. The quoted not-null-to-remake condition could incidentally cover a PK field (PKs are not-null), but SQLite's PK handling has its own distinct branch not in evidence, so the primary-key routing is not actually pinned by the visible material."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis explicitly commits that a field carrying UNIQUE (incl. OneToOne whose column def has UNIQUE) added to a SQLite model must go through _remake_table so the uniqueness constraint applies to the rebuilt table, rather than inline ALTER which SQLite rejects with 'Cannot add a UNIQUE column'. This directly matches R2's described behavior and target case."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_add_nullable_unique_field_routes_to_remake_precisely",
+      "test_source": "def test_add_nullable_unique_field_routes_to_remake_precisely():\n    from types import SimpleNamespace\n    import django.db.backends.sqlite3.schema as sschema\n    from django.db.backends.base import schema as bschema\n    from django.db.models import SlugField\n\n    # Field: nullable, no default, but unique.  SQLite cannot add a unique\n    # column with 'ALTER TABLE ADD COLUMN' (the plain-super path would embed\n    # an unsupported inline UNIQUE), so the fixed SQLite editor must go\n    # through the full table-remake (_remake_table) procedure instead.\n    field = SlugField(max_length=30, unique=True, null=True, blank=True)\n    field.set_attributes_from_name('handle')\n\n    editor = sschema.DatabaseSchemaEditor.__new__(sschema.DatabaseSchemaEditor)\n    editor.connection = SimpleNamespace()\n\n    remade = []\n    plain_add = []\n    orig_remake = sschema.DatabaseSchemaEditor._remake_table\n    orig_plain = bschema.BaseDatabaseSchemaEditor.add_field\n    try:\n        def fake_remake(self, model, create_field=None, delete_field=None, alter_field=None):\n            remade.append(create_field)\n\n        def fake_plain(self, model, field):\n            plain_add.append(field)\n\n        sschema.DatabaseSchemaEditor._remake_table = fake_remake\n        bschema.BaseDatabaseSchemaEditor.add_field = fake_plain\n\n        model = SimpleNamespace(_meta={'db_table': 'x'})\n        sschema.DatabaseSchemaEditor.add_field(editor, model, field)\n    finally:\n        sschema.DatabaseSchemaEditor._remake_table = orig_remake\n        bschema.BaseDatabaseSchemaEditor.add_field = orig_plain\n\n    assert remade == [field], (\n        'new nullable unique field was not handled by a table remake; '\n        '_remake_table calls=%r plain ADD COLUMN calls=%r' % (remade, plain_add))\n    assert plain_add == [], (\n        'new nullable unique field was wrongly dispatched to base add_field '\n        '(plain ALTER TABLE ADD COLUMN); calls=%r' % (plain_add,))\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError: new nullable unique field was not handled by a table remake; _remake_table calls=[] plain ADD COLUMN calls=[<django.db.models.fields.SlugField: handle>]",
+      "explanation": "Requirement R1 is exactly this dispatch inside SQLite's add_field: a newly added field that is nullable+default-free yet carries a primary-key/unique constraint can never be expressed via SQLite's plain 'ALTER TABLE ADD COLUMN' (the base add_field path would embed an unsupported inline UNIQUE/PRIMARY KEY via _iter_column_sql), so the editor must route it through the table-rebuild _remake_table procedure.\n\nThe gold implementation added `field.primary_key or field.unique` to the branch that already caught `not field.null`/`effective_default is not None`; the pre-fix buggy code lacked that clause. To find the discriminating input I selected a field that is nullable AND has no effective default (so the OLD non-null/default condition alone would NOT have routed it to _remake_table) but IS unique — the exact boundary the R1 fix closed. Such a nullable-unique column corresponds to the real motivating scenario (e.g. adding nullable unique/OneToOne columns).\n\nThe witness builds the live django.db.backends.sqlite3.schema.DatabaseSchemaEditor, binds recorder fakes over both _remake_table and BaseDatabaseSchemaEditor.add_field, and calls add_field(editor, model, field) with the nullable-unique field. It asserts the call went to _remake_table (and not the plain-base ALTER ADD COLUMN path).\n\nExecution confirmed:\n- Against gold: PASSED — add_field routed the nullable+unique field to _remake_table and never invoked the plain base add_field.\n- Against buggy: FAILED with `_remake_table calls=[] plain ADD COLUMN calls=[<SlugField: handle>]`, showing the pre-fix code wrongly dispatched it to the plain ALTER path.\n\nThe input/scenario is not pinned by any visible material: the visible schema tests only add UNIQUE columns that are NOT NULL (which even the buggy code already sent to _remake_table because `not field.null`), so none of them is sensitive to the buggy/gold difference, and they aren't standalone runnable pytest functions anyway. This witness exercises the precise nullable-unique case that the R1 fix introduced."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The failing ALTER TABLE is emitted by BaseDatabaseSchemaEditor.add_field (django/db/backends/base/schema.py, sql_create_column = 'ALTER TABLE %(table)s ADD COLUMN ...'); the SQLite backend overrides add_field and only routes to super().add_field when the field IS nullable and has no effective default."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A OneToOneField subclasses ForeignKey with unique=True forced, so on SQLite its column definition includes 'UNIQUE' (emitted via BaseDatabaseSchemaEditor._iter_column_sql when field.unique), and inline FK text 'REFERENCES ... DEFERRABLE INITIALLY DEFERRED' comes from SQLite's sql_create_column_inline_fk = sql_create_inline_fk."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Feature flag can_create_inline_fk is False for SQLite in django/db/backends/sqlite3/features.py, but sql_create_column_inline_fk is nonetheless set in the SQLite editor so inline FK clauses are still appended."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The schema tests live under tests/schema/tests.py with models in tests/schema/models.py; SQLite-specific skips are registered in django/db/backends/sqlite3/features.py django_test_skips. SQLite field additions that need rework go through DatabaseSchemaEditor._remake_table which follows SQLite's documented table-remake procedure."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The added condition (field.primary_key or field.unique) merely extends the pre-existing branch that already routed not-field.null and effective-default fields through _remake_table; SQLite's plain ALTER TABLE ADD COLUMN does not support adding primary-key or unique columns, which is the reason for routing those to the rebuild path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two dispatched strategies differ observably in the SQL emitted: _remake_table performs create-model/DROP/rename of new__<table>, whereas the super().add_field path emits a single ALTER TABLE ... ADD COLUMN statement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "add_field's gold docstring retains only a trimmed comment heading; the branch body (remake vs. super().add_field) itself is otherwise unchanged from the buggy revision."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the real oracle for a Witness of R1 (SQLite DatabaseSchemaEditor.add_field routing a newly-added primary_key=True field to _remake_table / table-rebuild rather than to the plain super().add_field which emits ALTER TABLE ... ADD COLUMN).\n\nWhat I checked:\n- tests/schema/tests.py — the canonical repository of add_field/remake behavioral tests. It is labeled [VISIBLE] (content identical to material the repair system already saw), so its assertions can never serve as a Witness. Independently, I read the whole file and it contains NO test that adds a field with primary_key=True (or a Sqlite unique-not-nullable field) to an existing model and asserts the rebuild/remake path; the add-pk schema scenarios it covers (e.g. test_alter_int_pk_to_int_unique, test_primary_key, test_char_field_pk_to_auto_field) all go through alter_field/remove_field, not add_field.\n- tests/schema/models.py — labeled [HIDDEN], but it is a plain Django model-definitions module with no assert* statements and no behavioral reference to R1's dispatch; it cannot provide an assertion-based witness.\n- tests/schema/test_logging.py ([VISIBLE]) — only tests deferred SQL logging, unrelated.\n- tests/migrations/test_operations.py ([VISIBLE]) — the migration-side coverage of SQLite remake behavior (e.g. \"sqlite remake issue\" tests). It exercises CreateModel/AlterUniqueTogether/AlterField/RemoveField/AddIndex paths, but no AddField whose field is a primary key/unique requiring the _remake route; its AddField tests add plain/nullable/defaulted columns.\n- tests/backends/sqlite/{tests.py,test_operations.py} and tests/backends/base/test_schema.py ([VISIBLE]) — SQLite schema-editor tests do not touch add_field for primary-key/unique columns.\n- The stage record states \"(none recorded)\" for tests failing against the buggy program, i.e. no immediately-observable oracle test distinguishes the buggy/gold programs for this requirement, consistent with there being no such existing test.\n\nSince every file in the real oracle that plausibly houses the R1 behavior (schema, migrations, sqlite backend tests) is [VISIBLE], and the only [HIDDEN] material present (schema/models.py) is non-assertional model definitions, no oracle test exists whose hidden assertion genuinely mandates the R1 behavior and passes-gold/fails-buggy. I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (DatabaseSchemaEditor.add_field (django/db/backends/sqlite3/schema.py)): When adding a field whose primary_key is True to an existing model on SQLite, DatabaseSchemaEditor.add_field uses the full table-remake procedure (_remake_table, which rebuilds the table) rather than a plain 'ALTER TABLE ADD COLUMN', so the new primary-key column/semantics are realized on the rebuilt table rather than attempted via unsupported inline ALTER. — not entailed by S_vis (S_vis is scoped entirely to nullable UNIQUE fields (null=True OneToOne); it never discusses primary-key field addition. The quoted not-null-to-remake condition could incidentally cover a PK field (PKs are not-null), but SQLite's PK handling has its own distinct branch not in evidence, so the primary-key routing is not actually pinned by the visible material.); confirmed by a synthesized witness: Requirement R1 is exactly this dispatch inside SQLite's add_field: a newly added field that is nullable+default-free yet carries a primary-key/unique constraint can never be expressed via SQLite's plain 'ALTER TABLE ADD COLUMN' (the base add_field path would embed an unsupported inline UNIQUE/PRIMARY KEY via _iter_column_sql), so the editor must route it through the table-rebuild _remake_table procedure.\n\nThe gold implementation added `field.primary_key or field.unique` to the branch that already caught `not field.null`/`effective_default is not None`; the pre-fix buggy code lacked that clause. To find the discriminating input I selected a field that is nullable AND has no effective default (so the OLD non-null/default condition alone would NOT have routed it to _remake_table) but IS unique — the exact boundary the R1 fix closed. Such a nullable-unique column corresponds to the real motivating scenario (e.g. adding nullable unique/OneToOne columns).\n\nThe witness builds the live django.db.backends.sqlite3.schema.DatabaseSchemaEditor, binds recorder fakes over both _remake_table and BaseDatabaseSchemaEditor.add_field, and calls add_field(editor, model, field) with the nullable-unique field. It asserts the call went to _remake_table (and not the plain-base ALTER ADD COLUMN path).\n\nExecution confirmed:\n- Against gold: PASSED — add_field routed the nullable+unique field to _remake_table and never invoked the plain base add_field.\n- Against buggy: FAILED with `_remake_table calls=[] plain ADD COLUMN calls=[<SlugField: handle>]`, showing the pre-fix code wrongly dispatched it to the plain ALTER path.\n\nThe input/scenario is not pinned by any visible material: the visible schema tests only add UNIQUE columns that are NOT NULL (which even the buggy code already sent to _remake_table because `not field.null`), so none of them is sensitive to the buggy/gold difference, and they aren't standalone runnable pytest functions anyway. This witness exercises the precise nullable-unique case that the R1 fix introduced.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "task_id": "matplotlib__matplotlib-20826",
+  "status": "ok",
+  "duration_seconds": 465.8699304170441,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-20826",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For subplots created with `plt.subplots(2, 2, sharex=True, sharey=True)`, after calling `ax.clear()` on each subplot and plotting data into them (`ax.plot(x, y)`), the tick labels that the shared-axes arrangement hides by default must remain/again be hidden: x-axis tick labels are shown only on the bottom (last-row) subplot of each column and y-axis tick labels only on the left (first-column) subplot of each row, so the rendered figure matches the matplotlib 3.4.1 expected output rather than re-showing the redundant per-subplot labels.",
+        "subject": "matplotlib.axes._base._AxesBase.clear/cla (with Axes.shared x/y and GridSpec share-label hiding)",
+        "hunk_ids": [],
+        "cited_from": "issue: 'When using shared axes (e.g. from `plt.subplots(2, 2, sharex=True, sharey=True)`), calling `ax.clear()` causes ticks and tick labels to be shown that should be hidden.'; reproduction 'for ax in axes.flatten(): ax.clear(); ax.plot(x, y)'; 'The presence of tick labels that should be hidden by virtue of the shared axes is the clearest problem in this plot'; expected outcome stated as the matplotlib 3.4.1 figure. Cross-checked by lib/matplotlib/tests/test_subplots.py check_visible helper and test_subplots_hide_ticklabels, which encode that in a sharex=True/sharey=True grid x-ticklabels are shown only on the last row and y-ticklabels only on the first column."
+      },
+      {
+        "id": "R2",
+        "statement": "Calling `ax.clear()` on a default-styled axes (including a single, independent subplot) must not cause tick marks to be displayed along the top and right spines or otherwise change which of the default tick/label sides is drawn; after clear, the visible render must remain at the default tick set (no extra top/right ticks), matching the matplotlib 3.4.1 expected plot.",
+        "subject": "matplotlib.axes._base._AxesBase.clear/cla + Axis tick visibility defaults (tick_params/rcParam-driven top & right sides)",
+        "hunk_ids": [],
+        "cited_from": "issue: 'there are also ticks that appear along the top and right side of each subplot which are not present in the example below (and not part of the default plotting style, IIRC)'; 'The top and right-side ticks also appear when not using multiple subplots, so I think the shared-axis aspect reveals another symptom but is not a core part of this bug.'; expected outcome stated as the matplotlib 3.4.1 figure."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "Axis.clear() (invoked by Axes.cla()/clear() for each axis) preserves the tick and tick-label appearance parameters previously stored on the axis (e.g., tick1On/tick2On/label1On/label2On toggles written by set_tick_params, such as the hiding of inner-subplot tick labels on shared axes), and regenerates the ticks with those settings intact rather than resetting them to rcParam-driven defaults.",
+        "subject": "Axis.clear / lib/matplotlib/axis.py",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "After Axis.clear(), the grid-on visibility of the regenerated major ticks equals (rcParams['axes.grid'] is True and rcParams['axes.grid.which'] in ('both','major')) and of the regenerated minor ticks equals (rcParams['axes.grid'] is True and rcParams['axes.grid.which'] in ('both','minor')), i.e. the grid state is re-derived from the current grid rcParams rather than carried over from any manual grid() toggling done before the clear.",
+        "subject": "Axis.clear / lib/matplotlib/axis.py",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins down the visible outcome that shared-axis-hidden tick labels must remain hidden after ax.clear(), and R2 that default (no top/right extra) tick sets must survive clear. However, this externally-observable behavior could equally be achieved by a post-clear re-application of the shared-axes hiding logic rather than Axis.clear() itself preserving stored tick1On/tick2On/label1On/label2On parameters and regenerating ticks with them — neither S_vis requirement commits to that internal preservation-in-regeneration mechanism or names those parameters, so the exact mechanism S1 asserts is not pinned down."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis requirement mentions grid-on/grid-off state, manual grid() toggling, or the axes.grid / axes.grid.which rcParams at all; both concern only tick/tick-label visibility on shared axes and default spines. Nothing in S_vis leads to the specific claim that clear re-derives grid visibility from current grid rcParams rather than carrying over prior grid() toggling."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement [S2] asserts that after Axis.clear(), the regenerated major/minor ticks' grid-on visibility is re-derived from rcParams['axes.grid']/['axes.grid.which'] rather than carried over from any manual grid() toggling done before the clear.\n\nI analyzed the gold vs buggy change at H0: gold replaces the explicit `self._reset_major_tick_kw()`/`self._reset_minor_tick_kw()` calls inside Axis.clear() with direct recomputation of only the 'gridOn' entry of `_major_tick_kw`/`_minor_tick_kw`. But those `_reset_*` methods (still present in both versions for other call paths) compute the exact same rcParams-derived gridOn value. Hence the net behavioral difference is confined to preservation of the OTHER (non-gridOn) entries previously placed in those dicts by `set_tick_params` (tick1On/label1On etc.) — it does not change the grid re-derivation behavior S2 is literally about.\n\nI confirmed this experimentally by running real candidate probes on BOTH gold and buggy:\n(a) rc axes.grid False (default) + ax.grid(True) manual toggle, then clear -> regenerated major ticks gridlines NOT visible on both gold and buggy.\n(b) rc_context axes.grid=True + ax.grid(False) manual toggle, then clear -> regenerated major ticks gridlines visible on both gold and buggy.\n(c) rc axes.grid=True & grid.which='minor' with manual major/minor off toggles before clear -> regenerated major not visible / minor visible on both gold and buggy.\n\nIn every case both programs re-derived the grid state identically from rcParams, i.e. S2's asserted behavior holds identically in the pre-fix and post-fix builds. The genuinely-divergent behavior (preserving non-gridOn tick kw after a manual toggle) is not what S2 asserts about grid-on visibility, and the only grid tests in the [VISIBLE] oracle (test_grid/test_rcparam_grid_minor/test_reset_grid/test_boxplot_no_weird_whisker in test_axes.py) are all VISIBLE and hence ineligible as witnesses anyway.\n\nNo execution-backed genuinely discriminating witness for S2 exists; both my probes pass on gold AND buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Core relevant source paths: _AxesBase.clear()/cla() is in lib/matplotlib/axes/_base.py; Axis.clear()/reset_ticks()/reset_major_tick_kw()/reset_minor_tick_kw() are in lib/matplotlib/axis.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cla() calls self.xaxis.clear() and self.yaxis.clear(), then (re)runs sharex()/sharey(self._sharex/_sharey) when axes were created shared, and finally restores xaxis/yaxis/patch visibility based on values saved before the clears."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Shared-subplot tick-label hiding for the empty grid is performed in lib/matplotlib/gridspec.py GridSpecBase.subplots via `_label_outer_xaxis`/`_label_outer_yaxis` (and likewise in Figure.subplot_mosaic in figure.py), defined in SubplotBase (lib/matplotlib/axes/_subplots.py); SubplotBase._label_outer_xaxis calls xaxis.set_tick_params(labelbottom=False / labeltop=False) for non-outer rows, and _label_outer_yaxis similarly for non-outer columns."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Axis.reset_ticks() rebuilds each major/minor tick list seeded by the current `_major_tick_kw`/`_minor_tick_kw` (which _reset_major_tick_kw/_reset_minor_tick_kw reinitialize from rcParams like xtick.top/xtick.bottom/ytick.labelleft/labelright and axes.grid)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/test_subplots.py check_visible()/test_shared()/test_subplots_hide_ticklabels document the intended invariant that shared grids render x tick labels only on the outer (last) row and y tick labels only on the outer (first) column; the visible repo does not contain a clear()-specific regression test for this bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/test_axes.py test_retain_tick_visibility (baseline retain_tick_visibility.png) and test_twinx_cla document that clear/cla is expected to preserve tick/axis visibility state; test_shared_axes_retick documents that shared subplots stay in lockstep and expose shared tick locators across the group."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold change removes the calls to _reset_major_tick_kw()/_reset_minor_tick_kw() inside Axis.clear() and replaces them with direct recomputation of only the 'gridOn' entry of the _major_tick_kw/_minor_tick_kw dicts; the gridOn value computed is byte-identical to what those _reset methods produced, so the net behavioral difference is that non-gridOn entries (notably tick-label/tick visibility flags placed by set_tick_params) are no longer wiped."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "reset_ticks() only deletes the lazy majorTicks/minorTicks lists; the fresh ticks are (re)built lazily via _LazyTickList._get_tick seeded from the current _major_tick_kw/_minor_tick_kw."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The _AxesBase.cla() flow additionally restores visibility/patch state and re-runs sharex()/sharey() for shared axes, and grid() is applied later at the Axes level; none of that is altered by H0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Tick appearance kwargs are translated/stored via Axis._translate_tick_kw and set_tick_params (keys like tick1On/label1On/label2On, gridOn)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: Requirement S2 claims that after Axis.clear()/cla(), the grid-on visibility of regenerated major/minor ticks is re-derived from the current rcParams (axes.grid / axes.grid.which), not carried over from a manual grid() toggle done before the clear.\n\nInvestigation:\n1. I enumerated the full oracle. The only tests touching this grid-after-clear/rcParams behavior live in lib/matplotlib/tests/test_axes.py — namely test_grid, test_rcparam_grid_minor, test_reset_grid, test_boxplot_no_weird_whisker. That file is labeled entirely [VISIBLE], so by the rules no assertion drawn from it can serve as a witness no matter how well it matched. (test_pyplot.py and test_subplots.py, also read, are [VISIBLE] and contain nothing about grid re-derivation after clear.)\n2. I mechanically probed whether the gold and buggy programs actually differ in the grid-after-clear behavior S2 describes. Setting rcParams axes.grid=False and manually toggling ax.grid(True) then ax.clear(), and the mirror scenario (axes.grid=True with ax.grid(False) before clear), both PASSED on gold AND on buggy. Also scenarios combining axes.grid.which='minor' with clear PASSED on both. In all cases the regenerated ticks' grid state was re-derived from rcParams identically in the two programs.\n\nConclusion: the grid-on behavior that S2 asserts holds identically in the (pre-fix) buggy build and the (fixed) gold build, so the oracle contains no test that can pass on gold while failing on buggy specifically for S2's behavior — and every potentially-relevant grid test that does exist is [VISIBLE] and therefore ineligible as a witness. Nothing in the oracle qualifies; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: Requirement [S2] asserts that after Axis.clear(), the regenerated major/minor ticks' grid-on visibility is re-derived from rcParams['axes.grid']/['axes.grid.which'] rather than carried over from any manual grid() toggling done before the clear.\n\nI analyzed the gold vs buggy change at H0: gold replaces the explicit `self._reset_major_tick_kw()`/`self._reset_minor_tick_kw()` calls inside Axis.clear() with direct recomputation of only the 'gridOn' entry of `_major_tick_kw`/`_minor_tick_kw`. But those `_reset_*` methods (still present in both versions for other call paths) compute the exact same rcParams-derived gridOn value. Hence the net behavioral difference is confined to preservation of the OTHER (non-gridOn) entries previously placed in those dicts by `set_tick_params` (tick1On/label1On etc.) — it does not change the grid re-derivation behavior S2 is literally about.\n\nI confirmed this experimentally by running real candidate probes on BOTH gold and buggy:\n(a) rc axes.grid False (default) + ax.grid(True) manual toggle, then clear -> regenerated major ticks gridlines NOT visible on both gold and buggy.\n(b) rc_context axes.grid=True + ax.grid(False) manual toggle, then clear -> regenerated major ticks gridlines visible on both gold and buggy.\n(c) rc axes.grid=True & grid.which='minor' with manual major/minor off toggles before clear -> regenerated major not visible / minor visible on both gold and buggy.\n\nIn every case both programs re-derived the grid state identically from rcParams, i.e. S2's asserted behavior holds identically in the pre-fix and post-fix builds. The genuinely-divergent behavior (preserving non-gridOn tick kw after a manual toggle) is not what S2 asserts about grid-on visibility, and the only grid tests in the [VISIBLE] oracle (test_grid/test_rcparam_grid_minor/test_reset_grid/test_boxplot_no_weird_whisker in test_axes.py) are all VISIBLE and hence ineligible as witnesses anyway.\n\nNo execution-backed genuinely discriminating witness for S2 exists; both my probes pass on gold AND buggy."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S2] (Axis.clear / lib/matplotlib/axis.py) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement [S2] asserts that after Axis.clear(), the regenerated major/minor ticks' grid-on visibility is re-derived from rcParams['axes.grid']/['axes.grid.which'] rather than carried over from any manual grid() toggling done before the clear.\n\nI analyzed the gold vs buggy change at H0: gold replaces the explicit `self._reset_major_tick_kw()`/`self._reset_minor_tick_kw()` calls inside Axis.clear() with direct recomputation of only the 'gridOn' entry of `_major_tick_kw`/`_minor_tick_kw`. But those `_reset_*` methods (still present in both versions for other call paths) compute the exact same rcParams-derived gridOn value. Hence the net behavioral difference is confined to preservation of the OTHER (non-gridOn) entries previously placed in those dicts by `set_tick_params` (tick1On/label1On etc.) — it does not change the grid re-derivation behavior S2 is literally about.\n\nI confirmed this experimentally by running real candidate probes on BOTH gold and buggy:\n(a) rc axes.grid False (default) + ax.grid(True) manual toggle, then clear -> regenerated major ticks gridlines NOT visible on both gold and buggy.\n(b) rc_context axes.grid=True + ax.grid(False) manual toggle, then clear -> regenerated major ticks gridlines visible on both gold and buggy.\n(c) rc axes.grid=True & grid.which='minor' with manual major/minor off toggles before clear -> regenerated major not visible / minor visible on both gold and buggy.\n\nIn every case both programs re-derived the grid state identically from rcParams, i.e. S2's asserted behavior holds identically in the pre-fix and post-fix builds. The genuinely-divergent behavior (preserving non-gridOn tick kw after a manual toggle) is not what S2 asserts about grid-on visibility, and the only grid tests in the [VISIBLE] oracle (test_grid/test_rcparam_grid_minor/test_reset_grid/test_boxplot_no_weird_whisker in test_axes.py) are all VISIBLE and hence ineligible as witnesses anyway.\n\nNo execution-backed genuinely discriminating witness for S2 exists; both my probes pass on gold AND buggy.",
+    "confidence": "Medium"
+  }
+}

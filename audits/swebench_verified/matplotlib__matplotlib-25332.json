@@ -1,0 +1,111 @@
+{
+  "task_id": "matplotlib__matplotlib-25332",
+  "status": "ok",
+  "duration_seconds": 399.63395583303645,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-25332",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling pickle.dumps (or pickle.dump / python pickle) on a Figure after its axes' labels have been aligned via fig.align_labels() must succeed without raising, in particular it must not raise `TypeError: cannot pickle 'weakref.ReferenceType' object`.",
+        "subject": "matplotlib.figure.Figure pickling of aligned-label grouper state",
+        "hunk_ids": [],
+        "cited_from": "Reproduction: `fig = plt.figure() ... ax1.set_ylabel('speed') ... ax2.set_ylabel('acc') ... fig.align_labels() ##pickling works after removing this line\\npickle.dumps(fig)`. Actual outcome: `pickle.dumps(fig)\\nTypeError: cannot pickle 'weakref.ReferenceType' object`. Expected outcome: \"Pickling successful\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "A Grouper instance whose _mapping holds weak references to live, weak-referenceable objects can be pickled (and unpickled, e.g. via pickle/copy.deepcopy) without raising an error.",
+        "subject": "cbook.Grouper (picklability)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "After a Grouper instance is pickled and unpickled, its grouping structure is faithfully restored: members that were joined together before pickling are still in the same set afterwards, so 'joined(a, b)' returns True for previously joined members, iteration/siblings yield the same membership, and '__contains__' reports True for previously contained members.",
+        "subject": "cbook.Grouper (round-trip preservation of grouping)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 describes only that pickling a Figure after align_labels() must not raise a TypeError about weakref. It says nothing about the cbook.Grouper class, its _mapping attribute, or the picklability of a Grouper instance holding weak references. S1 pins down a distinct, lower-level behavior not present in the visible information."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 addresses only that pickling succeeds (does not raise), and contains no statement about round-trip fidelity of grouping structure after unpickling — nothing about joined members staying joined, iteration/sibling membership, or __contains__ behavior. S2's round-trip preservation requirement is not covered by the visible information."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_grouper_pickle_roundtrip_noerror",
+      "test_source": "import pickle\nimport weakref\nfrom matplotlib import cbook\n\nclass Dummy:\n    pass\n\n\ndef test_grouper_pickle_roundtrip_noerror():\n    a = Dummy()\n    b = Dummy()\n    g = cbook.Grouper()\n    g.join(a, b)\n    blob = pickle.dumps(g)\n    g2 = pickle.loads(blob)\n    assert len(g2._mapping) == 2\n    for k, vs in g2._mapping.items():\n        assert isinstance(k, weakref.ReferenceType)\n        for v in vs:\n            assert isinstance(v, weakref.ReferenceType)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (TypeError: cannot pickle 'weakref.ReferenceType' object)",
+      "explanation": "Target requirement [S1] is that a Grouper whose _mapping holds weak references to live, weak-referenceable objects can be pickled and unpickled without error. The gold patch (lib/matplotlib/cbook.py H0) adds Grouper.__getstate__/__setstate__, converting weakref keys/values to strong refs on pickling and back to weakrefs on unpickling; the buggy version has neither method, so the default pickle path tries to serialize the raw weakref.ReferenceType objects in Grouper._mapping and raises TypeError. The witness constructs a Grouper, joins two top-level picklable Dummy objects (so failures are from the weakrefs, not from local-class pickling), pickle.dumps/loads it, and asserts that after the round trip the _mapping was preserved in size and was re-populated with weakref.ReferenceType keys and values, i.e., pickling is not merely tolerated but semantically preserves the weak-reference construction. This passes on gold (PASSED) and fails on buggy (TypeError: cannot pickle 'weakref.ReferenceType' object). It is not an already-visible oracle assertion: test_cbook.py's test_grouper/test_grouper_private only check membership operations and never pickle; test_cbook's test_pickling only round-trips a bare CallbackRegistry; test_pickle.py / test_figure.py only pickle whole figures/artists. No visible test directly round-trips a populated cbook.Grouper and verifies its _mapping holdings, so this is a genuine hidden-requirement witness, independently confirmed by run_test against both revisions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under lib/matplotlib/tests/ (figure/pickling behaviors in test_pickle.py, test_figure.py); no regression test for aligned-labels-plus-pickle exists yet in the visible suite."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FigureBase.__init__ initializes `self._align_label_groups = {\"x\": cbook.Grouper(), \"y\": cbook.Grouper()}` and this dict is an instance attribute of the figure (survives Figure.__getstate__/Artist.__getstate__, which copies __dict__ without filtering it out)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Grouper (lib/matplotlib/cbook.py) stores joined members as weakrefs: `self._mapping = {weakref.ref(x): [weakref.ref(x)] ...}`; align_xlabels/align_ylabels call `self._align_label_groups[axis].join(ax, axc)`, populating that mapping with weakrefs to Axes. These weakrefs (weakref.ReferenceType) are unpicklable, which is the reported cause of the failure."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "align_xlabels/align_ylabels only join axes that share the same label position and the same relevant span of the subplot's SubplotSpec; in the issue repro the two stacked y labels are joined while no x labels are joined."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 adds Grouper.__getstate__/__setstate__ only; Grouper.__init__ (which stores weakrefs per member plus a per-member list of weakrefs as the value) and __contains__ are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "__getstate__ replaces '_mapping' keys/values with strong references obtained by dereferencing each weakref; __setstate__ re-wraps each strong key and list value back into weakrefs via weakref.ref()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No new observable change to existing Grouper membership operations (join/joined/remove/clean/iteration) is made by this patch; the patch is purely about addit.serialization support."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Grouper methods (e.g. clean()) normally drop dead weak refs before operations, but __getstate__/__setstate__ do not invoke clean(); if a target has already been garbage-collected its dereferenced value is None and would be re-wrapped as weakref.ref(None) on unpickling."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: The only oracle tests exercising the relevant pickling path all live in [VISIBLE] files (test_pickle.py::test_complete[png], which is exactly the reported currently-failing test; plus test_figure.py and test_cbook.py). test_complete[png] is the closest behavioral overlap — it pickles a complete figure and fails on the buggy build, consistent with S1 (pickling a populated Grouper). However, its content is labeled [VISIBLE], meaning it was already seen by the repair system, so per policy it cannot serve as a Witness. Moreover, none of the checked files contains a dedicated assertion that pickles/round-trips a populated cbook.Grouper or a figure whose align-label Grouper holds weak refs (test_cbook.py pickles only CallbackRegistry; its test_grouper/test_grouper_private cover membership, not serialization). After checking test_cbook.py, test_pickle.py, and test_figure.py (the only files in the oracle that touch Grouper/figure pickling), no [HIDDEN] assertion genuinely tests requirement S1, so no Witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (cbook.Grouper (picklability)): A Grouper instance whose _mapping holds weak references to live, weak-referenceable objects can be pickled (and unpickled, e.g. via pickle/copy.deepcopy) without raising an error. — not entailed by S_vis (R1 describes only that pickling a Figure after align_labels() must not raise a TypeError about weakref. It says nothing about the cbook.Grouper class, its _mapping attribute, or the picklability of a Grouper instance holding weak references. S1 pins down a distinct, lower-level behavior not present in the visible information.); confirmed by a synthesized witness: Target requirement [S1] is that a Grouper whose _mapping holds weak references to live, weak-referenceable objects can be pickled and unpickled without error. The gold patch (lib/matplotlib/cbook.py H0) adds Grouper.__getstate__/__setstate__, converting weakref keys/values to strong refs on pickling and back to weakrefs on unpickling; the buggy version has neither method, so the default pickle path tries to serialize the raw weakref.ReferenceType objects in Grouper._mapping and raises TypeError. The witness constructs a Grouper, joins two top-level picklable Dummy objects (so failures are from the weakrefs, not from local-class pickling), pickle.dumps/loads it, and asserts that after the round trip the _mapping was preserved in size and was re-populated with weakref.ReferenceType keys and values, i.e., pickling is not merely tolerated but semantically preserves the weak-reference construction. This passes on gold (PASSED) and fails on buggy (TypeError: cannot pickle 'weakref.ReferenceType' object). It is not an already-visible oracle assertion: test_cbook.py's test_grouper/test_grouper_private only check membership operations and never pickle; test_cbook's test_pickling only round-trips a bare CallbackRegistry; test_pickle.py / test_figure.py only pickle whole figures/artists. No visible test directly round-trips a populated cbook.Grouper and verifies its _mapping holdings, so this is a genuine hidden-requirement witness, independently confirmed by run_test against both revisions.",
+    "confidence": "Medium"
+  }
+}

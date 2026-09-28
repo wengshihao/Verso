@@ -1,0 +1,171 @@
+{
+  "task_id": "django__django-14011",
+  "status": "ok",
+  "duration_seconds": 347.47738158295397,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14011",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a LiveServerTestCase's live server shuts down, every database connection opened while handling its live-server HTTP requests — including connections opened by the individual worker threads that handle requests under the threaded server (ThreadedWSGIServer used by LiveServerThread) — must be closed, so that destroy_test_db() can drop the test database without raising \"OperationalError: database ... is being accessed by other users\".",
+        "subject": "LiveServerThread / LiveServerTestCase teardown",
+        "hunk_ids": [],
+        "cited_from": "Issue body: \"In Django 2.2.17, I'm seeing the reappearance of #22414 ... OperationalError: database \"test_myapp\" is being accessed by other users\"; \"This error happens when not all of the database connections are closed.\"; \"Issue #20238 added threading support to LiveServerTestCase. One of the changes it made was changing LiveServerThread to use ThreadedWSGIServer instead of WSGIServer.\""
+      },
+      {
+        "id": "R2",
+        "statement": "The live server run by LiveServerTestCase must keep its threaded (concurrent) request handling in place: a view being served may itself open further connections/requests back to the same live server (and observe data written there) without deadlocking the server.",
+        "subject": "LiveServerThread.request handling / ThreadedWSGIServer",
+        "hunk_ids": [],
+        "cited_from": "tests/servers/tests.py LiveServerThreadedTests docstring: \"If LiveServerTestCase isn't threaded, these tests will hang.\" and tests/servers/views.py check_model_instance_from_subview(): \"def check_model_instance_from_subview(request):\\n    with urlopen(request.GET['url'] + '/create_model_instance/'):\\n        pass\\n    with urlopen(request.GET['url'] + '/model_view/') as response:\", asserting 'emily' present in the later view's body."
+      },
+      {
+        "id": "R3",
+        "statement": "After a LiveServerThread has run and been terminated, a database connection that the main test thread opened and handed to the thread via connections_override is closed (its connection attribute becomes None).",
+        "subject": "LiveServerThread.terminate / connections_override",
+        "hunk_ids": [],
+        "cited_from": "tests/servers/test_liveserverthread.py test_closes_connections: \"self.assertIsNotNone(conn.connection)\\n            self.run_live_server_thread(connections_override)\\n            self.assertIsNone(conn.connection)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "r1",
+        "statement": "ThreadedWSGIServer's __init__ accepts an optional keyword argument connections_override (defaulting to None) and stores the passed value unchanged on the instance as the attribute connections_override.",
+        "subject": "django.core.servers.basehttp.ThreadedWSGIServer.__init__",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "r2",
+        "statement": "When a ThreadedWSGIServer instance holds a non-empty connections_override, each HTTP request that is processed in a worker thread first rebinds, for every alias in connections_override, the database connection object django.db.connections[alias] in that worker thread to the connection provided by the override, so requests served in that thread reach the overridden connection; when connections_override is empty or None no such rebinding is performed.",
+        "subject": "django.core.servers.basehttp.ThreadedWSGIServer.process_request_thread",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "r3",
+        "statement": "A ThreadedWSGIServer closes all defined database connections (equivalent to django.db.connections.close_all()) at the point each HTTP client connection serviced in a worker thread is shut down, regardless of whether connections_override was provided, so that database connections opened or rebound during live-server request handling do not leak after the corresponding request thread completes.",
+        "subject": "django.core.servers.basehttp.ThreadedWSGIServer request handling (close_request/_close_connections)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "r4",
+        "statement": "When running on an in-memory SQLite database, the sqlite backend's django_test_skips metadata lists 'servers.tests.LiveServerTestCloseConnectionTest.test_closes_connections' (in addition to the already-listed 'servers.test_liveserverthread.LiveServerThreadTest.test_closes_connections') as tests to skip, because the sqlite backend's close() is a no-op for such databases.",
+        "subject": "django.db.backends.sqlite3.features.DatabaseFeatures.django_test_skips (in-memory skip set)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "r1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "No S_vis entry describes ThreadedWSGIServer.__init__ accepting a connections_override kwarg and storing it on the instance; R3 only shows connections_override being passed as an argument to run the server thread, not any constructor/attribute-storage behavior."
+      },
+      {
+        "requirement_id": "r2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis never mentions rebinding django.db.connections[alias] to an override inside each worker thread per HTTP request; R2 concerns concurrent reach-back threading without deadlock, and R1/R3 concern connection closing, none of which pins down this override-rebinding mechanism."
+      },
+      {
+        "requirement_id": "r3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R1 shows a need to close leaked live-server connections, but frames it at server shutdown to allow destroy_test_db, whereas r3 specifies close_all() at each individual HTTP client connection shutdown regardless of the override; S_vis leads toward connection-closing generally but does not pin down this precise locus and unconditional timing."
+      },
+      {
+        "requirement_id": "r4",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "No S_vis entry mentions the sqlite backend's django_test_skips metadata, in-memory databases, sqlite close() semantics, or adding a servers.tests test to a skip set, so nothing grounds this requirement."
+      }
+    ],
+    "target_requirement_id": "r1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_constructor_stores_connections_override",
+      "test_source": "def test_constructor_stores_connections_override():\n    from django.core.servers.basehttp import ThreadedWSGIServer, WSGIRequestHandler\n    c = {\"default\": object()}\n    server = ThreadedWSGIServer((\"localhost\", 0), WSGIRequestHandler, connections_override=c)\n    assert server.connections_override is c\n",
+      "gold_result": "PASSED — ThreadedWSGIServer(('localhost',0), WSGIRequestHandler, connections_override=c) stores c unchanged as server.connections_override.",
+      "buggy_result": "FAILED — TypeError: __init__() got an unexpected keyword argument 'connections_override' at django/core/servers/basehttp.py:71 (buggy ThreadedWSGIServer has no __init__ accepting the override parameter).",
+      "explanation": "Target r1 requires ThreadedWSGIServer.__init__ to accept an optional keyword `connections_override` (defaulting to None) and store the passed value unchanged as attribute `self.connections_override`. The gold implementation adds an explicit `__init__(self, *args, connections_override=None, **kwargs)` that stores it, whereas the buggy class has no __init__ at all (only daemon_threads = True), so forwarding the keyword to the base WSGIServer.__init__ fails with TypeError.\n\nI built a witness that constructs ThreadedWSGIServer directly with a `connections_override` mapping and asserts the instance attribute is the exact object passed (`is` identity check for \"stored unchanged\"). This is a real behavioral probe: on GOLD the run passed (attribute equals the passed dict), on BUGGY it failed with `TypeError: __init__() got an unexpected keyword argument 'connections_override'` raised at basehttp.py:71.\n\nI checked the visible oracle test files (tests/servers/test_basehttp.py, tests/servers/tests.py, tests/servers/test_liveserverthread.py, tests/builtin_server/tests.py): none constructs a ThreadedWSGIServer with a literal connections_override keyword and reads the stored attribute. They exercise only plain WSGIServer/WSGIRequestHandler or LiveServerThread/TestCase-level connection-closing and keep-alive behavior, so this specific direct-construction scenario is not pinned by visible content and genuinely discriminates gold from buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "django/core/servers/basehttp.py defines ThreadedWSGIServer as `socketserver.ThreadingMixIn` + WSGIServer with `daemon_threads = True`, and its `run()` helper's comment documents that with threading 'True means the server will not wait for thread termination before it quits'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/test/testcases.py LiveServerThread.run() rebinds thread-local `connections[alias] = conn` for each entries in connections_override, calls serve_forever(), and on exit runs `finally: connections.close_all()`, so the connections the *main thread* supplied are only closed in the server thread's own finally; per-HTTP-request worker threads use their own thread-local connections and are not waited on because daemon_threads is True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "LiveServerThread.run() assigns `self.httpd = self._create_server()` (server_class defaults to ThreadedWSGIServer), sets is_ready when ready, and LiveServerThread.terminate() calls httpd.shutdown(), httpd.server_close(), then self.join()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The `server_thread_class` class attribute allows overriding the server; tests/servers/tests.py defines SingleThreadLiveServerTestCase with a non-threaded WSGIServer subclass and LiveServerThreadedTests requiring a threaded server to avoid deadlock."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant live-server DB views live in tests/servers/views.py (model_view / create_model_instance over the Person model) and test_closes_connections lives in tests/servers/test_liveserverthread.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is purely an import add (`from django.db import connections`); it carries no independent behavioral contract beyond making `connections` available to H1's methods."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1's close_request logic runs within socketserver's per-connection shutdown path (ThreadingMixIn.process_request_thread -> shutdown_request -> close_request), i.e. once per accepted client socket/worker thread rather than per individual HTTP request on a keep-alive connection."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "At this revision the LiveServerThread._create_server in django/test/testcases.py does not pass connections_override to server_class, so the per-worker rebinding added in ThreadedWSGIServer.process_request_thread is not yet wired into the default live-server path by this patch alone; the feed-in happens via the class's own connections_override attribute."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The H2 skip entry references a test class servers.tests.LiveServerTestCloseConnectionTest that is not present in the tests/servers/tests.py of this revision, only analogues like servers/test_liveserverthread.py LiveServerThreadTest.test_closes_connections."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [r1]: Target requirement r1 says ThreadedWSGIServer.__init__ must accept an optional `connections_override` keyword (defaulting to None) and store it unchanged as the instance attribute `connections_override`.\n\nI confirmed the underlying behavior difference exists between the two programs by executing a probe: constructing `ThreadedWSGIServer(('localhost',0), WSGIRequestHandler, connections_override=...)` and reading `server.connections_override`. Against GOLD it PASSED (attr equals the passed dict), against BUGGY it FAILED with `TypeError: __init__() got an unexpected keyword argument 'connections_override'` (basehttp.py:71), i.e. the buggy WSGIServer.__init__ forwards all kwargs to the socket-server base which doesn't accept the new keyword. So the buggy/gold gap for r1 is real.\n\nHowever, a Witness must be an assertion already present in the oracle's [HIDDEN] content, and none qualifies:\n- I enumerated the whole oracle test-file set and read every file plausibly touching this behavior: tests/servers/test_basehttp.py, tests/servers/tests.py, tests/servers/test_liveserverthread.py, tests/staticfiles_tests/test_liveserver.py, and tests/builtin_server/tests.py. All are labeled [VISIBLE] (content the repair system already saw), so under the rules none of their assertions may serve as a hidden Witness regardless of how closely they relate to r1.\n- None of these files (or any other oracle test I inspected) constructs a ThreadedWSGIServer with a `connections_override` keyword and asserts the stored attribute; the threaded server tests only exercise connection-closing at the LiveServerThread/LiveServerTestCase layer (and that whole package is visible anyway), and the basehttp tests only use plain WSGIServer and WSGIRequestHandler.\n\nBecause everything relevant in the oracle is visible content (and no visible assertion directly covers the __init__-param behavior), a witness derived from the oracle cannot be built here. That provides no hidden evidence the developer needed to establish; found=false is reported."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [r1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[r1] (django.core.servers.basehttp.ThreadedWSGIServer.__init__): ThreadedWSGIServer's __init__ accepts an optional keyword argument connections_override (defaulting to None) and stores the passed value unchanged on the instance as the attribute connections_override. — not entailed by S_vis (No S_vis entry describes ThreadedWSGIServer.__init__ accepting a connections_override kwarg and storing it on the instance; R3 only shows connections_override being passed as an argument to run the server thread, not any constructor/attribute-storage behavior.); confirmed by a synthesized witness: Target r1 requires ThreadedWSGIServer.__init__ to accept an optional keyword `connections_override` (defaulting to None) and store the passed value unchanged as attribute `self.connections_override`. The gold implementation adds an explicit `__init__(self, *args, connections_override=None, **kwargs)` that stores it, whereas the buggy class has no __init__ at all (only daemon_threads = True), so forwarding the keyword to the base WSGIServer.__init__ fails with TypeError.\n\nI built a witness that constructs ThreadedWSGIServer directly with a `connections_override` mapping and asserts the instance attribute is the exact object passed (`is` identity check for \"stored unchanged\"). This is a real behavioral probe: on GOLD the run passed (attribute equals the passed dict), on BUGGY it failed with `TypeError: __init__() got an unexpected keyword argument 'connections_override'` raised at basehttp.py:71.\n\nI checked the visible oracle test files (tests/servers/test_basehttp.py, tests/servers/tests.py, tests/servers/test_liveserverthread.py, tests/builtin_server/tests.py): none constructs a ThreadedWSGIServer with a literal connections_override keyword and reads the stored attribute. They exercise only plain WSGIServer/WSGIRequestHandler or LiveServerThread/TestCase-level connection-closing and keep-alive behavior, so this specific direct-construction scenario is not pinned by visible content and genuinely discriminates gold from buggy.",
+    "confidence": "Medium"
+  }
+}

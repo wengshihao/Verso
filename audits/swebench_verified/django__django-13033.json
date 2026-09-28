@@ -1,0 +1,96 @@
+{
+  "task_id": "django__django-13033",
+  "status": "ok",
+  "duration_seconds": 1133.7791098750895,
+  "llm_calls": 43,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13033",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When order_by() names a relation through multiple lookup segments ending in that relation's raw attribute name (the FK's `_id` column) rather than in the relation field itself — for example `order_by('record__root_id')` where `root` is a self-referencing ForeignKey — the generated ORDER BY must apply ascending order directly to that already-joined `_id` column and must NOT append the referenced model's default Meta.ordering, and must NOT introduce an extra (self-)join onto the referenced model for the sole purpose of that ordering.",
+        "subject": "SQLCompiler.find_ordering_name / Query ordering resolution (django.db.models.sql.compiler)",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'qs = TwoModel.objects.filter(record__oneval__in=[1,2,3])\\nqs = qs.order_by(\"record__root_id\") ... The query has an unexpected DESCENDING sort. That appears to come from the default sort order on the OneModel class, but I would expect the order_by() to take prececence. ... It appears that, since OneModel.root is a foreign key to itself, that is causing it to do the unnecessary extra join.' AND the expected SQL for the equivalent `order_by('record__root__id')`: 'SELECT \"orion_twomodel\".\"id\", \"orion_twomodel\".\"record_id\", \"orion_twomodel\".\"twoval\" FROM \"orion_twomodel\" INNER JOIN \"orion_onemodel\" ON (\"orion_twomodel\".\"record_id\" = \"orion_onemodel\".\"id\") WHERE \"orion_onemodel\".\"oneval\" IN (1, 2, 3) ORDER BY \"orion_onemodel\".\"root_id\" ASC'; plus the note 'Note also that the queryset with order_by(\"record__root\") gives the exact same SQL.'"
+      },
+      {
+        "id": "R2",
+        "statement": "Ordering by a foreign key by its attribute name (`<fk>_id`, i.e. the raw column, not the relation field `<fk>` or `<fk>__<attr>`) must prevent the query from inheriting/applying that FK's referenced model default ordering — the requested order_by direction (ASC by default, unless prefixed '-'/descending exactly as given) is what must take effect.",
+        "subject": "SQLCompiler.find_ordering_name / Query ordering over a ForeignKey attribute name",
+        "hunk_ids": [],
+        "cited_from": "tests/ordering/tests.py test_order_by_fk_attname docstring: 'ordering by a foreign key by its attribute name prevents the query from inheriting its related model ordering option (#19195)' and issue: 'One final oddity; with the original queryset but the inverted sort order_by(): ... qs = qs.order_by(\"-record__root_id\") ... ORDER BY T3.\"id\" ASC ... I was not under the impression that sort orders are somehow relative to the class level sort order' with the reported correct workaround 'qs.order_by(\"root_id\") ... ORDER BY \"orion_onemodel\".\"zero_id\" ASC  ASCENDING sort'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "While generating the ORDER BY clause for a string lookup term that resolves to a relation field whose referenced model has a non-empty default Meta.ordering, Django decides whether to expand the term into that model's default ordering (recursively applying the model's Meta.ordering) by comparing the relation field's attribute name (attname) against only the LAST '__'-separated component of the lookup field path (pieces[-1]); when the lookup path is multi-segment, earlier segments are ignored for this comparison, so an ordering path whose final segment equals the relation field's attname (its storage column) is not expanded even though the full path string differs from the attname.",
+        "subject": "SQLCompiler.find_ordering_name ORDER BY expansion of a relation's default Meta.ordering",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When generating ORDER BY, expanding an ordering term into a related model's default Meta.ordering is suppressed (the term instead orders by the relation directly) if the term's terminal '__'-separated lookup component is the pk shortcut ('pk'), in addition to being suppressed when that terminal component equals the relation field's attname.",
+        "subject": "SQLCompiler.find_ordering_name pk-shortcut recursion suppression",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis (issue expected SQL + R1 statement) pins down that ordering through a multi-segment path whose final segment equals the FK attname (record__root_id, full string differs from root_id) must not be expanded into the referenced model's default Meta.ordering and must not add a self-join. S_vis R2 corroborates the attname-orders-directly behavior. This matches S_impl R1's behavioral commitment exactly, including the earlier-segment-ignored aspect."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 requires a suppression rule specifically triggered when the terminal lookup component is the pk shortcut ('pk'). Neither S_vis statement nor either cited artifact (issue report, expected SQL, test docstrings) mentions any pk-shortcut behavior; all visible evidence concerns raw FK-column (attname) ordering (root_id, zero_id). Nothing visible would lead a system to infer a pk-based expansion suppression."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "tests/ordering/models.py and tests/ordering/tests.py are byte-identical at the buggy and gold revisions, so the regression target for this one-hunk compiler change lives in another (non-`ordering`) test suite."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed line is inside SQLCompiler.find_ordering_name; only the comparison operand changed from the full `name` lookup string to `pieces[-1]` (name.split(LOOKUP_SEP) last element). For single-segment ordering names the two are equivalent, so the change only affects multi-segment (`a__b__...__relation`) ordering references."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 concerns the `find_ordering_name` recursion-suppression branch (``if field.is_relation and opts.ordering and attname != <term> and <term> != 'pk'``), where the fix makes the term comparison use the terminal `pieces[-1]` lookup segment instead of the full multi-segment `name`. The behavior only differs for multi-segment ordering references that land (after Meta.ordering expansion) on a relation whose target has its own Meta.ordering.\n\nI investigated every suite plausibly exercising this: tests/ordering (models/tests), tests/queries (models.py + tests.py + test_query.py) which contains the only real recursion-capable cycle models (LoopX/LoopY/LoopZ with cyclic FK Meta.ordering over `__pk`/attname and the cross term `order_by('y__x__y__x__id')`, covered by ConditionalTests.test_infinite_loop), plus tests/order_with_respect_to, tests/admin_ordering, tests/m2o_recursive, tests/nested_foreign_keys. Every one of those files is labeled [VISIBLE]. The ordering tests/models that encode the recursion-adjacent data (tests/ordering/tests.py being VISIBLE and byte-identical) cannot serve as a Witness because the assertion is drawn from VISIBLE content that a repair system already saw. No [HIDDEN] oracle assertion implements the pk-shortcut/terminal-`pieces[-1]` recursion suppression for R2, and no test is recorded as currently failing against the buggy program. Accordingly, I could not locate (and did not run) any execution-confirmed, [HIDDEN]-sourced oracle test that genuinely enforces R2, so the correct result is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: gave up after exhausting its exploration budget without concluding (24 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (SQLCompiler.find_ordering_name pk-shortcut recursion suppression) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

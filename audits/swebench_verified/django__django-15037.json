@@ -1,0 +1,138 @@
+{
+  "task_id": "django__django-15037",
+  "status": "ok",
+  "duration_seconds": 292.2365068750223,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15037",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When inspectdb introspects a column that is a foreign key whose constraint references a specific column (here foo.other_id) on the target table that is NOT the target table's primary key, the generated model for the referencing table (bar) must declare the relation as a foreign key to the target model Foo with the referenced field named explicitly (in Django terms to_field='other_id'), rather than an FK targeting Foo's primary key by default.",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection (Foreign key/relation field generation for a FK whose referenced column is not the target table's primary key)",
+        "hunk_ids": [],
+        "cited_from": "\"CREATE TABLE foo ( id serial primary key, other_id int UNIQUE);\\nCREATE TABLE bar (\\n\\tid serial primary key, other_id int,\\n\\tconstraint myconst \\n\\tFOREIGN KEY(other_id) references foo(other_id)\\n);\\nthe generated model for the bar table will have the other_id be a FK to foo and not foo(other_id).\""
+      },
+      {
+        "id": "R2",
+        "statement": "A foreign-key column whose referenced column IS the target table's primary key continues to be generated without emitting an explicit to_field argument (preserving the introspected ForeignKey/OneToOneField lines' existing form).",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection (foreign key field to target primary key generation)",
+        "hunk_ids": [],
+        "cited_from": "self.assertIn(\"from_field = models.ForeignKey('InspectdbPeople', models.DO_NOTHING, db_column='from_id')\", output,)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "When inspectdb generates a non-unique relation field from a column that is a ForeignKey (not a OneToOneField) referencing a column of another table and that referenced column is not the referenced table's primary key column, the emitted field definition includes a `to_field='<referenced column name>'` keyword argument among its extra params.",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection (generated ForeignKey field with to_field when target column is not the target table's PK)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "For a ForeignKey whose referenced column equals the referenced table's primary key column, or whose referenced table has no primary key column introspectable via get_primary_key_column, no `to_field` keyword argument is added to the generated field output (output unchanged relative to pre-patch behavior).",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection (generated ForeignKey field carrying no to_field when target column is the target PK / no target PK)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-3",
+        "statement": "The `to_field` keyword is added only to relations classified as ForeignKey; when a relation column is classified as OneToOneField (unique or primary-key), no `to_field` keyword argument is added to the generated output even if the referenced column is not the referenced table's primary key.",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection (generated relation fields — to_field only added for ForeignKey, never OneToOneField)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 directly pins the foreign-key-non-PK case: when a relation column is a ForeignKey whose referenced column is not the target table's PK (here foo.other_id, unique but not PK), the generated field must carry to_field='other_id'. R2 only confirms the PK-target case is unaffected, which is consistent with R1 commiting the to_field behavior for the non-PK FK."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 pins that a relation whose referenced column is the target table's primary key is generated without an explicit to_field (e.g. from_field = models.ForeignKey('InspectdbPeople', ...) with no to_field). R1 does not contradict this, covering only the non-PK case. The concrete PK-target branch of SI-2 is thereby covered."
+      },
+      {
+        "requirement_id": "SI-3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "SI-3 requires that to_field is added ONLY to ForeignKey and never to a OneToOneField even when the referenced column is not the target PK. S_vis (R1/R2) never discusses OneToOneField-classified relations or commits that to_field is excluded for them; R1 only pins the ForeignKey side. The distinguishing O2O-exclusion claim is not evidenced, so entailment is genuinely ambiguous rather than confirmed."
+      }
+    ],
+    "target_requirement_id": "SI-3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_foreignkey_to_non_pk_column_gets_to_field",
+      "test_source": "import django\nfrom django.conf import settings\nfrom io import StringIO\n\nif not settings.configured:\n    settings.configure(\n        DEBUG=True,\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n        USE_TZ=True,\n    )\ndjango.setup()\n\nfrom django.core.management import call_command\nfrom django.db import connection\n\n\ndef test_foreignkey_to_non_pk_column_gets_to_field():\n    # Create a \"referenced\" table whose primary key column is `id`, plus a\n    # distinct UNIQUE column `code`; then a second table holding a ForeignKey\n    # whose target is that non-primary-key `code` column.\n    with connection.cursor() as cur:\n        cur.execute('CREATE TABLE si3_author (id integer PRIMARY KEY, code varchar(20) NOT NULL UNIQUE)')\n        cur.execute('CREATE TABLE si3_book (id integer PRIMARY KEY, author_code varchar(20) REFERENCES si3_author (code))')\n    out = StringIO()\n    call_command('inspectdb', 'si3_book', stdout=out)\n    # Django's ForeignKey points at a column that is not the remote primary\n    # key, so inspectdb must add an explicit to_field argument naming it.\n    assert \"to_field='code'\" in out.getvalue()\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: 'to_field=\\'code\\'' not found in inspectdb output — buggy version never emits to_field)",
+      "explanation": "Requirement [SI-3] concerns django.core.management.commands.inspectdb.Command.handle_inspection: the to_field keyword must be emitted (in extra_params) only when a relation is classified as ForeignKey and the referenced column differs from the referenced table's primary key. The gold code (and only the gold code) adds `extra_params['to_field'] = ref_db_column` inside that ForeignKey else-branch (guarded by `ref_pk_column and ref_pk_column != ref_db_column`); the buggy pre-fix code has no such to_field logic at all.\n\nMy witness drives the actual (real) code path rather than live static fixtures: it boots a self-contained Django project over an in-memory SQLite DB, creates a target table `si3_author` whose PK is `id` with a separate UNIQUE `code` column, and a referencing table `si3_book` with an FK targeting that non-PK column `code`, then runs the real `inspectdb` management command and asserts its generated output contains `to_field='code'`. On the gold program the introspection records the FK `author_code -> si3_author.code`, detects `code != id` (si3_author's PK via get_primary_key_column), and emits `to_field='code'`, so the assertion PASSES. On the buggy program there is no to_field logic at all, so the FK line omits `to_field='code'` and the test FAILS. \n\nThis is the discriminating half of [SI-3] (the ForeignKey side to_field is added only by the fix). For the complementary OneToOneField side, both versions omit to_field (since the to_field code is entirely inside the FK branch), so no output difference exists there and it cannot be the discriminating fact; the ForeignKey emission is exactly the behavior the fix introduced. Execution confirmed: PASSED against gold, FAILED against buggy with the identical source. No visible test (test_attribute_name_not_python_keyword and friends) exercises a relation targeting a non-PK column, so this behavior is genuinely hidden/oracle-level."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in django/core/management/commands/inspectdb.py, in handle_inspection(). When generating a relation field it computes rel_to from relations[column][1] (the referenced table) and whether relations[column][0] (the referenced column) is self, but never compares the referenced column against the referenced table's primary key to emit a to_field argument."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The referenced-table/column info is {field_name: (referenced_column, referenced_table)} as documented in BaseDatabaseIntrospection.get_relations docstring and produced by e.g. postgresql/mysql/sqlite introspection get_key_columns."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The introspection DB comment in inspectdb output notes the generated FK/OneToOne fields require manual on_delete and the schema already emits ', models.DO_NOTHING'; to_field would be appended among keyword params in extra_params."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No existing visible test (tests/inspectdb/tests.py) covers a FK referencing a non-primary-key column; existing tests (e.g. PeopleMoreData.people_unique = ForeignKey(People, unique=True), Message.from_field referencing People's PK) all exercise FKs whose target is the target table's primary key."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests are run via call_command('inspectdb', ...) and assert on exact generated model lines (see InspectDBTestCase.make_field_type_asserter / assertIn checks in tests/inspectdb/tests.py); inspectdb models are defined in tests/inspectdb/models.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The to_field logic is placed inside the else-branch where rel_type == 'ForeignKey', i.e., it never runs for OneToOneField (which is chosen when the local column is unique or is the local table's PK)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The referenced table's primary key and referenced column are compared on the raw DB column names from relations[column_name] (a (referenced_column, referenced_table) 2-tuple as produced by backend get_key_columns)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "to_field is stored into the existing extra_params dict and rendered with the other keyword arguments in the emitted field model line."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-3]: Requirement [SI-3] is about inspectdb emitting a `to_field` keyword ONLY for relations classified as ForeignKey whose referenced column is not the referenced table's primary key (and never for OneToOneField in that same column-target situation). Any oracle witness must be a test that passes on the gold (fixed) program, fails on the buggy program, and asserts this exact behavior.\n\nInvestigation of the full oracle for inspectdb:\n- The inspectdb oracle consists only of tests/inspectdb/__init__.py, tests/inspectdb/models.py ([HIDDEN]), and tests/inspectdb/tests.py ([VISIBLE]).\n- Every relation in the oracle models references People's implicit primary key `id` (PeopleData.people_pk, PeopleMoreData.people_unique, Message.from_field all target People.id / 'self'). There is NO model with a ForeignKey or OneToOneField whose referenced column is a non-primary-key (unique but not PK) column of the referenced table.\n- The visible test touching relation-field generation (test_attribute_name_not_python_keyword) asserts exact strings for OneToOneField/ForeignKey lines that all point at the referenced table's PK, for which `to_field` should not be and is not emitted in either the buggy or the gold version. So that assertion cannot distinguish them.\n- Task Notebook itself confirms: no existing (visible) test covers a FK referencing a non-PK column; existing tests only exercise FKs whose target is the referenced table's primary key.\n- \"Tests currently failing against the buggy program: (none recorded)\" is consistent: since no oracle fixture establishes a relation to a non-PK column, no oracle test can drive the differing to_field code path, so no oracle test fails on buggy nor yields a different outcome between buggy and gold for this requirement.\n\nI checked every file the oracle contains for this benchmark area. Nothing in the oracle asserts the required ForeignKey-only `to_field` behavior on a relation to a non-PK column, so no genuine witness exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-3] (django.core.management.commands.inspectdb.Command.handle_inspection (generated relation fields — to_field only added for ForeignKey, never OneToOneField)): The `to_field` keyword is added only to relations classified as ForeignKey; when a relation column is classified as OneToOneField (unique or primary-key), no `to_field` keyword argument is added to the generated output even if the referenced column is not the referenced table's primary key. — not entailed by S_vis (SI-3 requires that to_field is added ONLY to ForeignKey and never to a OneToOneField even when the referenced column is not the target PK. S_vis (R1/R2) never discusses OneToOneField-classified relations or commits that to_field is excluded for them; R1 only pins the ForeignKey side. The distinguishing O2O-exclusion claim is not evidenced, so entailment is genuinely ambiguous rather than confirmed.); confirmed by a synthesized witness: Requirement [SI-3] concerns django.core.management.commands.inspectdb.Command.handle_inspection: the to_field keyword must be emitted (in extra_params) only when a relation is classified as ForeignKey and the referenced column differs from the referenced table's primary key. The gold code (and only the gold code) adds `extra_params['to_field'] = ref_db_column` inside that ForeignKey else-branch (guarded by `ref_pk_column and ref_pk_column != ref_db_column`); the buggy pre-fix code has no such to_field logic at all.\n\nMy witness drives the actual (real) code path rather than live static fixtures: it boots a self-contained Django project over an in-memory SQLite DB, creates a target table `si3_author` whose PK is `id` with a separate UNIQUE `code` column, and a referencing table `si3_book` with an FK targeting that non-PK column `code`, then runs the real `inspectdb` management command and asserts its generated output contains `to_field='code'`. On the gold program the introspection records the FK `author_code -> si3_author.code`, detects `code != id` (si3_author's PK via get_primary_key_column), and emits `to_field='code'`, so the assertion PASSES. On the buggy program there is no to_field logic at all, so the FK line omits `to_field='code'` and the test FAILS. \n\nThis is the discriminating half of [SI-3] (the ForeignKey side to_field is added only by the fix). For the complementary OneToOneField side, both versions omit to_field (since the to_field code is entirely inside the FK branch), so no output difference exists there and it cannot be the discriminating fact; the ForeignKey emission is exactly the behavior the fix introduced. Execution confirmed: PASSED against gold, FAILED against buggy with the identical source. No visible test (test_attribute_name_not_python_keyword and friends) exercises a relation targeting a non-PK column, so this behavior is genuinely hidden/oracle-level.",
+    "confidence": "Medium"
+  }
+}

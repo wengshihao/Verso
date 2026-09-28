@@ -1,0 +1,119 @@
+{
+  "task_id": "Closure-117",
+  "status": "ok",
+  "duration_seconds": 356.68932649700037,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Closure-117",
+    "s_vis": [
+      {
+        "id": "S_VIS_1",
+        "statement": "For code declaring a private constructor-typed instance field with a type annotation but no assigned value (\"/** @type {C2} @private */ this.c2_;\" in constructor C3), then reading a sub-property of that uninitialized field with the dot operator (\"var x = this.c2_.prop;\"), type checking must report a single warning reading \"Property prop never defined on C2\" and no error.",
+        "subject": "TypeCheck testIssue1047 scenario (accessing a property of a typed-but-uninitialized private field)",
+        "hunk_ids": [],
+        "cited_from": "public void testIssue1047() throws Exception {\n    testTypes(\n        \"/**\\n\" +\n        \" * @constructor\\n\" +\n        \" */\\n\" +\n        \"function C2() {}\\n\" +\n        \"\\n\" +\n        \"/**\\n\" +\n        \" * @constructor\\n\" +\n        \" */\\n\" +\n        \"function C3(c2) {\\n\" +\n        \"  /**\\n\" +\n        \"   * @type {C2} \\n\" +\n        \"   * @private\\n\" +\n        \"   */\\n\" +\n        \"  this.c2_;\\n\" +\n        \"\\n\" +\n        \"  var x = this.c2_.prop;\\n\" +\n        \"}\",\n        \"Property prop never defined on C2\");}"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "TypeValidator.getReadableJSTypeName starts by resolving the passed node's own type (dereferencing it first when the dereference argument is true), and if that resolved type is a function-prototype type or an object type with a non-null constructor, it returns that type's toString() name. This resolution runs before — and therefore takes precedence over — the GETPROP prototype-chain walk that otherwise maps a GETPROP node to a '<ReceiverType>.<property>' name (and over the qualified-name / type fallbacks).",
+        "subject": "TypeValidator.getReadableJSTypeName(Node, boolean) — return String",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "Consequently, a GETPROP node whose own (dereferenced) type is a constructor-instance type returns that type's class name rather than a name of the form '<DefinerType>.<property>' that would be produced by climbing the receiver's prototype chain to the property's defining type. E.g. for an access expression typed as a class C2 (such as 'this.c2_' where c2_ is declared @type {C2}), getReadableJSTypeName returns 'C2', not e.g. 'C3.c2_'.",
+        "subject": "TypeValidator.getReadableJSTypeName(Node, boolean) — precedence of own-type name over prototype-climb-derived '<type>.<prop>' name",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-3",
+        "statement": "When the node's own dereference-resolved type is NOT a function-prototype type and has no constructor, the previous resolution order is preserved: the method still first attempts the GETPROP prototype-chain walk to yield a '<DefinerType>.<property>' name and, only if nothing resolves there, falls back to the node's qualified name and finally to a function/type-based textual name.",
+        "subject": "TypeValidator.getReadableJSTypeName(Node, boolean) — fallback resolution order for non-constructor-typed nodes",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "false",
+        "checked_ids": [
+          "S_VIS_1"
+        ],
+        "rationale": "S_VIS_1 is only a passing test asserting the warning text 'Property prop never defined on C2'. It contains no source of getReadableJSTypeName and says nothing about the method's dereference-then-constructor-check precedence or its relation to the GETPROP prototype-chain walk, so the internal control-flow described is not pinned down."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S_VIS_1"
+        ],
+        "rationale": "The test's expected message 'Property prop never defined on C2' does show that the receiver of the access is rendered as 'C2' (supporting the outcome aspect of SI-2). But S_VIS pins down only this message; it gives no evidence distinguishing an own-type-name branch from an alternative mechanism producing the same name, so the specific mechanism is genuinely ambiguous."
+      },
+      {
+        "requirement_id": "SI-3",
+        "entailed": "false",
+        "checked_ids": [
+          "S_VIS_1"
+        ],
+        "rationale": "S_VIS_1 only asserts the test's observable warning. It contains no getReadableJSTypeName source and says nothing about the fallback resolution order for non-constructor-typed nodes (GETPROP climb, then qualified name, then function/type name), so this internal ordering is not derivable from visible evidence."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I independently built and execution-confirmed a genuine gold-vs-buggy discriminator for the precedence reordering in TypeValidator.getReadableJSTypeName. Driving the public Compiler.compile pipeline on an AST containing an undeclared-property read through a typed field:\n\n  /** @constructor */ function C2() {}\n  /** @constructor */ function C3() {\n    /** @type {C2} @private */ this.c2_;\n    var x = this.c2_.borf;   // undeclared property\n  }\n\nGold produced the warning \"Property borf never defined on C2\" (PASSED on gold because the receiver GETPROP `this.c2_` is resolved by its own dereferenced, constructable type C2 first), whereas buggy produced \"Property borf never defined on C3.c2_\" (FAILED on buggy), because the buggy version runs the GETPROP prototype-chain walk before the own-type resolution — exactly the reordering [SI-1] fixes.\n\nThis confirms the requirement is real and observable. However, it does NOT qualify as a hidden Witness: the very same structural scenario (typed private field `this.c2_` of class C2, undeclared property `.prop`, expected diagnostic \"Property prop never defined on C2\") is already pinned down verbatim by the visible test method testIssue1047 in test/com/google/javascript/jscomp/TypeCheckTest.java, which the [S_vis]/Oracle investigations confirmed to be a [VISIBLE] content-based file. My candidate is only a re-wording of that already-visible oracle (different property name / slightly streamlined code), so the oracle enforcing it was never a hidden fact. I also surveyed the other visible TypeCheckTest diagnostics that surface getReadableJSTypeName text (missing-property and assignment-to-property messages on NAME/call/union receivers such as testIssue725, testMissingProperty38, testGoodExtends15, testPropertyInference8): none of those other receivers are class-typed GETPROP nodes governed by the reordering, and the only discriminating input shape is the one testIssue1047 already covers. No new unobservable behavior remains to witness, so nothing genuinely hidden qualifies."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The only decisive visible artifact for this bug is the test method testIssue1047 in test/com/google/javascript/jscomp/TypeCheckTest.java, which is literally named after the bug's issue number. The issue-number mapping comes from the task description → fix touches TypeValidator.java + report link issue 1047."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The source file src/com/google/javascript/jscomp/TypeValidator.java and the test base class CompilerTypeTestCase.java were also read; TypeValidator contains type-mismatch/null-check routing (e.g. expectNotNullOrUndefined / registerMismatch / registerIfMismatch) but the issue's specific behavioral contract is only pinned down by testIssue1047."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The expected-diagnostic string from the test ('Property prop never defined on C2') is a missing-property diagnostic rather than any of TypeValidator's own FOUND_REQUIRED/TYPE_MISMATCH strings, so the precise internal mechanism of the fix cannot be inferred from visible material."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TypeValidator.getReadableJSTypeName is package-private and is invoked from TypeCheck (passing the receiver/object node, dereference=true) when composing the '%s never defined on %s' / INEXISTENT_PROPERTY diagnostic text, which is why the reordering surfaces as the regression test issue 1047 ('Property prop never defined on C2')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is purely a reordering of the two resolution strategies inside getReadableJSTypeName: it relocates the 'own type is constructable/function-prototype' branch (H0) to the top of the method and deletes its previous later copy (H1); no logic is added or changed beyond the precedence."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: The target requirement [SI-1] concerns the precedence reordering inside TypeValidator.getReadableJSTypeName: it must resolve the node's own (possibly dereferenced) type first, and when that type is a function-prototype or object type with a non-null constructor, return that type's toString() name before any GETPROP prototype-chain '<Receiver>.<property>' walk runs.\n\nI investigated the oracle. The only test exercising this behavior is testIssue1047 in test/com/google/javascript/jscomp/TypeCheckTest.java (the currently-failing test named after the issue). Its assertion — reproducing that accessing an undeclared property on a typed private field yields the diagnostic \"Property prop never defined on C2\" — directly exercises exactly the precedence change r describes. However, read_test_file labeled TypeCheckTest.java as [VISIBLE] (content-based), so this test's assertion was never hidden and therefore cannot serve as a Witness.\n\nI also inspected the [HIDDEN] TypeValidatorTest.java (the natural [HIDDEN] home for TypeValidator unit tests). Its methods (testBasicMismatch, testFunctionMismatch, testFunctionMismatch2, testNullUndefined, testSubclass) all concern type-mismatch registration and the TYPE_MISMATCH_WARNING diagnostic — none of them call getReadableJSTypeName, dereference logic, GETPROP name walking, or constructable/function-prototype name resolution. They do not test the behavior described in r.\n\nNo other oracle file plausibly targets this package-private helper; the fix manifests only through the TypeCheck 'never defined on' diagnostic, which is what testIssue1047 pins down — and that file is visible. Since a witness must rest on [HIDDEN] assertions and all relevant oracle assertions are [VISIBLE] (or unrelated to r), nothing qualifies. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: I independently built and execution-confirmed a genuine gold-vs-buggy discriminator for the precedence reordering in TypeValidator.getReadableJSTypeName. Driving the public Compiler.compile pipeline on an AST containing an undeclared-property read through a typed field:\n\n  /** @constructor */ function C2() {}\n  /** @constructor */ function C3() {\n    /** @type {C2} @private */ this.c2_;\n    var x = this.c2_.borf;   // undeclared property\n  }\n\nGold produced the warning \"Property borf never defined on C2\" (PASSED on gold because the receiver GETPROP `this.c2_` is resolved by its own dereferenced, constructable type C2 first), whereas buggy produced \"Property borf never defined on C3.c2_\" (FAILED on buggy), because the buggy version runs the GETPROP prototype-chain walk before the own-type resolution — exactly the reordering [SI-1] fixes.\n\nThis confirms the requirement is real and observable. However, it does NOT qualify as a hidden Witness: the very same structural scenario (typed private field `this.c2_` of class C2, undeclared property `.prop`, expected diagnostic \"Property prop never defined on C2\") is already pinned down verbatim by the visible test method testIssue1047 in test/com/google/javascript/jscomp/TypeCheckTest.java, which the [S_vis]/Oracle investigations confirmed to be a [VISIBLE] content-based file. My candidate is only a re-wording of that already-visible oracle (different property name / slightly streamlined code), so the oracle enforcing it was never a hidden fact. I also surveyed the other visible TypeCheckTest diagnostics that surface getReadableJSTypeName text (missing-property and assignment-to-property messages on NAME/call/union receivers such as testIssue725, testMissingProperty38, testGoodExtends15, testPropertyInference8): none of those other receivers are class-typed GETPROP nodes governed by the reordering, and the only discriminating input shape is the one testIssue1047 already covers. No new unobservable behavior remains to witness, so nothing genuinely hidden qualifies."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SI-1] (TypeValidator.getReadableJSTypeName(Node, boolean) — return String) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I independently built and execution-confirmed a genuine gold-vs-buggy discriminator for the precedence reordering in TypeValidator.getReadableJSTypeName. Driving the public Compiler.compile pipeline on an AST containing an undeclared-property read through a typed field:\n\n  /** @constructor */ function C2() {}\n  /** @constructor */ function C3() {\n    /** @type {C2} @private */ this.c2_;\n    var x = this.c2_.borf;   // undeclared property\n  }\n\nGold produced the warning \"Property borf never defined on C2\" (PASSED on gold because the receiver GETPROP `this.c2_` is resolved by its own dereferenced, constructable type C2 first), whereas buggy produced \"Property borf never defined on C3.c2_\" (FAILED on buggy), because the buggy version runs the GETPROP prototype-chain walk before the own-type resolution — exactly the reordering [SI-1] fixes.\n\nThis confirms the requirement is real and observable. However, it does NOT qualify as a hidden Witness: the very same structural scenario (typed private field `this.c2_` of class C2, undeclared property `.prop`, expected diagnostic \"Property prop never defined on C2\") is already pinned down verbatim by the visible test method testIssue1047 in test/com/google/javascript/jscomp/TypeCheckTest.java, which the [S_vis]/Oracle investigations confirmed to be a [VISIBLE] content-based file. My candidate is only a re-wording of that already-visible oracle (different property name / slightly streamlined code), so the oracle enforcing it was never a hidden fact. I also surveyed the other visible TypeCheckTest diagnostics that surface getReadableJSTypeName text (missing-property and assignment-to-property messages on NAME/call/union receivers such as testIssue725, testMissingProperty38, testGoodExtends15, testPropertyInference8): none of those other receivers are class-typed GETPROP nodes governed by the reordering, and the only discriminating input shape is the one testIssue1047 already covers. No new unobservable behavior remains to witness, so nothing genuinely hidden qualifies.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "task_id": "django__django-15368",
+  "status": "ok",
+  "duration_seconds": 97.39752350002527,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15368",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When a model instance field listed in bulk_update(objs, fields) has been assigned a plain F('col_name') expression (an F that merely references another field/column of the same table and is not combined with anything), bulk_update must resolve that expression to the referenced column in the generated UPDATE SQL rather than wrapping it into a literal value, so after saving, the updated field holds the referenced column's value. In the issue's repro, assigning o.c8 = F('name') (c8 and name both char fields) and calling SelfRef.objects.bulk_update([o], ['c8']) must yield SQL where c8 is set from the name column, not the literal string 'F(name)'.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [],
+        "cited_from": ">>> o.c8 = F('name')  # model has char fields 'c8' and 'name'\n>>> SelfRef.objects.bulk_update([o], ['c8'])\n...\nThe created SQL contains the string repr of F(), instead of resolving to the column name. ... looking at query.py. It works, if the type check gets replaced by one of these: if not isinstance(attr, (Expression, F)): ..."
+      },
+      {
+        "id": "2",
+        "statement": "bulk_update() must treat a field value as a literal database value only when it is NOT an expression-capable object; the narrow check that special-cases only Expression subclasses is the defect because F (which is not an Expression subclass) ends up mis-handled — the discriminating predicate for 'this is an expression, do not wrap in Value' must also recognize plain F objects.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [],
+        "cited_from": "The culprit seems to be a too narrow type check in https://github.com/django/django/blob/2eed554c3fd75dae1beade79f357ffd18d3c4fdf/django/db/models/query.py#L673. / 'or test for F explicitly: if not isinstance(attr, (Expression, F)):'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In QuerySet.bulk_update, when a model field on an object in the batch whose attribute value has a 'resolve_expression' attribute (e.g., an unwrapped F('field') instance, which is an expression but not a subclass of Expression), that value is used as the SQL expression in the per-pk WHEN clause so the update sets the field to the value of the referenced database column, rather than being wrapped in a Value() that would produce the literal string representation of the expression.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis [1] (with its citation showing the repro SQL must contain the column name rather than string repr of F) pins down that a plain F value on a bulk_update field must be used as the referenced column in the generated UPDATE SQL. S_vis [2] (with citation) identifies the narrow isinstance-only Expression predicate as the defect and that the check must also recognize plain F objects, matching R1's outcome that F-like expression-valued fields are used as SQL expressions rather than wrapped in a Value()."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug site is QuerySet.bulk_update in django/db/models/query.py; its per-field/per-object loop does `attr = getattr(obj, field.attname)` then `if not isinstance(attr, Expression): attr = Value(attr, output_field=field)` before building a When(pk=obj.pk, then=attr)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/db/models/expressions.py, `class F(Combinable)` — F is NOT a subclass of Expression (only Combinable and it does not inherit BaseExpression), whereas CombinedExpression, Func, Value, Case, When all subclass Expression. So a bare F('name') fails the isinstance(attr, Expression) test and gets wrapped in Value, producing the literal string 'F(name)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing bulk_update expression tests in tests/queries/test_bulk_update.py cover only Expression subclasses: test_functions uses Lower('note') (Func) and test_field_references uses F('num') + 1 (CombinedExpression). There is no test for a plain, unwrapped F() assigned to a field — matching the reported bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The model Note (tests/queries/models.py) has CharFields note & misc; Number has IntegerField num. These are used by the bulk_update tests."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch in the bulk_update field-per-object loop only mechanically changes the guard from `not isinstance(attr, Expression)` to `not hasattr(attr, 'resolve_expression')`; it does not reorder or restructure surrounding logic. H0 only removes the now-unreferenced `Expression` name from the imports and introduces no independent behavior of its own, so both hunks are attributed to the single substantive behavior fixed by H1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "F is a Combinable (not an Expression subclass), which is why the pre-fix isinstance guard misclassified a plain F() value as a literal to be wrapped in Value."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

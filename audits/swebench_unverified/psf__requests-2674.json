@@ -1,0 +1,111 @@
+{
+  "task_id": "psf__requests-2674",
+  "status": "ok",
+  "duration_seconds": 309.62177000008523,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-2674",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A request performed through the Requests API surface (e.g. requests.get / Session) whose transport operation times out and surfaces as urllib3's requests.packages.urllib3.exceptions.TimeoutError (including one arising because a proxy times out) must be raised to the caller as a requests.exceptions.Timeout exception rather than leaking the raw urllib3 exception, so callers do not additionally need to catch requests.packages.urllib3.exceptions.TimeoutError.",
+        "subject": "requests/adapters.py HTTPAdapter.send exception wrapping (urllib3 TimeoutError -> requests.exceptions.Timeout)",
+        "hunk_ids": [],
+        "cited_from": "requests.packages.urllib3.exceptions.DecodeError and requests.packages.urllib3.exceptions.TimeoutError (this one I get when a proxy timeouts) ... If it is [requests' design goal to wrap urllib3 exceptions], I have at least two of them passing through that I have to catch in addition to requests' exceptions."
+      },
+      {
+        "id": "R2",
+        "statement": "A request/response handled through the Requests API must not expose urllib3's requests.packages.urllib3.exceptions.DecodeError directly to callers; when response decoding fails it must be translated to a Requests exceptions type (requests.exceptions.ContentDecodingError), so callers do not additionally need to catch requests.packages.urllib3.exceptions.DecodeError.",
+        "subject": "requests/adapters.py HTTPAdapter.send + requests/models.py Response.iter_content exception wrapping (urllib3 DecodeError -> requests.exceptions.ContentDecodingError)",
+        "hunk_ids": [],
+        "cited_from": "requests.packages.urllib3.exceptions.DecodeError and requests.packages.urllib3.exceptions.TimeoutError (this one I get when a proxy timeouts) ... I have at least two of them passing through that I have to catch in addition to requests' exceptions."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "r1",
+        "statement": "HTTPAdapter.send catches a urllib3 ClosedPoolError raised by the connection operation and re-raises it as a requests.exceptions.ConnectionError (constructed from the original exception with request=request), rather than letting the raw urllib3 exception escape to the caller.",
+        "subject": "requests.adapters.HTTPAdapter.send",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "r1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern wrapping of specific urllib3 exceptions (TimeoutError->Timeout, DecodeError->ContentDecodingError) into Timeout/ContentDecodingError types, based on an issue report about those two exceptions leaking. Neither mentions ClosedPoolError or its translation to requests.exceptions.ConnectionError, so the visible info does not pin down the ClosedPoolError->ConnectionError wrapping behavior in HTTPAdapter.send."
+      }
+    ],
+    "target_requirement_id": "r1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_closed_pool_re_raised_as_connection_error",
+      "test_source": "import pytest\nfrom requests.adapters import HTTPAdapter\nfrom requests.models import PreparedRequest\nfrom requests.exceptions import ConnectionError\n\ndef test_closed_pool_re_raised_as_connection_error():\n    a = HTTPAdapter()\n    req = PreparedRequest()\n    req.prepare(method='GET', url='http://www.example.com/')\n    pool = a.get_connection(req.url)\n    pool.close()\n    with pytest.raises(ConnectionError) as excinfo:\n        a.send(req)\n    assert excinfo.value.request is req\n",
+      "gold_result": "PASSED — HTTPAdapter.send(req) raised requests.exceptions.ConnectionError whose .request is req.",
+      "buggy_result": "FAILED — the raw urllib3 requests.packages.urllib3.exceptions.ClosedPoolError escaped send() (buggy has no ClosedPoolError handler), so pytest.raises(ConnectionError) was not satisfied.",
+      "explanation": "Requirement r1 is exactly the behavior added by gold: HTTPAdapter.send must catch a urllib3 ClosedPoolError raised internally by conn.urlopen and re-raise it as requests.exceptions.ConnectionError (constructed from the original exception with request=request), instead of letting the raw urllib3 exception escape. The test drives a real (unmodified) HTTPAdapter.send: it retrieves the urllib3 HTTPConnectionPool backing the request URL and calls its close() (setting pool.pool=None). When send() then proceeds to conn.urlopen -> _get_conn, the pool raises ClosedPoolError, which propagates inside send()'s try/except. On gold the new `except ClosedPoolError` (H1) converts it to requests.exceptions.ConnectionError with request=request; on buggy there is no such handler, so the exception falls to the final `except (_SSLError,_HTTPError)` block's bare `else: raise` and the raw urllib3 ClosedPoolError escapes to the caller. Confirmed empirically: gold PASSED (raises ConnectionError with excinfo.value.request is req), buggy FAILED (raw ClosedPoolError escaped and pytest.raises(ConnectionError) was not satisfied). This scenario (a request sent into an adapter whose urllib3 pool has already been closed, asserting the ConnectionError translation) is not exercised anywhere in the visible oracle test_requests.py — that file only covers real network failures and timeout paths, never a closed-pool ClosedPoolError driving send(). So the assertion rests on the hidden fix, not on already-visible facts."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "urllib3 is vendored under requests/packages/urllib3/, so the exceptions cited in the issue are reachable as requests.packages.urllib3.exceptions.*."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "requests/exceptions.py defines its own mirror tree (Timeout, ReadTimeout, ConnectTimeout inheriting from ConnectionError+Timeout, ContentDecodingError, etc.); ContentDecodingError also subclasses urllib3's BaseHTTPError (HTTPError) so it can interoperate."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "requests/models.py Response.iter_content already translates urllib3 DecodeError->ContentDecodingError and ReadTimeoutError->ConnectionError during streamed decode; the issue concerns other paths where these urllib3 HTTPError subclasses slip out uncaught."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The adapter's final except block in requests/adapters.py is `except (_SSLError, _HTTPError) as e: if isinstance(e, _SSLError): raise SSLError... elif isinstance(e, ReadTimeoutError): raise ReadTimeout... else: raise` — the bare `else: raise` is the pass-through point letting plain urllib3 TimeoutError/DecodeError escape."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Top-level test_requests.py and TestTimeout (test_stream_timeout, test_read_timeout, test_connect_timeout) confirm ReadTimeout/ConnectTimeout subclasses of requests.exceptions.Timeout are the expected outcome for server timeouts; connect/read proxy-timeout scenario from the issue maps to the base urllib3 TimeoutError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/user/quickstart.rst 'Errors and Exceptions') state: 'If a request times out, a requests.exceptions.Timeout exception is raised.' and 'All exceptions that Requests explicitly raises inherit from requests.exceptions.RequestException.'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Library version is 2.7.0 with vendored urllib3 1.10.x per HISTORY.rst."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ClosedPoolError is a urllib3 PoolError subclass (hence an _HTTPError) but not a MaxRetryError, _ProxyError, ReadTimeoutError, or _SSLError; before the fix it therefore fell through the final `except (_SSLError, _HTTPError)` handler's bare `else: raise` and escaped out of HTTPAdapter.send as a raw urllib3 exception."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 introduces the module-level import of ClosedPoolError from the vendored .packages.urllib3.exceptions; H1 adds its handler clause in send()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ClosedPoolError is raised by urllib3 when a request enters a connection pool that has already been closed (relevant when using a transport/session after pool shutdown)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [r1]: The oracle contains exactly one test file (test_requests.py), and that entire file is labeled [VISIBLE]. The Witness rules require that any submitted test_source rest on [HIDDEN] assertions only — a [VISIBLE]-derived assertion can never serve, no matter how well it matches r1. Since zero [HIDDEN] test content exists in this oracle, no witness is possible on that ground alone.\n\nAdditionally, even on the merits of visible content, no test actually covers r1 (HTTPAdapter.send catching a urllib3 ClosedPoolError and re-raising it as requests.exceptions.ConnectionError). I examined the file in full: connection-related tests (test_connection_error_invalid_domain/port, timeout tests, test_unconsumed_session_response_closes_connection) exercise real network failures or raw-response closing — none constructs a scenario where a request enters a closed urllib3 connection pool inside send(), and none asserts that a ClosedPoolError is translated into requests.exceptions.ConnectionError with request=request. No tests are recorded as failing against the buggy program. Therefore nothing in the real oracle serves as a witness for r1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [r1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[r1] (requests.adapters.HTTPAdapter.send): HTTPAdapter.send catches a urllib3 ClosedPoolError raised by the connection operation and re-raises it as a requests.exceptions.ConnectionError (constructed from the original exception with request=request), rather than letting the raw urllib3 exception escape to the caller. — not entailed by S_vis (Both S_vis entries concern wrapping of specific urllib3 exceptions (TimeoutError->Timeout, DecodeError->ContentDecodingError) into Timeout/ContentDecodingError types, based on an issue report about those two exceptions leaking. Neither mentions ClosedPoolError or its translation to requests.exceptions.ConnectionError, so the visible info does not pin down the ClosedPoolError->ConnectionError wrapping behavior in HTTPAdapter.send.); confirmed by a synthesized witness: Requirement r1 is exactly the behavior added by gold: HTTPAdapter.send must catch a urllib3 ClosedPoolError raised internally by conn.urlopen and re-raise it as requests.exceptions.ConnectionError (constructed from the original exception with request=request), instead of letting the raw urllib3 exception escape. The test drives a real (unmodified) HTTPAdapter.send: it retrieves the urllib3 HTTPConnectionPool backing the request URL and calls its close() (setting pool.pool=None). When send() then proceeds to conn.urlopen -> _get_conn, the pool raises ClosedPoolError, which propagates inside send()'s try/except. On gold the new `except ClosedPoolError` (H1) converts it to requests.exceptions.ConnectionError with request=request; on buggy there is no such handler, so the exception falls to the final `except (_SSLError,_HTTPError)` block's bare `else: raise` and the raw urllib3 ClosedPoolError escapes to the caller. Confirmed empirically: gold PASSED (raises ConnectionError with excinfo.value.request is req), buggy FAILED (raw ClosedPoolError escaped and pytest.raises(ConnectionError) was not satisfied). This scenario (a request sent into an adapter whose urllib3 pool has already been closed, asserting the ConnectionError translation) is not exercised anywhere in the visible oracle test_requests.py — that file only covers real network failures and timeout paths, never a closed-pool ClosedPoolError driving send(). So the assertion rests on the hidden fix, not on already-visible facts.",
+    "confidence": "Medium"
+  }
+}

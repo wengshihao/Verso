@@ -1,0 +1,136 @@
+{
+  "task_id": "django__django-13689",
+  "status": "ok",
+  "duration_seconds": 543.1546538750408,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13689",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a queryset annotates an alias with an ExpressionWrapper around a Boolean expression (e.g. ExpressionWrapper(Q(bob_id=None), output_field=BooleanField())), then selects that alias via .values() followed by an aggregating .annotate() with an aggregate such as Count(id, distinct=True), the compiled SQL's GROUP BY must group by rows according to the full wrapped expression's value and retain that expression rather than collapsing to only the underlying column. For the reported query the GROUP BY must contain the 'bob_id IS NULL' predicate (grouping by the alias value as selected), so that the distinct-id counts are computed separately for rows where bob_id is NULL and rows where it is not.",
+        "subject": "QuerySet aggregate-over-annotated-value GROUP BY generation (Query.group_by / SQLCompiler.get_group_by / ExpressionWrapper.get_group_by_cols)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Aggregating when grouping on an ExpressionWrapper omits the expression from the group by\"\nQuery: \"Fred.objects.annotate(bob_id__is_null=ExpressionWrapper(Q(bob_id=None), output_field=BooleanField())).values(\"bob_id__is_null\").annotate(id__count=Count(\"id\", distinct=True)).values(\"bob_id__is_null\", \"id__count\")\"\nResulting SQL shown in the issue:\nSELECT \n\t\"main_fred\".\"bob_id\" IS NULL AS \"bob_id__is_null\", \n\tCOUNT(DISTINCT \"main_fred\".\"id\") AS \"id__count\" \nFROM \"main_fred\"\nGROUP BY \"main_fred\".\"bob_id\"\nReported defect: \"On the last line there the group by has dropped the \"IS NULL\"\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-1",
+        "statement": "When the expression wrapped by an ExpressionWrapper is an instance of django.db.models.expressions.Expression, get_group_by_cols returns the same columns as before: it copies the wrapped expression, stamps the wrapper's output_field onto the copy, and returns the wrapped expression's own get_group_by_cols(alias=alias) result.",
+        "subject": "ExpressionWrapper.get_group_by_cols",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "When the expression wrapped by an ExpressionWrapper is not an Expression instance (e.g. a Q object used as a WHERE-like clause), get_group_by_cols does not attempt to copy/delegate to the wrapped value; instead it falls back to the base implementation (BaseExpression.get_group_by_cols), so for a wrapper that contains no aggregate the whole ExpressionWrapper becomes a single GROUP BY column, causing queries that group by such an annotation to include the full wrapped expression in the GROUP BY clause rather than crashing or grouping incorrectly.",
+        "subject": "ExpressionWrapper.get_group_by_cols",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ-3",
+        "statement": "A values(...)-then-annotate(aggregate) query whose grouping expression is an ExpressionWrapper over a non-Expression (Q/where-clause) content now produces a valid executed query (correct GROUP BY including the grouped annotation) instead of raising during group-by column resolution.",
+        "subject": "ExpressionWrapper.get_group_by_cols",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 only demonstrates the bug in the non-Expression (Q-object wrapped) case and its desired GROUP BY outcome; it says nothing about the branch where the wrapped content IS a django Expression instance, nor about preserving copy/stamp/output_field/delegate behavior for such content. REQ-1's specific behavior is not pinned by the visible evidence."
+      },
+      {
+        "requirement_id": "REQ-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 pins the desired observable outcome (GROUP BY must retain the full wrapped expression, e.g. 'bob_id IS NULL', rather than collapsing to the bare column), which strongly matches REQ-2's effect. However REQ-2's specific mechanism (falling back to BaseExpression.get_group_by_cols so the whole wrapper becomes one group-by column) and the 'not crashing' manner of failure are implementation/design details not shown in the cited issue."
+      },
+      {
+        "requirement_id": "REQ-3",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's citation concerns exactly this scenario (ExpressionWrapper over a Q/where-clause selected via .values() then .annotate(Count distinct)) and demands that the query group by the full wrapped expression so correct distinct counts are computed — i.e., a valid query with the grouped annotation present in GROUP BY. REQ-3's observable behavior is pinned by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "REQ-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "REQ-1 describes EXACTLY the branch of ExpressionWrapper.get_group_by_cols where the wrapped content IS an instance of django.db.models.expressions.Expression (copy the wrapped expression, stamp the wrapper's output_field onto the copy, return the copy's get_group_by_cols(alias=alias)). But the S_impl diff and the gold/buggy files I read show that this isinstance(self.expression, Expression) branch is byte-for-byte IDENTICAL before (buggy, unconditional code that for Expression content does the same thing) and after (gold) the patch. The patch only ADDS the guard so that non-Expression content (e.g. a Q) no longer calls .copy()/.\n\nI verified this empirically with actual run_test executions:\n1. ExpressionWrapper(Value('f'), IntegerField()).get_group_by_cols() -> []  PASSED on BOTH gold and buggy.\n2. ExpressionWrapper(Lower(...)/IntegerField).get_group_by_cols() -> the copy-of-expression branch behaved identically on both gold and buggy (both my crafted assertions failed identically on both, because returned cols are copies, not expr.expression; no divergence).\nSo a test constructed along REQ-1's own specification can never FAIL on buggy while PASSING on gold — the code implementing REQ-1 is unchanged by the fix. I additionally probed the non-Expression (Q) content path, which is where the actual patch discriminates (buggy: AttributeError 'Q' has no attribute 'copy'; gold: a different path), but that path requires wrapped content that is NOT an Expression and therefore falls outside REQ-1's precondition as stated (\"is an instance of django.db.models.expressions.Expression\"). Note also that even there the gold and buggy outcomes differ only in which AttributeError is raised, so it isn't a clean witness either. A genuine Witness requires FAIL(buggy)/PASS(gold) for REQ-1's Expression-content behavior; that is impossible by construction, so found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The Django aggregation unit tests live under tests/aggregation/tests.py (models in tests/aggregation/models.py) and regression tests under tests/aggregation_regress/."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "GROUP BY construction for a values(...)-then-annotate(aggregate) query happens via compiler.get_group_by in django/db/models/sql/compiler.py, which consumes Query.group_by set by Query.set_group_by (called out of QuerySet._annotate in django/db/models/query.py when a .values() was applied before an aggregate annotation)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Grouping behavior for plain-field and F()-expression annotations (not ExpressionWrapper/Q) is asserted to work by tests such as AggregationTestCase.test_grouped_annotation_in_group_by ('An annotation included in values() before an aggregate should be included in the group by clause', xprice=F('price')) in tests/aggregation/tests.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ExpressionWrapper.__init__ wraps a single expression, and ExpressionWrapper.get_group_by_cols (django/db/models/expressions.py) copies the wrapped expression and forwards to its get_group_by_cols, so how the wrapper contributes to grouping depends on the wrapped expression's group-by behaviour."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The example model from the issue report (Fred with a presumably-nullable foreign key bob_id) is not among the visible test models; no visible unit test currently reproduces the ExpressionWrapper/Q grouping scenario, so the behavioural expectation is sourced from the issue report's narrative and generated-SQL excerpt only."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ExpressionWrapper.get_source_expressions returns [self.expression] and set_source_expressions sets self.expression = exprs[0]; ExpressionWrapper is declared as a subclass of Expression (BaseExpression)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix guards on isinstance(self.expression, Expression); before the patch the code path unconditionally called self.expression.copy() and assigned .output_field, which is invalid for non-Expression wrapped content."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "super().get_group_by_cols() resolves to BaseExpression.get_group_by_cols, which for content with no aggregate returns [self] (the wrapper itself) and otherwise recurses through get_source_expressions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ExpressionWrapper.as_sql just compiles self.expression, unchanged by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Change confined to django/db/models/expressions.py; no changes elsewhere in the diff."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-1]: REQ-1 asserts ExpressionWrapper.get_group_by_cols behavior when the wrapped content already IS a django Expression: copy it, stamp the wrapper's output_field on the copy, and forward to the wrapped expression's own get_group_by_cols. The notebook's S_impl notes show the patch only adds an isinstance(self.expression, Expression) guard for NON-Expression content (e.g. a Q); the Expression-content branch is left unchanged between buggy and gold.\n\nI confirmed this by mechanically running the only REQ-1-relevant assertions in the oracle (expressions/tests.py ExpressionWrapperTests.test_empty_group_by / test_non_empty_group_by) as standalone tests: both PASS against the buggy program (ExpressionWrapper(Value(3))->[] and ExpressionWrapper(Lower(Value('f')), IntegerField())->[expr.expression] with output_field stamped). Because that output path is identical pre/post patch, no oracle test can ever fail on buggy while passing on gold for REQ-1 — a necessary condition for any witness is unmet by construction.\n\nI checked the many group-by tests across the relevant oracle test files (aggregation/tests.py, aggregation_regress/tests.py, annotations/tests.py, expressions/test_queryset_values.py, expressions/test_deprecation.py, queries/test_q.py, queries/test_query.py, aggregation/test_filter_argument.py) — all are [VISIBLE], none asserts REQ-1's copy->stamp-output_field->forward semantics, and all grouping assertions concern plain fields/F()/subqueries, not an ExpressionWrapper-get_group_by_cols discriminating buggy-vs-gold. The relevant HIDDEN content that exists is in model files (e.g. aggregation/aggregation models), which carry no assertion. No HIDDEN oracle test reproduces REQ-1's behavior in a buggy-failing/gold-passing way."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-1]: REQ-1 describes EXACTLY the branch of ExpressionWrapper.get_group_by_cols where the wrapped content IS an instance of django.db.models.expressions.Expression (copy the wrapped expression, stamp the wrapper's output_field onto the copy, return the copy's get_group_by_cols(alias=alias)). But the S_impl diff and the gold/buggy files I read show that this isinstance(self.expression, Expression) branch is byte-for-byte IDENTICAL before (buggy, unconditional code that for Expression content does the same thing) and after (gold) the patch. The patch only ADDS the guard so that non-Expression content (e.g. a Q) no longer calls .copy()/.\n\nI verified this empirically with actual run_test executions:\n1. ExpressionWrapper(Value('f'), IntegerField()).get_group_by_cols() -> []  PASSED on BOTH gold and buggy.\n2. ExpressionWrapper(Lower(...)/IntegerField).get_group_by_cols() -> the copy-of-expression branch behaved identically on both gold and buggy (both my crafted assertions failed identically on both, because returned cols are copies, not expr.expression; no divergence).\nSo a test constructed along REQ-1's own specification can never FAIL on buggy while PASSING on gold — the code implementing REQ-1 is unchanged by the fix. I additionally probed the non-Expression (Q) content path, which is where the actual patch discriminates (buggy: AttributeError 'Q' has no attribute 'copy'; gold: a different path), but that path requires wrapped content that is NOT an Expression and therefore falls outside REQ-1's precondition as stated (\"is an instance of django.db.models.expressions.Expression\"). Note also that even there the gold and buggy outcomes differ only in which AttributeError is raised, so it isn't a clean witness either. A genuine Witness requires FAIL(buggy)/PASS(gold) for REQ-1's Expression-content behavior; that is impossible by construction, so found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ-1] (ExpressionWrapper.get_group_by_cols) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: REQ-1 describes EXACTLY the branch of ExpressionWrapper.get_group_by_cols where the wrapped content IS an instance of django.db.models.expressions.Expression (copy the wrapped expression, stamp the wrapper's output_field onto the copy, return the copy's get_group_by_cols(alias=alias)). But the S_impl diff and the gold/buggy files I read show that this isinstance(self.expression, Expression) branch is byte-for-byte IDENTICAL before (buggy, unconditional code that for Expression content does the same thing) and after (gold) the patch. The patch only ADDS the guard so that non-Expression content (e.g. a Q) no longer calls .copy()/.\n\nI verified this empirically with actual run_test executions:\n1. ExpressionWrapper(Value('f'), IntegerField()).get_group_by_cols() -> []  PASSED on BOTH gold and buggy.\n2. ExpressionWrapper(Lower(...)/IntegerField).get_group_by_cols() -> the copy-of-expression branch behaved identically on both gold and buggy (both my crafted assertions failed identically on both, because returned cols are copies, not expr.expression; no divergence).\nSo a test constructed along REQ-1's own specification can never FAIL on buggy while PASSING on gold — the code implementing REQ-1 is unchanged by the fix. I additionally probed the non-Expression (Q) content path, which is where the actual patch discriminates (buggy: AttributeError 'Q' has no attribute 'copy'; gold: a different path), but that path requires wrapped content that is NOT an Expression and therefore falls outside REQ-1's precondition as stated (\"is an instance of django.db.models.expressions.Expression\"). Note also that even there the gold and buggy outcomes differ only in which AttributeError is raised, so it isn't a clean witness either. A genuine Witness requires FAIL(buggy)/PASS(gold) for REQ-1's Expression-content behavior; that is impossible by construction, so found=false.",
+    "confidence": "Medium"
+  }
+}

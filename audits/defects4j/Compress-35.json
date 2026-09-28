@@ -1,0 +1,163 @@
+{
+  "task_id": "Compress-35",
+  "status": "ok",
+  "duration_seconds": 254.8772639910003,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Compress-35",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "TarUtils.verifyCheckSum must return true for a TAR header whose stored checksum field holds a valid checksum that is right-aligned (zero/null or space padding on the left), i.e. it must not lose the trailing significant octal digits of a right-aligned checksum and consequently reject an otherwise-valid checksum.",
+        "subject": "TarUtils.verifyCheckSum(byte[])",
+        "hunk_ids": [],
+        "cited_from": "\"The linked TAR has a checksum with zero padding on the left instead of the expected {{NULL-SPACE}} terminator on the right. As a result the last two digits of the stored checksum are lost and the otherwise valid checksum is treated as invalid.\" and \"Given that the code already checks for digits being in range before adding them to the stored sum, is it necessary to only look at the first 6 octal digits instead of the whole field?\" (issue description, COMPRESS-335)"
+      },
+      {
+        "id": "R2",
+        "statement": "When fed the TAR archive of COMPRESS-335 (the one whose checksum is stored right-aligned/zero-padded), archive detection must succeed, returning a non-null stream that is a TarArchiveInputStream.",
+        "subject": "ArchiveStreamFactory.createArchiveInputStream / TAR detection",
+        "hunk_ids": [],
+        "cited_from": "DetectArchiverTestCase.testCOMPRESS335: \"final ArchiveInputStream tar = getStreamFor(\\\"COMPRESS-335.tar\\\"); assertNotNull(tar); assertTrue(tar instanceof TarArchiveInputStream);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI_1",
+        "statement": "verifyCheckSum derives the stored/expected checksum value by parsing the entire CHKSUM field (the CHKSUMLEN bytes at CHKSUM_OFFSET) as an octal number with parseOctal semantics, i.e. leading space bytes and a leading NUL in that field are ignored (with a leading-NUL/whitespace-only field yielding 0), and trailing space/NUL padding within the field is trimmed, so the genuine octal digits found in the field form the compared value rather than only the first contiguous run of digits from the field's first byte.",
+        "subject": "TarUtils.verifyCheckSum",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI_2",
+        "statement": "verifyCheckSum returns true for a header whose CHKSUM field octal digits are separated from surrounding bytes by whitespace or NUL padding (leading and/or trailing), provided that parsed stored value equals the header's recomputed unsigned or signed sum — so checksum fields not laid out as a bare digit block flush against the field start are correctly recognized as valid.",
+        "subject": "TarUtils.verifyCheckSum",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI_3",
+        "statement": "verifyCheckSum computes the recomputed unsigned and signed header sums with all CHKSUMLEN bytes of the CHKSUM field masked to ASCII-space octets, and returns true iff the stored checksum value parsed from that field equals the unsigned sum or the signed sum.",
+        "subject": "TarUtils.verifyCheckSum",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI_4",
+        "statement": "verifyCheckSum can propagate an IllegalArgumentException thrown by parseOctal when the trimmed CHKSUM-field content contains a byte that is neither an octal digit nor leading/trailing space/NUL padding (a field the previous lenient digit-scan never rejected) rather than merely returning false.",
+        "subject": "TarUtils.verifyCheckSum",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI_1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 commits to reading the whole CHKSUM field so trailing significant octal digits are kept and leading zero/space padding is ignored, which matches SI_1's core. But the exact parseOctal edge semantics (leading-NUL field yielding 0, precise trailing-trim behavior) are mechanism details not stated in the issue or test."
+      },
+      {
+        "requirement_id": "SI_2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 explicitly states verifyCheckSum 'must return true' for a valid checksum that is right-aligned/zero-padded rather than rejecting it, directly pinning the behavior of SI_2 (acceptance when octal digits are padded by space/NUL on either side, value still matching the sum)."
+      },
+      {
+        "requirement_id": "SI_3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 and R2 only pin outcomes (returning true for padded valid checksums; the archive test). The specific recomputation algorithm - masking the CHKSUM field bytes to ASCII-space and comparing against both unsigned and signed sums - is never described in the visible evidence, so that exact mechanism is not pinned down."
+      },
+      {
+        "requirement_id": "SI_4",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions IllegalArgumentException propagation, invalid trimmed-field content, or any exception path in verifyCheckSum. Neither the issue nor the test would lead a repair system to produce the behavior of propagating an exception rather than returning false/encountering the previous lenient scan."
+      }
+    ],
+    "target_requirement_id": "SI_4",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test(expected = IllegalArgumentException.class)\npublic void t() throws Exception {\n    byte[] header = new byte[512];\n    // Tar checksum field occupies 8 bytes at offset 148 (standard ustar).\n    for (int i = 0; i < 6; i++) {\n        header[148 + i] = (byte) '0';\n    }\n    header[154] = (byte) 'G';\n    header[155] = (byte) ' ';\n    org.apache.commons.compress.archivers.tar.TarUtils.verifyCheckSum(header);\n}",
+      "gold_result": "PASSED — verifyCheckSum threw IllegalArgumentException (as @Test expected). The CHKSUM field content after leading octal digits / trailing-space trimming reaches the non-octal byte 'G', which parseOctal (now used to seed storedSum in the fixed code) rejects and propagates as IllegalArgumentException out of verifyCheckSum.",
+      "buggy_result": "FAILED — java.lang.AssertionError: Expected exception: java.lang.IllegalArgumentException. Buggy verifyCheckSum never throws; its manual ≤6-digit scan silently ignores 'G' and returns normally (false), so the @Test(expected=...) assertion did not observe the expected exception.",
+      "explanation": "[SI_4] states that verifyCheckSum must propagate the IllegalArgumentException thrown by parseOctal when the trimmed 8-byte CHKSUM field (offset 148 in a ustar header) contains a byte which is neither an octal digit nor leading/trailing space/NUL padding — a case the old lenient digit-scan (buggy) never rejected. The Witness feeds verifyCheckSum a 512-byte header whose CHKSUM field bytes are '0','0','0','0','0','0','G',' '. parseOctal skips leading spaces (none), trims the single trailing space, then iterates over the six '0' digits and finally hits 'G', which is outside '0'..'7' and therefore triggers its IllegalArgumentException; verifyCheckSum in the gold version calls parseOctal first and thus propagates this exception (test PASSES against gold). In the buggy version storedSum is built by a manual loop that only counts at most 6 leading octal digits and simply ignores any non-octal byte, so 'G' is treated as a space and verifyCheckSum returns a boolean normally without ever throwing (so @Test(expected = IllegalArgumentException.class) FAILS against buggy). I verified the offsets against the standard ustar header layout (CHKSUM_OFFSET=148, CHKSUMLEN=8) and confirmed via run_test: gold PASSED, buggy FAILED. This directly exercises the exception-propagation behavior required by SI_4 (not merely the ordinary true/false checksum verdict, which is what R1/R2 cover), and I confirmed it is not pinned down by the visible DetectArchiverTestCase testCOMPRESS335 (a detection/recognition assertion, no exception semantics for verifyCheckSum) or any other visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three Java files are visible: src/main/java/.../archivers/tar/TarUtils.java, and two tests (DetectArchiverTestCase.java, AbstractTestCase.java)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TarUtils.java references TarConstants (CHKSUMLEN, CHKSUM_OFFSET, MAXID, MAXSIZE, UIDLEN) and ZipEncoding/ZipEncodingHelper and TarArchiveInputStream/ArchiveStreamFactory, none of which are present in the visible tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The actual resource .tar files consumed by the tests (COMPRESS-335.tar, COMPRESS-117.tar, bla.tar, etc.) are under the classpath resources and are NOT present in the visible file set, so the precise byte layout of the failing archive cannot be quoted or inspected."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The core logic at issue is TarUtils.verifyCheckSum(byte[] header), which accumulates at most 6 octal digits per digit run from the CHKSUM field (CHKSUM_OFFSET .. CHKSUM_OFFSET+CHKSUMLEN-1) and treats those bytes as spaces when summing unsigned/signed, then accepts if storedSum equals either sum."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DetectArchiverTestCase also holds testCOMPRESS117 reading COMPRESS-117.tar (unrelated detection smoke test) and various other detection tests; only testCOMPRESS335 relates to the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "R1 and R2 are two levels of the same underlying defect: repair at TarUtils.verifyCheckSum would satisfy both, so a single fix settles them together; they are kept separate only because they constrain distinct API surfaces."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch modifies only verifyCheckSum(byte[]); both hunks touch the same method. The unsigned/signed recompute loop (masking the 8 CHKSUM bytes to space before summing each byte) is behaviorally identical before and after — only storedSum's provenance changed (from a manual up-to-6-octal-digit 'digits' accumulator to parseOctal over the whole field)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "parseOctal (same file, unchanged) throws IllegalArgumentException when, after skipping leading spaces / returning 0 on leading NUL and trimming the trailing NUL/space run, a remaining byte is not in '0'..'7'; this exception can now surface out of verifyCheckSum."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "CHKSUMLEN/CHKSUM_OFFSET come from TarConstants via static imports; TarConstants is not in the visible file set."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI_4]: Requirement [SI_4] is specifically that TarUtils.verifyCheckSum propagates an IllegalArgumentException thrown by parseOctal when the trimmed CHKSUM-field content contains a non-octal, non-space/NUL byte (the precise case the old lenient ≤6-digit scan never rejected). A valid witness therefore must be a test whose assertion genuinely demonstrates this exception-propagation behavior of verifyCheckSum.\n\nI read every test file in the oracle (all 14). The only file that directly calls TarUtils.verifyCheckSum is TarUtilsTest (HIDDEN), in the single method testVerifyHeaderCheckSum. That test feeds three real headers (valid bla.tar, COMPRESS-117, and a non-tar AIFF blob) and asserts ordinary true/false return values; none of its inputs craft a CHKSUM field that would cause parseOctal to throw, and the test asserts neither an IllegalArgumentException nor any behavior distinguishing buggy from gold for the [SI_4] scenario. The rest of the [HIDDEN] oracle (TarTestCase.testCOMPRESS178, ArchiveStreamFactoryTest, ArchiveReadTest, TarArchiveEntryTest, etc.) exercises other read/write/detection paths (e.g., IllegalArgument surfaced as an IOException cause from a *size* field during getNextEntry — not verifyCheckSum, and not an [SI_4] assertion).\n\nThe only test reported failing against the buggy program is testCOMPRESS335 in DetectArchiverTestCase, which asserts that a resource is recognized as a TarArchiveInputStream. That file is [VISIBLE] (cannot be used as a witness), and moreover its assertion is about archive *detection/recognition* — the same method (verifyCheckSum) contributes to detection but this is a distinct behavior from [SI_4]'s exception-propagation claim; no hidden test asserts verifyCheckSum throwing on a malformed-octal checksum field. Having inspected every oracle file, I found no genuine hidden witness for [SI_4], so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI_4]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI_4] (TarUtils.verifyCheckSum): verifyCheckSum can propagate an IllegalArgumentException thrown by parseOctal when the trimmed CHKSUM-field content contains a byte that is neither an octal digit nor leading/trailing space/NUL padding (a field the previous lenient digit-scan never rejected) rather than merely returning false. — not entailed by S_vis (No S_vis entry mentions IllegalArgumentException propagation, invalid trimmed-field content, or any exception path in verifyCheckSum. Neither the issue nor the test would lead a repair system to produce the behavior of propagating an exception rather than returning false/encountering the previous lenient scan.); confirmed by a synthesized witness: [SI_4] states that verifyCheckSum must propagate the IllegalArgumentException thrown by parseOctal when the trimmed 8-byte CHKSUM field (offset 148 in a ustar header) contains a byte which is neither an octal digit nor leading/trailing space/NUL padding — a case the old lenient digit-scan (buggy) never rejected. The Witness feeds verifyCheckSum a 512-byte header whose CHKSUM field bytes are '0','0','0','0','0','0','G',' '. parseOctal skips leading spaces (none), trims the single trailing space, then iterates over the six '0' digits and finally hits 'G', which is outside '0'..'7' and therefore triggers its IllegalArgumentException; verifyCheckSum in the gold version calls parseOctal first and thus propagates this exception (test PASSES against gold). In the buggy version storedSum is built by a manual loop that only counts at most 6 leading octal digits and simply ignores any non-octal byte, so 'G' is treated as a space and verifyCheckSum returns a boolean normally without ever throwing (so @Test(expected = IllegalArgumentException.class) FAILS against buggy). I verified the offsets against the standard ustar header layout (CHKSUM_OFFSET=148, CHKSUMLEN=8) and confirmed via run_test: gold PASSED, buggy FAILED. This directly exercises the exception-propagation behavior required by SI_4 (not merely the ordinary true/false checksum verdict, which is what R1/R2 cover), and I confirmed it is not pinned down by the visible DetectArchiverTestCase testCOMPRESS335 (a detection/recognition assertion, no exception semantics for verifyCheckSum) or any other visible material.",
+    "confidence": "Medium"
+  }
+}

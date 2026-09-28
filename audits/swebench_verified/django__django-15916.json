@@ -1,0 +1,115 @@
+{
+  "task_id": "django__django-15916",
+  "status": "ok",
+  "duration_seconds": 711.298064667033,
+  "llm_calls": 41,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15916",
+    "s_vis": [
+      {
+        "id": "svis-1",
+        "statement": "When modelform_factory(model, form=...) is called without an explicit formfield_callback argument, the returned form class must apply the formfield_callback declared on the supplied base form (via the class and/or its inner Meta) when generating its fields, so that e.g. with the report's all_required callback both the 'active' and 'name' fields of the FactoryForm are required=True.",
+        "subject": "django.forms.models.modelform_factory / django.forms.models.ModelFormMetaclass",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"The expected behavior would be that the FactoryForm uses the formfield_callback specified in the Meta attribute of MyForm and that therefore the fields would be required in both the FactoryForm and MyForm. However, under the current behavior of modelform_factory the formfield_callback is overwritten (with the default argument None) before the new class is constructed and in FactoryForm the fields are not required.\" — the defining example: \"def all_required(field, **kwargs):\\n\\tformfield = field.formfield(**kwargs)\\n\\tformfield.required = True\\n\\treturn formfield\\nclass MyForm(forms.ModelForm):\\n\\tformfield_callback = all_required\\n\\tclass Meta:\\n\\t\\tmodel = MyModel\\n\\t\\tformfield_callback = all_required\\n\\t\\tfields = ['active', 'name']\\nFactoryForm = forms.modelform_factory(MyModel, form=MyForm)\""
+      },
+      {
+        "id": "svis-2",
+        "statement": "Passing an explicit formfield_callback argument to modelform_factory must still use that given callable (and only it) to build the fields of the returned form, taking effective precedence over any callback the base form would otherwise declare.",
+        "subject": "django.forms.models.modelform_factory",
+        "hunk_ids": [],
+        "cited_from": "tests/model_forms/tests.py, test_custom_callback: \"callback_args = []\\n\\ndef callback(db_field, **kwargs):\\n    callback_args.append((db_field, kwargs))\\n    return db_field.formfield(**kwargs)\\n...\\nmodelform_factory(Person, form=BaseForm, formfield_callback=callback)\\nself.assertEqual(callback_args, [(id_field, {}), (name_field, {'widget': widget})])\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "IMP-1",
+        "statement": "A ModelForm subclass whose Meta class declares a formfield_callback has that callback applied when constructing that form's model-derived fields: each model field is routed through the Meta's callback rather than the default f.formfield() building.",
+        "subject": "ModelForm.Meta.formfield_callback",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "IMP-2",
+        "statement": "modelform_factory preserves (rather than overriding to no-op) a base form's Meta.declared formfield_callback: when modelform_factory is called on a form whose Meta sets formfield_callback and no explicit formfield_callback argument is passed, the generated form's model fields are still constructed with that Meta callback.",
+        "subject": "modelform_factory Meta.formfield_callback preservation",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "IMP-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "svis-1",
+          "svis-2"
+        ],
+        "rationale": "svis-1 describes the fix only in the modelform_factory-generating-Form context; in the defining example the base form MyForm declares formfield_callback both at class level and in Meta, so a standalone subclass relying purely on Meta.formfield_callback being routed over f.formfield() (per IMP-1) is not cleanly pinned by the visible evidence. No S_vis entry directly establishes that standalone behavior."
+      },
+      {
+        "requirement_id": "IMP-2",
+        "entailed": "true",
+        "checked_ids": [
+          "svis-1",
+          "svis-2"
+        ],
+        "rationale": "svis-1 directly states that when modelform_factory is called with no explicit formfield_callback the returned form must preserve and apply the Meta-declared formfield_callback rather than having it overwritten to None (the cited issue explicitly says the callback must not be overwritten before new-class construction), which is exactly IMP-2. svis-2 covers the disjoint explicit-argument path and is consistent."
+      }
+    ],
+    "target_requirement_id": "IMP-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_meta_formfield_callback_is_applied",
+      "test_source": "def test_meta_formfield_callback_is_applied():\n    import django\n    from django.conf import settings\n    settings.configure(\n        DEBUG=True,\n        SECRET_KEY=\"x\",\n        INSTALLED_APPS=[],\n        DATABASES={\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}},\n        DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n        USE_TZ=False,\n    )\n    django.setup()\n\n    from django import forms\n    from django.db import models\n    from django.forms.models import modelform_factory\n\n    class Book(models.Model):\n        title = models.CharField(max_length=32)\n\n        class Meta:\n            app_label = \"verso_witness_meta\"\n            managed = False\n\n    def cb(f, **kwargs):\n        out = f.formfield(**kwargs)\n        if out is not None:\n            out.help_text = \"meta-callback-applied\"\n        return out\n\n    class BaseBookForm(forms.ModelForm):\n        class Meta:\n            model = Book\n            fields = \"__all__\"\n            formfield_callback = cb\n\n    Generated = modelform_factory(Book, form=BaseBookForm)\n    form = Generated()\n    assert form.fields[\"title\"].help_text == \"meta-callback-applied\", form.fields[\"title\"].help_text\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert '' == 'meta-callback-applied')",
+      "explanation": "Requirement [IMP-1] states that a ModelForm subclass whose Meta declares a `formfield_callback` must have that callback applied when building the form's model-derived fields (each field routed through Meta's callback rather than default `f.formfield()`). The Oracle Agent already established that the pre-fix code drops Meta-declared callbacks: buggy's metaclass only consults bases' Meta and overrides with the always-present `formfield_callback` (None when not passed to a factory), while gold honors `_meta.formfield_callback` read from the class's own Meta.\n\nMy witness is a direct, independent capture of that behavior: it Declares `formfield_callback` *inside* the Meta of a `ModelForm` subclass (not passed as a factory keyword) and then derives a new form via `modelform_factory(Book, form=BaseBookForm)`. The callback tags the model-derived `title` field's help_text. This is precisely the discriminating scenario for this requirement — the run harness needed `settings.configure`/`django.setup` plus an inline model because the standalone runner has no INSTALLED_APPS, so I select a fresh managed=False model.\nExecution confirmed: identical source PASSES on gold (callback honored, help_text applied) and FAILS on buggy (callback never invoked, help_text '').\n\nWhy this is a genuine (non-visible) witness: the visible FormFieldCallbackTests in tests/model_forms/tests.py exercise only the factory-*argument* API (`modelform_factory(..., formfield_callback=callback)`), which both gold and buggy honor identically; none of them declare the callback directly in Meta and then expect it to survive a `form=...`/subclass route. That Meta-declaration scenario is the hidden, requirement-specific discriminator this test targets, so it is not a harmless reinvention of any visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant docs: PyPI docs/ref/forms/models.txt documents modelform_factory's formfield_callback argument only; no Meta-level formfield_callback is documented yet (this issue is what introduces honoring it)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Mechanism in django/forms/models.py: modelform_factory builds the new form's Meta by subclassing form.Meta (so the base Meta.formfield_callback is inherited), then always places 'formfield_callback': formfield_callback (its own argument, default None) into the new class attrs; ModelFormMetaclass later resolves the effective callback via attrs.pop('formfield_callback', base_formfield_callback) after scanning base classes for b.Meta.formfield_callback, so the unset (None) factory argument overrides the inherited/base callback."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests in tests/model_forms/tests.py cover this API: FormFieldCallbackTests.test_baseform_with_widgets_in_meta, test_custom_callback, test_bad_callback (TypeError for non-callable), test_inherit_after_custom_callback; model_formsets_regress/tests.py has FormfieldCallbackTests for formsets. No visible test currently asserts the Meta-callback-preserved-across-factory behavior that this bug requests."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The metaclass no longer resolves the effective callback by popping a 'formfield_callback' from class-body attrs or by scanning base classes' Meta; it now reads new_class.Meta.formfield_callback via ModelFormOptions ('self.formfield_callback = getattr(options, \"formfield_callback\", None)')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "modelform_factory still honors an explicitly-passed formfield_callback argument by assigning it (via staticmethod) onto the generated Meta; only the always-present 'formfield_callback' entry (which could be None) was removed from the new form class's attrs (H2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the new metaclass reads only Meta.formfield_callback, a callback supplied as a class-body attribute of a ModelForm subclass (rather than inside Meta) is no longer consulted."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [IMP-1]: I searched the oracle test files that could encode the [IMP-1] behavior (a ModelForm subclass whose Meta declares `formfield_callback` having that callback honored when building model-derived fields — specifically the scenario where going through modelform_factory/inheritance preserves the Meta-level callback instead of overriding it with None).\n\nFiles read and their content-based labels:\n- tests/model_forms/tests.py  — [VISIBLE]. FormFieldCallbackTests covers only the factory-*argument* API (`modelform_factory(Person, form=…, formfield_callback=callback)`): test_baseform_with_widgets_in_meta, test_factory_with_widget_argument, test_modelform_factory_without_fields, test_modelform_factory_with_all_fields, test_custom_callback, test_bad_callback, test_inherit_after_custom_callback. None asserts that a callback declared directly *inside* BaseForm.Meta is preserved/honored through a subsequent modelform_factory call (i.e. none tests the exact behavior this requirement describes). Because the file is fully [VISIBLE], none of its assertions could serve as a witness regardless.\n- tests/model_forms/models.py, tests/model_forms/test_modelchoicefield.py, tests/model_forms/test_uuid.py — all [VISIBLE], none relevant to Meta-level formfield_callback.\n- tests/model_formsets_regress/tests.py — [VISIBLE]. Its FormfieldCallbackTests / Callback usage passes the callback through factory arguments (`formfield_callback=callback`), not via Meta.\n- tests/model_formsets/tests.py — [VISIBLE]. TestModelFormsetOverridesTroughFormMeta covers widgets/labels/help_texts/error_messages/field_classes overrides delivered through factory kwargs, not a Meta-declared formfield_callback.\n- tests/admin_views/test_forms.py — [VISIBLE], unrelated.\n\nI did mechanically confirm (only for my own understanding) that gold honors a BaseForm.Meta.formfield_callback through `modelform_factory(Person, form=BaseForm)` while the buggy program ignores it (callback never invoked), confirming the requirement describes a real behavioral difference. However, no [HIDDEN] oracle assertion that tests this specific Meta-callback behavior was located; every test I found that exercises formfield_callback does so only via the visible factory-argument API and is marked [VISIBLE] (hence disqualified as a witness). Per the rules, an assertion drawn from [VISIBLE] content can never serve as a witness, and a genuine [HIDDEN] match could not be found. Therefore found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [IMP-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[IMP-1] (ModelForm.Meta.formfield_callback): A ModelForm subclass whose Meta class declares a formfield_callback has that callback applied when constructing that form's model-derived fields: each model field is routed through the Meta's callback rather than the default f.formfield() building. — not entailed by S_vis (svis-1 describes the fix only in the modelform_factory-generating-Form context; in the defining example the base form MyForm declares formfield_callback both at class level and in Meta, so a standalone subclass relying purely on Meta.formfield_callback being routed over f.formfield() (per IMP-1) is not cleanly pinned by the visible evidence. No S_vis entry directly establishes that standalone behavior.); confirmed by a synthesized witness: Requirement [IMP-1] states that a ModelForm subclass whose Meta declares a `formfield_callback` must have that callback applied when building the form's model-derived fields (each field routed through Meta's callback rather than default `f.formfield()`). The Oracle Agent already established that the pre-fix code drops Meta-declared callbacks: buggy's metaclass only consults bases' Meta and overrides with the always-present `formfield_callback` (None when not passed to a factory), while gold honors `_meta.formfield_callback` read from the class's own Meta.\n\nMy witness is a direct, independent capture of that behavior: it Declares `formfield_callback` *inside* the Meta of a `ModelForm` subclass (not passed as a factory keyword) and then derives a new form via `modelform_factory(Book, form=BaseBookForm)`. The callback tags the model-derived `title` field's help_text. This is precisely the discriminating scenario for this requirement — the run harness needed `settings.configure`/`django.setup` plus an inline model because the standalone runner has no INSTALLED_APPS, so I select a fresh managed=False model.\nExecution confirmed: identical source PASSES on gold (callback honored, help_text applied) and FAILS on buggy (callback never invoked, help_text '').\n\nWhy this is a genuine (non-visible) witness: the visible FormFieldCallbackTests in tests/model_forms/tests.py exercise only the factory-*argument* API (`modelform_factory(..., formfield_callback=callback)`), which both gold and buggy honor identically; none of them declare the callback directly in Meta and then expect it to survive a `form=...`/subclass route. That Meta-declaration scenario is the hidden, requirement-specific discriminator this test targets, so it is not a harmless reinvention of any visible assertion.",
+    "confidence": "Medium"
+  }
+}

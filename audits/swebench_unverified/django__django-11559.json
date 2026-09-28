@@ -1,0 +1,112 @@
+{
+  "task_id": "django__django-11559",
+  "status": "ok",
+  "duration_seconds": 556.0009143750649,
+  "llm_calls": 39,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11559",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When a model's Meta.ordering contains query-expression/F-reference items in addition to plain strings (as in Article: '-pub_date', 'headline', F('author__name').asc(), OrderBy(F('second_author__name'))), querysets on that model must order their result rows by those fields/expressions with the declared directions, and calling .reverse() on such an ordered queryset must invert that ordering.",
+        "subject": "QuerySet ordering / Meta.ordering with expression items (Article, OrderedByFArticle models)",
+        "hunk_ids": [],
+        "cited_from": "tests/ordering/models.py: Article Meta.ordering = ('-pub_date', 'headline', models.F('author__name').asc(), OrderBy(models.F('second_author__name'))); tests/ordering/tests.py test_reverse_meta_ordering_pure: Article.objects.filter(headline='Article 5') == ['Name 1','Name 2'], .reverse() == ['Name 2','Name 1']; test_default_ordering_by_f_expression: OrderedByFArticle Meta.ordering = (models.F('author').asc(nulls_first=True), 'id') and articles == ['Article 1', 'Article 4', 'Article 3', 'Article 2']."
+      },
+      {
+        "id": "2",
+        "statement": "Calling order_by on a multi-table-inheritance child model using the parent-link field (ChildArticle.objects.order_by('article_ptr'), where the parent Article's Meta.ordering contains F/OrderBy expression items) must succeed without raising, and must order the child rows by the parent model's default (expression-containing) ordering.",
+        "subject": "QuerySet.order_by on multi-table-inheritance child via parent-link field with expression-containing parent Meta.ordering (ChildArticle/Article)",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'During testing I discovered a strange bug when using a query expression for ordering during multi-table inheritance ... The bug occurs because the field is an OrderBy object, not a string, during get_order_dir.'; tests/ordering/tests.py test_order_by_ptr_field_with_default_ordering_by_expression: with ca1(headline='h2',d=2005-07-27,author2), ca2('h2',d2005-07-27,author1), ca3('h3',d2005-07-27,author1), ca4('h1',d2005-07-28,None), assert ChildArticle.objects.order_by('article_ptr') == [ca4, ca2, ca1, ca3]."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When SQLCompiler.find_ordering_name expands ordering over a relation (field.is_relation) whose target/pointed-to model's Meta.ordering contains an entry that is an expression (has a resolve_expression attribute) but is not an existing OrderBy instance (e.g. a bare F() or other function/combined expression), that entry is honored as a real expression ordering term in the produced query rather than being recursed as a field-name string: the resulting QuerySet sorts by that expression and compiles without a field-resolution/reference error.",
+        "subject": "SQLCompiler.find_ordering_name (ordering by a relation whose default ordering includes a non-OrderBy expression entry)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When such a non-OrderBy expression entry in a relation/pointer model's Meta.ordering is incorporated into the ORDER BY, the direction used for that expression term follows the descending state of the enclosing find_ordering_name recursion (i.e. it is ordered descending when ordering the relation field in descending order / after the query ordering is reversed, and ascending otherwise), keeping the inherited-expression ordering's direction consistent with the direction the relation itself is being ordered.",
+        "subject": "SQLCompiler.find_ordering_name (direction propagation to a non-OrderBy expression default-ordering entry)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis[2] shows ordering over a parent-link relation whose parent Meta.ordering contains expression items succeeds and sorts correctly without raising, which supports the general relation-expansion-with-expressions behavior. However, S_vis examples' expression entries are all OrderBy instances (F(...).asc(), OrderBy(...)); none exhibits a non-OrderBy bare F()/function entry in a pointed-to model's Meta.ordering, so R1's distinct 'honored as an expression term, not recursed as a field-name string' branch is not clearly pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "No visible evidence exercises ordering/reversing a relation (or pointing relation descending) whose target's Meta.ordering contains non-OrderBy expression terms while checking that each inherited expression term's direction tracks the enclosing recursion's descending state. S_vis[1]'s reverse test is on the model directly and S_vis[2]'s test is a plain ascending order_by, so R2's direction-propagation guarantee is not established by the visible information."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to build an execution-confirmed witness for R1 (SQLCompiler.find_ordering_name honoring a non-OrderBy expression entry — e.g. a bare models.F() — that appears in the related target model's Meta.ordering while ordering over a relation).\n\nWhat I established via run_test:\n1. The harness actually runs pytest over Python functions (despite the generic Java/JUnit wording in the task template). I confirmed plain python `def test_*()` passes and that `django` is importable from the /testbed checkout.\n2. I got a full Django ORM bootstrap working inside a plain test function: `settings.configure(...)` with `django.db.backends.sqlite3 :memory:` plus a real on-disk INSTALLED_APPS package I synthesize under a temp dir (writing __init__.py and models.py), `django.setup()`, schema-editor table creation, and live instance insert/query. This overcame the AppRegistryNotReady / model-import problems the earlier agent hit.\n3. I then exercised the exact R1 control flow: outer model `Holder` with `ForeignKey('…Target', null=True)` and `<Outer>.objects.order_by('target')`, where `Target.Meta.ordering` contains a *bare* `models.F('…')` (has resolve_expression, not an OrderBy). This drives `find_ordering_name` into `Target.Meta.ordering`.\n\nWhy no witness could be finalized:\n- For that bare-expression ordering entry to survive compilation, the expression must resolve against the *outer* query's namespace. With two distinct models, a bare `F('name')` (unqualified, as the gold branch wraps and appends it exactly as-is) raises `django.core.exceptions.FieldError: Cannot resolve keyword 'name'` during `get_order_by`, i.e. gold itself FAILS on my synthetic scenario. So that scenario is not a gold-pass witness. (The real Django suite only ever uses *OrderBy-wrapped* expression entries — `models.F('x').asc()` / `OrderBy(...)` — in Meta.ordering reached through a relation, where the expression names resolve against a shared/parent join table; the bare non-OrderBy sub-case in R1 is not exercised anywhere in the oracle, hidden or visible.)\n- Crafting a self-consistent pair where a bare (non-OrderBy) expression inside the *target* meta-ordering is resolvable while the relation is a separate FK requires a parent/MTI sharing-join topology (like tests/ordering's Article/ChildArticle), and every arrangement I can construct still fails on gold with a field-resolution error, never cleanly sorting.\n\nI could not produce any candidate test_source that both PASSES on gold and FAILS on buggy across actual run_test invocations, so found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repository is the django/django source tree (pre Doctrine). Relevant ordering code: django/db/models/sql/query.py defines get_order_dir (indexes field[0], downstream helper returning (field, dir)), and django/db/models/sql/compiler.py: SQLCompiler.get_order_by (resolve_expression/OrderBy/string handling) and find_ordering_name (recurses into the ordered field's related model's Meta.ordering when ordering by a relation and field.attname != name)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The expression-capable MTI scenario that the issue/tests cover lives in tests/ordering (models tests/ordering/models.py: Article with expression-bearing Meta.ordering; OrderedByAuthorArticle and OrderedByFArticle proxy Models; ChildArticle a multi-table subclass of Article; Reference ordering by an Article FK) and tests/ordering/tests.py. Tests run under tests app 'ordering' (model_inheritance models alongside for MTI fixtures)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "models.F('author__name').asc() and OrderBy(...) used in Meta.ordering return OrderBy instances; expression items that are not wrapped in OrderBy are handled in get_order_by's resolve_expression branch via field.asc(), whereas find_ordering_name's related-objecting recursion only special-cases isinstance(item, OrderBy)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch touches only the opts.ordering iteration loop inside compiler.py's find_ordering_name; behavior for string field-name entries (still recursed into find_ordering_name) and for existing OrderBy entries (still appended as-is) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "descending in find_ordering_name is computed from get_order_dir on the current recursion's name/order, so the new .desc()/.asc() branch keys off the direction of the enclosing relation ordering context, not the individual expression's own intended direction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Relevant exercising context is MTI/proxy-related ordering (tests/ordering/models.py): Article.Meta.ordering mixes strings and OrderBy-wrapped F expressions, and ChildArticle (MTI subclass) is ordered via the article_ptr parent link (test_order_by_ptr_field_with_default_ordering_by_expression uses order_by('article_ptr'))."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the oracle for a witness covering R1 (SQLCompiler.find_ordering_name honoring a non-OrderBy expression entry found in the target relation's Meta.ordering while expanding ordering over a relation).\n\nThe only oracle content covering expressions-in-Meta.ordering reached through relation ordering lives in tests/ordering: models.py (defines Article.Meta.ordering with expression entries) and tests.py (holds the assertions: test_default_ordering_by_f_expression, test_order_by_ptr_field_with_default_ordering_by_expression, test_reverse_meta_ordering_pure, test_deprecated_values_annotate, etc.). reading tests.py labels it [VISIBLE]; per the constraint that a Witness may only rest on [HIDDEN] assertion content, an assertion drawn from this visible file can never serve as a witness regardless of how well it matches R1.\n\nAdditional findings:\n- tests/ordering/models.py is [HIDDEN] but it is a model-definition file, not an assertion/test; even its expression entries (F('author__name').asc(), OrderBy(...)) are all OrderBy instances, so the exact R1 sub-case ('a bare F()/function/combined expression that is NOT an OrderBy instance' appearing in the relation's Meta.ordering) is not literally exercised by any ordering test either.\n- I searched for any other hidden test module exercising this narrow behavior (relation-ordering into a target model whose default ordering carries a non-OrderBy expression); it exists nowhere else in the tree — the scenario is uniquely tied to the ordering/models.py + ordering/tests.py pair.\n- Attempts to mechanically run these Django integration tests via run_test could not bootstrap the environment (relative/absolute model imports fail in the standalone temp module, `AppRegistryNotReady` because no settings/app registry is set up for a plain pytest function, and Django TestCase classes are not collected, indicating the harness does not bring up the full Django test runner). So I also cannot produce confirmed gold-pass/buggy-fail run results for any candidate.\n\nConclusion: no witness can be established — the only covering test assertion lives in [VISIBLE] content (tests/ordering/tests.py) and cannot qualify, and no [HIDDEN] test asserts R1. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: I attempted to build an execution-confirmed witness for R1 (SQLCompiler.find_ordering_name honoring a non-OrderBy expression entry — e.g. a bare models.F() — that appears in the related target model's Meta.ordering while ordering over a relation).\n\nWhat I established via run_test:\n1. The harness actually runs pytest over Python functions (despite the generic Java/JUnit wording in the task template). I confirmed plain python `def test_*()` passes and that `django` is importable from the /testbed checkout.\n2. I got a full Django ORM bootstrap working inside a plain test function: `settings.configure(...)` with `django.db.backends.sqlite3 :memory:` plus a real on-disk INSTALLED_APPS package I synthesize under a temp dir (writing __init__.py and models.py), `django.setup()`, schema-editor table creation, and live instance insert/query. This overcame the AppRegistryNotReady / model-import problems the earlier agent hit.\n3. I then exercised the exact R1 control flow: outer model `Holder` with `ForeignKey('…Target', null=True)` and `<Outer>.objects.order_by('target')`, where `Target.Meta.ordering` contains a *bare* `models.F('…')` (has resolve_expression, not an OrderBy). This drives `find_ordering_name` into `Target.Meta.ordering`.\n\nWhy no witness could be finalized:\n- For that bare-expression ordering entry to survive compilation, the expression must resolve against the *outer* query's namespace. With two distinct models, a bare `F('name')` (unqualified, as the gold branch wraps and appends it exactly as-is) raises `django.core.exceptions.FieldError: Cannot resolve keyword 'name'` during `get_order_by`, i.e. gold itself FAILS on my synthetic scenario. So that scenario is not a gold-pass witness. (The real Django suite only ever uses *OrderBy-wrapped* expression entries — `models.F('x').asc()` / `OrderBy(...)` — in Meta.ordering reached through a relation, where the expression names resolve against a shared/parent join table; the bare non-OrderBy sub-case in R1 is not exercised anywhere in the oracle, hidden or visible.)\n- Crafting a self-consistent pair where a bare (non-OrderBy) expression inside the *target* meta-ordering is resolvable while the relation is a separate FK requires a parent/MTI sharing-join topology (like tests/ordering's Article/ChildArticle), and every arrangement I can construct still fails on gold with a field-resolution error, never cleanly sorting.\n\nI could not produce any candidate test_source that both PASSES on gold and FAILS on buggy across actual run_test invocations, so found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (SQLCompiler.find_ordering_name (ordering by a relation whose default ordering includes a non-OrderBy expression entry)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to build an execution-confirmed witness for R1 (SQLCompiler.find_ordering_name honoring a non-OrderBy expression entry — e.g. a bare models.F() — that appears in the related target model's Meta.ordering while ordering over a relation).\n\nWhat I established via run_test:\n1. The harness actually runs pytest over Python functions (despite the generic Java/JUnit wording in the task template). I confirmed plain python `def test_*()` passes and that `django` is importable from the /testbed checkout.\n2. I got a full Django ORM bootstrap working inside a plain test function: `settings.configure(...)` with `django.db.backends.sqlite3 :memory:` plus a real on-disk INSTALLED_APPS package I synthesize under a temp dir (writing __init__.py and models.py), `django.setup()`, schema-editor table creation, and live instance insert/query. This overcame the AppRegistryNotReady / model-import problems the earlier agent hit.\n3. I then exercised the exact R1 control flow: outer model `Holder` with `ForeignKey('…Target', null=True)` and `<Outer>.objects.order_by('target')`, where `Target.Meta.ordering` contains a *bare* `models.F('…')` (has resolve_expression, not an OrderBy). This drives `find_ordering_name` into `Target.Meta.ordering`.\n\nWhy no witness could be finalized:\n- For that bare-expression ordering entry to survive compilation, the expression must resolve against the *outer* query's namespace. With two distinct models, a bare `F('name')` (unqualified, as the gold branch wraps and appends it exactly as-is) raises `django.core.exceptions.FieldError: Cannot resolve keyword 'name'` during `get_order_by`, i.e. gold itself FAILS on my synthetic scenario. So that scenario is not a gold-pass witness. (The real Django suite only ever uses *OrderBy-wrapped* expression entries — `models.F('x').asc()` / `OrderBy(...)` — in Meta.ordering reached through a relation, where the expression names resolve against a shared/parent join table; the bare non-OrderBy sub-case in R1 is not exercised anywhere in the oracle, hidden or visible.)\n- Crafting a self-consistent pair where a bare (non-OrderBy) expression inside the *target* meta-ordering is resolvable while the relation is a separate FK requires a parent/MTI sharing-join topology (like tests/ordering's Article/ChildArticle), and every arrangement I can construct still fails on gold with a field-resolution error, never cleanly sorting.\n\nI could not produce any candidate test_source that both PASSES on gold and FAILS on buggy across actual run_test invocations, so found=false.",
+    "confidence": "Medium"
+  }
+}

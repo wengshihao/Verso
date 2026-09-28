@@ -1,0 +1,124 @@
+{
+  "task_id": "pytest-dev__pytest-9624",
+  "status": "ok",
+  "duration_seconds": 447.8021224170225,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "pytest-dev__pytest-9624",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a collected test item (report-node whose traceback rendering goes through _prunetraceback) has a failure/error that must be reported — in particular an exception surfacing during the teardown phase — pytest must not crash with an INTERNALERROR TypeError caused by invoking the test class __init__ with no arguments, when that class requires a positional 'test_method' argument; instead of ending in INTERNALERROR it should report the test through the normal fail/error reporting path (even if exotic/uncommon), exactly as for the surrounding suite which otherwise produced a per-test outcome summary.",
+        "subject": "_pytest.reports/runtest protocol session-level crash avoidance for TestCaseFunction items",
+        "hunk_ids": [],
+        "cited_from": "INTERNALERROR> TypeError: __init__() missing 1 required positional argument: 'test_method' ... File \".../_pytest/runner.py\", line 223, in call_and_report ... report: TestReport = hook.pytest_runtest_makereport(item=item, call=call) ... File \".../_pytest/nodes.py\", line 447, in _repr_failure_py ... self._prunetraceback(excinfo) ... File \".../_pytest/python.py\", line 1725, in _prunetraceback ... code = _pytest._code.Code.from_function(get_real_func(self.obj)) ... File \".../_pytest/python.py\", line 1706, in _getobj ... parent_obj = self.parent.newinstance() ... File \".../_pytest/python.py\", line 791, in newinstance ... return self.obj() ; followed by '=================== 2 failed, 85 passed in 411.73s' and the issue author reporting 'Issue happened only once... I will update this issue if it happens multiple times and if I manage to reproduce it outside of GitHub Actions CI.'"
+      },
+      {
+        "id": "R2",
+        "statement": "For a test function class whose __init__ requires a required positional test_method argument, the underlying 'obj' recovery performed lazily by traceback pruning must not attempt a no-argument re-instantiation of the class after the per-test teardown has cleared the cached object; the class instance that the item already created during setup must still be usable (or the rendering otherwise must not re-run the class constructor) so a reported failure does not result in the __init__() missing argument TypeError.",
+        "subject": "_pytest.python.Function._getobj / Class.newinstance lifecycle for items whose setup constructed an argument-taking test class",
+        "hunk_ids": [],
+        "cited_from": "unittest.py: 'def teardown(self) -> None: ... self._testcase = None; self._obj = None' (teardown therefore forces later obj re-fetch); python.py: 'def newinstance(self): return self.obj()' and in _getobj 'parent_obj = self.parent.newinstance()'; traceback frames 'python.py line 791, in newinstance: return self.obj()' raising 'TypeError: __init__() missing 1 required positional argument: test_method'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "When a TestCaseFunction item's `obj` is lazily re-derived after its `_obj` has been cleared (e.g. because `TestCaseFunction.teardown()` ran and pytest later accesses `obj` to render/prune a traceback for an error raised during the teardown phase), the underlying test method is resolved from the test-class object without creating a fresh instance of the test class. Consequently a unittest.TestCase subclass whose constructor requires one or more positional arguments (cannot be called with no arguments) fails or errors during teardown and is reported normally, rather than raising a spurious `TypeError` (missing required positional argument) while pytest renders the test report/traceback for that failure.",
+        "subject": "_pytest.unittest.TestCaseFunction — lazy obj re-derivation / teardown-phase rendering path",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_2",
+        "statement": "The lazily re-derived `obj` value of a TestCaseFunction is the test method attribute obtained from the test class itself (i.e. an unbound method), in contrast to a bound method attached to a test-class instance; in particular the lazy lookup does not depend on, and does not need, the setUp-created TestCase instance (`_testcase`/bound `_obj`), so it still succeeds after `teardown()` has cleared those.",
+        "subject": "_pytest.unittest.TestCaseFunction.obj — attribute resolved on lazy access",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 requires that a teardown-phase error on an argument-taking test class be reported through the normal path instead of an INTERNALERROR TypeError from no-arg __init__, and R2 explicitly requires that obj resolution must not attempt a no-argument re-instantiation of the class after teardown cleared the cached object. Together these pin the exact observable behavior in S_IMPL_1."
+      },
+      {
+        "requirement_id": "S_IMPL_2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 makes the resolution succeed post-teardown without re-instantiating, but it explicitly permits the alternative that the setup-created instance remains usable, and the visible evidence never states the lazily-derived obj is specifically the test method as an unbound class attribute obtained independently of _testcase. The concrete mechanism in S_IMPL_2 exceeds what S_vis uniquely pins down."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_no_teardown_report_obj_reinstantiation",
+      "test_source": "import pytest\n\npytest_plugins = [\"pytester\"]\n\n\ndef test_no_teardown_report_obj_reinstantiation(pytester):\n    path = pytester.makepyfile(\n        \"\"\"\n        from unittest import TestCase\n\n        class TC(TestCase):\n            def __init__(self, methodName):\n                super().__init__(methodName)\n                self.methodName = methodName\n\n            def tearDown(self):\n                assert 0, \"down\"\n\n            def test_method(self):\n                assert False, \"callfail\"\n        \"\"\"\n    )\n    result = pytester.runpytest_inprocess(\"-s\", str(path))\n    result.stdout.fnmatch_lines([\"*1 failed*1 error*\"])\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (INTERNALERROR during teardown report render — the summary line '1 failed 1 error' is absent because report rendering lazily re-instantiates TC() with no argument, raising TypeError)",
+      "explanation": "S_IMPL_2 states that the lazily re-derived `TestCaseFunction.obj` (used when reporting an error in the pytest \"teardown\" phase after `item.teardown()` has cleared `_obj`/`_testcase`) must be the *unbound* test method obtained from the test class itself, and must not depend on constructing a fresh TestCase instance via the no-arg `parent.obj()`/`newinstance()` path.\n\nThe witness drives the real engine through pytester: it creates a `unittest.TestCase` subclass whose `__init__` requires the positional `methodName`, so no-arg instantiation `TC()` is impossible, and arranges for BOTH the test body and unittest's `tearDown` to raise. That makes unittest record two exception infos on the item's `_excinfo` list; the first is rendered in the \"call\" phase report and the second (the tearDown error) is popped in the \"teardown\"-phase `pytest_runtest_makereport`, i.e. exactly at a moment when the real `item.teardown()` has already run and cleared `_obj`. Rendering that teardown longrepr triggers the lazy `item.obj` re-derivation:\n\n- On gold, TestCaseFunction overrides `_getobj()` to `getattr(self.parent.obj, self.originalname)`, obtaining the plain/unbound test method from the test class — no instance is created, so `TC()` is never invoked, the teardown error report is rendered cleanly, and the run summary is \"1 failed 1 error\".\n\n- On buggy, TestCaseFunction inherits `Function._getobj()`, which does `self.parent.newinstance()` = `self.parent.obj()` (a no-arg instantiation). Because `TC.__init__` requires `methodName`, this raises `TypeError` during report rendering, producing pytest's INTERNALERROR instead of the normal summary line.\n\nThe scenario's required-arg `__init__` constructor is the essential trigger and is NOT exercised by any visible test (the visible `test_method_and_teardown_failing_reporting`-style tests use default `object`/`unittest.TestCase.__init__` and never observe a discriminator; they also don't render a distinct confirmation of what obj resolves to after teardown). run_test independently confirmed: PASSED against gold and FAILED against buggy with this exact source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo snapshot is pytest ~7.0 (release-7.0.0.rst present; no changelog/9624 entry yet, so this is the pre-fix buggy state)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The crash originates in the unittest family item path: _pytest.unittest.TestCaseFunction.teardown() sets self._obj = None; when a report must be rendered for a teardown-phase exception, nodes.Node._repr_failure_py -> _prunetraceback (python.py Function._prunetraceback) lazily accesses self.obj which, with _obj cleared, re-runs Function._getobj -> self.parent.newinstance() -> python.py 'def newinstance(self): return self.obj()', instantiating the test class with NO arguments."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only classes whose __init__ has a required positional (here 'test_method') crash with the reported TypeError; a plain unittest.TestCase/Class (default __init__/runTest) or the Class.collect-time hasinit warning path would not hit this."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The failing case is an external project (skupper-proton test_broker.py StreamingMessageTest), single flaky occurrence in GitHub Actions CI; issue states it is not currently reproducible, so no deterministic in-repo test encodes the scenario in the visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Env/config from issue: pytest-7.0.0, Python 3.6, CentOS Stream 8; suite summary '2 failed, 85 passed in 411.73s' plus an unrelated 'Address already in use' OSError in a background thread of test_broker.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TestCaseFunction extends _pytest.python.Function whose `_getobj()` (for Class-parented items) creates a fresh instance via `self.parent.newinstance()` = `self.obj()` (no-arg instantiation); the pre-fix TestCaseFunction inherited that path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TestCaseFunction.setup() builds the TestCase instance via `self.parent.obj(self.name)` (passing the method name) and sets `_obj` to the bound method; teardown() that clears `_testcase`/`_obj` is what makes a later lazy `obj` access reach `_getobj()`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TestCaseFunction's parent is a UnitTestCase (which extends Class), and `self.parent.obj` is that test class; the overridden `_getobj()` keyed on `self.originalname` returns an unbound method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a crash-prevention fix for the unittest-family teardown-phase report-rendering path (no new behavior for normal pass/setup flows is introduced)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_2]: I searched the oracle's full test-file list for any test whose assertion genuinely exercises S_IMPL_2 — that the lazy re-derived `TestCaseFunction.obj` is the unbound test method fetched from the test class itself and still resolves after `teardown()` has cleared `_testcase`/`_obj` (i.e. does not depend on the setUp-built instance or crash via `Function._getobj -> Class.newinstance()` no-arg instantiation).\n\nWhat I checked:\n- `testing/test_unittest.py` (the natural home for such a unittest regression): read in full. It covers setup/teardown reporting, cleanup, skips, trials, pdb, instance/obj checks (`test_function_item_obj_is_instance`) — but none asserts obj access / re-derivation AFTER teardown in a class whose `__init__` requires a positional arg (the only scenario that crashes on the buggy code). This file is [VISIBLE] anyway, so it cannot serve as a Witness regardless.\n- unittest example scripts (`test_setup_skip.py`, `test_unittest_plain_async.py` etc.): irrelevant; [VISIBLE].\n- `src/_pytest/unittest.py`, `src/_pytest/python.py` (source only, to pin down the exact lazy-`obj` mechanism): they confirm the buggy path but are not tests.\n- `bench/unit_test.py`: the only [HIDDEN] unittest-family file I found; it merely generates 15000 trivial `unittest.TestCase` classes for a benchmarking run — no assertion about item.obj re-resolution after teardown, no report-render path, no class with a required-arg `__init__`. Not a witness.\n- `testing/test_nodes.py`, `testing/test_reports.py`/`test_runner.py` region and `testing/python/collect.py`: no teardown-phase-obj-re-derivation regression.\n\nNotes from the earlier stages corroborate this: the crash is a single flaky external-project occurrence (skupper-proton) that the issue author could not reproduce, and the visible material explicitly contains no deterministic in-repo test encoding the scenario. In the pre-fix snapshot there is no regression test for this fix, and the only hidden content adjacent to unittest workflows (bench/unit_test.py) asserts nothing about S_IMPL_2. A Witness must rest on a real [HIDDEN] oracle assertion that fails on the buggy program and passes on the gold program; since no such test exists in the oracle, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL_2] (_pytest.unittest.TestCaseFunction.obj — attribute resolved on lazy access): The lazily re-derived `obj` value of a TestCaseFunction is the test method attribute obtained from the test class itself (i.e. an unbound method), in contrast to a bound method attached to a test-class instance; in particular the lazy lookup does not depend on, and does not need, the setUp-created TestCase instance (`_testcase`/bound `_obj`), so it still succeeds after `teardown()` has cleared those. — not entailed by S_vis (R2 makes the resolution succeed post-teardown without re-instantiating, but it explicitly permits the alternative that the setup-created instance remains usable, and the visible evidence never states the lazily-derived obj is specifically the test method as an unbound class attribute obtained independently of _testcase. The concrete mechanism in S_IMPL_2 exceeds what S_vis uniquely pins down.); confirmed by a synthesized witness: S_IMPL_2 states that the lazily re-derived `TestCaseFunction.obj` (used when reporting an error in the pytest \"teardown\" phase after `item.teardown()` has cleared `_obj`/`_testcase`) must be the *unbound* test method obtained from the test class itself, and must not depend on constructing a fresh TestCase instance via the no-arg `parent.obj()`/`newinstance()` path.\n\nThe witness drives the real engine through pytester: it creates a `unittest.TestCase` subclass whose `__init__` requires the positional `methodName`, so no-arg instantiation `TC()` is impossible, and arranges for BOTH the test body and unittest's `tearDown` to raise. That makes unittest record two exception infos on the item's `_excinfo` list; the first is rendered in the \"call\" phase report and the second (the tearDown error) is popped in the \"teardown\"-phase `pytest_runtest_makereport`, i.e. exactly at a moment when the real `item.teardown()` has already run and cleared `_obj`. Rendering that teardown longrepr triggers the lazy `item.obj` re-derivation:\n\n- On gold, TestCaseFunction overrides `_getobj()` to `getattr(self.parent.obj, self.originalname)`, obtaining the plain/unbound test method from the test class — no instance is created, so `TC()` is never invoked, the teardown error report is rendered cleanly, and the run summary is \"1 failed 1 error\".\n\n- On buggy, TestCaseFunction inherits `Function._getobj()`, which does `self.parent.newinstance()` = `self.parent.obj()` (a no-arg instantiation). Because `TC.__init__` requires `methodName`, this raises `TypeError` during report rendering, producing pytest's INTERNALERROR instead of the normal summary line.\n\nThe scenario's required-arg `__init__` constructor is the essential trigger and is NOT exercised by any visible test (the visible `test_method_and_teardown_failing_reporting`-style tests use default `object`/`unittest.TestCase.__init__` and never observe a discriminator; they also don't render a distinct confirmation of what obj resolves to after teardown). run_test independently confirmed: PASSED against gold and FAILED against buggy with this exact source.",
+    "confidence": "Medium"
+  }
+}

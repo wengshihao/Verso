@@ -1,0 +1,94 @@
+{
+  "task_id": "JacksonCore-26",
+  "status": "ok",
+  "duration_seconds": 67.63294619699991,
+  "llm_calls": 8,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-26",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a non-blocking byte-array parser is fed input whose start offset is non-zero (e.g. feeder.feedInput(input, 2, 3) on byte[] \"[[[\"), the byte offsets reported by getCurrentLocation() and getTokenLocation() for the token produced must equal the logical position of that token in the input stream (1 for the first '['), not the physical offset into the supplied buffer (3).",
+        "subject": "NonBlockingJsonParser.getCurrentLocation().getByteOffset() / getTokenLocation().getByteOffset()",
+        "hunk_ids": [],
+        "cited_from": "Unit test in the issue: \"feeder.feedInput(input, 2, 3); assertEquals(JsonToken.START_ARRAY, parser.nextToken()); assertEquals(1, parser.getCurrentLocation().getByteOffset()); // ACTUAL = 3 assertEquals(1, parser.getTokenLocation().getByteOffset());   // ACTUAL = 3\""
+      },
+      {
+        "id": "R2",
+        "statement": "Byte-offset locations must accumulate logically across successive feedInput calls that use different physical start offsets: after first feeding \"[[[\" via (input, 2, 3) producing the first START_ARRAY at logical offset 1, continuing with feeder.feedInput(input, 0, 1) must yield a second START_ARRAY whose getCurrentLocation().getByteOffset() and getTokenLocation().getByteOffset() both equal 2.",
+        "subject": "NonBlockingJsonParser location tracking across repeated feedInput calls",
+        "hunk_ids": [],
+        "cited_from": "Unit test in the issue: \"feeder.feedInput(input, 0, 1); assertEquals(JsonToken.START_ARRAY, parser.nextToken()); assertEquals(2, parser.getCurrentLocation().getByteOffset()); assertEquals(2, parser.getTokenLocation().getByteOffset());\" — and, for why independence from any single feed's offset is required: \"It's not possible for a user to work around this issue by subtracting 7 from the reported locations, because the token location may have been established by an earlier feeding with a different offset.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "After NonBlockingJsonParser feeds a new input segment via feedInput(byte[] buf, int start, int end), the parser tracks the segment's `start` index as the base of logical byte-offset accounting for that segment, so that reported byte offsets of tokens/current position are not inflated by a nonzero `start` value (i.e. when the JSON content does not begin at buf index 0, the parser reports byte offsets as if the content began at index 0).",
+        "subject": "NonBlockingJsonParser.feedInput / JsonLocation byte offsets (getCurrentLocation, getTokenLocation via _updateTokenLocation)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis[R1] directly pins down this behavior with the concrete unit test: feeding (input, 2, 3) on '[[[' must report byte offset 1 (logical position in the parsed content) rather than 3 (physical offset into the buffer), which is exactly S_impl[R1]'s claim that the parser uses the segment's start as the base of logical offset accounting so nonzero start does not inflate reported offsets. S_vis[R2] corroborates the same logical-accumulation accounting across feeds."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible reproduction already lives in the repo at src/test/java/com/fasterxml/jackson/core/json/async/AsyncLocationTest.java as testLocationOffsets (for core#531), extending AsyncTestBase; it additionally asserts, for each of the two tokens, getCurrentLocation/getTokenLocation lineNr==1 and columnNr 2/1 then 3/2."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Location state lives in NonBlockingJsonParserBase: getCurrentLocation() computes byte offset as `_currInputProcessed + (_inputPtr - _currBufferStart)`, getTokenLocation() reports `_tokenInputTotal`, and _updateTokenLocation() sets `_tokenInputTotal = _currInputProcessed + (ptr - _currBufferStart)`; but nextToken() in NonBlockingJsonParser sets `_tokenInputTotal = _currInputProcessed + _inputPtr` WITHOUT subtracting _currBufferStart."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In NonBlockingJsonParser.feedInput, _inputPtr is set to `start` while _currInputProcessed is advanced only by _origBufferLen (end-start); _currBufferStart and _currInputRowStart are adjusted relative to `start`/the buffer but the buffer-start offset itself (start, i.e. here 2) is what leaks into the byte-offset computations."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AsyncTestBase lives under src/test/java/com/fasterxml/jackson/core/async/ and relies on test-support classes not present in this visible subset (AsyncReaderWrapperForByteArray / BaseTest are referenced but not listed)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a single added assignment `_currBufferStart = start;` in NonBlockingJsonParser.feedInput (H0); _currBufferStart is a protected field declared in NonBlockingJsonParserBase (initialized to 0 there, and reset to 0 by _closeInput)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_currBufferStart participates in feedInput buffer bookkeeping distinct from _currInputProcessed/_currInputRowStart; it directly feeds the byte-offset terms in getCurrentLocation() (`_currInputProcessed + (_inputPtr - _currBufferStart)`) and _updateTokenLocation() (`_tokenInputTotal = _currInputProcessed + (ptr - _currBufferStart)`, surfaced via getTokenLocation())."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Location row/column arithmetic does not use _currBufferStart; only the byte-offset component of locations is affected by this field."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Not part of this patch (pre-existing, still present in gold): nextToken() in NonBlockingJsonParser sets `_tokenInputTotal = _currInputProcessed + _inputPtr` directly, without subtracting _currBufferStart, so the byte offset it stamps for fresh tokens is separately affected by the buffer-start leak; the H0 hunk does not touch that path."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

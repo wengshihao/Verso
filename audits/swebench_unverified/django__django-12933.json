@@ -1,0 +1,110 @@
+{
+  "task_id": "django__django-12933",
+  "status": "ok",
+  "duration_seconds": 446.9863457919564,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12933",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the configured SESSION_ENGINE's SessionStore.clear_expired() raises NotImplementedError (i.e., is invoked on a session backend that does not implement clear_expired()), the clearsessions command must raise django.core.management.base.CommandError rather than merely writing a message to stderr and completing successfully.",
+        "subject": "django.contrib.sessions.management.commands.clearsessions.Command.handle",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"clearsessions writes to stderr directly when a backend has not implemented clear_expired(). François notes that the recommended behavior is to raise CommandError.\" Current buggy code (django/contrib/sessions/management/commands/clearsessions.py): \"try:\\n    engine.SessionStore.clear_expired()\\nexcept NotImplementedError:\\n    self.stderr.write(\\n        \\\"Session engine '%s' doesn't support clearing expired \\\"\\n        \\\"sessions.\\\" % settings.SESSION_ENGINE\\n    )\""
+      },
+      {
+        "id": "R2",
+        "statement": "When the configured SESSION_ENGINE's SessionStore.clear_expired() is implemented on the backend, running clearsessions removes expired sessions from the session store. ",
+        "subject": "django.contrib.sessions.management.commands.clearsessions.Command.handle",
+        "hunk_ids": [],
+        "cited_from": "tests/sessions_tests/tests.py, DatabaseSessionTests.test_clearsessions_command, after creating one future-expiry and one past-expiry object and calling `management.call_command('clearsessions')` under the db backend: \"# ... and one is deleted.\\nself.assertEqual(1, self.model.objects.count())\"; and FileSessionTests.test_clearsessions_command (file backend, three sessions including an expired one and one without expiry under SESSION_COOKIE_AGE=0): \"# ... and two are deleted.\\nself.assertEqual(1, count_sessions())\""
+      },
+      {
+        "id": "R3",
+        "statement": "A session backend that does not support clearing expired sessions (a subclass that does not override the base behavior) raises NotImplementedError from SessionBase.clear_expired(); this is the mechanism a backend uses to signal that clearsessions cannot clear its expired sessions.",
+        "subject": "django.contrib.sessions.backends.base.SessionBase.clear_expired",
+        "hunk_ids": [],
+        "cited_from": "django/contrib/sessions/backends/base.py: \"@classmethod\\ndef clear_expired(cls):\\n    ...\\n    raise NotImplementedError('This backend does not support clear_expired().')\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the configured session engine's SESSION_ENGINE module exposes a SessionStore whose clear_expired() raises NotImplementedError, running/executing the clearsessions command raises django.core.management.base.CommandError whose message is exactly \"Session engine '<SESSION_ENGINE>' doesn't support clearing expired sessions.\", causing the command to fail (non-zero return code) rather than writing a message to stderr and completing normally.",
+        "subject": "django.contrib.sessions.management.commands.clearsessions.Command.handle",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis R1 pins that the command must raise CommandError (not write to stderr) when clear_expired() raises NotImplementedError, and the cited code shows the message text 'Session engine ... doesn't support clearing expired sessions.' Currently written to stderr. However, neither S_vis summary states that this exact message string is what the CommandError carries, so the exact-message text (and hence failure semantics) is a plausible inference rather than strictly pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_clearsessions_raises_command_error_on_unsupported_engine",
+      "test_source": "import sys\nimport types\n\nfrom django.conf import settings\nfrom django.core import management\nfrom django.core.management.base import CommandError\n\nif not settings.configured:\n    settings.configure(\n        SECRET_KEY='witness-secret-key',\n        INSTALLED_APPS=[\n            'django.contrib.contenttypes',\n            'django.contrib.auth',\n            'django.contrib.sessions',\n        ],\n        DATABASES={},\n        SESSION_ENGINE='verso_unsupported_session_engine',\n        SESSION_SERIALIZER='django.contrib.sessions.serializers.JSONSerializer',\n        SESSION_SAVE_EVERY_REQUEST=False,\n        SESSION_COOKIE_AGE=1209600,\n    )\n\nimport django\ndjango.setup()\n\n\ndef test_clearsessions_raises_command_error_on_unsupported_engine():\n    engine_mod = types.ModuleType('verso_unsupported_session_engine')\n\n    class SessionStore:\n        @classmethod\n        def clear_expired(cls):\n            raise NotImplementedError('not supported here')\n\n    engine_mod.SessionStore = SessionStore\n    sys.modules['verso_unsupported_session_engine'] = engine_mod\n\n    try:\n        management.call_command('clearsessions')\n    except CommandError as e:\n        assert str(e) == (\n            \"Session engine 'verso_unsupported_session_engine' doesn't support \"\n            \"clearing expired sessions.\"\n        )\n    else:\n        raise AssertionError(\"CommandError was not raised\")\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: CommandError was not raised; command instead wrote the unsupported-engine message to stderr and completed)",
+      "explanation": "Requirement R1 says: when the SESSION_ENGINE module exposes a SessionStore whose clear_expired() raises NotImplementedError, executing the clearsessions command must raise django.core.management.base.CommandError with message \"Session engine '<ENGINE>' doesn't support clearing expired sessions.\" The gold command raises CommandError in that branch (verified PASSED), whereas the buggy command merely writes that same text to stderr and completes normally (verified FAILED, no CommandError raised). My test constructs an inline fake session-engine module (own invented name 'verso_unsupported_session_engine') whose SessionStore.clear_expired() raises NotImplementedError, configures minimal but complete Django settings pointing SESSION_ENGINE at it, and asserts call_command('clearsessions') raises a CommandError whose str exactly matches the required message. It passes against gold and fails against buggy. This branch is not pinned anywhere in the visible material: the only visible clearsessions tests (DatabaseSessionTests.test_clearsessions_command and FileSessionTests.test_clearsessions_command) exercise the success path with engines whose clear_expired() actually deletes rows and assert expired-row counts; no visible test uses an engine whose clear_expired() raises NotImplementedError or asserts any CommandError, and I independently invented a distinct engine scenario and assertion wording not present in the oracle."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The clearsessions command lives in django/contrib/sessions/management/commands/clearsessions.py and is invoked as `django-admin clearsessions` / `management.call_command('clearsessions')`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Ticket django__django-12933 changes only the NotImplementedError branch of Command.handle: current code catches NotImplementedError and writes the unsupported-engine message to self.stderr; the fix should raise CommandError instead (CommandError is django.core.management.base.CommandError, see base.py docstring: the exception is caught and turned into a nicely-printed error to stderr)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Backends shipped with Django: db.py implements clear_expired() that actually deletes expired DB rows; cached_db.py inherits it from db; cache.py and signed_cookies.py override clear_expired() as a no-op `pass` (caches/browsers expire data themselves); file.py implements a real clear_expired. Only a custom backend subclassing SessionBase without overriding clear_expired() triggers the NotImplementedError path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing visible tests test only the success paths (tests/sessions_tests/tests.py DatabaseSessionTests.test_clearsessions_command and FileSessionTests.test_clearsessions_command); no visible test exercises the NotImplementedError / unsupported-engine path that this ticket addresses."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Clearsessions is documented in docs/ref/django-admin.txt as 'Can be run as a cron job or directly to clean out expired sessions.' and clear_expired is documented in docs/topics/http/sessions.txt ('Removes expired sessions from the session store. This class method is called by clearsessions.')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 merely adds CommandError to the base.py imports; the only behavioral change is in H1's NotImplementedError branch. Message text is unchanged between the buggy (stderr.write) and gold (CommandError) versions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For a session engine whose clear_expired() succeeds, handle() behavior is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When command is invoked from the command line (run_from_argv), the raised CommandError is caught and printed to stderr as 'CommandError: <msg>' and sys.exit(1) is called (CommandError defaults returncode=1)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test that exercises the NotImplementedError/unsupported-session-engine path of clearsessions (the branch R1 describes: when the configured SESSION_ENGINE's SessionStore.clear_expired() raises NotImplementedError, the command must raise CommandError with message \"Session engine '<ENGINE>' doesn't support clearing expired sessions.\").\n\nWhat I checked:\n- tests/sessions_tests/tests.py ([VISIBLE], read in full): contains only the success-path clearing-command tests (DatabaseSessionTests.test_clearsessions_command and FileSessionTests.test_clearsessions_command). Both invoke clearsessions against engines whose clear_expired() succeeds (db/file backends) and assert expired rows are removed. Nothing calls clearsessions against an engine whose clear_expired() raises NotImplementedError, and there is no CommandError/unsupported-engine assertion anywhere in the file.\n- tests/sessions_tests/models.py ([HIDDEN]) and tests/sessions_tests/__init__.py ([HIDDEN], empty): these provide the custom DB-backed SessionStore used by the (inherited) success-path clearing test; models.SessionStore subclasses DBStore whose clear_expired() is implemented, so it never exercises the NotImplementedError branch.\n- tests/test_client_regress/session.py ([HIDDEN]): this file DOES define a SessionStore(SessionBase) that does not override clear_expired(), which would indeed trigger NotImplementedError and is a real candidate engine module. However, I checked its only consumer, tests/test_client_regress/tests.py ([VISIBLE]) SessionEngineTests/SessionTests classes, and these only test login/session-key behavior via SESSION_ENGINE='test_client_regress.session'. None of them ever runs call_command('clearsessions') or asserts any CommandError for clearing expired sessions.\n\nExecution notes: no tests were recorded as failing against the buggy program, which is consistent with there being no in-suite test that actually reaches the NotImplementedError branch of clearsessions. My attempts to mechanically run a candidate were blocked because the (engine-present) custom session module is not wired to any clearsessions assertion in the oracle.\n\nIn short, every clearsessions test that exists in the real oracle targets only the success (clear_expired-available) behavior and is built on [VISIBLE]/unrelated content; no oracle test's assertion genuinely checks the R1 CommandError-on-NotImplementedError behavior. Therefore nothing in the oracle qualifies as a Witness for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.contrib.sessions.management.commands.clearsessions.Command.handle): When the configured session engine's SESSION_ENGINE module exposes a SessionStore whose clear_expired() raises NotImplementedError, running/executing the clearsessions command raises django.core.management.base.CommandError whose message is exactly \"Session engine '<SESSION_ENGINE>' doesn't support clearing expired sessions.\", causing the command to fail (non-zero return code) rather than writing a message to stderr and completing normally. — not entailed by S_vis (S_vis R1 pins that the command must raise CommandError (not write to stderr) when clear_expired() raises NotImplementedError, and the cited code shows the message text 'Session engine ... doesn't support clearing expired sessions.' Currently written to stderr. However, neither S_vis summary states that this exact message string is what the CommandError carries, so the exact-message text (and hence failure semantics) is a plausible inference rather than strictly pinned down by the visible evidence.); confirmed by a synthesized witness: Requirement R1 says: when the SESSION_ENGINE module exposes a SessionStore whose clear_expired() raises NotImplementedError, executing the clearsessions command must raise django.core.management.base.CommandError with message \"Session engine '<ENGINE>' doesn't support clearing expired sessions.\" The gold command raises CommandError in that branch (verified PASSED), whereas the buggy command merely writes that same text to stderr and completes normally (verified FAILED, no CommandError raised). My test constructs an inline fake session-engine module (own invented name 'verso_unsupported_session_engine') whose SessionStore.clear_expired() raises NotImplementedError, configures minimal but complete Django settings pointing SESSION_ENGINE at it, and asserts call_command('clearsessions') raises a CommandError whose str exactly matches the required message. It passes against gold and fails against buggy. This branch is not pinned anywhere in the visible material: the only visible clearsessions tests (DatabaseSessionTests.test_clearsessions_command and FileSessionTests.test_clearsessions_command) exercise the success path with engines whose clear_expired() actually deletes rows and assert expired-row counts; no visible test uses an engine whose clear_expired() raises NotImplementedError or asserts any CommandError, and I independently invented a distinct engine scenario and assertion wording not present in the oracle.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "task_id": "JacksonCore-4",
+  "status": "ok",
+  "duration_seconds": 166.66110361699975,
+  "llm_calls": 15,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-4",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Repeatedly calling TextBuffer.expandCurrentSegment() while the current segment's length is below 500,000 characters must return an array whose length is strictly larger than the previous current segment's length on every call (i.e. expansion must never fail to grow, stalling at MAX_SEGMENT_LEN and then returning a smaller/shorter array for subsequent calls).",
+        "subject": "com.fasterxml.jackson.core.util.TextBuffer.expandCurrentSegment(int? )",
+        "hunk_ids": [],
+        "cited_from": "TestTextBuffer.java testExpand:\n      // [Core#152]\n      public void testExpand()\n      {\n          TextBuffer tb = new TextBuffer(new BufferRecycler());\n          char[] buf = tb.getCurrentSegment();\n\n          while (buf.length < 500 * 1000) {\n              char[] old = buf;\n              buf = tb.expandCurrentSegment();\n              if (old.length >= buf.length) {\n                  fail(\"Expected buffer of \"+old.length+\" to expand, did not, length now \"+buf.length);\n              }\n          }\n      }\n\nAlso supported by TextBuffer.java comment on the actual buggy line (issue 152): \"once the length of _currentSegment is increased to MAX_SEGMENT_LEN + 1 (262145) bytes, the newLen will stay at MAX_SEGMENT_LEN, which is smaller than len. Therefore System.arraycopy() will fail.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When expandCurrentSegment() is called on a current segment whose length len satisfies len + (len>>1) <= MAX_SEGMENT_LEN, it replaces the current segment with (and returns) a new char array of length exactly len + (len>>1) (a ~50% growth with the previous contents preserved).",
+        "subject": "TextBuffer.expandCurrentSegment()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When expandCurrentSegment() is called on a current segment whose length len is such that len + (len>>1) > MAX_SEGMENT_LEN (i.e. roughly len > 2*MAX_SEGMENT_LEN/3), it replaces the current segment with (and returns) a new char array of length len + (len>>2) (~25% growth) — the segment is not capped at MAX_SEGMENT_LEN and is never shrunk, so repeated calls can grow a single contiguous segment arbitrarily beyond MAX_SEGMENT_LEN (including continuing to grow when the current length already exceeds MAX_SEGMENT_LEN).",
+        "subject": "TextBuffer.expandCurrentSegment()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The visible testExpand test only requires that each expandCurrentSegment() call return a strictly longer array while growing up to 500,000 chars; it never asserts a specific growth magnitude of exactly len+(len>>1) (50%). The exact output-length formula for S_impl R1 is therefore not pinned down by visible evidence."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "Vis does pin down R2's core anti-bug behavior (never capping at MAX_SEGMENT_LEN, never shrinking, and growing a single segment beyond MAX on repeated calls, as the test drives growth to 500k past MAX and the comment documents the shrink-at-MAX bug). However, the exact len+(len>>2) (~25%) growth formula is never specified by any visible artifact, leaving the precision of the claimed magnitude unpinned, so full entailment of this compound requirement is ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement R1 is scoped to calls of expandCurrentSegment() where the current segment length len satisfies len+(len>>1) <= MAX_SEGMENT_LEN (262144), and asserts the new segment is exactly len+(len>>1) (~50% growth).\n\nAnalyzing the two implementations in precisely this domain:\n- gold: newLen = len+(len>>1); since len+(len>>1) <= MAX it does not enter the > MAX branch, so it returns len+(len>>1).\n- buggy: the special-case (len == MAX) can never trigger here because at len == MAX, len+(len>>1) = 393216 > MAX, i.e. len==MAX is outside R1's domain. For all remaining len in R1's domain, len != MAX and len+(len>>1) <= MAX, so buggy returns Math.min(MAX, len+(len>>1)) = len+(len>>1).\n\nThe two implementations therefore compute byte-identical results for every input satisfying R1's precondition. The functional divergence between buggy and gold lives exclusively in the complementary regime len+(len>>1) > MAX_SEGMENT_LEN (e.g. len==MAX or len just below 2/3·MAX), i.e. the ~25%-growth behavior that corresponds to a *different* requirement, not R1. Any test that distinguishes buggy from gold necessarily asserts behavior outside R1's scope, so it would not be a genuine witness for R1.\n\nI also confirmed via inspection that all buffering/allocation state controlling _currentSegment.length is private, and the only means to reach specific lengths is to replay the growth sequence, whose exact values depend on allocator internals; but that does not change the outcome, since within R1's precondition the two methods agree by construction. Hence no genuine execution-confirmed witness exists for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible code already contains a lookahead adjustment `int newLen = (len == MAX_SEGMENT_LEN) ? (MAX_SEGMENT_LEN+1) : Math.min(MAX_SEGMENT_LEN, len + (len >> 1));` in expandCurrentSegment(), but it only covers the exact boundary len==MAX_SEGMENT_LEN (262144); a subsequent call with len==262145 is forced back down to MAX_SEGMENT_LEN via Math.min, so growth stops and the buffer would need to keep growing to reach 500000."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Constant MAX_SEGMENT_LEN = 0x40000 (262144); MIN_SEGMENT_LEN = 1000; both package-private static fields, referenced directly by the test (TextBuffer.MAX_SEGMENT_LEN)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under src/test/java/com/fasterxml/jackson/core/util/TestTextBuffer.java, extending com.fasterxml.jackson.core.BaseTest."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MAX_SEGMENT_LEN is declared without public/private access qualifier but is package-private static final; accessible from tests in the same package."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible in the repo listing: the TextBuffer source and its test — no parser-level (UTF8StreamJsonParser) sources are in the visible set, so the fix is expected at the TextBuffer level."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MAX_SEGMENT_LEN = 0x40000 (262144); MIN_SEGMENT_LEN = 1000; both are package-private static finals."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch touches only the no-arg expandCurrentSegment(). The overloaded expandCurrentSegment(int minSize) (grows exactly to minSize when needed) and the paths used by append()/finishCurrentSegment() (expand(int)/finishCurrentSegment private helpers, which still individually cap each segment at MAX_SEGMENT_LEN) are unaffected."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TextBuffer is final; constructor takes a BufferRecycler."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 concerns TextBuffer.expandCurrentSegment()'s behavior of growing the current segment to exactly ~50% (len + (len>>1)) when that does not exceed MAX_SEGMENT_LEN (262144).\n\nInvestigation: I listed all test files in the oracle and read the only class that touches TextBuffer's current-segment expansion — TestTextBuffer.java (src/test/java/com/fasterxml/jackson/core/util/TestTextBuffer.java). That whole file is labeled [VISIBLE], meaning its content (including the sole failing test testExpand, and maxSegmentLength()/expand tests) was already visible to the repair system and can therefore never serve as a Witness regardless of fit.\n\nI also scanned the plausible [HIDDEN] candidates that generate large content through parsers (TestUtf8Parser, TestWithTonsaSymbols, etc.). None of these exercise single-segment TextBuffer expansion across the MAX_SEGMENT_LEN boundary: they produce small values/field names (hundreds to a few thousand chars), far below the ~256KB threshold needed to reach the boundary condition in expandCurrentSegment(). No hidden oracle content asserts anything remotely about the ~50% current-segment growth behavior or its exact resulting length len+(len>>1).\n\nThe only behavioral verification of R1's claim lives in the dedicated, already-visible testExpand (which is also the sole failing test). Because a Witness must rest on a [HIDDEN] assertion, and all relevant content here is [VISIBLE] with no hidden test reaching TextBuffer's large-segment expansion, no genuine witness exists in the oracle. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Requirement R1 is scoped to calls of expandCurrentSegment() where the current segment length len satisfies len+(len>>1) <= MAX_SEGMENT_LEN (262144), and asserts the new segment is exactly len+(len>>1) (~50% growth).\n\nAnalyzing the two implementations in precisely this domain:\n- gold: newLen = len+(len>>1); since len+(len>>1) <= MAX it does not enter the > MAX branch, so it returns len+(len>>1).\n- buggy: the special-case (len == MAX) can never trigger here because at len == MAX, len+(len>>1) = 393216 > MAX, i.e. len==MAX is outside R1's domain. For all remaining len in R1's domain, len != MAX and len+(len>>1) <= MAX, so buggy returns Math.min(MAX, len+(len>>1)) = len+(len>>1).\n\nThe two implementations therefore compute byte-identical results for every input satisfying R1's precondition. The functional divergence between buggy and gold lives exclusively in the complementary regime len+(len>>1) > MAX_SEGMENT_LEN (e.g. len==MAX or len just below 2/3·MAX), i.e. the ~25%-growth behavior that corresponds to a *different* requirement, not R1. Any test that distinguishes buggy from gold necessarily asserts behavior outside R1's scope, so it would not be a genuine witness for R1.\n\nI also confirmed via inspection that all buffering/allocation state controlling _currentSegment.length is private, and the only means to reach specific lengths is to replay the growth sequence, whose exact values depend on allocator internals; but that does not change the outcome, since within R1's precondition the two methods agree by construction. Hence no genuine execution-confirmed witness exists for R1."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (TextBuffer.expandCurrentSegment()) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement R1 is scoped to calls of expandCurrentSegment() where the current segment length len satisfies len+(len>>1) <= MAX_SEGMENT_LEN (262144), and asserts the new segment is exactly len+(len>>1) (~50% growth).\n\nAnalyzing the two implementations in precisely this domain:\n- gold: newLen = len+(len>>1); since len+(len>>1) <= MAX it does not enter the > MAX branch, so it returns len+(len>>1).\n- buggy: the special-case (len == MAX) can never trigger here because at len == MAX, len+(len>>1) = 393216 > MAX, i.e. len==MAX is outside R1's domain. For all remaining len in R1's domain, len != MAX and len+(len>>1) <= MAX, so buggy returns Math.min(MAX, len+(len>>1)) = len+(len>>1).\n\nThe two implementations therefore compute byte-identical results for every input satisfying R1's precondition. The functional divergence between buggy and gold lives exclusively in the complementary regime len+(len>>1) > MAX_SEGMENT_LEN (e.g. len==MAX or len just below 2/3·MAX), i.e. the ~25%-growth behavior that corresponds to a *different* requirement, not R1. Any test that distinguishes buggy from gold necessarily asserts behavior outside R1's scope, so it would not be a genuine witness for R1.\n\nI also confirmed via inspection that all buffering/allocation state controlling _currentSegment.length is private, and the only means to reach specific lengths is to replay the growth sequence, whose exact values depend on allocator internals; but that does not change the outcome, since within R1's precondition the two methods agree by construction. Hence no genuine execution-confirmed witness exists for R1.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "task_id": "Closure-152",
+  "status": "ok",
+  "duration_seconds": 262.22361520400045,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Closure-152",
+    "s_vis": [
+      {
+        "id": "cl152-req-1",
+        "statement": "After a constructor `goog.Derived` is declared with an `@extends {goog.Base}` JSDoc annotation, the derived constructor's FunctionType must expose a prototype whose implicit-prototype chain terminates at the base's instance type, so that `derivedCtor.getPrototype().getImplicitPrototype().toString()` equals the base type name.",
+        "subject": "com.google.javascript.rhino.jstype.FunctionType (setPrototype / getPrototype / superClass walk)",
+        "hunk_ids": [],
+        "cited_from": "testGoodExtends4 in test/com/google/javascript/jscomp/TypeCheckTest.java: \"    FunctionType subCtorType =\n        (FunctionType) subTypeName.getNext().getJSType();\n    assertEquals(\"goog.Derived\", subCtorType.getInstanceType().toString());\n\n    JSType superType = subCtorType.getPrototype().getImplicitPrototype();\n    assertEquals(\"goog.Base\", superType.toString());\""
+      },
+      {
+        "id": "cl152-req-2",
+        "statement": "An instance of a constructor declared via `@extends` must be assignable to a formal whose declared type is an ancestor constructor's instance type along the prototype/extends chain (i.e. subtyping must follow the @extends superclass relation so a `new Foo()` value can be used where an instance of its declared superclass type is required), without spurious errors.",
+        "subject": "com.google.javascript.rhino.jstype.FunctionType (isSubtype / instance subtyping through inheritance)",
+        "hunk_ids": [],
+        "cited_from": "testGoodExtends10 in test/com/google/javascript/jscomp/TypeCheckTest.java: \"    /** @constructor \n     * @extends {Super} */ function Sub() {}\n    \"Sub.prototype = new Super();\" +\n    \"    /** @return {Super} */ function foo() { return new Sub(); }\"),  where testTypes asserts no warning, combined with testGoodExtends12: \"foo(new Sub2());\" with Sub2 extending Sub which extends Super, no error expected."
+      },
+      {
+        "id": "cl152-req-3",
+        "statement": "When a subclass constructor's prototype property is assigned an instance of its declared superclass (idiom `Sub.prototype = new Super();`), FunctionType/instance subtyping must recognize `Sub` instances as subtypes of `Super` so that code returning or accepting `Super` also accepts `new Sub()`, and members inherited through that assigned prototype are visible on sub instances.",
+        "subject": "com.google.javascript.rhino.jstype.FunctionType (setPrototype / direct prototype assignment)",
+        "hunk_ids": [],
+        "cited_from": "testGoodExtends10 ... \"    /** @constructor */ function Super() {}\" +\n    \"    /** @constructor \\n * @extends {Super} */ function Sub() {}\" +\n    \"    Sub.prototype = new Super();\" +\n    \"    /** @return {Super} */ function foo() { return new Sub(); }\") and testDirectPrototypeAssignment1/2 in TypeCheckTest.java which verify prototype-chain property visibility and error/warning counts."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When resolving a FunctionType, if its type-of-this resolves to an ObjectType, that resolved ObjectType becomes the function's recorded type-of-this (the assignment still occurs in the ObjectType case).",
+        "subject": "FunctionType.resolveInternal (com.google.javascript.rhino.jstype.FunctionType)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When resolving a FunctionType whose type-of-this resolves to a value that is NOT an ObjectType (e.g. a union type), resolution must not throw a ClassCastException, and the function's previously-held type-of-this is retained rather than being replaced by the non-object resolution result.",
+        "subject": "FunctionType.resolveInternal (com.google.javascript.rhino.jstype.FunctionType)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "cl152-req-1",
+          "cl152-req-2",
+          "cl152-req-3"
+        ],
+        "rationale": "S_vis describes externally-visible prototype-chain/subtyping behaviors verified by TypeCheckTest (testGoodExtends*), but nothing about how resolveInternal records the type-of-this when it resolves to an ObjectType. That internal field-assignment behavior is not pinned down by any visible requirement."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "cl152-req-1",
+          "cl152-req-2",
+          "cl152-req-3"
+        ],
+        "rationale": "No S_vis entry references resolveInternal, ClassCastException avoidance, or retention of a previously-held type-of-this when resolution yields a non-ObjectType. This internal robustness/resolution behavior is entirely absent from the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Analysis of gold vs buggy resolveInternal shows the two revisions differ ONLY in the branch taken when safeResolve(typeOfThis,...) yields a NON-ObjectType: gold guards with `instanceof ObjectType` and leaves typeOfThis unmodified; buggy performs an unconditional `(ObjectType)` cast, which throws ClassCastException for a resolution that yields e.g. a UnionType or primitive. In the ObjectType case R1 mentions, both revisions execute the identical assignment `typeOfThis = (ObjectType) safeResolve(...)`, so that case CANNOT discriminate the two program states.\n\nTo trigger the discriminating case you must build a FunctionType whose typeOfThis is a lazily-resolved NamedType that resolves to a non-ObjectType. The only real path to that state in this codebase is the compiler's forward/backward typedef/type resolution (a `@this {MyTypedef}` whose typedef is declared later). That entire scenario is already pinned down by the [VISIBLE] TypeCheckTest.testBackwardsTypedefUse1/2/3 (which oracle confirmed crash buggy), so any witness built on it is a cosmetic reinvention of visible content and demonstrates nothing hidden. I independently confirmed the runner restricts standalone witnesses to a plain method body (no package, no imports, default class) with only public API — the constructors/helpers needed to reproduce that scenario (CompilerTypeTestCase, BaseJSTypeTestCase, TypeCheckTest's private parseAndTypeCheckWithScope, and the package-private SemanticReverseAbstractInterpreter required by TypeCheck) are not public and are themselves [VISIBLE] test infrastructure, so a standalone class cannot even compile a fresh version of the reproducer (I hit 'not public' compile errors). The R1 \"recorded type-of-this stays an ObjectType\" object case behaves identically on gold and buggy, so no assertion about it can be a discriminating Witness. Therefore no genuine hidden witness exists for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The reported fix target is com.google.javascript.rhino.jstype.FunctionType and the bug tracker id is 268 (retrieved via Closure bug 152), but the actual issue text could NOT be fetched (the visible description states 'Could not automatically fetch the original bug report text'), so there is no authoritative statement of the specific mis-behavior being fixed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test in TypeCheckTest / CompilerTypeTestCase is labelled or attributed to this bug number, so I could not identify a single failing regression case from visible material alone. The extracted requirements are therefore the FunctionType inheritance/subtyping invariants that the disclosed (passing) tests pin down — the behaviors a FunctionType fix most plausibly must preserve."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FunctionType extends PrototypeObjectType and hangs subtyping on the implicit-prototype chain reached through getPrototype()/getImplicitPrototype(); setPrototype/setPrototypeBasedOn and getSuperClassConstructor drive @extends handling. Tests exercising these paths live in TypeCheckTest (testGoodExtends*, testDirectPrototypeAssignment*, testConstructorAlias*, testInheritanceCheck*, getInstanceType helpers)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The source tree seen by a repair system is limited to the 6 visible files: FunctionType, PrototypeObjectType, ObjectType, JSType (under rhino/jstype) and the two jscomp test files."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PrototypeObjectType.setImplicitPrototype (the chain node used by getImplicitPrototype) is guarded by checkState(!hasCachedValues()), i.e. prototype rewiring is only allowed before cached values exist; FunctionType's lazily-created prototype field and hasCachedValues() interlock with this."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Single-line change within FunctionType.resolveInternal; typeOfThis is declared as an ObjectType field, but safeResolve (JSType.safeResolve -> JSType.resolve) can legally yield a non-ObjectType (e.g. when a name resolves to a union), so the pre-fix unconditional ObjectType cast could crash."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The TODO comment (\"Handle this correctly if we have a UnionType\") remains above the edit, indicating the fix deliberately leaves the non-object case un-handled rather than fully supporting union type-of-this."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 concerns FunctionType.resolveInternal recording a resolved type-of-this only in the ObjectType case (backward/lazily-defined type-of-this that resolves to an ObjectType). The three tests that currently fail against the buggy program (TypeCheckTest.testBackwardsTypedefUse1/2/3) are the ones that actually drive this resolution path via a `@this {MyTypedef}` annotation whose typedef is declared later; however, they all live in TypeCheckTest, which is labeled [VISIBLE] content, so they can never serve as a Witness (an assertion drawn from [VISIBLE] material cannot demonstrate anything hidden to the repair system). I checked every [HIDDEN] oracle candidate that could exercise FunctionType.resolveInternal's type-of-this resolution in the object case: FunctionTypeTest, JSTypeTest, JSTypeRegistryTest, UnionTypeTest, UnionTypeBuilderTest, FunctionParamBuilderTest (all rhino/jstype unit tests), and LooseTypeCheckTest (the fork of TypeCheckTest). None of them constructs a FunctionType whose type-of-this is a lazily-resolved NamedType then asserts that resolving it to an ObjectType records it back into the function: the hidden type-system tests either build functions with already-resolved native ObjectType this-types (e.g. withTypeOfThis(OBJECT_TYPE)/DATE_TYPE) without going through resolveInternal's assignment, or exercise unrelated prototype/return-type machinery; LooseTypeCheckTest does not contain the backwards-typedef @this tests at all. Therefore no [HIDDEN] assertion genuinely and specifically tests R1's behavior, so no Witness exists in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Analysis of gold vs buggy resolveInternal shows the two revisions differ ONLY in the branch taken when safeResolve(typeOfThis,...) yields a NON-ObjectType: gold guards with `instanceof ObjectType` and leaves typeOfThis unmodified; buggy performs an unconditional `(ObjectType)` cast, which throws ClassCastException for a resolution that yields e.g. a UnionType or primitive. In the ObjectType case R1 mentions, both revisions execute the identical assignment `typeOfThis = (ObjectType) safeResolve(...)`, so that case CANNOT discriminate the two program states.\n\nTo trigger the discriminating case you must build a FunctionType whose typeOfThis is a lazily-resolved NamedType that resolves to a non-ObjectType. The only real path to that state in this codebase is the compiler's forward/backward typedef/type resolution (a `@this {MyTypedef}` whose typedef is declared later). That entire scenario is already pinned down by the [VISIBLE] TypeCheckTest.testBackwardsTypedefUse1/2/3 (which oracle confirmed crash buggy), so any witness built on it is a cosmetic reinvention of visible content and demonstrates nothing hidden. I independently confirmed the runner restricts standalone witnesses to a plain method body (no package, no imports, default class) with only public API — the constructors/helpers needed to reproduce that scenario (CompilerTypeTestCase, BaseJSTypeTestCase, TypeCheckTest's private parseAndTypeCheckWithScope, and the package-private SemanticReverseAbstractInterpreter required by TypeCheck) are not public and are themselves [VISIBLE] test infrastructure, so a standalone class cannot even compile a fresh version of the reproducer (I hit 'not public' compile errors). The R1 \"recorded type-of-this stays an ObjectType\" object case behaves identically on gold and buggy, so no assertion about it can be a discriminating Witness. Therefore no genuine hidden witness exists for R1."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (FunctionType.resolveInternal (com.google.javascript.rhino.jstype.FunctionType)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Analysis of gold vs buggy resolveInternal shows the two revisions differ ONLY in the branch taken when safeResolve(typeOfThis,...) yields a NON-ObjectType: gold guards with `instanceof ObjectType` and leaves typeOfThis unmodified; buggy performs an unconditional `(ObjectType)` cast, which throws ClassCastException for a resolution that yields e.g. a UnionType or primitive. In the ObjectType case R1 mentions, both revisions execute the identical assignment `typeOfThis = (ObjectType) safeResolve(...)`, so that case CANNOT discriminate the two program states.\n\nTo trigger the discriminating case you must build a FunctionType whose typeOfThis is a lazily-resolved NamedType that resolves to a non-ObjectType. The only real path to that state in this codebase is the compiler's forward/backward typedef/type resolution (a `@this {MyTypedef}` whose typedef is declared later). That entire scenario is already pinned down by the [VISIBLE] TypeCheckTest.testBackwardsTypedefUse1/2/3 (which oracle confirmed crash buggy), so any witness built on it is a cosmetic reinvention of visible content and demonstrates nothing hidden. I independently confirmed the runner restricts standalone witnesses to a plain method body (no package, no imports, default class) with only public API — the constructors/helpers needed to reproduce that scenario (CompilerTypeTestCase, BaseJSTypeTestCase, TypeCheckTest's private parseAndTypeCheckWithScope, and the package-private SemanticReverseAbstractInterpreter required by TypeCheck) are not public and are themselves [VISIBLE] test infrastructure, so a standalone class cannot even compile a fresh version of the reproducer (I hit 'not public' compile errors). The R1 \"recorded type-of-this stays an ObjectType\" object case behaves identically on gold and buggy, so no assertion about it can be a discriminating Witness. Therefore no genuine hidden witness exists for R1.",
+    "confidence": "Medium"
+  }
+}

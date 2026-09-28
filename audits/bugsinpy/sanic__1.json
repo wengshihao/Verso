@@ -1,0 +1,165 @@
+{
+  "task_id": "sanic__1",
+  "status": "ok",
+  "duration_seconds": 648.3706937079551,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "sanic__1",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Response middleware registered on a Blueprint (named response middleware) must execute in reverse registration order, identical to application-level response middleware, so that the handlers registered in the order resp_middleware_4, resp_middleware_5, resp_middleware_6 execute as '6 5 4'. Concretely: an app/blueprint whose request middlewares print '1','2','3' (registered in that order) and whose response middlewares print '4','5','6' (registered in that order) must produce output '1 2 3 6 5 4' whether the middleware is registered at app level or blueprint level.",
+        "subject": "Sanic.register_named_middleware(middleware, route_names, attach_to='response')",
+        "hunk_ids": [],
+        "cited_from": "\"See the first snippet prints \\\"1 2 3 6 5 4\\\" (correct) but the second snippet prints \\\"1 2 3 4 5 6\\\". This should match the first.\" and \"When registering a \\\"response\\\" middleware, they are supposed to be added to the left in reverse. So `appendleft()` should be used instead of `append()`.\" (The visible `register_middleware` shows the reference: `if attach_to == \"response\": if middleware not in self.response_middleware: self.response_middleware.appendleft(middleware)`.)"
+      },
+      {
+        "id": "R2",
+        "statement": "Request middleware registered on a Blueprint (named request middleware) must execute in forward registration order, consistent with application-level request middleware, so request middlewares registered to print '1','2','3' in that order execute as '1 2 3'.",
+        "subject": "Sanic.register_named_middleware(middleware, route_names, attach_to='request')",
+        "hunk_ids": [],
+        "cited_from": "\"the first snippet prints \\\"1 2 3 6 5 4\\\"\" — the leading '1 2 3' is the request middleware order produced by request_middleware_1/2/3 registered in order 1, 2, 3, and \"This should match the first\" applies to the named/blueprint case as well. Visible reference in register_middleware: `if attach_to == \"request\": self.request_middleware.append(middleware)`."
+      },
+      {
+        "id": "R3",
+        "statement": "A response middleware registered on a Blueprint applies only to routes registered in that blueprint and does NOT override/replace the response of a route that is not part of that blueprint.",
+        "subject": "Blueprint.middleware('response') / Sanic._run_response_middleware with request_name",
+        "hunk_ids": [],
+        "cited_from": "tests/test_blueprints.py::test_bp_middleware: `@blueprint.middleware(\"response\") async def process_response(request, response): return text(\"OK\")` ... `@app.route(\"/\") async def handler(request): return text(\"FAIL\")` ... `assert response.status == 200` and `assert response.text == \"FAIL\"`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Registering a named (route-scoped) response middleware via Sanic.register_named_middleware with attach_to='response' inserts the middleware at the front of that route name's named_response_middleware collection, so named response middleware for a route is invoked in reverse registration order (last registered runs first) rather than registration order.",
+        "subject": "Sanic.register_named_middleware",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a route has multiple named response middleware registered, the middleware that returns a truthy response (and therefore supplies the final response seen by the client, since _run_response_middleware stops at the first truthy return) is the most recently registered one among them, because of the front-insertion ordering.",
+        "subject": "Sanic._run_response_middleware",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Named response middleware registration for a route name remains idempotent: registering the same middleware callable more than once for the same route name leaves a single entry for it in that route's named_response_middleware collection.",
+        "subject": "Sanic.register_named_middleware",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 concerns exactly register_named_middleware with attach_to='response', and its citation explicitly states response middleware must be added 'to the left in reverse ... appendleft() should be used instead of append()' with the reference showing appendleft for attach_to=='response'. This pins down front-insertion producing reverse registration order."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 establishes reverse/front-insertion ordering, but never states that _run_response_middleware stops at the first truthy return, nor that the most recently registered middleware supplies the final response. The truthy/stop-and-win mechanism is a distinct behavioral claim not pinned down in S_vis."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis entries cover response ordering (R1) and blueprint scoping (R3) but never assert idempotency/deduplication for named response middleware registration; the app-level dedup guard shown in a citation is not stated as a requirement and is about a different collection."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R3 requires idempotence of named *response* middleware registration: registering the same callable more than once for the same route name leaves a single entry in named_response_middleware[route_name]. The patch under audit changes only `self.named_response_middleware[_rn].append(middleware)` -> `.appendleft(middleware)`; the dedup guard `if middleware not in self.named_response_middleware[_rn]` is present and unchanged in both revisions, and append vs appendleft cannot affect container membership or count. I empirically confirmed this with multiple standalone candidates run via run_test against BOTH programs: (1) register the same middleware twice and assert len(coll)==1 -> PASSED on gold and PASSED on buggy; (2) register it three times and assert len(coll)==1 and list(coll)==[mw] -> PASSED on both; (3) register it four times and check that the effective applicable middleware list (app.response_middleware + named_response_middleware['r']) contains the callable exactly once -> PASSED on both. In every case the buggy and gold results were identical, so no test can satisfy the required \"PASSES on gold, FAILS on buggy\" witness condition for R3. The only behavior the patch actually changes is the *order* in which named response middleware are stored/executed (append vs appendleft), which is a different requirement and is already the subject of the visible tests/test_blueprints.py ordering test — not R3's single-entry/idempotence semantics. Therefore no genuine execution-confirmed witness for R3 exists."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: only `sanic/app.py` and `tests/test_blueprints.py` are exposed to the repair system."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In `sanic/app.py`, `Sanic.register_named_middleware` (the function named in the issue) currently does `self.named_response_middleware[_rn].append(middleware)` for `attach_to == 'response'`; `Sanic.register_middleware` does `self.response_middleware.appendleft(middleware)` for the same case — the two are the ordering reference pair."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`Sanic._run_response_middleware` builds `applicable_middleware = self.response_middleware + named_middleware`, i.e. global response middleware is listed before the named (blueprint) response middleware."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`Sanic._run_request_middleware` builds `applicable_middleware = self.request_middleware + named_middleware` similarly."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`self.named_request_middleware` and `self.named_response_middleware` are dicts keyed by route name, each value a `deque` created lazily in `register_named_middleware`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`sanic/blueprints.py` (Blueprint class) is NOT among the visible files, so blueprint registration internals (how middleware/route names get registered) are not directly visible here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/test_blueprints.py uses a shared `app` fixture (defined elsewhere, not visible) and tests are invoked via `app.test_client`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to a single call: append -> appendleft on self.named_response_middleware[_rn] in Sanic.register_named_middleware (sanic/app.py); both hunks' before/after spans are identical apart from that token."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'request' branch of register_named_middleware still uses .append, so named request middleware ordering is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Sanic.register_middleware (app-level) already used self.response_middleware.appendleft(middleware) for attach_to == 'response', so the patched named-response behavior now matches the app-level response-middleware insertion direction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Sanic._run_response_middleware builds applicable_middleware = self.response_middleware + named_middleware and iterates in that order, breaking on the first middleware that returns a truthy response; the loop variable/break structure is not modified by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The dedup guard 'if middleware not in self.named_response_middleware[_rn]' is present in both before and after revisions (unchanged by this patch)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is the only hunk in the catalogue; the diff context lines (deque creation and dedup guard) are unchanged surrounding lines."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: Target requirement R3 is that `Sanic.register_named_middleware` is idempotent for named *response* middleware: registering the same callable more than once for the same route name leaves a single entry in `named_response_middleware[route_name]`. The patch under audit changes only `self.named_response_middleware[_rn].append(middleware)` -> `.appendleft(middleware)`; the dedup guard (`if middleware not in self.named_response_middleware[_rn]`) is present and unchanged in both revisions, and append vs appendleft does not affect container membership. Thus R3's observable outcome is identical on the buggy and gold programs, so no test can satisfy the necessary \"passes on gold, fails on buggy\" witness condition for R3.\n\nI verified this mechanically: a standalone test registering the same callable twice via `app.register_named_middleware(mw, [\"route\"], \"response\")` and asserting `len(app.named_response_middleware[\"route\"]) == 1` PASSES on BOTH the buggy and the gold program (run_test called with the identical source against both). I also tried a Blueprint-level duplicate-registration variant; it failed on both programs for an unrelated reason (RouteExists from re-registering the route), i.e. it distinguishes nothing about R3.\n\nI read the full oracle test corpus relevant to middleware/named middleware: tests/test_middleware.py ([HIDDEN]) — only ordering/override/exception tests, no duplicate-registration assertion; tests/test_blueprints.py ([VISIBLE]) — no idempotence assertion and it is visible content anyway; tests/test_blueprint_group.py ([HIDDEN]) — middleware invocation counters, not dedup; tests/test_named_routes.py, test_views.py, test_routes.py, test_requests.py, test_url_building.py, test_app.py, tests/conftest.py — none assert single-entry semantics for a named response middleware collection. The one test claimed to currently fail, `tests/test_blueprints.py::test_bp_middleware_order`, is about response-middleware ORDER (the behavior the patch actually changes) not idempotence, and it resides in a [VISIBLE] file, so it could not serve as a witness for R3 in any case.\n\nNo oracle test genuinely exercises R3 (dedup/single-entry idempotence) with the buggy/gold distinction required; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: Target R3 requires idempotence of named *response* middleware registration: registering the same callable more than once for the same route name leaves a single entry in named_response_middleware[route_name]. The patch under audit changes only `self.named_response_middleware[_rn].append(middleware)` -> `.appendleft(middleware)`; the dedup guard `if middleware not in self.named_response_middleware[_rn]` is present and unchanged in both revisions, and append vs appendleft cannot affect container membership or count. I empirically confirmed this with multiple standalone candidates run via run_test against BOTH programs: (1) register the same middleware twice and assert len(coll)==1 -> PASSED on gold and PASSED on buggy; (2) register it three times and assert len(coll)==1 and list(coll)==[mw] -> PASSED on both; (3) register it four times and check that the effective applicable middleware list (app.response_middleware + named_response_middleware['r']) contains the callable exactly once -> PASSED on both. In every case the buggy and gold results were identical, so no test can satisfy the required \"PASSES on gold, FAILS on buggy\" witness condition for R3. The only behavior the patch actually changes is the *order* in which named response middleware are stored/executed (append vs appendleft), which is a different requirement and is already the subject of the visible tests/test_blueprints.py ordering test — not R3's single-entry/idempotence semantics. Therefore no genuine execution-confirmed witness for R3 exists."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R3] (Sanic.register_named_middleware) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R3 requires idempotence of named *response* middleware registration: registering the same callable more than once for the same route name leaves a single entry in named_response_middleware[route_name]. The patch under audit changes only `self.named_response_middleware[_rn].append(middleware)` -> `.appendleft(middleware)`; the dedup guard `if middleware not in self.named_response_middleware[_rn]` is present and unchanged in both revisions, and append vs appendleft cannot affect container membership or count. I empirically confirmed this with multiple standalone candidates run via run_test against BOTH programs: (1) register the same middleware twice and assert len(coll)==1 -> PASSED on gold and PASSED on buggy; (2) register it three times and assert len(coll)==1 and list(coll)==[mw] -> PASSED on both; (3) register it four times and check that the effective applicable middleware list (app.response_middleware + named_response_middleware['r']) contains the callable exactly once -> PASSED on both. In every case the buggy and gold results were identical, so no test can satisfy the required \"PASSES on gold, FAILS on buggy\" witness condition for R3. The only behavior the patch actually changes is the *order* in which named response middleware are stored/executed (append vs appendleft), which is a different requirement and is already the subject of the visible tests/test_blueprints.py ordering test — not R3's single-entry/idempotence semantics. Therefore no genuine execution-confirmed witness for R3 exists.",
+    "confidence": "Medium"
+  }
+}

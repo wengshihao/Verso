@@ -1,0 +1,111 @@
+{
+  "task_id": "scikit-learn__scikit-learn-13828",
+  "status": "ok",
+  "duration_seconds": 151.18322912498843,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-13828",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "AffinityPropagation with affinity='precomputed' must fit successfully (raise no error) when the affinity matrix passed to fit is a scipy CSR sparse matrix, behaving as it does for the equivalent dense matrix input.",
+        "subject": "AffinityPropagation.fit",
+        "hunk_ids": [],
+        "cited_from": "```python\nfrom sklearn.cluster import AffinityPropagation\nfrom scipy.sparse import csr\naffinity_matrix = csr.csr_matrix((3,3))\nAffinityPropagation(affinity='precomputed').fit(affinity_matrix)\n``` ... #### Expected Results\nno error raised since it works for dense matrix."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "AffinityPropagation.fit(X, y) with affinity='precomputed' and X a scipy sparse matrix raises an error during input validation (check_array with accept_sparse=False), rather than accepting the sparse matrix and storing it as affinity_matrix_.",
+        "subject": "AffinityPropagation.fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "AffinityPropagation.fit(X, y) with affinity='euclidean' still accepts a scipy sparse matrix X (sparse CSR is allowed by input validation), so a sparse X does not raise during check_array for the euclidean path.",
+        "subject": "AffinityPropagation.fit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 states that a precomputed (CSR) sparse affinity matrix should fit with no error, behaving as dense does. S_impl R1 describes the opposite behavior — that sparse X should raise an error during check_array. Nothing in S_vis pins down (and it actually contradicts) the raising behavior, so it does not entail R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 only concerns the affinity='precomputed' path with a sparse matrix. It says nothing about the affinity='euclidean' path accepting sparse X, so it does not pin down the euclidean behavior described by S_impl R2."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_sparse_precomputed_fit_raises_typerror",
+      "test_source": "def test_sparse_precomputed_fit_raises_typerror():\n    import numpy as np\n    from scipy.sparse import csr_matrix\n    import pytest\n    from sklearn.cluster.affinity_propagation_ import AffinityPropagation\n\n    S = np.array([[-1., 2., 3., 4.],\n                  [2., -1., 1., 0.],\n                  [3., 1., -1., 5.],\n                  [4., 0., 5., -1.]])\n    X_sparse = csr_matrix(S)\n    af = AffinityPropagation(affinity='precomputed')\n    with pytest.raises(TypeError):\n        af.fit(X_sparse)\n",
+      "gold_result": "PASSED — TypeError raised by fit on sparse precomputed input.",
+      "buggy_result": "FAILED — a deep ValueError (np.median of the kept-sparse affinity matrix, \"setting an array element with a sequence\") was raised instead of the expected TypeError, so pytest.raises(TypeError) did not match.",
+      "explanation": "R1 concerns AffinityPropagation.fit using affinity='precomputed' with a scipy sparse matrix: after the fix, check_array uses accept_sparse=False for the precomputed branch, so check_array rejects a sparse precomputed input by raising TypeError('A sparse matrix was passed, but dense data is required. Use X.toarray()...'). In the buggy code, accept_sparse='csr' is always used, so a sparse precomputed matrix passes validation, is kept sparse, and is then handed to affinity_propagation, where it later crashes deep inside np.median with a ValueError('setting an array element with a sequence') — i.e. NOT the clean validation TypeError.\n\nThe witness builds a small square CSR matrix and asserts that af.fit(X_sparse) raises TypeError on a precomputed estimator. This is exactly the behavior R1 demands (validation-level rejection of sparse precomputed). It PASSED against gold (TypeError raised from check_array) and FAILED against buggy (the code path instead raises a deep ValueError, which pytest.raises(TypeError) does not accept). The visible oracle tests only ever pass dense arrays (or euclidean_distances results) into the precomputed path, and only one visible test uses a sparse matrix, and only for predict with default euclidean affinity (fit X is dense) — so this sparse-precomputed fit input and its validation TypeError is a genuinely hidden behavior, confirmed by real execution on both revisions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in sklearn/cluster/affinity_propagation_.py: in AffinityPropagation.fit, X = check_array(X, accept_sparse='csr') keeps a CSR sparse precomputed matrix sparse (stored as affinity_matrix_), which is then handed to the free function affinity_propagation; there as_float_array(S, copy=copy) returns the sparse CSR unchanged rather than densifying, and the reported traceback fails at `preference = np.median(S)` (affinity_propagation method, around the line reported as affinity_propagation_.py:115 in the traceback), raising 'ValueError: setting an array element with a sequence.'"
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For affinity='euclidean', a sparse X is densified (euclidean_distances has a dense output path), so only the precomputed sparse path is broken."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The 'precomputed' clustering path itself (np.median, S.flat[::(n_samples+1)] = preference, S += ..., np.argmax(tmp, axis=1), etc.) only works on dense arrays, so enabling sparse support requires densifying the affinity matrix before the algorithm runs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests for this module are in sklearn/cluster/tests/test_affinity_propagation.py; they do not yet exercise the sparse-precomputed scenario (the pre-issue test_affinity_propagation_convergence_warning_dense_sparse concerns euclidean predict with sparse/dense all-zero cluster centers, referencing #13334)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk [H0] merely splits the accept_sparse parameter of check_array inside AffinityPropagation.fit according to self.affinity."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "With accept_sparse=False (used for precomputed), check_array's _ensure_sparse_format raises TypeError 'A sparse matrix was passed, but dense data is required. Use X.toarray() ...' when input is sparse."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The affinity_propagation free function and the rest of fit operate on dense arrays (np.median, S.flat[::...] in-place indexing, etc.), so a sparse affinity can never reach the clustering algorithm; the patch removes the ability for a sparse precomputed matrix to slip through."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No docstring changes were made by the patch; dense euclidean/precomputed behavior is unchanged by the fix."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the only oracle test file that exercises AffinityPropagation, sklearn/cluster/tests/test_affinity_propagation.py. That file is entirely labeled [VISIBLE], meaning none of its content was hidden from the repair system, so no assertion drawn from it can serve as a witness for R1. Moreover, none of its tests actually exercise R1's scenario: fit(X, y) with affinity='precomputed' and X a scipy sparse matrix. Every test uses dense inputs (euclidean_distances or np.dot results) for the precomputed path; the single parametrized test involving csr_matrix (test_affinity_propagation_convergence_warning_dense_sparse) uses default euclidean affinity with dense fit X and only feeds sparse/dense all-zero cluster centers into predict (referencing #13334), which is a different behavior. The [HIDDEN] file sklearn/cluster/tests/common.py contains only data-generation utilities (no tests). No other oracle file implements or references a sparse-precomputed affinity-propagation fit, so there is no hidden oracle assertion enforcing R1. Hence no witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (AffinityPropagation.fit): AffinityPropagation.fit(X, y) with affinity='precomputed' and X a scipy sparse matrix raises an error during input validation (check_array with accept_sparse=False), rather than accepting the sparse matrix and storing it as affinity_matrix_. — not entailed by S_vis (S_vis R1 states that a precomputed (CSR) sparse affinity matrix should fit with no error, behaving as dense does. S_impl R1 describes the opposite behavior — that sparse X should raise an error during check_array. Nothing in S_vis pins down (and it actually contradicts) the raising behavior, so it does not entail R1.); confirmed by a synthesized witness: R1 concerns AffinityPropagation.fit using affinity='precomputed' with a scipy sparse matrix: after the fix, check_array uses accept_sparse=False for the precomputed branch, so check_array rejects a sparse precomputed input by raising TypeError('A sparse matrix was passed, but dense data is required. Use X.toarray()...'). In the buggy code, accept_sparse='csr' is always used, so a sparse precomputed matrix passes validation, is kept sparse, and is then handed to affinity_propagation, where it later crashes deep inside np.median with a ValueError('setting an array element with a sequence') — i.e. NOT the clean validation TypeError.\n\nThe witness builds a small square CSR matrix and asserts that af.fit(X_sparse) raises TypeError on a precomputed estimator. This is exactly the behavior R1 demands (validation-level rejection of sparse precomputed). It PASSED against gold (TypeError raised from check_array) and FAILED against buggy (the code path instead raises a deep ValueError, which pytest.raises(TypeError) does not accept). The visible oracle tests only ever pass dense arrays (or euclidean_distances results) into the precomputed path, and only one visible test uses a sparse matrix, and only for predict with default euclidean affinity (fit X is dense) — so this sparse-precomputed fit input and its validation TypeError is a genuinely hidden behavior, confirmed by real execution on both revisions.",
+    "confidence": "Medium"
+  }
+}

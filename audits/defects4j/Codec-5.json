@@ -1,0 +1,98 @@
+{
+  "task_id": "Codec-5",
+  "status": "ok",
+  "duration_seconds": 71.63827949199913,
+  "llm_calls": 8,
+  "error": null,
+  "record": {
+    "task_id": "Codec-5",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Base64.decode must not throw a NullPointerException on the EOF decode call (inAvail == -1) when it is entered with buffer == null (all previously decoded output already consumed via readResults) but a non-zero leftover modulus (e.g. modulus == 3) from a previous data round; it must handle the final partial-quad flush without dereferencing a null buffer.",
+        "subject": "Base64.decode(byte[], int, int)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The exception occurs when Base64.decode is entered with the following conditions: buffer is null; modulus is 3 from a previous entry; inAvail is -1 ... Under these conditions, Base64.decode reaches line 581 with buffer still null and throws a NullPointerException.\" and \"the real fix needs to happen in Base64 since it this same situation could be created by direct use.\" Visible Base64.java flush block (runs with buffer possibly null since EOF path never allocates it): \"if (eof && modulus != 0) { x = x << 6; switch (modulus) { case 2 : x = x << 6; buffer[pos++] = ...; case 3 : buffer[pos++] = (byte) ((x >> 16) & MASK_8BITS); buffer[pos++] = (byte) ((x >> 8) & MASK_8BITS); break; } }\""
+      },
+      {
+        "id": "R2",
+        "statement": "Reading (with a byte[1024] target array via Base64InputStream.read(byte[])) the base64 input given in the issue (the 1190-byte H4s... block quoted in the report) must decode without raising a NullPointerException and must yield the correct fully-decoded byte content, not throw.",
+        "subject": "Base64InputStream.read(byte[]) decoding",
+        "hunk_ids": [],
+        "cited_from": "Issue input block begins \"H4sIAAAAAAAAAFvzloG1uIhBKiuxLFGvODW5tCizpFIvODM9LzXFPykrNbmE8//eDC2bq/+ZGJij...\" and \"Say this is read from file with a byte[] of size 1024 using Base64InputStream.read(byte[])... the NPE occurs the next iteration.\" Plus visible Base64InputStreamTest.testCodec98NPE: \"byte[] decodedBytes = Base64TestData.streamToBytes(stream, new byte[1024]); String decoded = StringUtils.newStringUtf8(decodedBytes); assertEquals(\"codec-98 NPE Base64InputStream\", Base64TestData.CODEC_98_NPE_DECODED, decoded)\""
+      },
+      {
+        "id": "R3",
+        "statement": "Decoding data of the kind from the issue through Base64OutputStream (writing with a 1024-byte chunk from a padded copy of the input and calling close()) must not raise a NullPointerException and must produce decoded output equal to the full correctly-decoded content.",
+        "subject": "Base64OutputStream decoding + close()",
+        "hunk_ids": [],
+        "cited_from": "Visible Base64OutputStreamTest.testCodec98NPE: \"byte[] codec98_1024 = new byte[1024]; System.arraycopy(codec98, 0, codec98_1024, 0, codec98.length); ... stream.write(codec98_1024, 0, 1024); stream.close(); byte[] decodedBytes = data.toByteArray(); ... assertEquals(\"codec-98 NPE Base64OutputStream\", Base64TestData.CODEC_98_NPE_DECODED, decoded)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In the streaming decode path Base64.decode(byte[], int, int), when end-of-stream is reached (inAvail<0, or '=' padding encountered) with a partially-consumed base64 group remaining (modulus != 0), the decoder writes that residual decoded byte/byte-pair to its internal buffer successfully instead of throwing a NullPointerException or ArrayIndexOutOfBoundsException — i.e. it first obtains writable buffer space (allocating the buffer if none exists, or resizing if the remaining space is insufficient) before performing the residual write.",
+        "subject": "Base64.decode(byte[],int,int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 describes precisely the same EOF scenario (buffer==null, modulus==3, inAvail==-1) and requires the final partial-quad flush to write residual decoded bytes to the internal buffer without throwing an NPE/dereferencing a null buffer — which matches S_impl R1's obligation to write the residual byte/byte-pair successfully (obtaining writable buffer space) rather than throwing. R2/R3 corroborate that the streaming decode yields correct content without exceptions."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files are visible: Base64.java and two test classes. Base64InputStream, Base64OutputStream, and Base64TestData (with CODEC_98_NPE/CODEC_98_NPE_DECODED/ENCODED_64_CHARS_PER_LINE/DECODED constants) are referenced by the tests but are NOT present in the visible tree."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Base64.java's stateful streaming decode: EOF (inAvail<0) decode call sets eof=true but never allocates buffer, and the trailing `if (eof && modulus != 0)` flush block writes `buffer[pos++]` unconditionally — the NPE described. readResults() nulls buffer once all buffered output is consumed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Base64.decode(Object) on empty/null input returns it unchanged; decode(byte[]) calls reset() then setInitialBuffer then decode twice (data, then EOF -1)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests that random round-trip data sizes 0..150 (encode-decode and wrap 10x encode/decode) exist in both test files, but they already pass and are not tied to this bug."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is entirely within the package-private streaming method Base64.decode(byte[], int, int); the public one-shot decode(byte[]) is unaffected because it pre-allocates its output buffer via setInitialBuffer before calling decode twice."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Base64.java contains package-private/streaming collaborators (encode/decode(byte[],int,int), readResults, setInitialBuffer, avail(), hasData) that are not directly exposed; the observable behavior of this fix is exercised via Base64InputStream/Base64OutputStream and the Base64TestData CODEC_98_NPE* constants, none of which are in the visible source tree."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard added is `if (buffer == null || buffer.length - pos < decodeSize) resizeBuffer();`, mirroring the guards used elsewhere in the encode/decode data loops."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

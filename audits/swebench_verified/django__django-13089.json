@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-13089",
+  "status": "ok",
+  "duration_seconds": 87.88731512497179,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13089",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "DatabaseCache._cull must not raise a TypeError ('NoneType' object is not subscriptable) when the SELECT produced by cache_key_culling_sql() returns no rows after expired entries have been deleted; e.g. when the number of remaining live entries exceeds _max_entries but the OFFSET cull_num query has nothing at/after that offset, the subsequent DELETE-and-index into cursor.fetchone()[0] must not crash.",
+        "subject": "DatabaseCache._cull (django.core.cache.backends.db)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"cache.backends.db._cull sometimes fails with 'NoneType' object is not subscriptable\" ... backtrace db.py:277→ _cull ... source snippet: \"cursor.execute(\\n      connection.ops.cache_key_culling_sql() % table,\\n      [cull_num])\\ncursor.execute(\\\"DELETE FROM %s \\\"\\n               \\\"WHERE cache_key < %%s\\\" % table,\\n               [cursor.fetchone()[0]])\" ... \"From what I can understand, the cursor after running connection.ops.cache_key_culling_sql() command is not returning any data, so cursor.fetchone()[0] afterwards fails. I guess a simple check to see if it contains data would be enough, may apply for an easy picking.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When _max_entries is exceeded so that _base_set calls _cull, the set operation must not fail merely because the live rows remaining after deleting expired entries leave the cull-boundary SELECT empty; the cull should handle that case and set/add completes without propagating an exception.",
+        "subject": "DatabaseCache set/add path invoking _cull",
+        "hunk_ids": [],
+        "cited_from": "Backtrace in issue: \"base.py:143→ _get_response ... middleware/cache.py:103→ process_response ... cache/backends/db.py:104→ set ... db.py:136→ _base_set ... db.py:277→ _cull\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "When DatabaseCache culling is triggered after a write and the boundary-selection query (cache_key_culling_sql at the cull offset) returns no row (fetchone() is None), the cull completes without raising an exception: the subsequent 'DELETE ... WHERE cache_key < %s' step is skipped rather than attempting to index an empty result.",
+        "subject": "django.core.cache.backends.db.DatabaseCache._cull",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 (and its citation) directly pins down the exact scenario: when the cache_key_culling_sql boundary SELECT at the cull offset returns no row (fetchone()[0] crash), the cull of DatabaseCache after a write must not raise, and the DELETE WHERE cache_key < ... step must be skipped/checked for data rather than index an empty fetchone() result. R2 corroborates this same _cull path being reached after a set/add write. Together they entail the specific behavior S_IMPL-1 describes."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root defect is in django/core/cache/backends/db.py DatabaseCache._cull: after deleting expired rows it runs SELECT COUNT(*), and if num > self._max_entries computes cull_num = num // self._cull_frequency then runs the backend's cache_key_culling_sql() (= \"SELECT cache_key FROM %s ORDER BY cache_key LIMIT 1 OFFSET %%s\" base, Oracle variant '... ORDER BY cache_key OFFSET %%s ROWS FETCH FIRST 1 ROWS ONLY') parametrized by [cull_num], and blindly does [cursor.fetchone()[0]]. fetchone() returns None when that OFFSET row count exceeds remaining rows, so None[0] raises TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The culling SELECT count discrepancy (COUNT returns num, then OFFSET cull_num can exceed remaining rows) means entries can't all be within the selected offset window, so fetchone() can be None even though num > _max_entries."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant tests live in tests/cache/tests.py: DBCacheTests(BaseCacheTests, TransactionTestCase) with BACKEND django.core.cache.backends.db.DatabaseCache, table name 'test cache table'; DBCacheTests overrides only test_zero_cull (_perform_cull_test('zero_cull', 50, 18)); BaseCacheTests provides test_cull (_perform_cull_test('cull', 50, 29)) and caches settings use MAX_ENTRIES 30, CULL_FREQUENCY 3 for 'cull'. These exercise the normal (non-empty-result) cull path only."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseCache.__init__ (django/core/cache/backends/base.py) reads MAX_ENTRIES (default 300) and CULL_FREQUENCY (default 3)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cache_key_culling_sql is defined on BaseDatabaseOperations and, in this tree, overridden only by oracle.DatabaseOperations; postgres/mysql/sqlite inherit the base LIMIT 1 OFFSET form."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is confined to DatabaseCache._cull in django/core/cache/backends/db.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When the culling SELECT (with OFFSET cull_num given num > _max_entries) returns fewer rows than the offset, fetchone() returns None; the patch guards against indexing it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When fetchone() returns a non-None boundary key, the existing DELETE of rows with cache_key below that boundary still runs (behavior preserved)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

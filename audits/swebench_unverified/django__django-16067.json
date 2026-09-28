@@ -1,0 +1,99 @@
+{
+  "task_id": "django__django-16067",
+  "status": "ok",
+  "duration_seconds": 253.9370958750369,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16067",
+    "s_vis": [
+      {
+        "id": "decimal_validator_zero_scientific_notation_valid",
+        "statement": "DecimalValidator(max_digits=8, decimal_places=7) must NOT raise a ValidationError when validating a zero given in positive-exponent scientific notation, specifically Decimal('0E+1') (and equivalently Decimal('0E+2') per the issue title), which represents the number zero and therefore fits within the digit/decimal-place limits.",
+        "subject": "DecimalValidator.__call__",
+        "hunk_ids": [],
+        "cited_from": "'DecimalValidator fails to validate 0 in scientific notation (0E+1 or 0E+2)' ... \"value = '0E+1'\\nvalidator = DecimalValidator(8, 7)\\ntry:\\n    validator(Decimal(value))\\nexcept ValidationError:\\n    self.fail(\"'{}' is an invalid decimal\".format(value))\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When validating a Decimal whose value is zero expressed with a non-negative exponent (significand tuple (0,) and exponent >= 0, e.g. Decimal('0E+1') or Decimal('0E+2')), DecimalValidator counts it as a single digit (1), not as len(digit_tuple) + exponent digits.",
+        "subject": "django.core.validators.DecimalValidator.__call__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A Decimal equal to zero with a positive exponent (e.g. Decimal('0E+1') under DecimalValidator(8, 7)) no longer raises the max_whole_digits (or max_digits) ValidationError merely because its exponent looks like trailing zeros; it passes as a valid zero within the digit limits.",
+        "subject": "django.core.validators.DecimalValidator.__call__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "decimal_validator_zero_scientific_notation_valid"
+        ],
+        "rationale": "S_vis establishes the observable no-error outcome for 0E+1/0E+2 within the (8,7) limits, which corresponds to the behavioral outcome of R1, but it does not articulate R1's specific counting rule that the value is counted as exactly a single digit (1) rather than len(digit_tuple)+exponent. That mechanism/quantification is not pinned by visible information."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "decimal_validator_zero_scientific_notation_valid"
+        ],
+        "rationale": "S_vis directly states that DecimalValidator(8,7) must not raise a ValidationError for a zero expressed in positive-exponent scientific notation (0E+1/0E+2) because zero fits within the digit/decimal limits, which matches R2's claim that such a zero no longer raises the max_digits/max_whole_digits error and passes as valid."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_zero_with_positive_exponent_is_single_digit",
+      "test_source": "import pytest\nfrom decimal import Decimal\nfrom django.core.validators import DecimalValidator\n\ndef test_zero_with_positive_exponent_is_single_digit():\n    v = DecimalValidator(8, 7)\n    # validating should not raise (zero treated as a single digit, whole_digits=1 <= 1)\n    v(Decimal('0E+1'))",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (django.core.exceptions.ValidationError with code max_whole_digits raised at validators.py line 522)",
+      "explanation": "The gold patch special-cases digit_tuple == (0,) in the exponent >= 0 branch so that leading-zero scientific forms like Decimal('0E+1') (significand tuple (0,), exponent 1) are counted as exactly one digit rather than len(digit_tuple)+exponent. With the buggy code a DecimalValidator(8, 7) computes digits = 1+1 = 2 and whole_digits = 2 > (8-7)=1, so it raises the max_whole_digits ValidationError; with the gold code digit_tuple==(0,) means digits stays 1 and whole_digits = 1 which is not > 1, so validation succeeds without raising. run_test confirmed gold PASSED and buggy FAILED with a ValidationError (max_whole_digits). I checked every visible oracle that could pin this down: tests/validators/tests.py TEST_DATA contains only DecimalValidator cases with nonzero significands in scientific/positive form (e.g. '7.42403889818E+17', '7304E-1', '999', '0.99') and no 0E+/0E0 positive-exponent-zero case; tests/model_fields/test_decimalfield.py and tests/forms_tests/field_tests/test_decimalfield.py likewise exercise nonzero scientific values ('1E+2', '1E+1', '0.546e+2') but never a zero significand with a non-negative exponent. Thus Decimal('0E+1') with DecimalValidator(8,7) passes on gold and raises on buggy, and this specific input/configuration is not derivable from any visible assertion — it is a genuine hidden-behavior witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "DecimalValidator lives in django/core/validators.py; its __call__ reads digit_tuple/exponent from value.as_tuple() and caps digits, decimals, and whole_digits against max_digits/decimal_places."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Current code: for exponent >= 0 it sets digits = len(digit_tuple) + exponent and decimals = 0, so Decimal('0E+1') (digit_tuple=(0,), exponent=1) computes digits=2, whole_digits=2 which exceeds (8-7)=1 under DecimalValidator(8,7), raising the max_whole_digits error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Validator unit tests live in tests/validators/tests.py; the TEST_DATA there currently contains no 0E+1 / 0E+2 positive-exponent-zero entries."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue explicitly notes that applying Decimal('0E+1').normalize() (yielding Decimal('0')) as a workaround avoids the error in DecimalField's to_python, implying the intended semantics treat 0E+1/0E+2 as zero within the digit limit."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change special-cases digit_tuple == (0,) only in the exponent >= 0 branch of DecimalValidator.__call__; the negative-exponent branch is untouched. The two listed requirements describe the same observable effect from the outside (zero with positive exponent validates as a single zero digit rather than erroring on whole/max digit counts)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I checked all oracle test files relevant to DecimalValidator's zero-with-positive-exponent behavior. The direct unit-test location (tests/validators/tests.py) is [VISIBLE] and its TEST_DATA contains no Decimal('0E+1')/Decimal('0E+2') positive-exponent-zero cases; the field-level files (tests/model_fields/test_decimalfield.py and tests/forms_tests/field_tests/test_decimalfield.py) are likewise [VISIBLE] and contain no hidden assertion about this exponent semantics. A witness may only rest on [HIDDEN] content, and none of these files carries hidden material for this behavior. Furthermore, the benchmark reports that no tests currently fail against the buggy program — and any genuine oracle test for R1 (buggy DecimalValidator counts 0E+1 once as len(digit_tuple)+exponent and raises max_whole_digits under DecimalValidator(8,7)) would necessarily fail on the buggy program. Since a failing buggy run is a necessary condition for a witness, and none exists, no test in the oracle genuinely witnesses R1. Conclusion: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.core.validators.DecimalValidator.__call__): When validating a Decimal whose value is zero expressed with a non-negative exponent (significand tuple (0,) and exponent >= 0, e.g. Decimal('0E+1') or Decimal('0E+2')), DecimalValidator counts it as a single digit (1), not as len(digit_tuple) + exponent digits. — not entailed by S_vis (S_vis establishes the observable no-error outcome for 0E+1/0E+2 within the (8,7) limits, which corresponds to the behavioral outcome of R1, but it does not articulate R1's specific counting rule that the value is counted as exactly a single digit (1) rather than len(digit_tuple)+exponent. That mechanism/quantification is not pinned by visible information.); confirmed by a synthesized witness: The gold patch special-cases digit_tuple == (0,) in the exponent >= 0 branch so that leading-zero scientific forms like Decimal('0E+1') (significand tuple (0,), exponent 1) are counted as exactly one digit rather than len(digit_tuple)+exponent. With the buggy code a DecimalValidator(8, 7) computes digits = 1+1 = 2 and whole_digits = 2 > (8-7)=1, so it raises the max_whole_digits ValidationError; with the gold code digit_tuple==(0,) means digits stays 1 and whole_digits = 1 which is not > 1, so validation succeeds without raising. run_test confirmed gold PASSED and buggy FAILED with a ValidationError (max_whole_digits). I checked every visible oracle that could pin this down: tests/validators/tests.py TEST_DATA contains only DecimalValidator cases with nonzero significands in scientific/positive form (e.g. '7.42403889818E+17', '7304E-1', '999', '0.99') and no 0E+/0E0 positive-exponent-zero case; tests/model_fields/test_decimalfield.py and tests/forms_tests/field_tests/test_decimalfield.py likewise exercise nonzero scientific values ('1E+2', '1E+1', '0.546e+2') but never a zero significand with a non-negative exponent. Thus Decimal('0E+1') with DecimalValidator(8,7) passes on gold and raises on buggy, and this specific input/configuration is not derivable from any visible assertion — it is a genuine hidden-behavior witness.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "task_id": "Jsoup-51",
+  "status": "ok",
+  "duration_seconds": 211.2877298049998,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-51",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Given an XML document whose root and child element names and attribute names are entirely Japanese/CJK characters (as in the reported repro, e.g. root <進捗推移グラフ> and child <開始予定凡例名 表示状態=\"0\" 線色=\"00CED1\">), Jsoup.parse(input, \"UTF-8\", Parser.xmlParser()) must succeed and produce a Document whose getAllElements()/tagName() traversal exposes those Japanese element names (and their attributes) as structure, so that each element can be located and its text content read via its text nodes.",
+        "subject": "Jsoup.parse(xml, charset, Parser.xmlParser()) / XML parsing of Documents",
+        "hunk_ids": [],
+        "cited_from": "\"Problem in reading XML file containing Japanese tag names\" ... \"JSOUP is not parsing this Japanese tags.\" / \"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\" standalone=\\\"yes\\\"?>\n<進捗推移グラフ>\n    <開始予定凡例名 表示状態=\\\"0\\\" 線色=\\\"00CED1\\\">&amp;#9312;...\".\n<開始予定凡例名>\n## </進捗推移グラフ>\" and the source snippet \"Document doc = Jsoup.parse(XMLString.toString(),\\\"UTF-8\\\",Parser.xmlParser()); Elements objElementCollection = doc.getAllElements();\" iterating \"Element ... objCurrent.tagName()\" and each text node's text."
+      },
+      {
+        "id": "R2",
+        "statement": "A tag name composed partly or fully of CJK characters (no ASCII letters at all, e.g. 進捗推移グラフ or 開始予定凡例名) must still be recognized and consumed as a complete element/attribute name in the XML parsing path — i.e. parsing such a document must not lose or truncate that name merely because it begins with or consists of non-ASCII-letter code points.",
+        "subject": "XML parser element/attribute name tolerance for non-ASCII tag-name consumers in org.jsoup.parser (CharacterReader)",
+        "hunk_ids": [],
+        "cited_from": "Issue repro tag names \"<進捗推移グラフ> ... <開始予定凡例名 表示状態=\\\"0\\\" 線色=\\\"00CED1\\\">...<開始予定凡例名> ... </進捗推移グラフ>\" (names made only of CJK characters, with no A-Z/a-z letters), contrasted with the passing HTML test \"String body = \\\"<進捗推移グラフ>Yes</進捗推移グラフ>\\\"; ... doc.select(\\\"進捗推移グラフ\\\"); assertEquals(\\\"Yes\\\", els.text());\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "CharacterReader.matchesLetter() returns true when the reader is not empty and the current character (at pos) is a letter as defined by Character.isLetter, which includes non-ASCII/Unicode letters (e.g. CJK characters such as '進') as well as ASCII 'A'-'Z'/'a'-'z' letters.",
+        "subject": "CharacterReader.matchesLetter()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "CharacterReader.matchesLetter() returns false when the reader is empty (pos beyond input length), even though Character.isLetter semantics otherwise apply — the isEmpty guard is retained and not overridden by the added Unicode-letter check.",
+        "subject": "CharacterReader.matchesLetter()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1/R2 establish that CJK-only element/attribute names must be recognized and consumed in the XML CharacterReader parsing path (not lost or truncated), implying the letter predicate accepts CJK letters such as '進'. However, the visible issue evidence doesn't pin down the exact matchesLetter() function-level semantics (that it pivots on Character.isLetter, includes ASCII letters, and returns true for a non-empty reader), so full entailment of this specific behavior is genuinely ambiguous."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry says anything about the empty-reader/end-of-input case for matchesLetter(); R1 and R2 only concern non-empty XML/HTML content with CJK letters and contain no evidence about an isEmpty guard being retained or its return value. This behavior is entirely invisible in the source material."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "S_IMPL-2 pins down the retention of the isEmpty guard in CharacterReader.matchesLetter(): when the reader is empty (pos >= input length) the method must return false rather than letting the added Character.isLetter branch evaluate an out-of-range subscript. I inspected both revisions: the gold (fixed) code is `if (isEmpty()) return false; char c = input[pos]; return (c>='A'...) || (c>='a'...) || Character.isLetter(c);` and the buggy (pre-fix) code is identical except it omits the trailing `|| Character.isLetter(c)`. Crucially, BOTH revisions lead with the identical `if (isEmpty()) return false;` guard, so the empty-reader behavior under test is textually the same in both programs.\n\nI empirically confirmed this cannot discriminate. Using reflection (because CharacterReader and its matchesLetter are package-private and the enclosing harness class is not in org.jsoup.parser), I ran a pure empty-guard witness — `new CharacterReader(\"\")` then asserting matchesLetter() == false — against the buggy revision (PASSED) and against the gold revision (PASSED). I also ran the pos-beyond-length (EOF reached by advancing twice past a \"ab\" input) variant against both; again PASSED on both revisions. In every case both compile and both produce the expected false, so no genuine PASS-gold/FAIL-buggy witness exists for this specific guard requirement.\n\nThe observable fix really only changes matchesLetter's behavior on NON-empty inputs holding non-ASCII letters (returning false on buggy, true on gold) — that changed behavior is the subject of the separately-stated Unicode letter-recognition requirement (S_IMPL-1), not the empty-guard preservation at issue here. Since the guard semantics are identical pre- and post-fix, S_IMPL-2 has no discriminating oracle witness; claiming found=true would require a test whose outcome hinges on the (unrelated) non-empty Unicode branch, which would not honestly correspond to this guard requirement. Reporting found=false after verifying no candidate can pass gold and fail buggy on the empty-reader semantics themselves."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo snapshot contains only two files: src/main/java/org/jsoup/parser/CharacterReader.java and src/test/java/org/jsoup/parser/HtmlParserTest.java; no XML-parser test or XML branch source is visible, so the XML-side behavior is anchored only in the issue's repro."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CharacterReader's letter-segmentation helpers (matchesLetter, consumeLetterSequence, consumeLetterThenDigitSequence) accept only ASCII ranges 'A'..'Z'/'a'..'z'; consumeTagName/consumeToEnd/nextIndexOf do not restrict to ASCII. This asymmetries between ASCII-letter detection and general tag-name consumption is the obvious candidate region for the non-ASCII XML defect, but no visible artifact states the exact obligation for those ASCII-letter methods."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test testSupportsNonAsciiTags (\"<進捗推移グラフ>Yes</進捗推移グラフ>\", parsed via the HTML parser) already passes, demonstrating the Japanese-tag defect is specific to the XML parsing path described in the issue rather than to generic parsing of CJK names."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's element text content is entity-soup (&amp;#9312;&amp;#35373;...) from the reporter's escaping; the load-bearing complaint is element tag/attribute names, not the exact character-content decoding."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note: a fixed test belongs in an XML-parser test file that is not present in this visible snapshot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only CharacterReader.java and HtmlParserTest.java are in the snapshot; the XML-parsing consumers of matchesLetter/consumeLetterSequence (e.g. the XML TreeBuilder branch named in the issue) are not visible, so the downstream XML tag-name obligation is not directly confirmable here."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "CharacterReader is a package-private final class used internally by the parser; matchesLetter is package-private (no public API exposure)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Related ASCII-only helpers consumeLetterSequence(), consumeLetterThenDigitSequence() and matchesDigit() were NOT changed by this patch, so ASCII-only behavior in those helpers is preserved."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-2]: Target S_IMPL-2 requires a witness proving that CharacterReader.matchesLetter() returns false when the reader is empty (pos at/beyond length) — i.e., that the isEmpty guard is retained and NOT overridden by the newly added Unicode-letter (Character.isLetter) logic. This is a subtle internal guard property distinct from S_IMPL-1's Unicode tag-name recognition.\n\nI investigated all parser/reader test files. The oracle's only currently-reported failing test is HtmlParserTest.testSupportsNonAsciiTags (which parses <進捗推移グラフ>Yes</…> and checks select text). I ran it: it FAILS on buggy (expected \"Yes\" but got \"\" because the buggy matchesLetter only accepts ASCII, so the CJK tag is not tokenized) and PASSES on gold. But (a) HtmlParserTest is labeled [VISIBLE], and (b) its assertion only exercises non-ASCII letter recognition on a NON-empty input; it never drives the reader into an empty/EOF state and never asserts the isEmpty-guard behavior that defines S_IMPL-2. So it cannot serve as a witness for this requirement.\n\nI then read every parser-internal test that could hold a direct matchesLetter assertion: CharacterReaderTest ([HIDDEN]) contains consume/unconsume/mark/consumeToEnd/nextIndexOf/matches/matchesIgnoreCase/matchesAny and consume-letter helpers, but has NO matchesLetter(@empty) method or any assertion about matchesLetter returning false at EOF. AttributeParseTest ([HIDDEN]) only tests attribute parsing; XmlTreeBuilderTest ([HIDDEN]) tests XML structure/EOF-in-attribute but contains no non-ASCII/empty-letter matchesLetter assertion (and none of its tests are in the failing set anyway). The visible task notebook likewise notes that a dedicated XML-side test for this obligation \"is not present in this visible snapshot.\"\n\nSince CharacterReaderTest is the only [HIDDEN] unit-test home for matchesLetter and it contains no empty-reader assertion, and no [HIDDEN] test in the oracle exercises the isEmpty guard of matchesLetter (as confirmed by actually running the only failing test and finding it tests Unicode recognition, not the empty guard), there is no genuine oracle witness for S_IMPL-2. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-2]: S_IMPL-2 pins down the retention of the isEmpty guard in CharacterReader.matchesLetter(): when the reader is empty (pos >= input length) the method must return false rather than letting the added Character.isLetter branch evaluate an out-of-range subscript. I inspected both revisions: the gold (fixed) code is `if (isEmpty()) return false; char c = input[pos]; return (c>='A'...) || (c>='a'...) || Character.isLetter(c);` and the buggy (pre-fix) code is identical except it omits the trailing `|| Character.isLetter(c)`. Crucially, BOTH revisions lead with the identical `if (isEmpty()) return false;` guard, so the empty-reader behavior under test is textually the same in both programs.\n\nI empirically confirmed this cannot discriminate. Using reflection (because CharacterReader and its matchesLetter are package-private and the enclosing harness class is not in org.jsoup.parser), I ran a pure empty-guard witness — `new CharacterReader(\"\")` then asserting matchesLetter() == false — against the buggy revision (PASSED) and against the gold revision (PASSED). I also ran the pos-beyond-length (EOF reached by advancing twice past a \"ab\" input) variant against both; again PASSED on both revisions. In every case both compile and both produce the expected false, so no genuine PASS-gold/FAIL-buggy witness exists for this specific guard requirement.\n\nThe observable fix really only changes matchesLetter's behavior on NON-empty inputs holding non-ASCII letters (returning false on buggy, true on gold) — that changed behavior is the subject of the separately-stated Unicode letter-recognition requirement (S_IMPL-1), not the empty-guard preservation at issue here. Since the guard semantics are identical pre- and post-fix, S_IMPL-2 has no discriminating oracle witness; claiming found=true would require a test whose outcome hinges on the (unrelated) non-empty Unicode branch, which would not honestly correspond to this guard requirement. Reporting found=false after verifying no candidate can pass gold and fail buggy on the empty-reader semantics themselves."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_IMPL-2] (CharacterReader.matchesLetter()) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: S_IMPL-2 pins down the retention of the isEmpty guard in CharacterReader.matchesLetter(): when the reader is empty (pos >= input length) the method must return false rather than letting the added Character.isLetter branch evaluate an out-of-range subscript. I inspected both revisions: the gold (fixed) code is `if (isEmpty()) return false; char c = input[pos]; return (c>='A'...) || (c>='a'...) || Character.isLetter(c);` and the buggy (pre-fix) code is identical except it omits the trailing `|| Character.isLetter(c)`. Crucially, BOTH revisions lead with the identical `if (isEmpty()) return false;` guard, so the empty-reader behavior under test is textually the same in both programs.\n\nI empirically confirmed this cannot discriminate. Using reflection (because CharacterReader and its matchesLetter are package-private and the enclosing harness class is not in org.jsoup.parser), I ran a pure empty-guard witness — `new CharacterReader(\"\")` then asserting matchesLetter() == false — against the buggy revision (PASSED) and against the gold revision (PASSED). I also ran the pos-beyond-length (EOF reached by advancing twice past a \"ab\" input) variant against both; again PASSED on both revisions. In every case both compile and both produce the expected false, so no genuine PASS-gold/FAIL-buggy witness exists for this specific guard requirement.\n\nThe observable fix really only changes matchesLetter's behavior on NON-empty inputs holding non-ASCII letters (returning false on buggy, true on gold) — that changed behavior is the subject of the separately-stated Unicode letter-recognition requirement (S_IMPL-1), not the empty-guard preservation at issue here. Since the guard semantics are identical pre- and post-fix, S_IMPL-2 has no discriminating oracle witness; claiming found=true would require a test whose outcome hinges on the (unrelated) non-empty Unicode branch, which would not honestly correspond to this guard requirement. Reporting found=false after verifying no candidate can pass gold and fail buggy on the empty-reader semantics themselves.",
+    "confidence": "Medium"
+  }
+}

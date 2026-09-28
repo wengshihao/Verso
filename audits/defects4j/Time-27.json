@@ -1,0 +1,102 @@
+{
+  "task_id": "Time-27",
+  "status": "ok",
+  "duration_seconds": 234.62561139899844,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Time-27",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A formatter built with appendSeparatorIfFieldsAfter(\"T\") separating day suffix \"D\" from a group of hours+\"H\", minutes+\"M\", secondsWithOptionalMillis+\"S\" must parse the whole input \"PT1003199059S\" without throwing (consuming the full string and producing a valid period), even though the seconds digits (1003199059) exceed 10 characters of int representable range when combined with tail affixes.",
+        "subject": "PeriodFormatterBuilder.parsePeriod / FieldFormatter.parseInto",
+        "hunk_ids": [],
+        "cited_from": "PeriodFormatter pfmt1 = new PeriodFormatterBuilder() ... .appendSeparatorIfFieldsAfter(\"T\").appendHours().appendSuffix(\"H\").appendMinutes().appendSuffix(\"M\").appendSecondsWithOptionalMillis().appendSuffix(\"S\").toFormatter(); ... pfmt1.parsePeriod(\"PT1003199059S\");"
+      },
+      {
+        "id": "R2",
+        "statement": "Parsing a seconds-with-(optional-)millis field consumes a decimal point followed by 1 to 3 fractional digit characters and assigns the fractional part to millis, scaling it by 100 (1 digit) or 10 (2 digits) so that the appended field value is represented in millis; when the period's whole seconds portion is negative the parsed fraction is negated.",
+        "subject": "FieldFormatter.parseInto (SECONDS_MILLIS / SECONDS_OPTIONAL_MILLIS fractional parse)",
+        "hunk_ids": [],
+        "cited_from": "if (fractLen == 1) { fractValue *= 100; } else { fractValue *= 10; } } if (wholeValue < 0) { fractValue = -fractValue; } setFieldValue(period, MILLIS, fractValue);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "When building a formatter from an ordered printer/parser element list whose first element is a Separator that has already been finalized (i.e. whose after-printer and after-parser were already assigned by a prior build), PeriodFormatterBuilder does not re-wrap that Separator around the trailing sublist; it instead keeps the Separator's existing finished printer/parser content intact and composes the full list (the separator followed by the remaining content) as its printer and parser. Concretely, a PeriodFormatter procured by appending an already-finalized leading-separator formatter (such as ISOPeriodFormat.standard()) into a fresh builder via append(...) and then calling toFormatter keeps all of that wrapped content, so that parsePeriod still recognizes the separator and the following fields instead of dropping them or throwing.",
+        "subject": "org.joda.time.format.PeriodFormatterBuilder.toFormatter (static build step that folds a leading Separator)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl-1 describes a specific internal composition step in PeriodFormatterBuilder.toFormatter where an already-finalized leading Separator (from an appended pre-built formatter like ISOPeriodFormat.standard()) must not be re-wrapped around the trailing sublist. Neither S_vis entry addresses this fold/append of a pre-built formatter: R1 exercises a single inline builder chain parsing a long-seconds string, and R2 concerns fractional-millis scaling/negation. Neither pins down the toFormatter static-build folding behavior for an appended finalized Separator."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@org.junit.Test\npublic void t() throws Exception {\n    org.joda.time.format.PeriodFormatter wrapped =\n        new org.joda.time.format.PeriodFormatterBuilder()\n            .append(org.joda.time.format.ISOPeriodFormat.standard())\n            .toFormatter();\n    // Appending an already-finalized (leading-separator) formatter and rebuilding\n    // must retain ALL wrapped content so that parse still recognises the leading\n    // separators ('P'...'T') and every following field, with correct values.\n    org.joda.time.Period p = wrapped.parsePeriod(\"P1Y2M3W4DT5H6M7.008S\");\n    org.junit.Assert.assertEquals(1, p.getYears());\n    org.junit.Assert.assertEquals(2, p.getMonths());\n    org.junit.Assert.assertEquals(3, p.getWeeks());\n    org.junit.Assert.assertEquals(4, p.getDays());\n    org.junit.Assert.assertEquals(5, p.getHours());\n    org.junit.Assert.assertEquals(6, p.getMinutes());\n    org.junit.Assert.assertEquals(7, p.getSeconds());\n    org.junit.Assert.assertEquals(8, p.getMillis());\n}",
+      "gold_result": "PASSED — parse succeeds and all eight asserted field values (years=1..millis=8) are correct on the append-then-rebuild formatter.",
+      "buggy_result": "FAILED — java.lang.IllegalArgumentException: Invalid format: \"P1Y2M3W4DT5H6M7.008S\" is malformed at \"5H6M7.008S\"; the leading finalized Separator content was wiped by the unconditional `finish(EMPTY,...)` in the buggy toFormatter fold path, so the separator/T and following fields are dropped and parsing fails.",
+      "explanation": "Requirement S_impl-1 is about the static build step in PeriodFormatterBuilder.toFormatter: when the leading element is an already-finalized Separator (iAfterPrinter/iAfterParser non-null) — e.g. after new PeriodFormatterBuilder().append(ISOPeriodFormat.standard()).toFormatter() — the builder must NOT re-wrap that separator over a trailing sublist; it must keep the separator's existing finished content and compose it with any remaining list. The gold code guards the fold with `sep.iAfterParser == null && sep.iAfterPrinter == null`, while the buggy code folds unconditionally, calling sep.finish(EMPTY,...) on an empty trailing sublist and thereby wiping the previously wrapped ISO content (leading 'P'/'T' separators and the fields they cover). My test reproduces the exact append-already-finalized-formatter-into-a-fresh-builder scenario from the requirement and then parses a full ISO period \"P1Y2M3W4DT5H6M7.008S\", asserting all retained field VALUES (years/months/weeks/days before 'T', and hours/minutes/seconds/millis after 'T'). On gold the parse succeeds and all values match; on buggy the retained wrapping is destroyed so parsing throws malformed. Execution confirmed: run_test against gold PASSED and against buggy FAILED with IllegalArgumentException. This assertion is not pinned down by the visible material: testBug2495455 parses only \"PT1003199059S\" and makes NO value assertions (only that parsing must not throw), whereas this test parses a distinct, fully date+time ISO input and verifies the exact resulting period values — a different, genuinely hidden fact that a buggy implementation preserving only non-throwing behavior (or dropping different content) would still trip on."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Original bug report text (joda bug 64) was not retrievable — only a fallback citation note is present in the visible description."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: src/main/java/org/joda/time/format/PeriodFormatterBuilder.java and src/test/java/org/joda/time/format/TestPeriodFormatterBuilder.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testBug2495455 is the only test exercising a full compound parse; it calls parsePeriod on two formatters with no assertion of the result value — only that parsing must not throw."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test file's own class/method names (e.g. testFormatSecondsWithOptionalMillis, testFormatSeparator*) document formatter output expectations (e.g. secondsWithOptionalMillis prints '7' for zero millis and '7.001' otherwise) but were not emitted as requirements since they exercise unrelated, well-established behavior rather than the bug's parse path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PeriodFormatterBuilder bundles printer/parser element pairs into a List (iElementPairs) and builds via appendYears/appendSuffix/appendSeparator*/appendLiteral etc.; Separator/Composite/FieldFormatter/SimpleAffix/PluralAffix/CompositeAffix are all static inner classes of PeriodFormatterBuilder."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The private static PeriodFormatterBuilder.toFormatter(List,notPrinter,notParser) selects between (a) folding a leading Separator over the remaining sublist via Separator.finish and (b) createComposite(...); the fix H0 only enters path (a) when the leading Separator's iAfterParser/iAfterPrinter are still null. Separator.iAfterPrinter and iAfterParser are mutable volatile fields that remain null until Separator.finish is called, so a Separator created and finalized while building one formatter is 'already finalized' if re-used by a later build."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the degenerate appending case (append an already-built single formatter that top-level returned new PeriodFormatter(sep,sep)), the trailing sublist is empty, so the buggy unconditional finish(EMPTY,...) wiped the separator's wrapped content; the composite/decompose path instead treats the existing finished separator as its own composite element."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Test testBug2495455 (visible artifact) exercises pfmt2=builder.append(ISOPeriodFormat.standard()).toFormatter() and calls parsePeriod(\"PT1003199059S\") on both pfmt1 and pfmt2; it asserts only that these calls must not throw, not the parsed value."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: Target requirement S_impl-1 concerns PeriodFormatterBuilder.toFormatter's static build step when the leading element is an ALREADY-FINALIZED Separator (as produced by appending an already-built leading-separator formatter such as ISOPeriodFormat.standard() into a fresh builder and then calling toFormatter again) — with parsePeriod needing to still recognize the separator and following content instead of dropping them/erroring.\n\nInvestigation across the entire oracle test set:\n- I listed all 22 test files. The relevant format-building tests live in the org.joda.time.format package; I read them all (TestPeriodFormatterBuilder, TestISOPeriodFormat, TestISOPeriodFormatParsing, TestPeriodFormat, TestPeriodFormatParsing, TestPeriodFormatter), plus TestStringConverter, TestMutablePeriod_Basics and TestPeriod_Basics for completeness.\n- The test that genuinely reproduces the target scenario is testBug2495455's pfmt2 branch: `new PeriodFormatterBuilder().append(ISOPeriodFormat.standard()).toFormatter()` then `parsePeriod(\"PT1003199059S\")`. I mechanically confirmed that this exact append-then-rebuild+parse scenario fails on buggy (IllegalArgumentException: malformed \"PT1003199059S\") and passes on gold. However, testBug2495455 resides in TestPeriodFormatterBuilder, which is labeled [VISIBLE] (it is the byte-for-byte content the repair system already saw). Per the rules a [VISIBLE]-content assertion can never serve as a Witness, since it was never hidden.\n- Every [HIDDEN] test exercising standard ISO-period parsing (TestISOPeriodFormatParsing/TestPeriodFormatter and similar) calls `ISOPeriodFormat.standard().parsePeriod(...)` / prints with the pristine standard() formatter returned directly; it never appends that formatter into a fresh PeriodFormatterBuilder and re-invokes toFormatter(), so it never goes through the buggy leading-Separator/finalized-Separator re-composition code path. I confirmed this mechanically: a direct `ISOPeriodFormat.standard().parsePeriod(\"PT5H6M7.008S\")` assertion PASSES on BOTH buggy and gold — so no hidden ISO-parse test distinguishes the fix.\n- The other [HIDDEN] tests (Period/word-based formatting, period object arithmetic, time-base, converters) do not construct PeriodFormatterBuilder output by appending an already-finalized separator formatter; they are unrelated to the toFormatter composition bug.\n\nTherefore no [HIDDEN]-content oracle test genuinely asserts requirement S_impl-1. The sole reproducing test (testBug2495455) is visible, so it cannot serve as a witness, and no standalone derived-from-visible test would qualify either. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-1] (org.joda.time.format.PeriodFormatterBuilder.toFormatter (static build step that folds a leading Separator)): When building a formatter from an ordered printer/parser element list whose first element is a Separator that has already been finalized (i.e. whose after-printer and after-parser were already assigned by a prior build), PeriodFormatterBuilder does not re-wrap that Separator around the trailing sublist; it instead keeps the Separator's existing finished printer/parser content intact and composes the full list (the separator followed by the remaining content) as its printer and parser. Concretely, a PeriodFormatter procured by appending an already-finalized leading-separator formatter (such as ISOPeriodFormat.standard()) into a fresh builder via append(...) and then calling toFormatter keeps all of that wrapped content, so that parsePeriod still recognizes the separator and the following fields instead of dropping them or throwing. — not entailed by S_vis (S_impl-1 describes a specific internal composition step in PeriodFormatterBuilder.toFormatter where an already-finalized leading Separator (from an appended pre-built formatter like ISOPeriodFormat.standard()) must not be re-wrapped around the trailing sublist. Neither S_vis entry addresses this fold/append of a pre-built formatter: R1 exercises a single inline builder chain parsing a long-seconds string, and R2 concerns fractional-millis scaling/negation. Neither pins down the toFormatter static-build folding behavior for an appended finalized Separator.); confirmed by a synthesized witness: Requirement S_impl-1 is about the static build step in PeriodFormatterBuilder.toFormatter: when the leading element is an already-finalized Separator (iAfterPrinter/iAfterParser non-null) — e.g. after new PeriodFormatterBuilder().append(ISOPeriodFormat.standard()).toFormatter() — the builder must NOT re-wrap that separator over a trailing sublist; it must keep the separator's existing finished content and compose it with any remaining list. The gold code guards the fold with `sep.iAfterParser == null && sep.iAfterPrinter == null`, while the buggy code folds unconditionally, calling sep.finish(EMPTY,...) on an empty trailing sublist and thereby wiping the previously wrapped ISO content (leading 'P'/'T' separators and the fields they cover). My test reproduces the exact append-already-finalized-formatter-into-a-fresh-builder scenario from the requirement and then parses a full ISO period \"P1Y2M3W4DT5H6M7.008S\", asserting all retained field VALUES (years/months/weeks/days before 'T', and hours/minutes/seconds/millis after 'T'). On gold the parse succeeds and all values match; on buggy the retained wrapping is destroyed so parsing throws malformed. Execution confirmed: run_test against gold PASSED and against buggy FAILED with IllegalArgumentException. This assertion is not pinned down by the visible material: testBug2495455 parses only \"PT1003199059S\" and makes NO value assertions (only that parsing must not throw), whereas this test parses a distinct, fully date+time ISO input and verifies the exact resulting period values — a different, genuinely hidden fact that a buggy implementation preserving only non-throwing behavior (or dropping different content) would still trip on.",
+    "confidence": "Medium"
+  }
+}

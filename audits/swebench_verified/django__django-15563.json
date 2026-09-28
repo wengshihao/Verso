@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-15563",
+  "status": "ok",
+  "duration_seconds": 940.548866749974,
+  "llm_calls": 42,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15563",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When QuerySet.update() is called on a child queryset in a concrete multiple-inheritance hierarchy and the updated field lives on one of the child's ancestor tables that is NOT on the child's root primary-key chain (i.e. a second independent concrete parent such as OtherBase in class Child(Base, OtherBase)), the generated UPDATE on that ancestor's table must match only the ancestor table rows linked (via the parent-link) to the selected child instances. Consequently, after such an update the field read back through the child instances must reflect the new value, and rows belonging to unrelated instances of the ancestor model must remain untouched.",
+        "subject": "QuerySet.update() / UpdateQuery / SQLUpdateCompiler - multi-table multiple-inheritance parent-field update target resolution",
+        "hunk_ids": [],
+        "cited_from": "In [5]: Child.objects.update(field_otherbase=55)\n...\nUPDATE \"appliances_otherbase\"\n SET \"field_otherbase\" = 55\n WHERE \"appliances_otherbase\".\"otherbase_id\" IN (1, 2)\n...\nIn [6]: Child.objects.values('field_otherbase')\n<QuerySet [{'field_otherbase': 0}, {'field_otherbase': 1}]>\nIn [7]: OtherBase.objects.filter(otherbase_id__in=[1,2]).values('field_otherbase')\n<QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]>\n... As seen on the above code, updating Child fields from second parent has no effect. Worse is that OtherBase fields where modifed because query is using primiary keys from Base class."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On a queryset over a multi-table-inheritance model, calling .update() on a field belonging to a concrete ancestor model that is NOT connected to the queryset model by an all-primary-key parent chain (an ancestor with an independent primary key, such as a second concrete parent with its own AutoField pk) updates exactly the rows in that ancestor's table that correspond to the rows selected by the queryset, keyed by that ancestor's own primary-key values, instead of relying on the queryset model's own pk values (which previously updated no/mismatched rows).",
+        "subject": "QuerySet.update on ancestor field / SQLUpdateCompiler.pre_sql_setup / UpdateQuery.get_related_updates",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For an ancestor of a queryset model that IS reachable by an all-primary-key parent chain (where the queryset model's pk value equals that ancestor's pk value), .update() on a field of that ancestor continues to update exactly the rows corresponding to those selected by the queryset, filtering by that shared primary-key id list (the root-model pk idents reused for that ancestor).",
+        "subject": "QuerySet.update on pk-chain ancestor field / SQLUpdateCompiler.pre_sql_setup",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1's desired behavior (UPDATE on the second concrete ancestor's table must touch only the parent-link-linked rows of the selected children, read-back reflects the new value, unrelated ancestor rows untouched) requires resolving the ancestor table be keyed by that ancestor's own independent primary key rather than the queryset model's pk chain values, exactly matching S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly restricts itself to an ancestor NOT on the root primary-key chain and says nothing about ancestors reachable by an all-primary-key parent chain continuing to update by the shared root pk idents, so no visible information pins down S_impl R2's behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The multi-parent-field update path lives in django/db/models/query.py (QuerySet.update -> query.chain(sql.UpdateQuery).add_update_values(kwargs)); django/db/models/sql/subqueries.py (UpdateQuery.add_update_values routes a field whose concrete_model differs from the root's concrete model into related_updates per ancestor; get_related_updates builds one UpdateQuery(ancestor) per such ancestor and, when related_ids is set, filters it with pk__in related_ids); and django/db/models/sql/compiler.py (SQLUpdateCompiler.pre_sql_setup collects related_ids by selecting the queryset root model's pk from the base table, and execute_sql runs each related-update query after the primary one)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The root cause visible from the code: get_related_updates reuses the queryset's own pk (from the first/root parent chain) verbatim as pk__in against every ancestor table, which is only valid when the ancestor shares that pk chain; for a second concrete parent (OtherBase) with an independent AutoField pk this filters by wrong ids."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue-repro model classes (Base/OtherBase/Child, 'appliances' app) are not present in this repository; the reproduction is supplied only in the issue text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/model_inheritance tests ancestor-field update via Restaurant(Place, Rating) where Rating is abstract and Place is the sole concrete parent, so it exercises a single-branch parent update, not two concrete parents with independent pks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The internal representation of UpdateQuery.related_ids changes from a flat list shared by every related-update query into a collections.defaultdict mapping each related-parent model to its own list of pk ids; get_related_updates now reads self.related_ids[model]. This is internal plumbing, not independently observable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The related-updates path is only entered by SQLUpdateCompiler.pre_sql_setup when self.query.related_updates is non-empty or the backend forbids self-select (count>1 and not update_can_self_select); in those pre-select materialization branches the root 'pk__in' filter and the per-ancestor ids are all drawn from the same executed subselect rows."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The issue-repro MTI model classes (Base/OtherBase/Child) are not present in this repository; the change is exercised against chains vs non-chains generically, where the select column index 0 (root pk) is reused for pk-chain ancestors and an extra named select column is appended for each non-chain ancestor's own pk."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated every test file in the real oracle that could plausibly exercise the R2 behavior (QuerySet.update on a pk-chain ancestor field, keeping exact row selection via shared root-pk id filtering in SQLUpdateCompiler.pre_sql_setup).\n\nCovered files and findings:\n- tests/model_inheritance/tests.py and test_abstract_inheritance.py ([VISIBLE]): the ancestor-update tests use Restaurant(Place, Rating) with Rating abstract and Place the sole concrete pk-chain parent; even test_update_parent_filtering / test_update_works_on_parent_and_child_models_at_once only exercise single-branch MTI updates, not the pk-chain-vs-separate-pk scenario described by R2. File is [VISIBLE], so its assertions cannot serve as a witness regardless.\n- tests/model_inheritance_regress/tests.py ([VISIBLE]): contains queryset update-on-parent tests (test_queryset_update_on_parent_model on ArticleWithAuthor, a single pk chain) and multi-parent save() tests on Congressman(Person, Politician), but NO .update() queryset test on a pk-chain ancestor of that multi-parent model. [VISIBLE] and none match R2.\n- tests/update/tests.py ([VISIBLE]): test_nonempty/empty_update_with_inheritance exercise updating ancestor C.y via D(C) queryset (single pk chain), but again [VISIBLE] and only the chain case provided by those tests was already exercised — nothing that distinguishes, and the file is visible.\n- tests/queries/tests.py, queries/test_query.py, queries/test_sqlcompiler.py ([VISIBLE]): no MTI pk-ancestor update coverage relevant to R2.\n- The reproduction model classes (Base/OtherBase/Child in the 'appliances' app) described in the earlier-stage notebook are not present in this repository, and the only hidden model file whose hierarchy could host a two-concrete-parent scenario (model_inheritance_regress/models.py, hidden) has no hidden/hidden test counterpart that calls QuerySet.update on a pk-chain ancestor.\n\nTests \"currently failing against the buggy program\" were recorded as none. After reviewing all the oracle files that would contain a genuine witness for R2, every candidate test file is [VISIBLE] content or lacks the required behavior. No [HIDDEN] test-source assertion in the oracle genuinely tests R2, so I cannot build a valid witness and report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: gave up after exhausting its exploration budget without concluding (21 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (QuerySet.update on pk-chain ancestor field / SQLUpdateCompiler.pre_sql_setup) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

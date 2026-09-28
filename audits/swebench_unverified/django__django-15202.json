@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-15202",
+  "status": "ok",
+  "duration_seconds": 987.2785010000225,
+  "llm_calls": 42,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15202",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "forms.URLField().clean('////]@N.AN') must raise a django.core.exceptions.ValidationError (the URLField 'Enter a valid URL.' invalid error), rather than propagating a bare ValueError whose message is 'Invalid IPv6 URL'.",
+        "subject": "django.forms.URLField.clean",
+        "hunk_ids": [],
+        "cited_from": "Title: 'URLField throws ValueError instead of ValidationError on clean'. Description: 'forms.URLField( ).clean('////]@N.AN')\nresults in:\n\tValueError: Invalid IPv6 URL\n\tTraceback (most recent call last):\n\t File \"basic_fuzzer.py\", line 22, in TestOneInput\n\t File \"fuzzers.py\", line 350, in test_forms_URLField\n\t File \"django/forms/fields.py\", line 151, in clean\n\t File \"django/forms/fields.py\", line 136, in run_validators\n\t File \"django/core/validators.py\", line 130, in __call__\n\t File \"urllib/parse.py\", line 440, in urlsplit'"
+      },
+      {
+        "id": "R2",
+        "statement": "When URLValidator.__call__ validates a value and its internal urlsplit(value)/urlsplit(value).netloc/urlsplit(value).hostname parsing raises a ValueError such as 'Invalid IPv6 URL', that ValueError must be caught and re-raised as the validator's ValidationError ('Enter a valid URL.', code 'invalid') so the exception type escaping from URLValidator is a ValidationError and never a raw ValueError from urllib.parse.urlsplit.",
+        "subject": "django.core.validators.URLValidator.__call__",
+        "hunk_ids": [],
+        "cited_from": "URLValidator.__call__ in django/core/validators.py accesses urlsplit value-path parsing without guarding the ValueError (missing on: 'host_match = re.search(r'^\\[(.+)\\](?::\\d{1,5})?$', urlsplit(value).netloc)' and 'if len(urlsplit(value).hostname) > 253:'), and the issue traceback shows a ValueError(\"Invalid IPv6 URL\") escaping validators.py __call__ into run_validators/clean.\nURLField default_error_messages = {'invalid': _('Enter a valid URL.'),} and URLValidator.message = _('Enter a valid URL.')."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "URLValidator.__call__ always performs urlsplit(value) on the input value before proceeding with the rest of validation, and if urlsplit raises a ValueError (e.g. an invalid bracketed-IPv6 netloc), it raises a ValidationError with URLValidator's message ('Enter a valid URL.') and code 'invalid' instead of letting the ValueError propagate out of __call__ — this applies on every code path, including inputs whose trivial regex match succeeds (previously the unguarded urlsplit in the IPv6/hostname checks allowed the ValueError to leak).",
+        "subject": "URLValidator.__call__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a value whose regular-expression validation completes without raising, URLValidator.__call__ raises a ValidationError (URLValidator's message and code 'invalid') when the parsed URL has no hostname component (urlsplit(value).hostname is None), instead of raising a TypeError from applying len() to None.",
+        "subject": "URLValidator.__call__",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 directly pins down that URLValidator.__call__ must guard the ValueError that urlsplit can raise (on every path, including the netloc regex host_match check and the len(hostname) line) and re-raise it as ValidationError with URLValidator's message and code 'invalid', never letting a raw ValueError escape; S_vis R1 independently confirms the desired ValidationError behavior. This fully matches S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 describes a different failure mode: when regex validation passes but urlsplit(value).hostname is None, __call__ must raise ValidationError instead of a TypeError from len(None). S_vis evidence only concerns the ValueError-raised-by-urlsplit (invalid IPv6) path and never mentions the hostname-is-None/len(None)/TypeError scenario, so it does not pin down this behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target requirement R2 is the URLValidator.__call__ TypeError->ValidationError transition: a value whose regex validation completes without raising, yet whose urlsplit(value).hostname is None, must raise ValidationError (message 'Enter a valid URL.', code 'invalid') instead of the buggy code's TypeError from `len(None)`.\n\nI explored exhaustively for a genuine single-call reproducer before concluding none is reachable:\n\n1. Semantics: In Python's urllib.parse, `urlsplit(url).hostname` is None exactly when the netloc's host region (after the last '@' userinfo delimiter and/or after stripping brackets/port) is empty — e.g. netloc '', '@', ':80', 'x@', '@:80', 'a:a@' all yielded hostname None (verified by probe). For this validator to reach the trailing length check, the full anchored regex `...://(?:user(:pass)?@)?(?:ipv4|ipv6|hostname.tld...)...\\Z` must first MATCH, which always requires a non-empty host component (an IPv4/IPv6-literal/hostname/label). The chars that satisfy that host component are exactly the chars urlsplit would parse into a non-None .hostname. Hence a single value satisfying `URLValidator.regex.search(value)` AND having `urlsplit(value).hostname is None` cannot exist.\n\n2. Empirical confirmation: I brute-force enumerated candidate netlocs appended to 'http://' over alphabets including {a,b,1,@,:,[,],.,-,hex...} up to length 7 and ran URLValidator.__call__ against BOTH gold and buggy. On the buggy (pre-fix) code this search found ZERO TypeError cases — every hostless netloc is rejected earlier by the regex (raising ValidationError on both revisions identically), so the unguarded `len(urlsplit(value).hostname)` line is never reached with hostname None.\n\n3. Probe runs confirmed the outputs agree for all hostless candidates (both gold and buggy raise ValidationError 'invalid'), so they cannot discriminate R2.\n\n4. The inputs that DO distinguish gold from buggy at this location (e.g. 'http://]@x.com', 'http://]]@N.AN' — verified: gold raises ValidationError code 'invalid', buggy leaks a raw urllib `ValueError: Invalid IPv6 URL` from an unbalanced bracket in the netloc) exercise the urlsplit-ValueError conversion (the H0 branch), which corresponds to requirement R1, NOT the R2 hostname-None/TypeError behavior that is the target here. No input of the R2 (hostname-None) class discriminates.\n\nSince no observable input exercises the R2 hostname-None -> ValidationError transition differently between the fixed and pre-fix programs, no genuine witness for R2 exists; I report found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant but distinct URLs must still raise ValidationError with message 'Enter a valid URL.'; the disclosed URLField tests (tests/forms_tests/field_tests/test_urlfield.py, test_urlfield_clean_invalid) assert f.clean on inputs like 'http://', 'http://[a', '[a' etc. raises ValidationError with msg \"'Enter a valid URL.'\", but do not include the '////]@N.AN' case from this issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/validators/tests.py defines VALID_URLS and INVALID_URLS lists and runs them through URLValidator(); INVALID_URLS already includes bracket/port cases such as 'http://[::1:2::3]:8/', 'http://[]', 'http://[]:8080' but not '////]@N.AN'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "URLField.to_python already guards urlsplit (raising ValidationError with self.error_messages['invalid'])  via its local split_url helper; the leaked ValueError comes later from URLValidator.__call__ during run_validators."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch (H0/H1) refactors URLValidator.__call__ so urlsplit(value) is invoked exactly once up front inside a try/except ValueError that converts the ValueError to ValidationError, and the resulting splitted_url is reused by the IDN-retry branch (H0), the IPv6-in-netloc regex (H1), and the trailing hostname-length check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 alone introduces no observable behavior change beyond netloc no longer being re-parsed independently in the else branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 adds a `hostname is None` guard to the RFC 1034 253-char hostname length check, which previously would have crashed with TypeError when the parsed netloc yielded no hostname."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The disclosed tests (tests/forms_tests ... test_urlfield_clean_invalid and tests/validators/tests.py INVALID_URLS) cited in earlier stages do not include the exact issue input '////]@N.AN'."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated whether the real oracle already contains a test that witnesses R2 (URLValidator.__call__ converting the hostname-None len() TypeError into a ValidationError).\n\nOracle survey: The only files in the oracle that exercise URLValidator are tests/validators/tests.py, tests/forms_tests/field_tests/test_urlfield.py, tests/forms_tests/tests/test_validators.py, and tests/validation/test_validators.py. All four were read and every one is labeled [VISIBLE] (content-based). The first two are where a URLValidator hostname regression would naturally live; the visible VALID_URLS/INVALID_URLS lists and test_urlfield_clean_invalid inputs contain no hostname-less-but-regex-passing value (e.g. no '////]@N.AN' style case), so none of their assertions distinguish gold from buggy for R2.\n\nI also ran concrete probes to understand the actual behavioral gap between the fixed and pre-fix __call__ implementations (inspected both). The gold code performs urlsplit once up front and guards the final 253-char hostname check with `hostname is None`, whereas the buggy pre-fix code re-splits and does `len(urlsplit(value).hostname)` unguarded. Probe runs confirmed inputs like 'http://]@x.com' leak a raw ValueError from urlsplit on the buggy code and are converted to ValidationError by gold, i.e. the bug is genuine; however no input of that hostless class appears in any oracle test, and none of the oracle's assertions targets the R2 TypeError/ValidationError transition.\n\nConsistent with the task's note that no test currently fails against the buggy program for R2, all relevant oracle tests are [VISIBLE] disclosures and none tests the R2 behavior, so there is no eligible [HIDDEN] witness. (A witness cannot rest on [VISIBLE] content, so even the existing urlfield/validator tests cannot serve.) Therefore no witness is found."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target requirement R2 is the URLValidator.__call__ TypeError->ValidationError transition: a value whose regex validation completes without raising, yet whose urlsplit(value).hostname is None, must raise ValidationError (message 'Enter a valid URL.', code 'invalid') instead of the buggy code's TypeError from `len(None)`.\n\nI explored exhaustively for a genuine single-call reproducer before concluding none is reachable:\n\n1. Semantics: In Python's urllib.parse, `urlsplit(url).hostname` is None exactly when the netloc's host region (after the last '@' userinfo delimiter and/or after stripping brackets/port) is empty — e.g. netloc '', '@', ':80', 'x@', '@:80', 'a:a@' all yielded hostname None (verified by probe). For this validator to reach the trailing length check, the full anchored regex `...://(?:user(:pass)?@)?(?:ipv4|ipv6|hostname.tld...)...\\Z` must first MATCH, which always requires a non-empty host component (an IPv4/IPv6-literal/hostname/label). The chars that satisfy that host component are exactly the chars urlsplit would parse into a non-None .hostname. Hence a single value satisfying `URLValidator.regex.search(value)` AND having `urlsplit(value).hostname is None` cannot exist.\n\n2. Empirical confirmation: I brute-force enumerated candidate netlocs appended to 'http://' over alphabets including {a,b,1,@,:,[,],.,-,hex...} up to length 7 and ran URLValidator.__call__ against BOTH gold and buggy. On the buggy (pre-fix) code this search found ZERO TypeError cases — every hostless netloc is rejected earlier by the regex (raising ValidationError on both revisions identically), so the unguarded `len(urlsplit(value).hostname)` line is never reached with hostname None.\n\n3. Probe runs confirmed the outputs agree for all hostless candidates (both gold and buggy raise ValidationError 'invalid'), so they cannot discriminate R2.\n\n4. The inputs that DO distinguish gold from buggy at this location (e.g. 'http://]@x.com', 'http://]]@N.AN' — verified: gold raises ValidationError code 'invalid', buggy leaks a raw urllib `ValueError: Invalid IPv6 URL` from an unbalanced bracket in the netloc) exercise the urlsplit-ValueError conversion (the H0 branch), which corresponds to requirement R1, NOT the R2 hostname-None/TypeError behavior that is the target here. No input of the R2 (hostname-None) class discriminates.\n\nSince no observable input exercises the R2 hostname-None -> ValidationError transition differently between the fixed and pre-fix programs, no genuine witness for R2 exists; I report found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (URLValidator.__call__) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target requirement R2 is the URLValidator.__call__ TypeError->ValidationError transition: a value whose regex validation completes without raising, yet whose urlsplit(value).hostname is None, must raise ValidationError (message 'Enter a valid URL.', code 'invalid') instead of the buggy code's TypeError from `len(None)`.\n\nI explored exhaustively for a genuine single-call reproducer before concluding none is reachable:\n\n1. Semantics: In Python's urllib.parse, `urlsplit(url).hostname` is None exactly when the netloc's host region (after the last '@' userinfo delimiter and/or after stripping brackets/port) is empty — e.g. netloc '', '@', ':80', 'x@', '@:80', 'a:a@' all yielded hostname None (verified by probe). For this validator to reach the trailing length check, the full anchored regex `...://(?:user(:pass)?@)?(?:ipv4|ipv6|hostname.tld...)...\\Z` must first MATCH, which always requires a non-empty host component (an IPv4/IPv6-literal/hostname/label). The chars that satisfy that host component are exactly the chars urlsplit would parse into a non-None .hostname. Hence a single value satisfying `URLValidator.regex.search(value)` AND having `urlsplit(value).hostname is None` cannot exist.\n\n2. Empirical confirmation: I brute-force enumerated candidate netlocs appended to 'http://' over alphabets including {a,b,1,@,:,[,],.,-,hex...} up to length 7 and ran URLValidator.__call__ against BOTH gold and buggy. On the buggy (pre-fix) code this search found ZERO TypeError cases — every hostless netloc is rejected earlier by the regex (raising ValidationError on both revisions identically), so the unguarded `len(urlsplit(value).hostname)` line is never reached with hostname None.\n\n3. Probe runs confirmed the outputs agree for all hostless candidates (both gold and buggy raise ValidationError 'invalid'), so they cannot discriminate R2.\n\n4. The inputs that DO distinguish gold from buggy at this location (e.g. 'http://]@x.com', 'http://]]@N.AN' — verified: gold raises ValidationError code 'invalid', buggy leaks a raw urllib `ValueError: Invalid IPv6 URL` from an unbalanced bracket in the netloc) exercise the urlsplit-ValueError conversion (the H0 branch), which corresponds to requirement R1, NOT the R2 hostname-None/TypeError behavior that is the target here. No input of the R2 (hostname-None) class discriminates.\n\nSince no observable input exercises the R2 hostname-None -> ValidationError transition differently between the fixed and pre-fix programs, no genuine witness for R2 exists; I report found=false.",
+    "confidence": "Medium"
+  }
+}

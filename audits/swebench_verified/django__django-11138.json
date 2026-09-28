@@ -1,0 +1,163 @@
+{
+  "task_id": "django__django-11138",
+  "status": "ok",
+  "duration_seconds": 577.0630101669813,
+  "llm_calls": 50,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11138",
+    "s_vis": [
+      {
+        "id": "r1",
+        "statement": "When USE_TZ is True and a backend that does not itself support time zones (e.g. MySQL, SQLite, Oracle) is configured with its own per-database #TIME_ZONE so that naive datetime values are stored in that database timezone, the datetime date/time lookup conversions must treat the stored column as being in the database's configured timezone (falling back to UTC when the option is not set), not in a hardcoded source 'UTC'; i.e., for the issue's scenario the conversion must go from the database time zone tz2 to the Django application one tz1 instead of 'UTC' to tz1.",
+        "subject": "MySQLDatabaseOperations._convert_field_to_tz (feeds datetime_cast_date_sql / datetime_extract_sql / datetime_trunc_sql / datetime_cast_time_sql)",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'The conversion should go from the database timezone tz2 to the django app one tz1.'; 'Two things are wrong. First, conversion should be from Paris to Paris, instead of UTC to Paris.'; '[the observed buggy SQL] DATE(CONVERT_TZ(`my_model`.`my_datetime_field`, 'UTC', 'Europe/Paris')) = '2017-07-06''; and the relevant settings doc (docs/ref/settings.txt, DATABASE-TIME_ZONE): 'When USE_TZ is True and the database doesn't support time zones (e.g. SQLite, MySQL, Oracle), Django reads and writes datetimes in local time according to this option if it is set and in UTC if it isn't.' Source code: django/db/backends/mysql/operations.py _convert_field_to_tz returns \"CONVERT_TZ(%s, 'UTC', '%s')\" % (field_name, tzname) instead of using the connection timezone."
+      },
+      {
+        "id": "r2",
+        "statement": "When the database connection's configured time zone equals the current/app time zone to which datetime fields are converted for lookup (e.g. both 'Europe/Paris'), the generated MySQL lookup must not wrap the column in any CONVERT_TZ at all — it should compare the column's own date directly — so the query matches rows and returns the correct result even on a MySQL server whose time zone tables have not been populated.",
+        "subject": "MySQLDatabaseOperations.datetime_cast_date_sql / _convert_field_to_tz (datetime `__date`-style lookup SQL generation)",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'Secondly, when tz1 == tz2, there should be no need to use CONVERT_TZ and the query will work without timezone tables in MySQL.' and the explicit expected query 'SELECT (1) AS `a` FROM `my_model` WHERE DATE(`my_model`.`my_datetime_field`) = '2017-07-06' LIMIT 1;' plus the issue's reproduction where the DB TIME_ZONE and global TIME_ZONE are both 'Europe/Paris' and the lookup `MyModel.objects.filter(my_datetime_field__date=dt.date()).exists()` should be True."
+      },
+      {
+        "id": "r3",
+        "statement": "A Django application may legitimately set one global TIME_ZONE (tz1) and a different per-database DATABASES[...]['TIME_ZONE'] (tz2) for a legacy database, and datetime values written/read to such a timezone-less-backed database are stored in tz2's local time (UTC when unset); therefore datetime date lookups on that database must produce results consistent with values actually stored in tz2 rather than assuming all such stored values are in UTC.",
+        "subject": "django.db.backends (per-database TIME_ZONE honored consistently in datetime lookups across MySQL/SQLite/Oracle)",
+        "hunk_ids": [],
+        "cited_from": "Issue settings excerpt: 'USE_TZ = True; TIME_ZONE = 'Europe/Paris' # tz1' ... 'legacy': { ... 'TIME_ZONE': 'Europe/Paris', # tz2 }' and 'Indeed from ref1 and ref2: When USE_TZ is True and the database doesn't support time zones (e.g. SQLite, MySQL, Oracle), Django reads and writes datetimes in local time according to this option if it is set and in UTC if it isn't.' plus docs/ref/settings.txt: 'A string representing the time zone for datetimes stored in this database (assuming that it doesn't support time zones) or None.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1_mysql_conn_tz",
+        "statement": "Under MySQL, when USE_TZ is enabled, date/time transform SQL produced by datetime_cast_date_sql, datetime_cast_time_sql, datetime_extract_sql, and datetime_trunc_sql interprets the stored datetime field as being expressed in the connection's configured timezone (self.connection.timezone_name) rather than UTC: when that connection timezone differs from the requested tzname the SQL converts from the connection timezone to tzname via CONVERT_TZ, and when the two timezones are equal the field is emitted unchanged with no CONVERT_TZ wrapping.",
+        "subject": "mysql.operations.DatabaseOperations._convert_field_to_tz (used by datetime_cast_date_sql / datetime_cast_time_sql / datetime_extract_sql / datetime_trunc_sql)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2_oracle_conn_tz",
+        "statement": "Under Oracle, when USE_TZ is enabled, _convert_field_to_tz (used by datetime_cast_date_sql, datetime_cast_time_sql, datetime_extract_sql, and datetime_trunc_sql) treats the stored datetime field as being in the connection's configured timezone: when self.connection.timezone_name differs from the requested tzname the SQL takes the field as being in the connection timezone (FROM_TZ source = self.connection.timezone_name, replacing the fixed '0:00' UTC offset) and converts it to tzname, and when the two timezones are equal the field is returned unchanged without any conversion.",
+        "subject": "oracle.operations.DatabaseOperations._convert_field_to_tz (used by datetime_cast_date_sql / datetime_cast_time_sql / datetime_extract_sql / datetime_trunc_sql)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3_sqlite_conn_tz",
+        "statement": "Under SQLite, datetime date/time transform operations (django_datetime_cast_date, django_datetime_cast_time, django_datetime_extract, django_datetime_trunc, and the SQL generated by datetime_cast_date_sql / datetime_cast_time_sql / datetime_extract_sql / datetime_trunc_sql, which now pass both the lookup tzname and the connection tzname as arguments) interpret the stored naive datetime as being in the connection's configured timezone: the value is first stamped with the connection timezone and is shifted to the requested lookup timezone only when that lookup timezone differs from the connection timezone.",
+        "subject": "sqlite3 datetime lookup SQL chain (_sqlite_datetime_parse / _sqlite_datetime_cast_date / _sqlite_datetime_cast_time / _sqlite_datetime_extract / _sqlite_datetime_trunc and operations.datetime_*_sql)",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1_mysql_conn_tz",
+        "entailed": "true",
+        "checked_ids": [
+          "r1",
+          "r2"
+        ],
+        "rationale": "r1's citation shows the MySQL conversion must use the connection timezone (db tz2) as the CONVERT_TZ source instead of hardcoded 'UTC', matching the differs-branch; r2 pins the equal-branch explicitly (when conn tz == connection tz1/app tz, column emitted with no CONVERT_TZ wrap, per the expected DATE(field) query). Together they pin both branches of R1 exactly."
+      },
+      {
+        "requirement_id": "R2_oracle_conn_tz",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "r1",
+          "r2",
+          "r3"
+        ],
+        "rationale": "r1 and r3 establish the general principle that timezone-less backends such as Oracle store/read naive datetimes in the per-DB connection tz rather than UTC, which suggests interpreting Oracle fields in the connection tz. However no S_vis entry describes Oracle's concrete FROM_TZ source replacement or the Oracle equal-tz unchanged branch, so the exact Oracle-specific behavior is not fully pinned down."
+      },
+      {
+        "requirement_id": "R3_sqlite_conn_tz",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "r1",
+          "r2",
+          "r3"
+        ],
+        "rationale": "r1/r3 mention SQLite only under the general principle that such backends store datetimes in the connection tz; no S_vis entry addresses the SQLite parse-chain argument passing of both tznames, the connection-tz stamping, or the shift-only-when-different behavior that R3 specifies. The high-level outcome is implied but the concrete SQLite mechanism is not pinned."
+      }
+    ],
+    "target_requirement_id": "R2_oracle_conn_tz",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_oracle_conn_tz_equal_noop",
+      "test_source": "from django.conf import settings\n\n\ndef test_oracle_conn_tz_equal_noop():\n    settings.configure(\n        USE_TZ=True, TIME_ZONE='UTC', SECRET_KEY='x', INSTALLED_APPS=[],\n    )\n    import django\n    django.setup()\n    settings.USE_TZ = True\n\n    import sys, types\n    fake = types.ModuleType('cx_Oracle')\n    for name in ['DatabaseError', 'InterfaceError', 'Error']:\n        setattr(fake, name, Exception)\n    fake.Timestamp = type('DT', (object,), {})\n    fake.Binary = bytes\n    fake.LOB = str\n    fake.makedsn = lambda *a, **k: 'dummy'\n    fake.connect = lambda *a, **k: type('c', (), {})()\n    for name in ['BLOB', 'CLOB', 'DATETIME', 'FIXED_CHAR', 'FIXED_NCHAR',\n                 'INTERVAL', 'NATIVE_FLOAT', 'NCHAR', 'NCLOB', 'NUMBER',\n                 'STRING', 'TIMESTAMP', 'ROWID']:\n        setattr(fake, name, name)\n    sys.modules['cx_Oracle'] = fake\n\n    import django.db.backends.oracle.base  # noqa: F401  (breaks the circular import)\n    from django.db.backends.oracle.operations import DatabaseOperations\n\n    class FakeConnection:\n        timezone_name = 'UTC'\n\n    ops = DatabaseOperations(connection=FakeConnection())\n\n    # The requested tz is the same as the connection's timezone: no conversion\n    # may be emitted -- the field is returned as-is inside TRUNC().\n    sql = ops.datetime_cast_date_sql('col_x', 'UTC')\n    assert sql == 'TRUNC(col_x)', sql",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: TRUNC(CAST((FROM_TZ(col_x, '0:00') AT TIME ZONE 'UTC') AS TIMESTAMP)) != 'TRUNC(col_x)')",
+      "explanation": "Target requirement R2 (Oracle `DatabaseOperations._convert_field_to_tz` connection-timezone policy) states: under USE_TZ, when the requested tzname equals the connection's configured timezone (`self.connection.timezone_name`), the stored datetime field must be returned unchanged (no FROM_TZ conversion emitted); the buggy program unconditionally emits `CAST((FROM_TZ(field,'0:00') AT TIME ZONE tzname) AS TIMESTAMP)` with a hard-coded UTC '0:00' source.\n\nThe witness instantiates the real `django.db.backends.oracle.operations.DatabaseOperations` with a fake connection whose `timezone_name` is 'UTC' (requires a stub `cx_Oracle` module and importing `oracle.base` first to break the intentional circular import), enables USE_TZ, and drives the public driver `datetime_cast_date_sql('col_x','UTC')` (one of the four methods named in R2 that call `_convert_field_to_tz`). With connection timezone == requested timezone the gold output is exactly `TRUNC(col_x)` (field unchanged) while the buggy output is `TRUNC(CAST((FROM_TZ(col_x, '0:00') AT TIME ZONE 'UTC') AS TIMESTAMP))`. Execution confirmed: PASSED on gold, FAILED on buggy.\n\nI first checked visible content: the existing tests (tests/backends/oracle/test_operations.py, tests/db_functions/datetime/test_extract_trunc.py, tests/timezones/, tests/datetimes/, tests/backends/oracle/tests.py) never exercise this Oracle `_convert_field_to_tz` FROM_TZ source / equality no-op path — prior Oracle search agent confirmed no visible assertion covers it. So this is a genuine hidden-behavior witness distinguishing the gold (fixed) from the buggy (pre-fix) code."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The core defect locus in the visible code is django/db/backends/mysql/operations.py `_convert_field_to_tz`, which hard-codes the FROM side of MySQL's CONVERT_TZ as 'UTC' regardless of the per-database TIME_ZONE. It wraps date/time/extract/trunc conversions used by `TruncDate.__date`, Extract/Trunc lookups, and trunc/annotations (see django/db/models/functions/datetime.py TruncDate.as_sql which passes `tzname=timezone.get_current_timezone_name()`, the app/current timezone, as the TO side)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The connection object already exposes the database-timezone as BaseDatabaseWrapper.timezone/timezone_name (django/db/backends/base/base.py): timezone_name returns settings_dict['TIME_ZONE'] or 'UTC' when USE_TZ, so the DB's configured timezone is available to _convert_field_to_tz via self.connection.timezone_name."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The same UTC-assumption pattern exists in django/db/backends/oracle/operations.py `_convert_field_to_tz` (FROM_TZ(%s,'0:00')) and in SQLite's registered functions (sqlite3/base.py _sqlite_datetime_parse uses timezone.localtime(dt, tzname) on a naive stored value, ignoring the connection timezone); the issue title names MySQL, SQLite, and Oracle, though the walkthrough focuses on MySQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseDatabaseWrapper.timezone falls back to timezone.utc when per-db TIME_ZONE is None; write/read conversion (adapt_datetimefield_value / convert_datetimefield_value) already uses self.connection.timezone, only the lookup-side SQL did not."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Feature flag MySQL DatabaseFeatures.has_zoneinfo_database reports whether MySQL's time zone tables are populated; requirement r2 relates to producing SQL that works when these tables are absent."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant tests live under tests/timezones (incl. ForcedTimeZoneDatabaseTests.override_database_connection_timezone which toggles connection.settings_dict['TIME_ZONE'] and clears cached timezone properties) and tests/datetimes; the fix would plausibly be validated there."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "self.connection.timezone_name is the database's configured TIME_ZONE with a UTC fallback when USE_TZ is on; the tzname argument reaching these methods is the app/current timezone from timezone.get_current_timezone_name()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MySQL (H0) and Oracle (H1) both add a guard so no time-zone conversion SQL is emitted when the connection timezone already equals the requested tzname, so range/equality lookups work even where the DB lacks its own time-zone data."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SQLite stores DateTimeField values naive in the connection timezone via adapt/convert; before this patch the lookup-side parse used timezone.localtime on the naive value (which Django treats as UTC), and it now first attaches self.connection.timezone (SQLite stores actual tz object; Oracle/MySQL use timezone_name)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PostgreSQL and other backends are not touched by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The '0:00'/'UTC' hardcoding removal in the FROM side of MySQL CONVERT_TZ and Oracle FROM_TZ is the operand of the same conversion policy expressed in R1/R2."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2_oracle_conn_tz]: The target requirement R2 describes the Oracle `_convert_field_to_tz` policy: when USE_TZ is on, the FROM side of the Oracle conversion must take the stored field in the connection's configured timezone (FROM_TZ source = self.connection.timezone_name instead of the hard-coded '0:00' UTC), converting to the requested tzname, and must emit no conversion when the two timezones are equal.\n\nI inspected the test files in the Django test suite that can exercise this behavior:\n- tests/timezones/tests.py (NewDatabaseTests.* date/datetime lookups under USE_TZ with timezone.override; ForcedTimeZoneDatabaseTests read/write with overridden connection TIME_ZONE) - all labelled [VISIBLE], and the ForcedTimeZoneDatabaseTests only tests adapt/convert (read/write), not the SQL-side _convert_field_to_tz path.\n- tests/db_functions/datetime/test_extract_trunc.py (Extract/Trunc with explicit tzinfo, which drives datetime_extract/trunc SQL) - [VISIBLE].\n- tests/datetimes/tests.py (datetimes()/truncation) - [VISIBLE].\n- tests/backends/base/test_operations.py, tests/backends/oracle/test_operations.py, tests/backends/oracle/tests.py, tests/backends/mysql/tests.py, tests/backends/sqlite/tests.py, tests/backends/tests.py - [VISIBLE]; none assert anything about the Oracle FROM_TZ source timezone or the equality no-op guard; the oracle ops test only checks sequence-name truncation and bulk_batch_size.\n- tests/timezones/models.py was the only [HIDDEN] file I encountered in the relevant tree, and it only defines model classes (no assertions).\n\nEvery candidate assertion that could demonstrate the connection-timezone-aware Oracle conversion behavior lives in [VISIBLE] content, which by the rules cannot serve as a Witness (it was never hidden from the repair system). No [HIDDEN] test asserting the Oracle FROM_TZ behavior (source = connection timezone, or no conversion when tzname == connection timezone) exists among the tests I could find, and the task records no tests failing against the buggy program. Therefore no genuine witness for R2 exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2_oracle_conn_tz]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2_oracle_conn_tz] (oracle.operations.DatabaseOperations._convert_field_to_tz (used by datetime_cast_date_sql / datetime_cast_time_sql / datetime_extract_sql / datetime_trunc_sql)): Under Oracle, when USE_TZ is enabled, _convert_field_to_tz (used by datetime_cast_date_sql, datetime_cast_time_sql, datetime_extract_sql, and datetime_trunc_sql) treats the stored datetime field as being in the connection's configured timezone: when self.connection.timezone_name differs from the requested tzname the SQL takes the field as being in the connection timezone (FROM_TZ source = self.connection.timezone_name, replacing the fixed '0:00' UTC offset) and converts it to tzname, and when the two timezones are equal the field is returned unchanged without any conversion. — not entailed by S_vis (r1 and r3 establish the general principle that timezone-less backends such as Oracle store/read naive datetimes in the per-DB connection tz rather than UTC, which suggests interpreting Oracle fields in the connection tz. However no S_vis entry describes Oracle's concrete FROM_TZ source replacement or the Oracle equal-tz unchanged branch, so the exact Oracle-specific behavior is not fully pinned down.); confirmed by a synthesized witness: Target requirement R2 (Oracle `DatabaseOperations._convert_field_to_tz` connection-timezone policy) states: under USE_TZ, when the requested tzname equals the connection's configured timezone (`self.connection.timezone_name`), the stored datetime field must be returned unchanged (no FROM_TZ conversion emitted); the buggy program unconditionally emits `CAST((FROM_TZ(field,'0:00') AT TIME ZONE tzname) AS TIMESTAMP)` with a hard-coded UTC '0:00' source.\n\nThe witness instantiates the real `django.db.backends.oracle.operations.DatabaseOperations` with a fake connection whose `timezone_name` is 'UTC' (requires a stub `cx_Oracle` module and importing `oracle.base` first to break the intentional circular import), enables USE_TZ, and drives the public driver `datetime_cast_date_sql('col_x','UTC')` (one of the four methods named in R2 that call `_convert_field_to_tz`). With connection timezone == requested timezone the gold output is exactly `TRUNC(col_x)` (field unchanged) while the buggy output is `TRUNC(CAST((FROM_TZ(col_x, '0:00') AT TIME ZONE 'UTC') AS TIMESTAMP))`. Execution confirmed: PASSED on gold, FAILED on buggy.\n\nI first checked visible content: the existing tests (tests/backends/oracle/test_operations.py, tests/db_functions/datetime/test_extract_trunc.py, tests/timezones/, tests/datetimes/, tests/backends/oracle/tests.py) never exercise this Oracle `_convert_field_to_tz` FROM_TZ source / equality no-op path — prior Oracle search agent confirmed no visible assertion covers it. So this is a genuine hidden-behavior witness distinguishing the gold (fixed) from the buggy (pre-fix) code.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "task_id": "matplotlib__matplotlib-23299",
+  "status": "ok",
+  "duration_seconds": 434.9118582920637,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-23299",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling matplotlib.get_backend() must not remove or clear figures from Gcf.figs — in particular when the (sole, first) managed figure was created inside an rc_context() block (so that rcParams['backend'] is still at the _auto_backend_sentinel and get_backend() thus triggers sentinel resolution via rcParams['backend']). Concretely, Gcf.figs before calling get_backend() must equal Gcf.figs after calling it, so that the figure remains findable by Gcf.destroy_fig()/plt.close().",
+        "subject": "matplotlib.get_backend / pyplot.switch_backend / Gcf.figs",
+        "hunk_ids": [],
+        "cited_from": "Issue \"[Bug]: get_backend() clears figures from Gcf.figs if they were created under rc_context\": \"calling `matplotlib.get_backend()` removes all figures from `Gcf` if the *first* figure in `Gcf.figs` was created in an `rc_context`.\"; reproduction asserts \"before = f'{id(plt._pylab_helpers.Gcf)} {plt._pylab_helpers.Gcf.figs!r}'\nget_backend()\nafter = f'{id(plt._pylab_helpers.Gcf)} {plt._pylab_helpers.Gcf.figs!r}'\nassert before == after, '\\n' + before + '\\n' + after\"; actual outcome shows \"... OrderedDict())\"; expected outcome: \"The figure should not be missing from `Gcf`.  Consequences of this are, e.g, `plt.close(fig2)` doesn't work because `Gcf.destroy_fig()` can't find it.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On exit of the matplotlib.rc_context context manager, rcParams['backend'] is left untouched: whatever backend value (or resolution of the auto-backend sentinel) is in effect at the end of the context body is preserved after the context exits, rather than being restored to its value at context entry. In particular, an auto-backend sentinel present in the global rcParams at context entry is never re-installed into rcParams['backend'] by the context's cleanup, and a backend set or resolved inside the body (e.g. by figure creation, by the supplied fname/rc, or by matplotlib.use) is not rolled back.",
+        "subject": "matplotlib.rc_context",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The docstring of matplotlib.rc_context documents that the :rc:`backend` rc parameter is not reset by the context manager, i.e. its rcParam is exempt from the temporary-change/restore behavior the context performs on all other rcParams.",
+        "subject": "matplotlib.rc_context (docstring)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 concerns a figure-preservation bug: get_backend() must not clear figures from Gcf.figs when a figure was created under rc_context. S_impl R1 instead concerns rc_context's exit semantics — that rcParams['backend'] is left untouched/not restored after the context exits. That is a completely different behavior not described anywhere in S_vis."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 is about figures surviving get_backend() calls; it says nothing about the rc_context docstring documenting that the backend rcParam is exempt from temporary-change/restore. No evidence in S_vis pins down any documentation change."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_rc_context_backend_left_untouched",
+      "test_source": "import matplotlib as mpl\n\n\ndef test_rc_context_backend_left_untouched():\n    sentinel = mpl.rcsetup._auto_backend_sentinel\n    dict.__setitem__(mpl.rcParams, 'backend', sentinel)\n    with mpl.rc_context():\n        mpl.use('agg')\n    backend = dict.__getitem__(mpl.rcParams, 'backend')\n    assert backend != sentinel\n    assert backend == 'agg'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (rcParams['backend'] restored to auto-backend sentinel on rc_context exit, discarding the 'agg' backend set inside the body)",
+      "explanation": "Requirement R1 says matplotlib.rc_context must leave rcParams['backend'] untouched on exit: an auto-backend sentinel present at context entry must not be re-installed by cleanup, and a backend set inside the body must not be rolled back. The visible tests never exercise this (test_rcparams.py's rc_context tests only assert non-backend params like text.usetex / lines.linewidth restoration, and test_backend_fallback_headful only checks that the sentinel resolves when read on the global instance, never that rc_context exit leaves a backend set inside the body in place).\n\nMy witness drives exactly the missing scenario: it forces the raw global rcParams['backend'] to the auto-backend sentinel at the dict level (mimicking the untouched default state at context entry), enters a bare mpl.rc_context(), and inside the body calls mpl.use('agg') (a backend that is set/resolved within the body). After exit it checks the raw dict value of rcParams['backend'] with dict.__getitem__ (avoiding sentinel re-resolution).\n\n- Gold: rc_context snapshots `orig = dict(rcParams.copy()); del orig['backend']`, so its finally-block `dict.update(rcParams, orig)` no longer touches 'backend'; the body's 'agg' value survives exit -> PASSED.\n- Buggy: rc_context snapshots `orig = rcParams.copy()` including 'backend' == sentinel, and on exit `dict.update(rcParams, orig)` re-installs the sentinel into rcParams['backend'], wiping out the 'agg' set inside -> the assertion backend==sentinel fails.\n\nThe genuinely novel, non-visible aspect captured is the post-exit state of the backend raw value when a body-set backend differs from an entry-time auto sentinel. I confirmed by running the identical test_source against both revisions (gold PASSED, buggy FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause chain visible in code: matplotlib.get_backend() returns rcParams['backend']; RcParams.__getitem__ for key 'backend' on the global rcParams resolves _auto_backend_sentinel by calling plt.switch_backend(rcsetup._auto_backend_sentinel) (lib/matplotlib/__init__.py __getitem__). pyplot.switch_backend begins with close(\"all\") before any backend selection (lib/matplotlib/pyplot.py switch_backend), which calls Gcf.destroy_all() and clears Gcf.figs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "rc_context (no rc/fname) snapshots orig = rcParams.copy() on entry and restores via dict.update(rcParams, orig) in finally, so the auto-backend sentinel value present at context entry is restored on exit even if figure creation inside the block had resolved the backend (lib/matplotlib/__init__.py rc_context)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests referencing this area live under lib/matplotlib/tests/ (e.g. test_rcparams.py test_backend_fallback_headful checks that the sentinel only resolves on the global rcParams; test_pyplot.py etc.)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Pyplot state is tracked via the singleton class matplotlib._pylab_helpers.Gcf whose class attribute figs is an OrderedDict mapping manager numbers to figure managers."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 rewrites the rc_context entry snapshot from `orig = rcParams.copy()` (an RcParams holding a `backend` entry, possibly the auto-backend sentinel) to `orig = dict(rcParams.copy()); del orig['backend']`, so the `finally: dict.update(rcParams, orig)` restoration loop over `orig` can no longer rewrite `rcParams['backend']`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The `dict(...)` wrapper around `rcParams.copy()` is behavior-neutral for values (they were already a standalone copy); all non-backend rcParams remain snapshotted and restored on exit exactly as before the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is only relevant when the backend differs between context entry and exit; if the backend is untouched inside the body nothing observable changes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "rcParams beyond 'backend' are still fully restored on rc_context exit (existing behavior, unchanged by this patch)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for any pre-existing test whose assertion genuinely corresponds to requirement R1 (that on exit of matplotlib.rc_context, rcParams['backend']/the effective pyplot backend is left untouched — the auto-backend sentinel present at entry is never reinstalled, and a backend set/resolved inside the body is not rolled back).\n\nFiles examined:\n- lib/matplotlib/tests/test_pyplot.py — full [VISIBLE] content; tests ioff/ion, close, subplot reuse, figure management, lazy backend selection helpers etc., but no rc_context+backend behavior.\n- lib/matplotlib/tests/test_rcparams.py — [VISIBLE]; tests rc_context restoration of text.usetex / lines.linewidth (non-backend params), plus backend auto-sentinel resolution tests (test_backend_fallback_headful/headless, _impl lazy selection) that do NOT enter rc_context and do not assert exit leaves backend untouched.\n- lib/matplotlib/tests/test_matplotlib.py, test_style.py, test_backends_interactive.py — [VISIBLE]; no rc_context 'backend' preservation assertion.\n- lib/matplotlib/tests/conftest.py — [HIDDEN] but only re-exports mpl_test_settings etc., no rc_context test.\n\nNo file contained an assertion (visible or hidden) exercising R1. Furthermore there are no recorded tests failing against the buggy program, which is the necessary condition any witness would have to satisfy. Because the only potentially relevant content is [VISIBLE] (and would not be hidden from a repair system anyway), and no hidden assertion testing this behavior exists in the oracle, nothing here can serve as a Witness. I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (matplotlib.rc_context): On exit of the matplotlib.rc_context context manager, rcParams['backend'] is left untouched: whatever backend value (or resolution of the auto-backend sentinel) is in effect at the end of the context body is preserved after the context exits, rather than being restored to its value at context entry. In particular, an auto-backend sentinel present in the global rcParams at context entry is never re-installed into rcParams['backend'] by the context's cleanup, and a backend set or resolved inside the body (e.g. by figure creation, by the supplied fname/rc, or by matplotlib.use) is not rolled back. — not entailed by S_vis (S_vis R1 concerns a figure-preservation bug: get_backend() must not clear figures from Gcf.figs when a figure was created under rc_context. S_impl R1 instead concerns rc_context's exit semantics — that rcParams['backend'] is left untouched/not restored after the context exits. That is a completely different behavior not described anywhere in S_vis.); confirmed by a synthesized witness: Requirement R1 says matplotlib.rc_context must leave rcParams['backend'] untouched on exit: an auto-backend sentinel present at context entry must not be re-installed by cleanup, and a backend set inside the body must not be rolled back. The visible tests never exercise this (test_rcparams.py's rc_context tests only assert non-backend params like text.usetex / lines.linewidth restoration, and test_backend_fallback_headful only checks that the sentinel resolves when read on the global instance, never that rc_context exit leaves a backend set inside the body in place).\n\nMy witness drives exactly the missing scenario: it forces the raw global rcParams['backend'] to the auto-backend sentinel at the dict level (mimicking the untouched default state at context entry), enters a bare mpl.rc_context(), and inside the body calls mpl.use('agg') (a backend that is set/resolved within the body). After exit it checks the raw dict value of rcParams['backend'] with dict.__getitem__ (avoiding sentinel re-resolution).\n\n- Gold: rc_context snapshots `orig = dict(rcParams.copy()); del orig['backend']`, so its finally-block `dict.update(rcParams, orig)` no longer touches 'backend'; the body's 'agg' value survives exit -> PASSED.\n- Buggy: rc_context snapshots `orig = rcParams.copy()` including 'backend' == sentinel, and on exit `dict.update(rcParams, orig)` re-installs the sentinel into rcParams['backend'], wiping out the 'agg' set inside -> the assertion backend==sentinel fails.\n\nThe genuinely novel, non-visible aspect captured is the post-exit state of the backend raw value when a body-set backend differs from an entry-time auto sentinel. I confirmed by running the identical test_source against both revisions (gold PASSED, buggy FAILED).",
+    "confidence": "Medium"
+  }
+}

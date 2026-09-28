@@ -1,0 +1,86 @@
+{
+  "task_id": "sympy__sympy-15875",
+  "status": "ok",
+  "duration_seconds": 364.75145624997094,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-15875",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a complex (non-real) Add whose summands mix real-nonzero terms with imaginary terms and which is in fact equal to zero, is_zero must not return the definite wrong answer False; it must return a value consistent with the expression truly being zero (True) rather than False. In particular, for e = -2*I + (1 + I)**2, since simplify(e).is_zero is True, e.is_zero must not be False.",
+        "subject": "Add.is_zero / Add._eval_is_zero",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"is_zero is incorrect on complex integer\" ... \"```\n>>> e = -2*I + (1 + I)**2\n>>> e.is_zero\nFalse\n>>> simplify(e).is_zero\nTrue\n```\" ... \"is_zero should return None if it cannot decide, but should never give the wrong answer.\" ... Release notes: \"- core - Fix `is_zero` becoming `False` on some expressions with `Add`.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "Add.is_zero (the _eval_is_zero handler) returns None rather than False for an Add belonging to a commutative (real-valued or complex-valued sum) whose classified arguments contain no real term known to be nonzero but contain at least one imaginary-direction term (an argument with is_imaginary, or whose product with the imaginary unit I is real), with any real arguments being individually known-zero; i.e. an expression whose real part is established as zero but whose full zero-ness (whether the imaginary part cancels) is not decidable is reported as unknown (None), not as nonzero (False).",
+        "subject": "Add.is_zero / Add._eval_is_zero",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's evidence (the bug report) is about a genuinely-zero complex Add (e simplifies to 0, decidable as True) and states 'should return None if it cannot decide', which points toward S1's None-on-undecidable behavior. However, R1 does not pin down the precise classified-argument trigger S1 commits to (imaginary-direction terms with known-zero real args when imaginary cancellation is undecidable), nor its specific None (rather than True) outcome, leaving a genuine precision gap."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness",
+      "test_source": "from sympy import Symbol, I\n\ndef test_witness():\n    x = Symbol('x', real=True, nonzero=True)\n    y = Symbol('y', real=True, nonzero=True)\n    expr = I*x + I*y\n    assert expr.is_zero is None",
+      "gold_result": "PASSED (expr.is_zero is None)",
+      "buggy_result": "FAILED (assert False is None; buggy reports I*x + I*y.is_zero == False instead of None)",
+      "explanation": "The target requirement [S1] concerns the specific code change in Add._eval_is_zero (sympy/core/add.py) where the guard was modified from `if len(nz) == len(self.args): return None` to `if len(nz) == 0 or len(nz) == len(self.args): return None`. The scenario it fixes: an Add whose classified args contain no real term known to be nonzero (nz empty) but at least one imaginary-direction term that is genuinely classified `is_imaginary` (so im=True and im_or_z=False). In the buggy code execution falls through to `b = self.func(*nz)` which collapses to zero, and hits the `if im and not im_or_z: return False` branch, wrongly declaring the (undecidable) sum nonzero. Gold returns None immediately (early `len(nz) == 0` guard). My expression `I*x + I*y` with x,y declared real & nonzero produces two Add args that each have is_real=False, is_imaginary=True (verified), so in the loop they both set im=True (not im_or_z), nz stays empty, and z==0. The whole sum's zero-ness is genuinely undecidable (real part 0; imaginary part I(x+y) could vanish for special values), so is_zero must be None, not False. Running it confirms: on buggy `expr.is_zero` evaluates to False (the wrong nonzero verdict sought by S1), so the assertion fails; on gold it returns None and the assertion passes. This directly asserts the None-vs-False distinction required by S1 and is execution-confirmed in both directions; the earlier extractor/oracle notes confirm no pre-existing shipped test covers this imaginary-direction empty-nz case (the regression test was added in the developer patch)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test in the shipped test-suite covers this failing case (the fix's regression test would be added by the developer patch), so S_vis is grounded in the issue report; the only remaining visible support is Add._eval_is_zero in sympy/core/add.py, whose `if im and not im_or_z: return False` branch is the mechanism by which an imaginary-laden Add can be wrongly declared nonzero."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue notes this wrongly-decided is_zero propagates into matrix rank computation (references issue #15872/#15873), but gives no concrete matrix, so no matrix-specific atomic requirement can be extracted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing shipped tests that exercise Add.is_zero/is_imaginary semantics live in sympy/core/tests/test_arit.py (e.g. test_Add_is_zero, test_Add_is_imaginary_real, test_Pow_is_zero); matrix rank/is_zero-sensitive cases (real-valued though, not this bug) are in sympy/matrices/tests/test_matrices.py (test_opportunistic_simplification etc.)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change (in sympy/core/add.py Add._eval_is_zero) guards against the pre-existing `if im and not im_or_z: return False` branch firing when the Add's real-nonzero arg list is empty: previously a purely-imaginary-valued Add (real part zero, no known-real-nonzero term) with im=True and im_or_z=False would be wrongly pronounced nonzero because b=self.func() collapses to zero and the method commits to False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only the guard condition changed; the sibling `len(nz) == len(self.args)` (all-real-nonzero -> None) branch was already present. The early return None for empty nz can never discard a decidable-True/False outcome because reaching it with non-all-args-zero requires an imaginary-direction term, whose cancellation is never established by this method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The regression appears to propagate (per issue notes) into e.g. matrix operations that test rank from prior issues #15872/#15873, but no concrete matrix expression is given."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: Requirement [S1] describes the case repaired in Add._eval_is_zero where an Add with known-zero real args plus an undecidable imaginary-direction term must report is_zero=None (not False). No pre-existing oracle test targets this scenario: (1) no tests are recorded as failing against the buggy program — a necessary condition for any witness; (2) the primary home of Add.is_zero semantics, sympy/core/tests/test_arit.py, is [VISIBLE] and contains only is_zero tests on real-valued expressions (e.g. test_Add_is_negative_positive's numeric-zero squareroot sums, test_issue_8247_8354's real trig/radical expressions, test_Add_is_zero's zero+zero symbols) and imaginary/real detection tests (test_Mul_is_imaginary_real, test_Pow_is_real) that intersect a different method/branch and never assert the None-vs-False distinction on a pure-imaginary-direction sum with empty real-nonzero list; (3) as the earlier extractor note states, the regression test exercising this case is added by the developer patch, not present in the pre-existing oracle, and the sibling matrix rank tests referenced by the issue are real-valued and do not exercise this bug. Since no existing test (visible or hidden) both fails on buggy and genuinely asserts S1's None-not-False behavior, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (Add.is_zero / Add._eval_is_zero): Add.is_zero (the _eval_is_zero handler) returns None rather than False for an Add belonging to a commutative (real-valued or complex-valued sum) whose classified arguments contain no real term known to be nonzero but contain at least one imaginary-direction term (an argument with is_imaginary, or whose product with the imaginary unit I is real), with any real arguments being individually known-zero; i.e. an expression whose real part is established as zero but whose full zero-ness (whether the imaginary part cancels) is not decidable is reported as unknown (None), not as nonzero (False). — not entailed by S_vis (R1's evidence (the bug report) is about a genuinely-zero complex Add (e simplifies to 0, decidable as True) and states 'should return None if it cannot decide', which points toward S1's None-on-undecidable behavior. However, R1 does not pin down the precise classified-argument trigger S1 commits to (imaginary-direction terms with known-zero real args when imaginary cancellation is undecidable), nor its specific None (rather than True) outcome, leaving a genuine precision gap.); confirmed by a synthesized witness: The target requirement [S1] concerns the specific code change in Add._eval_is_zero (sympy/core/add.py) where the guard was modified from `if len(nz) == len(self.args): return None` to `if len(nz) == 0 or len(nz) == len(self.args): return None`. The scenario it fixes: an Add whose classified args contain no real term known to be nonzero (nz empty) but at least one imaginary-direction term that is genuinely classified `is_imaginary` (so im=True and im_or_z=False). In the buggy code execution falls through to `b = self.func(*nz)` which collapses to zero, and hits the `if im and not im_or_z: return False` branch, wrongly declaring the (undecidable) sum nonzero. Gold returns None immediately (early `len(nz) == 0` guard). My expression `I*x + I*y` with x,y declared real & nonzero produces two Add args that each have is_real=False, is_imaginary=True (verified), so in the loop they both set im=True (not im_or_z), nz stays empty, and z==0. The whole sum's zero-ness is genuinely undecidable (real part 0; imaginary part I(x+y) could vanish for special values), so is_zero must be None, not False. Running it confirms: on buggy `expr.is_zero` evaluates to False (the wrong nonzero verdict sought by S1), so the assertion fails; on gold it returns None and the assertion passes. This directly asserts the None-vs-False distinction required by S1 and is execution-confirmed in both directions; the earlier extractor/oracle notes confirm no pre-existing shipped test covers this imaginary-direction empty-nz case (the regression test was added in the developer patch).",
+    "confidence": "Medium"
+  }
+}

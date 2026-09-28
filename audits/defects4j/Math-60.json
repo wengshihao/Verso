@@ -1,0 +1,96 @@
+{
+  "task_id": "Math-60",
+  "status": "ok",
+  "duration_seconds": 223.34124818499913,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Math-60",
+    "s_vis": [
+      {
+        "id": "norm-1",
+        "statement": "NormalDistributionImpl.cumulativeProbability(double x) must not throw a convergence-type exception (ConvergenceException / MathException) for very large or very small arguments; instead it returns a top-coded value (1 for sufficiently large/max/positive-infinity x, 0 for sufficiently small/most-negative/negative-infinity x). Concretely, on a standard normal (mean 0, sd 1) instance it returns exactly 1 for Double.POSITIVE_INFINITY and Double.MAX_VALUE, exactly 0 for Double.NEGATIVE_INFINITY and -Double.MAX_VALUE, and completes without exception across a long sweep of growing exp values (e.g. Math.exp(i), i=0..500, as it did in commons-math 2.0) and across integer arguments i in [0,100].",
+        "subject": "NormalDistributionImpl.cumulativeProbability(double)",
+        "hunk_ids": [],
+        "cited_from": "\"for (int i = 0; i < 100; i++) { // make sure no convergence exception\\n            double lowerTail = distribution.cumulativeProbability(-i);\\n            double upperTail = distribution.cumulativeProbability(i);\" / \"assertEquals(distribution.cumulativeProbability(Double.MAX_VALUE), 1, 0);\\n        assertEquals(distribution.cumulativeProbability(-Double.MAX_VALUE), 0, 0);\\n        assertEquals(distribution.cumulativeProbability(Double.POSITIVE_INFINITY), 1, 0);\\n        assertEquals(distribution.cumulativeProbability(Double.NEGATIVE_INFINITY), 0, 0);\" / from the issue: \"for (int i = 0; i < 500; i++) { final double val = Math.exp(i); try { ... nd.cumulativeProbability(val) } catch (MathException e) { e.printStackTrace(); fail(); } } ... In version 2.0, I get no exception.\" and \"to catch all ConvergenceException (and return for very large and very small values), not just MaxIterationsExceededException.\""
+      },
+      {
+        "id": "norm-2",
+        "statement": "For standard-normal arguments that are not extreme (roughly up to 8 standard deviations from the mean, i.e. x = -i and x = i with i < 9, which the erf computation handles), cumulativeProbability must NOT be top-coded: cumulativeProbability(-i) must be strictly greater than 0 and cumulativeProbability(+i) must be strictly less than 1.",
+        "subject": "NormalDistributionImpl.cumulativeProbability(double)",
+        "hunk_ids": [],
+        "cited_from": "\"if (i < 9) { // make sure not top-coded \\n                // For i = 10, due to bad tail precision in erf (MATH-364), 1 is returned\\n                assertTrue(lowerTail > 0.0d);\\n                assertTrue(upperTail < 1.0d);\\n            }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the input x deviates from the distribution mean by more than 40 times the standard deviation (i.e. |x - mean| > 40 * sd), cumulativeProbability saturates: it returns exactly 0.0 when x < mean and exactly 1.0 when x > mean, and does not invoke Erf for such inputs (so it never throws a MaxIterationsExceededException or other MathException from the erf computation for these extreme inputs).",
+        "subject": "NormalDistributionImpl.cumulativeProbability(double)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When |x - mean| <= 40 * standardDeviation, cumulativeProbability computes P(X < x) via the standard normal CDF formula returned by 0.5 * (1 + erf((x - mean)/(sd * sqrt(2)))) without the previous 20-standard-deviation fallback (so intermediate-distance inputs are evaluated purely through the erf formula rather than via any exceptional 0/1 clamping).",
+        "subject": "NormalDistributionImpl.cumulativeProbability(double)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "norm-1",
+          "norm-2"
+        ],
+        "rationale": "S_vis establishes saturation/no-exception behavior at very extreme inputs (MAX_VALUE, INFINITY, exp sweep) and non-top-coding up to ~8 sd, which is generally consistent with saturation for extreme x, but it never pins down the exact 40*standardDeviation threshold nor the fact that Erf is not invoked beyond that boundary. Since no visible evidence fixes the precise 40-sd cutoff, the exact behavior R1 commits to is not fully entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "norm-1",
+          "norm-2"
+        ],
+        "rationale": "norm-2 does show that for distances up to ~8 sd the value is not top-coded (supporting the erf-formula region), but S_vis says nothing about a 40-sd inner boundary, the formula 0.5*(1+erf((x-mean)/(sd*sqrt(2)))), or the removal of a 20-standard-deviation fallback/clamping. The precise behavior R2 commits to is not pinned down by visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "saturatesHugelyBeyondMean",
+      "test_source": "@Test\n    public void saturatesHugelyBeyondMean() throws Exception {\n        org.apache.commons.math.distribution.NormalDistributionImpl d =\n            new org.apache.commons.math.distribution.NormalDistributionImpl(0, 1);\n        org.junit.Assert.assertEquals(1.0, d.cumulativeProbability(1e300), 0.0);\n        org.junit.Assert.assertEquals(0.0, d.cumulativeProbability(-1e300), 0.0);\n    }",
+      "gold_result": "PASSED — gold's up-front check |dev|=(1e300) > 40*sd short-circuits before Erf and returns exactly 1.0 (and 0.0 for -1e300).",
+      "buggy_result": "FAILED — buggy invokes Erf.erf on the dev/(sd*sqrt2) argument whose magnitude overflows the continued fraction, throwing org.apache.commons.math.ConvergenceException (\"Continued fraction diverged to NaN for value ∞\"); the exception propagates because buggy's catch only handles MaxIterationsExceededException. This violates R1's \"never throws a MathException from the erf computation for extreme inputs\" and the exact 0.0/1.0 saturation.",
+      "explanation": "R1 requires NormalDistributionImpl.cumulativeProbability to saturate to exactly 0.0 (x"
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The method Javadoc in both the buggy and gold revisions already states the 40-standard-deviation saturation behavior; only the implementation was inconsistent with it, so the patch aligns code with pre-existing documentation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The buggy code's fallback threshold was 20 standard deviations and only took effect inside the catch block after Erf.erf threw MaxIterationsExceededException; the gold code moved saturation up front at 40 standard deviations and removed the try/catch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires a test that asserts NormalDistributionImpl.cumulativeProbability saturates at |x-mean|>40*sd (returns exactly 0.0/1.0 without invoking Erf/never throwing MaxIterationsExceededException). The only oracle test probing Normal distribution extreme value saturation is testExtremeValues, located in src/test/java/org/apache/commons/math/distribution/NormalDistributionTest.java — but that file is labeled [VISIBLE], so its assertions can never count as a Witness (the information was already visible to the repair system; a Witness must rest on content that remained hidden). The other oracle file, PoissonDistributionTest.java, is [HIDDEN] but only exercises the discrete Poisson distribution (cumulative/inverse/mean/normal-approximation of Poisson for various parameters within a few sigma of the mean). None of its assertions touch NormalDistributionImpl.cumulativeProbability's 40-sd saturation behavior, exact 0.0/1.0 saturation returns, or the absence of Erf invocation at extreme inputs. Since the oracle contains only these two test files and no [HIDDEN] assertion tests R1, no genuine witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (NormalDistributionImpl.cumulativeProbability(double)): When the input x deviates from the distribution mean by more than 40 times the standard deviation (i.e. |x - mean| > 40 * sd), cumulativeProbability saturates: it returns exactly 0.0 when x < mean and exactly 1.0 when x > mean, and does not invoke Erf for such inputs (so it never throws a MaxIterationsExceededException or other MathException from the erf computation for these extreme inputs). — not entailed by S_vis (S_vis establishes saturation/no-exception behavior at very extreme inputs (MAX_VALUE, INFINITY, exp sweep) and non-top-coding up to ~8 sd, which is generally consistent with saturation for extreme x, but it never pins down the exact 40*standardDeviation threshold nor the fact that Erf is not invoked beyond that boundary. Since no visible evidence fixes the precise 40-sd cutoff, the exact behavior R1 commits to is not fully entailed.); confirmed by a synthesized witness: R1 requires NormalDistributionImpl.cumulativeProbability to saturate to exactly 0.0 (x",
+    "confidence": "Medium"
+  }
+}

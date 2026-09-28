@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-11490",
+  "status": "ok",
+  "duration_seconds": 111.92494537495077,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11490",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a composed (union/intersection/difference) queryset built over the same underlying base queryset object(s) is evaluated more than once with values()/values_list() calls that specify a different set of columns, each evaluation must select exactly the columns requested by that call rather than the stale column set left over from a prior evaluation. Concretely: after ReservedName.objects.create(name='a', order=2) with qs1 = ReservedName.objects.all(), evaluating qs1.union(qs1).values_list('order') must project only the 'order' column (returning a one-column tuple), not the earlier two-column result ('a', 2) retained from a prior values_list('name', 'order') evaluation of the same composed query.",
+        "subject": "Query.combined_queries / SQLCompiler.get_combinator_sql (union/intersection/difference composed queries)",
+        "hunk_ids": [],
+        "cited_from": "Issue title/description: \"Composed queries cannot change the list of columns when values()/values_list() is evaluated multiple times, e.g.\\n>>> ReservedName.objects.create(name='a', order=2)\\n>>> qs1 = ReservedName.objects.all()\\n>>> print(qs1.union(qs1).values_list('name', 'order').get())\\n('a', 2)\\n>>> print(qs1.union(qs1).values_list('order').get())\\n('a', 2)\\n(see compiler.py#L428-L433).\""
+      },
+      {
+        "id": "R2",
+        "statement": "A composed queryset evaluated (once) with an explicit values() or values_list() column selection must still project exactly the requested columns onto the database rows; for a ReservedName row (name='a', order=2), qs1.union(qs1).values('name','order','id').get() yields a dict with name 'a' and order 2, and qs1.union(qs1).values_list('name','order','id').get() yields a tuple whose first two elements are ('a', 2) — and the same holds for the intersection and difference set operations (which are also required not to regress when the R1 repeat-evaluation change-column behavior is fixed).",
+        "subject": "SQLCompiler.get_combinator_sql (union/intersection/difference composed queries with values/values_list)",
+        "hunk_ids": [],
+        "cited_from": "tests/queries/test_qs_combinators.py test_union_with_values: \"reserved_name = qs1.union(qs1).values('name', 'order', 'id').get()\\nself.assertEqual(reserved_name['name'], 'a')\\nself.assertEqual(reserved_name['order'], 2)\\nreserved_name = qs1.union(qs1).values_list('name', 'order', 'id').get()\\nself.assertEqual(reserved_name[:2], ('a', 2))\"; test_intersection_with_values and test_difference_with_values encode the same for the intersection/difference variants."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "Repeated evaluation of a set-combination queryset (union/intersection/difference) that carries a column-limiting values()/values_list()() projection re-projects each non-empty sub-query independently on every evaluation: if the projection's column selection differs between successive evaluations, each evaluation returns rows projected according to that evaluation's own column selection, and an earlier evaluation's column selection does not persist on the shared sub-query and corrupt a later evaluation's columns.",
+        "subject": "SQLCompiler.get_combinator_sql (set-op querysets on the QuerySet union/intersection/difference path)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 directly pins the exact behavior: repeated evaluation of a set-op queryset with differing values()/values_list() column selections must use that evaluation's own requested columns each time, and must not let an earlier evaluation's stale column set persist and corrupt a later evaluation (concrete 'order' one-column vs prior two-column example). This matches impl-1's requirement that earlier projection not persist on the shared sub-query. R2 corroborates per-evaluation projection correctness though it is single-evaluation-focused."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The ReservedName model used in the issue and tests (name CharField, order IntegerField) is defined in tests/queries/models.py, while the model file for the dedicated reserved_names test app (tests/reserved_names/models.py) only defines a Thing model and is unrelated to this issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Set-op compound querysets are built by QuerySet._combinator_query (django/db/models/query.py), which stores the *same, un-cloned* base Query objects in query.combined_queries (qs.union(qs) stores (qs.query, qs.query)); the buggy propagation then lives in SQLCompiler.get_combinator_sql (django/db/models/sql/compiler.py) where, when a compound query carries a values_select, it calls compiler.query.set_values(...) on each combined subquery guarded by 'if not compiler.query.values_select and self.query.values_select:' — the stale non-empty values_select on the shared subquery blocks re-projection with a changed column list on repeated evaluation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Set-op tests live in tests/queries/test_qs_combinators.py (union/intersection/difference, counts, ordering, empty sets, multi-model, ordering-by-non-selected-column error cases)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests test_union_with_values / test_intersection_with_values / test_difference_with_values already pin down the single-evaluation values()/values_list() projection for each set operator; no visible test yet covers the repeat-evaluation-with-changed-columns scenario from the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The ReservedName row values used across these tests are name='a', order=2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The generator loop pulls compiler.query from self.query.combined_queries, which set-op querysets store as shared (un-cloned) base Query objects; the fix clones compiler.query inside get_combinator_sql so set_values(...) no longer mutates that shared persistent state."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The clone is applied only on the path where the outer compound query has a non-empty values_select and the given combined sub-query does not yet have its own values_select (i.e. exactly where re-projection to a matching column list is required)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "submitted requirements only commit to the observable repeat-evaluation-with-changed-columns behavior the patch enables; the single-evaluation union/intersection/difference-with-values behavior (already pinned by existing tests) is not altered by this change."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

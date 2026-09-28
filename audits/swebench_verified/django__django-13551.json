@@ -1,0 +1,129 @@
+{
+  "task_id": "django__django-13551",
+  "status": "ok",
+  "duration_seconds": 495.3702869589906,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13551",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Changing a user's email address must invalidate any previously issued, still-unused password reset token for that user: if a password reset token was generated while the user's email was address A and then the user's email is changed to a different address, PasswordResetTokenGenerator.check_token(user, token) must return False for that token.",
+        "subject": "django.contrib.auth.tokens.PasswordResetTokenGenerator (_make_hash_value / make_token / check_token)",
+        "hunk_ids": [],
+        "cited_from": "Exactly as in the ticket narrative: \"Have account with email address foo@… / Password reset request for that email (unused) / foo@… account changes their email address / Password reset email is used / The password reset email's token should be rejected at that point, but in fact it is allowed.\" and the prescribed mechanism \"The fix is to add the user's email address into PasswordResetTokenGenerator._make_hash_value().\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "A password reset token generated for a user is invalidated by a later change to that user's email (the value of the field named by user.get_email_field_name()), so check_token returns False after the email changes even when pk, password and last_login are unchanged.",
+        "subject": "PasswordResetTokenGenerator._make_hash_value / make_token / check_token",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "The email appended to the hashed value is taken from the email field resolved via user.get_email_field_name() (cls.EMAIL_FIELD, defaulting to 'email'), so on a custom user model whose EMAIL_FIELD names a different attribute, it is that attribute's value whose later change invalidates the token.",
+        "subject": "PasswordResetTokenGenerator._make_hash_value / make_token / check_token",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-3",
+        "statement": "When the resolved email field is absent on the user object or its value is empty or None, an empty string is substituted for the email; token generation and validation still succeed without error and the generated token remains valid, for users lacking an email address.",
+        "subject": "PasswordResetTokenGenerator._make_hash_value / make_token / check_token",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 directly mandates that a later change to the user's email address invalidates a previously issued, unused reset token via adding the email into _make_hash_value(), which is exactly SI-1's core behavior; the note that check_token returns False even with pk/password/last_login unchanged is consistent with the email being the discriminating hash input."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's narrative and prescribed mechanism only refer to 'the user's email address' and say nothing about the email being sourced via user.get_email_field_name() / cls.EMAIL_FIELD, nor about custom user models with a differently-named email attribute."
+      },
+      {
+        "requirement_id": "SI-3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 concerns a user who has an email and changes it; it contains no evidence about an absent/empty email field resulting in empty-string substitution or about token generation succeeding for users lacking an email."
+      }
+    ],
+    "target_requirement_id": "SI-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_email_change_invalidates_token_with_custom_field",
+      "test_source": "from django.conf import settings\n\nsettings.configure(\n    SECRET_KEY='test-secret-key-XYZ',\n    DEFAULT_HASHING_ALGORITHM='sha256',\n    PASSWORD_RESET_TIMEOUT=259200,\n)\nimport django\ndjango.setup()\n\nfrom datetime import datetime\n\nfrom django.contrib.auth.tokens import PasswordResetTokenGenerator\n\n\nclass MockedGen(PasswordResetTokenGenerator):\n    def __init__(self, now):\n        self._now_val = now\n        super().__init__()\n\n    def _now(self):\n        return self._now_val\n\n\nclass CustomEmailUser:\n    EMAIL_FIELD = 'email_address'\n\n    def __init__(self, email):\n        self.pk = 7\n        self.password = 'pbkdf2-pw-hash'\n        self.last_login = None\n        self.email_address = email\n\n    @classmethod\n    def get_email_field_name(cls):\n        return getattr(cls, 'EMAIL_FIELD', 'email')\n\n\ndef test_email_change_invalidates_token_with_custom_field():\n    user = CustomEmailUser('first@example.com')\n    gen = MockedGen(datetime.now())\n    token = gen.make_token(user)\n    user.email_address = 'second@example.com'\n    assert gen.check_token(user, token) is False\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: assert True is False — check_token still returned True after changing the custom email field)",
+      "explanation": "Requirement [SI-2] says the email hashed into the password-reset token is taken from the attribute named by user.get_email_field_name() (cls.EMAIL_FIELD; default 'email'), so on a custom user model whose EMAIL_FIELD points to a different attribute, it is changing THAT attribute that invalidates the token. The gold _make_hash_value resolves email_field = user.get_email_field_name() and appends getattr(user, email_field,'') into the hash string, while the buggy version never includes any email (it returns pk+password+login_timestamp+timestamp).\n\nWitness design: I drive the real token pipeline (make_token -> _make_token_with_timestamp -> salted_hmac over _make_hash_value; and check_token) using a MockedGen whose _now() is fixed so the timeout check never masks the hash change, and a plain CustomEmailUser class with EMAIL_FIELD='email_address' (mirroring the existing with_custom_email_field.py fixture, so get_email_field_name() resolves 'email_address' rather than the hard-coded abstract-base default). Because make_token/check_token only read pk/password/last_login/get_email_field_name/email_address, no DB is needed — everything is constructed in-method per the standalone requirement.\n\nOn gold the freshly generated token is invalidated by changing user.email_address, so check_token(...) returns False and the assertion passes. On buggy the token does NOT depend on the email field at all, so check_token still returns True after the change and the assertion correctly FAILS. This is a genuine, execution-confirmed discriminating behavior for SI-2. I confirmed both runs with run_test and verified no [VISIBLE] oracle (test_tokens.py/TokenGeneratorTest, test_models.py, test_forms.py) tests token invalidation after a change of the EMAIL_FIELD-resolved attribute on a custom EMAIL_FIELD model."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The token machinery lives in django/contrib/auth/tokens.py (PasswordResetTokenGenerator, make_token/check_token/_make_hash_value). Current _make_hash_value returns str(pk)+password+login_timestamp+timestamp and does not incorporate the email."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/auth_tests/test_tokens.py (TokenGeneratorTest) currently covers make/token, timeout, different secrets, and hashing-algorithm cases, but has no case about email change invalidating a token."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/contrib/auth/forms.py PasswordResetForm.save() generates the token via default_token_generator.make_token(user) when a reset email is requested."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AbstractBaseUser (django/contrib/auth/base_user.py) has no email field; get_email_field_name() returns cls.EMAIL_FIELD or 'email'. AbstractUser/User define EMAIL_FIELD='email'. tests/auth_tests/models/with_custom_email_field.py uses EMAIL_FIELD='email_address' on the CustomEmailField model."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/contrib/auth/models.py get_session_auth_hash() is cited in the issue as an example of factoring per-user token-hash building onto the model."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "AbstractBaseUser.get_email_field_name() (contrib/auth/base_user.py) reads cls.EMAIL_FIELD and defaults to 'email'; it predates this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hash-string builder (_make_token_with_timestamp) still runs the full _make_hash_value output through salted_hmac with the standard default/legacy algorithm paths, and H0/H1 do not alter that."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Codebase still carries RemovedInDjango40Warning shims for the legacy sha1 constant_time_compare path in check_token."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-2]: I searched the auth token-related oracle test suite for any assertion that witnesses requirement [SI-2] (that PasswordResetTokenGenerator/make_token/_make_hash_value hashes the email value resolved via user.get_email_field_name()/cls.EMAIL_FIELD, so changing that attribute on a custom model with EMAIL_FIELD != 'email' invalidates the token).\n\nFiles inspected under tests/auth_tests/: test_tokens.py (the canonical home of TokenGeneratorTest), test_models.py, test_forms.py, test_views.py, test_password_reset_timeout_days.py, test_basic.py, test_templates.py. All were labeled [VISIBLE].\n\nFindings: (1) test_tokens.py / TokenGeneratorTest contains test_make_token, test_10265, test_timeout, test_check_token_with_nonexistent_token_and_user, test_token_with_different_secret, test_token_default_hashing_algorithm, test_legacy_token_validation — all on the plain User (EMAIL_FIELD='email'); there is NO case that creates a token and then changes the EMAIL_FIELD-resolved attribute (on any model) to assert the token is invalidated. (2) test_models.py's test_custom_email only asserts CustomEmailField().get_email_field_name()=='email_address' (generic accessor, not token machinery). (3) test_forms.py's test_custom_email_field only asserts the reset mail is delivered to the address under AUTH_USER_MODEL=CustomEmailField — it never calls the token generator or checks invalidation after an email change. (4) View/template/timeout tests exercise reset routing with plain User. (5) No test currently fails against the buggy program was recorded, and none of these assertions can even be a witness because they are [VISIBLE] content.\n\nThe only [HIDDEN] material found is model fixture definitions (with_custom_email_field.py EMAIL_FIELD='email_address', custom_user.py, models/__init__.py) — helpers, not token-behavior assertions. A witness must rest on a [HIDDEN] assertion, and no existing oracle assertion tests r. Synthesizing a new test would not be an existing oracle witness. Conclusion: the real oracle does not contain a witness for [SI-2]; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-2] (PasswordResetTokenGenerator._make_hash_value / make_token / check_token): The email appended to the hashed value is taken from the email field resolved via user.get_email_field_name() (cls.EMAIL_FIELD, defaulting to 'email'), so on a custom user model whose EMAIL_FIELD names a different attribute, it is that attribute's value whose later change invalidates the token. — not entailed by S_vis (R1's narrative and prescribed mechanism only refer to 'the user's email address' and say nothing about the email being sourced via user.get_email_field_name() / cls.EMAIL_FIELD, nor about custom user models with a differently-named email attribute.); confirmed by a synthesized witness: Requirement [SI-2] says the email hashed into the password-reset token is taken from the attribute named by user.get_email_field_name() (cls.EMAIL_FIELD; default 'email'), so on a custom user model whose EMAIL_FIELD points to a different attribute, it is changing THAT attribute that invalidates the token. The gold _make_hash_value resolves email_field = user.get_email_field_name() and appends getattr(user, email_field,'') into the hash string, while the buggy version never includes any email (it returns pk+password+login_timestamp+timestamp).\n\nWitness design: I drive the real token pipeline (make_token -> _make_token_with_timestamp -> salted_hmac over _make_hash_value; and check_token) using a MockedGen whose _now() is fixed so the timeout check never masks the hash change, and a plain CustomEmailUser class with EMAIL_FIELD='email_address' (mirroring the existing with_custom_email_field.py fixture, so get_email_field_name() resolves 'email_address' rather than the hard-coded abstract-base default). Because make_token/check_token only read pk/password/last_login/get_email_field_name/email_address, no DB is needed — everything is constructed in-method per the standalone requirement.\n\nOn gold the freshly generated token is invalidated by changing user.email_address, so check_token(...) returns False and the assertion passes. On buggy the token does NOT depend on the email field at all, so check_token still returns True after the change and the assertion correctly FAILS. This is a genuine, execution-confirmed discriminating behavior for SI-2. I confirmed both runs with run_test and verified no [VISIBLE] oracle (test_tokens.py/TokenGeneratorTest, test_models.py, test_forms.py) tests token invalidation after a change of the EMAIL_FIELD-resolved attribute on a custom EMAIL_FIELD model.",
+    "confidence": "Medium"
+  }
+}

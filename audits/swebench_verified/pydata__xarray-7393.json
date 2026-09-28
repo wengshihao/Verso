@@ -1,0 +1,86 @@
+{
+  "task_id": "pydata__xarray-7393",
+  "status": "ok",
+  "duration_seconds": 333.3539192080498,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-7393",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When Dataset.stack creates a MultiIndex over stacked dimensions, the resulting dimension/level coordinates must retain the original dtype of the index coordinates they are built from; in particular stacking a coordinate whose array has numpy int32 ('i4') dtype must not upcast that coordinate to int64 ('i8').",
+        "subject": "Dataset.stack / PandasMultiIndex.stack (MultiIndex level coordinate dtype)",
+        "hunk_ids": [],
+        "cited_from": "Issue 'stack casts int32 dtype coordinate to int64': \"The code example below results in `False`, because the data type of the `a` coordinate is changed from 'i4' to 'i8'.\" and \"Creating a MultiIndex should not change the data type of the Indexes from which it is built.\" plus MVCE:\n```Python\nimport xarray as xr\nimport numpy as np\n\nds = xr.Dataset(coords={'a': np.array([0], dtype='i4')})\nds['a'].values.dtype == ds.stack(b=('a',))['a'].values.dtype\n```\"I expect the result to be `True`.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When PandasMultiIndexingAdapter.__array__ is called on an adapter whose level is set (not None), the returned numpy array is np.asarray(level_values.values, dtype=dtype) where dtype is the requested dtype argument if one was given, or otherwise the adapter's recorded dtype (self.dtype) — so the result has the requested dtype when one is supplied and otherwise preserves the recorded original level-coordinate dtype rather than whatever dtype pandas' get_level_values would otherwise produce (i.e., an int32 level coordinate is not upcast to int64).",
+        "subject": "xarray.core.indexing.PandasMultiIndexingAdapter.__array__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (an issue on Dataset.stack) pins down the user-visible outcome that stacking an int32 level coordinate must not upcast it to int64, which conceptually overlaps with the adapter preserving its recorded dtype. However, S_impl describes a specific internal implementation detail — PandasMultiIndexingAdapter.__array__ returning np.asarray(level_values.values, dtype=dtype), including honoring a caller-supplied dtype and defaulting to self.dtype — that the visible issue never mentions or pins down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_restore_dtype_on_multiindexes",
+      "test_source": "import numpy as np\nimport pandas as pd\nfrom xarray.core.indexes import PandasMultiIndex\n\ndef test_restore_dtype_on_multiindexes():\n    # Regression: an int32 level coordinate must not be upcast to int64 when\n    # level-clone coordinates of a stacked index are materialized through\n    # PandasMultiIndexingAdapter.__array__ (level view with level set).\n    level_values = np.array([0, 0, 1], dtype=\"int32\")\n    other = np.array([10, 11, 12])\n    midx = pd.MultiIndex.from_arrays([level_values, other], names=(\"foo\", \"bar\"))\n    index = PandasMultiIndex(\n        midx, \"x\", level_coords_dtype={\"foo\": level_values.dtype, \"bar\": other.dtype}\n    )\n    variables = index.create_variables()\n    # variable data wraps PandasMultiIndexingAdapter with level set; .values\n    # must preserve the recorded original dtype rather than pandas' upcast.\n    arr = np.asarray(variables[\"foo\"].data)\n    assert arr.dtype == np.dtype(\"int32\"), arr.dtype\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: dtype('int64') != dtype('int32') — arr dtype printed int64)",
+      "explanation": "R1 states that PandasMultiIndexingAdapter.__array__ (level set / level view) must return np.asarray(level_values.values, dtype=...) where dtype defaults to the adapter's recorded dtype (self.dtype), so an int32 level coordinate is not upcast to int64 by pandas' get_level_values.\n\nThe two tests reported as currently failing against the buggy program, test_restore_dtype_on_multiindexes[int32] and [float32] (xarray/tests/test_indexes.py), are precisely about this dtype restoration. I could not read their raw source in any test file dumped by read_test_file — test_indexes.py, test_dataset.py and test_indexing.py all contain only [VISIBLE] content that has no such dtype-restoration-on-stacked-levels test (their visible equivalents only exercise int64/float64 data or PandasIndex rename/copy paths where no upcast can occur, so they cannot witness R1).\n\nI reconstructed the essence of that regression test at the actual code surface: build a PandasMultiIndex whose level_coords_dtype records an int32 level, call create_variables() (which reconstructs level variables via PandasMultiIndexingAdapter(…, level=…)), and materialize the level variable (np.asarray of its data, which triggers __array__ on the level-view adapter). I confirmed by mechanical run:\n- against GOLD: PASSED (adapter honors the recorded int32 dtype)\n- against BUGGY: FAILED with an int32->int64 upcast AssertionError (arr.dtype == int64)\n\nThis assertion (preserving the recorded level dtype rather than pandas' upcast) is exactly the behavior described by R1 and is not entailed by any [VISIBLE] content, so this test is a genuine Witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The stack flow lives in xarray/core/dataset.py: Dataset._stack_once -> Dataset._get_stack_index collects the index coordinates per stacked dim, then calls index_cls.stack(product_vars, new_dim) (PandasMultiIndex.stack in xarray/core/indexes.py) and reconstructs level variables via index.create_variables()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PandasMultiIndex.stack (indexes.py) factorizes each level index into (codes, uniques) and builds pd.MultiIndex; level variable reconstruction stores level values through PandasMultiIndexingAdapter(self.index, dtype=self.level_coords_dtype[name], level=name) where level_coords_dtype records the pre-stack variable.dtype."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Level-coordinate dtype handling in indexes.py: get_valid_numpy_dtype(), PandasMultiIndex.create_variables(), PandasMultiIndexingAdapter.__array__/._convert_scalar, and PandasIndexingAdapter's dtype preservation logic (xarray/core/indexing.py) are the relevant surfaces for the int32->int64 upcast observed in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under xarray/tests/ (e.g. xarray/tests/test_dataset.py, xarray/tests/test_indexes.py). The issue report itself (title, expectation statement, MVCE) is the sole visible specification anchoring S_vis here."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PandasMultiIndexingAdapter subclasses PandasIndexingAdapter; its self.dtype comes from PandasIndexingAdapter.__init__ (set from get_valid_numpy_dtype(array) or the recorded dtype passed by level_coords_dtype in PandasMultiIndex.create_variables, xarray/core/indexes.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The level-view branch is only entered when self.level is not None; the level is None branch delegates to PandasIndexingAdapter.__array__ (unchanged by this patch), which already resolves dtype=None to self.dtype."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PandasMultiIndexingAdapter stores (array: pd.MultiIndex, _dtype, level) and is used to represent single level-clone coordinates of a stacked/multi-index."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (xarray.core.indexing.PandasMultiIndexingAdapter.__array__): When PandasMultiIndexingAdapter.__array__ is called on an adapter whose level is set (not None), the returned numpy array is np.asarray(level_values.values, dtype=dtype) where dtype is the requested dtype argument if one was given, or otherwise the adapter's recorded dtype (self.dtype) — so the result has the requested dtype when one is supplied and otherwise preserves the recorded original level-coordinate dtype rather than whatever dtype pandas' get_level_values would otherwise produce (i.e., an int32 level coordinate is not upcast to int64). — not entailed by S_vis (S_vis (an issue on Dataset.stack) pins down the user-visible outcome that stacking an int32 level coordinate must not upcast it to int64, which conceptually overlaps with the adapter preserving its recorded dtype. However, S_impl describes a specific internal implementation detail — PandasMultiIndexingAdapter.__array__ returning np.asarray(level_values.values, dtype=dtype), including honoring a caller-supplied dtype and defaulting to self.dtype — that the visible issue never mentions or pins down.); confirmed by a oracle witness: R1 states that PandasMultiIndexingAdapter.__array__ (level set / level view) must return np.asarray(level_values.values, dtype=...) where dtype defaults to the adapter's recorded dtype (self.dtype), so an int32 level coordinate is not upcast to int64 by pandas' get_level_values.\n\nThe two tests reported as currently failing against the buggy program, test_restore_dtype_on_multiindexes[int32] and [float32] (xarray/tests/test_indexes.py), are precisely about this dtype restoration. I could not read their raw source in any test file dumped by read_test_file — test_indexes.py, test_dataset.py and test_indexing.py all contain only [VISIBLE] content that has no such dtype-restoration-on-stacked-levels test (their visible equivalents only exercise int64/float64 data or PandasIndex rename/copy paths where no upcast can occur, so they cannot witness R1).\n\nI reconstructed the essence of that regression test at the actual code surface: build a PandasMultiIndex whose level_coords_dtype records an int32 level, call create_variables() (which reconstructs level variables via PandasMultiIndexingAdapter(…, level=…)), and materialize the level variable (np.asarray of its data, which triggers __array__ on the level-view adapter). I confirmed by mechanical run:\n- against GOLD: PASSED (adapter honors the recorded int32 dtype)\n- against BUGGY: FAILED with an int32->int64 upcast AssertionError (arr.dtype == int64)\n\nThis assertion (preserving the recorded level dtype rather than pandas' upcast) is exactly the behavior described by R1 and is not entailed by any [VISIBLE] content, so this test is a genuine Witness for R1.",
+    "confidence": "High"
+  }
+}

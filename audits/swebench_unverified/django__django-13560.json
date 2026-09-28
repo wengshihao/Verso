@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-13560",
+  "status": "ok",
+  "duration_seconds": 342.8084229170345,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13560",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "When Collector.collect aggregates multiple protected references and re-raises a ProtectedError, the objects passed to the exception (its protected_objects / second constructor argument) must be a materialized concrete collection (list) of the protected model instances, not a lazy iterator such as an itertools.chain — so that repr/logging of the exception shows the actual objects rather than an uninformative `<itertools.chain object at ...>`.",
+        "subject": "django.db.models.deletion.Collector.collect / ProtectedError.protected_objects",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"('Cannot delete some instances of model \\\"A\\\" because they are referenced through protected foreign keys: \\\"A.protect\\\", \\\"B.protect\\\".', <itertools.chain object at 0x7f96b5cb6c40>) ... As a result, the repr of exception in Sentry is not informative.\" and source `raise ProtectedError( ... ', '.join(protected_objects) ), chain.from_iterable(protected_objects.values()), )`"
+      },
+      {
+        "id": "VIS-2",
+        "statement": "When Collector.collect's fail_on_restricted branch raises a RestrictedError after collecting restricted objects, the objects passed to the exception (its restricted_objects / second constructor argument) must be a materialized concrete collection (list) of the restricted model instances, not a lazy iterator such as an itertools.chain — so that repr/logging of the exception shows the actual objects rather than an uninformative `<itertools.chain object at ...>`.",
+        "subject": "django.db.models.deletion.Collector.collect / RestrictedError.restricted_objects",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"ProtectedError/RestrictedError raised from Collector.collect contains iterators\" and source `raise RestrictedError( ... ', '.join(restricted_objects) ), chain.from_iterable(restricted_objects.values()), )`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When deletion via Collector.collect is blocked by protected foreign keys and it aggregates references into a ProtectedError, the raised exception's `protected_objects` attribute (and the second positional element of its `args` tuple, which is what its repr renders) is a materialized `set` of the referencing objects — never a lazy iterator such as an `itertools.chain` — so the attribute is directly inspectable/iterable and each distinct referencing object appears once.",
+        "subject": "django.db.models.deletion.Collector.collect (ProtectedError.protected_objects)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When deletion via Collector.collect is blocked by restricted foreign keys (fail_on_restricted) and it aggregates references into a RestrictedError, the raised exception's `restricted_objects` attribute (and the second positional element of its `args` tuple, which is what its repr renders) is a materialized `set` of the referencing objects — never a lazy iterator such as an `itertools.chain` — so the attribute is directly inspectable/iterable and each distinct referencing object appears once.",
+        "subject": "django.db.models.deletion.Collector.collect (RestrictedError.restricted_objects)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "S_vis strongly pins the core requirement that protected_objects be a materialized concrete collection, not a lazy itertools.chain, so the exception repr is informative. However, S_impl additionally commits to the materialized type being a set with each distinct referencing object appearing once (deduplication), whereas the visible evidence and S_vis's own summary only demand a materialized collection (even described as 'list') and never specify set-type/uniqueness semantics."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "S_vis pins that restricted_objects must be materialized (a concrete collection) rather than a lazy itertools.chain for an informative repr. But S_impl further commits that this is a specific set with each distinct referencing object appearing once; the visible findings never mandate set-type or deduplication (S_vis's summary characterizes it as a materialized list), leaving that specific behavioral commitment unpinned."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_protected_objects_is_materialized_set",
+      "test_source": "def test_protected_objects_is_materialized_set():\n    import django\n    from django.conf import settings\n\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=[\n                'django.contrib.contenttypes',\n                'tests.delete',\n            ],\n            DATABASES={\n                'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'},\n            },\n            SECRET_KEY='x',\n        )\n    if django.apps.apps.ready is False:\n        django.setup()\n\n    from django.test.utils import setup_test_environment, teardown_test_environment\n    from django.test.runner import DiscoverRunner\n\n    setup_test_environment()\n    runner = DiscoverRunner(verbosity=0, interactive=False)\n    old_config = runner.setup_databases()\n\n    try:\n        from django.db.models import ProtectedError\n        from tests.delete.models import A, B, create_a\n\n        a = create_a('protect')\n        r = a.protect\n        B.objects.create(protect=r)\n        try:\n            r.delete()\n        except ProtectedError as e:\n            protected = e.protected_objects\n            assert isinstance(protected, set), type(protected)\n            assert len(protected) == 2, len(list(protected))\n            assert len(list(protected)) == 2\n        else:\n            raise AssertionError('expected ProtectedError')\n    finally:\n        runner.teardown_databases(old_config)\n        teardown_test_environment()\n",
+      "gold_result": "PASSED — r.delete() raises a ProtectedError whose .protected_objects is a real set holding both the A and B referencing instances; isinstance(..., set) holds, len==2, and it stays iterable without exhaustion.",
+      "buggy_result": "FAILED — .protected_objects is an itertools.chain (`AssertionError: <class 'itertools.chain'> assert False ... isinstance(<itertools.chain object>, set)`), so the isinstance(..., set) assertion fails on the buggy program.",
+      "explanation": "R1 demands that when deletion via Collector.collect is blocked by PROTECT foreign keys and it aggregates references into a ProtectedError, raised exception's protected_objects attribute (hence args[1]/repr) must be a materialized set of distinct referencing instances — not a lazy itertools.chain. The witness triggers this code path: it creates an R referenced through the PROTECT FK both by an A (via create_a) and by B, then calls r.delete(). collect aggregates both references because both reverse relations have field.remote_field.on_delete == PROTECT, then raises a fresh ProtectedError whose second positional argument is chain.from_iterable(...) in the buggy code but set(chain.from_iterable(...)) in the gold [H0 hunk]. The test asserts e.protected_objects is an actual set of length 2 and is re-iterable without exhaustion — exactly the lazy-vs-materialized distinction. Execution confirmed with the identical byte-for-byte source: PASSED against gold (protected_objects is a set), FAILED against buggy (AssertionError: <class 'itertools.chain'> from the isinstance check). No visible test in tests/delete/tests.py asserts on the type/content/re-iterability of .protected_objects (they only check the message text via assertRaisesMessage), so this is a genuine witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug location: django/db/models/deletion.py, class Collector method collect. Two raise sites pass lazy iterators as the exception's protected/restricted object argument: ProtectedError gets `chain.from_iterable(protected_objects.values())` and RestrictedError gets `chain.from_iterable(restricted_objects.values())`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ProtectedError.__init__ / RestrictedError.__init__ set self.protected_objects / self.restricted_objects and then call IntegrityError.__init__(self, msg, objects), so the chain lands in self.args and thus in the exception's repr — producing the uninformative `<itertools.chain object at ...>` shown in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for on_delete behavior live in tests/delete/tests.py (OnDeleteTests/test_protect, test_protect_multiple, test_restrict, test_restrict_multiple, etc.). These currently assert only the exception message text via assertRaisesMessage and do not inspect the type/content of .protected_objects/.restricted_objects."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test models under tests/delete/models.py expose the multi-reference scenario: A and B both have models.PROTECT FKs to R, and A (with restrict FK) plus B3 (RESTRICT FK to R)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks encode the same single change idea (wrap the lazy chain.from_iterable iterator in set()) applied at the two distinct raise sites for ProtectedError (H0) and RestrictedError (H1); the aggregated per-key lists under protected_objects/restricted_objects are concatenated then de-duplicated/lazily-iterated by the expression being wrapped."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ProtectedError.__init__ and RestrictedError.__init__ each assign the passed second argument to the self.protected_objects / self.restricted_objects attribute and forward it to IntegrityError.__init__(msg, objects), so the value becomes part of Exception.args and thus the repr."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The collector dictionaries hold model instances (querysets of referencing rows), so the resulting set contains model instances, not pks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Being an ordinary set (rather than a one-shot chain) means the attribute can be iterated/len'd and passed on multiple times without exhaustion."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires the protected_objects attribute (and args[1]) of a ProtectedError raised from Collector.collect to be a materialized set of the referencing instances rather than a lazy iterator (chain), i.e. directly lengthable/iterable and not exhausted.\n\nI examined the oracle test files for this behavior. The canonical home of collector/protect behavior is tests/delete/. I read tests/delete/tests.py in full ([VISIBLE]): OnDeleteTests.test_protect, test_protect_multiple, and test_restrict(_multiple) only use `assertRaisesMessage(ProtectedError, msg)` (plus the restrict-path and diamond/generic tests), checking exclusively the *message text* built from the referencing field names. None of them inspects the `.protected_objects`/`.restricted_objects` attribute, its `args`, its type, or its content, so none can distinguish a materialized `set` from an `itertools.chain` — the buggy program still passes every one of these (consistent with the note that no test currently fails against the buggy program). tests/delete/models.py ([HIDDEN]) defines the models (A/B/B3 PROTECT+PROTECT references to R) but is not a test file. I also read tests/delete_regress/tests.py ([VISIBLE]) and its models ([HIDDEN]); they cover cascades, fast-deletes, proxy deletion and locking, but never raise/inspect a ProtectedError's protected_objects.\n\nThe requirement is not something the visible delete tests enforce because the lazy-vs-set distinction is invisible to a message-only assertion. Since the only relevant oracle file is [VISIBLE] and contains no assertion on the collect/ProtectedError object set semantics, and no other oracle test asserts R1, no genuine hidden witness exists. There is no [HIDDEN] test whose assertion enforces R1, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.deletion.Collector.collect (ProtectedError.protected_objects)): When deletion via Collector.collect is blocked by protected foreign keys and it aggregates references into a ProtectedError, the raised exception's `protected_objects` attribute (and the second positional element of its `args` tuple, which is what its repr renders) is a materialized `set` of the referencing objects — never a lazy iterator such as an `itertools.chain` — so the attribute is directly inspectable/iterable and each distinct referencing object appears once. — not entailed by S_vis (S_vis strongly pins the core requirement that protected_objects be a materialized concrete collection, not a lazy itertools.chain, so the exception repr is informative. However, S_impl additionally commits to the materialized type being a set with each distinct referencing object appearing once (deduplication), whereas the visible evidence and S_vis's own summary only demand a materialized collection (even described as 'list') and never specify set-type/uniqueness semantics.); confirmed by a synthesized witness: R1 demands that when deletion via Collector.collect is blocked by PROTECT foreign keys and it aggregates references into a ProtectedError, raised exception's protected_objects attribute (hence args[1]/repr) must be a materialized set of distinct referencing instances — not a lazy itertools.chain. The witness triggers this code path: it creates an R referenced through the PROTECT FK both by an A (via create_a) and by B, then calls r.delete(). collect aggregates both references because both reverse relations have field.remote_field.on_delete == PROTECT, then raises a fresh ProtectedError whose second positional argument is chain.from_iterable(...) in the buggy code but set(chain.from_iterable(...)) in the gold [H0 hunk]. The test asserts e.protected_objects is an actual set of length 2 and is re-iterable without exhaustion — exactly the lazy-vs-materialized distinction. Execution confirmed with the identical byte-for-byte source: PASSED against gold (protected_objects is a set), FAILED against buggy (AssertionError: <class 'itertools.chain'> from the isinstance check). No visible test in tests/delete/tests.py asserts on the type/content/re-iterability of .protected_objects (they only check the message text via assertRaisesMessage), so this is a genuine witness for R1.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "task_id": "Closure-88",
+  "status": "ok",
+  "duration_seconds": 292.5343888009993,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "Closure-88",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For the function `function f(p) { var x; return ((x=p.id) && (x=parseInt(x.substr(1))) && x>0); }`, the dead-assignment-elimination pass must not remove or alter the two assignments to x (`x=p.id` and `x=parseInt(x.substr(1))`): the value assigned by `x=parseInt(...)` is subsequently read by `x>0`, so it is live and must be preserved. Under SIMPLE_OPTIMIZATIONS compilation this entire body must survive with only identifier renaming (p->b, x->a) and with the same assignments intact.",
+        "subject": "DeadAssignmentsElimination (assignment embedded in && expression whose variable is read later in the same expression)",
+        "hunk_ids": [],
+        "cited_from": "DeadAssignmentsEliminationTest.testIssue297a: `testSame(\"function f(p) { var x; return ((x=p.id) && (x=parseInt(x.substr(1))) && x>0); }; f('');\")` — and CommandLineRunnerTest.testIssue297: input `function f(p) { var x; return ((x=p.id) && (x=parseInt(x.substr(1))) && x>0); }` must compile (SIMPLE_OPTIMIZATIONS, VERBOSE off) to `function f(b) { var a; return ((a=b.id) && (a=parseInt(a.substr(1))) && a>0); }`."
+      },
+      {
+        "id": "R2",
+        "statement": "When an assignment's RHS result is consumed by a following `&&`/arithmetic operand but the assigned variable is never read again in a live position, the assignment must be reduced to just its RHS (or to the RHS expression), i.e. a dead assignment inside the expression is eliminated. Concretely: `(x='') && (x = x.substr(1))` must become `(x='') && (x.substr(1))`, `(a=1) && (a = f(a))` must become `(a=1) && f(a)` (likewise when the lhs is a parameter), and `(a=1) - (a = g(a))` must become `(a=1) - (g(a))`.",
+        "subject": "DeadAssignmentsElimination (assignment in && whose assigned value is never read afterwards)",
+        "hunk_ids": [],
+        "cited_from": "DeadAssignmentsEliminationTest.testIssue297b: `return (x='') && (x = x.substr(1));` -> `return (x='') && (x.substr(1));`; testIssue297c: `return (x=1) && (x = f(x));` -> `return (x=1) && f(x);`; testIssue297d: `return (a=1) && (a = f(a));` -> `return (a=1) && (f(a));`; testIssue297e: `return (a=1) - (a = g(a));` -> `return (a=1) - (g(a));`."
+      },
+      {
+        "id": "R3",
+        "statement": "For a chained assignment-in-initializer whose final value is live through a surrounding return of a different variable, the assignment must remain in place and must not be eliminated. Concretely `function f(a) { var b = h((b=1) - (b = g(b))); return b; };` must be left unchanged (both inner assignments to b preserved), because b's value is subsequently read by `return b`.",
+        "subject": "DeadAssignmentsElimination (later operand only reads the RHS value in a chain whose non-assigned variable is live afterward)",
+        "hunk_ids": [],
+        "cited_from": "DeadAssignmentsEliminationTest.testIssue297g: `test(\"function f(a) { var b = h((b=1) - (b = g(b))); return b; };\", ...)` with comment \"The last assignment in the initializer should be eliminated\" but expected output identical, i.e. preserved."
+      },
+      {
+        "id": "R4",
+        "statement": "The dead-assignment-elimination pass must not modify code at global scope (assignments to globals like `var x; x=1; x=2; x=3;` must be preserved verbatim) and must not eliminate an assignment to an extern declared variable (e.g. `extern = true` in a function must compile unchanged).",
+        "subject": "DeadAssignmentsElimination (not run on global scope / external var in function)",
+        "hunk_ids": [],
+        "cited_from": "DeadAssignmentsEliminationTest.testGlobal: `test(\"var x; x=1; x=2; x=3;\", \"var x; x=1; x=2; x=3;\");` and testAssignToExtern: `inFunction(\"extern = true;\");` (no change)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-R1",
+        "statement": "Dead assignment elimination no longer treats an assignment `v = RHS` (to a local variable `v`) as an unconditional kill of `v` when the assignment lies to the right of another value-producing assignment to `v` within the same expression: if `RHS`'s first reference to `v` is a read (a read occurring before any write to `v` within `RHS`), the live-ness scan reports a READ for that assignment instead of a KILL, so the earlier assignment to `v` is preserved (not eliminated) because its value is observable through that RHS read. Observable case: `if ((a=1)&&(b=a))` keeps `a=1`, and `return (x=1) && (x=f(x))` keeps `x=1`.",
+        "subject": "DeadAssignmentsElimination.isVariableReadBeforeKill / DAE expression-liveness scan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "R2's testIssue297c/d reproduce SIMP-R1's same-variable observable (`return (x=1)&&(x=f(x))` keeps x=1; `(a=1)&&(a=f(a))` keeps a=1), forcing a read-before-kill style decision and thus partly pinning the fix. However S_vis never states the internal READ-not-KILL mechanism nor the distinct cross-variable observable `if((a=1)&&(b=a))` keeps a=1, leaving SIMP-R1's full scope ambiguous."
+      }
+    ],
+    "target_requirement_id": "SIMP-R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testIssue297c",
+      "test_source": "@Test\npublic void t() throws Exception {\n  com.google.javascript.jscomp.CompilerTestCase tc =\n      new com.google.javascript.jscomp.CompilerTestCase(\"var extern;\") {\n        @Override\n        protected com.google.javascript.jscomp.CompilerPass getProcessor(\n            final com.google.javascript.jscomp.Compiler compiler) {\n          return new com.google.javascript.jscomp.CompilerPass() {\n            public void process(com.google.javascript.rhino.Node externs,\n                com.google.javascript.rhino.Node js) {\n              try {\n                Class<?> c = Class.forName(\n                    \"com.google.javascript.jscomp.DeadAssignmentsElimination\");\n                java.lang.reflect.Constructor<?> ct = c.getDeclaredConstructors()[0];\n                ct.setAccessible(true);\n                Object dae = ct.newInstance(compiler);\n                for (java.lang.reflect.Method mm :\n                     com.google.javascript.jscomp.NodeTraversal.class.getMethods()) {\n                  if (mm.getName().equals(\"traverse\") &&\n                      mm.getParameterTypes().length == 3) {\n                    mm.invoke(null, compiler, js, dae);\n                    break;\n                  }\n                }\n              } catch (Exception e) {\n                throw new RuntimeException(e);\n              }\n            }\n          };\n        }\n        @Override\n        protected int getNumRepetitions() { return 1; }\n      };\n  tc.test(\"function f() { var x; return (x=1) && (x = f(x)); };\",\n          \"function f() { var x; return (x=1) && f(x); };\");\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (buggy DAE wrongly eliminated the leading `x=1`, producing `return 1 && f(x)` instead of the required `return (x=1) && f(x)`)",
+      "explanation": "Target R1 is exactly the behavior behind issue 297: when an assignment `v = RHS` (with RHS's first self-reference being a read) lies to the right of another value-producing assignment to `v` in the same expression, DAE must report a READ (via isVariableReadBeforeKill) instead of an unconditional KILL, so the earlier assignment to `v` is preserved rather than eliminated. Observable case given in the requirement: `return (x=1) && (x=f(x))` must keep `x=1`.\n\nThe hidden test file DeadAssignmentsEliminationTest.java (labeled [HIDDEN]) contains testIssue297c, which asserts exactly: `function f(){ var x; return (x=1) && (x=f(x)); }` compiles (under the DAE pass) to `var x; return (x=1) && f(x);` — i.e. the first `x=1` is PRESERVED because the sibling `x = f(x)` assignment reads `x` first (its reference is f(x), a read before any write inside the RHS) and is therefore classified READ, not KILL.\n\nI reproduced this as the standalone method above using the public CompilerTestCase harness (with reflection only to reach the package-private DeadAssignmentsElimination constructor/NodeTraversal.traverse, since the class is package-private and not reachable from the default package). I ran the identical source against both versions: against gold it PASSED (output retained `(x=1)&&f(x)`), and against buggy it FAILED (buggy DAE eliminated the leading assignment, degrading `(x=1)` to `1`, i.e. `return 1 && f(x)`). This precisely demonstrates the newly-committed READ-vs-KILL liveness behavior, is drawn entirely from hidden test content, and is not established by any visible information. (TestIssue297c was not even required to be failing-listed, but the closely-related a/b/c... same-file issue297 tests are failing, and c is the canonical direct match for R1's stated observable.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue 297 has no fetchable original report text; the only authoritative visible content is the source file src/com/google/javascript/jscomp/DeadAssignmentsElimination.java and the test suites. The bug fix is stated (in the issue header) to touch DeadAssignmentsElimination."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests in DeadAssignmentsEliminationTest wrap logic inside `function FUNC(param1,param2){...}` via the inFunction helper; externs are `var extern;`. The class under test is package-private."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CommandLineRunnerTest.testIssue297 is the end-to-end SIMPLE_OPTIMIZATIONS integration regression for issue 297; DeadAssignmentsEliminationTest.testIssue297a-g are the unit-level regressions for the same issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "R4 groups two independent guard cases (global-scope skip and extern-assignment skip) that a single DAE fix (adding a scope/extern guard) would satisfy together; note the code's rationale: no DAE on global scope and when inner functions are present."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The DAE source code already documents the key correctness caveat that motivated issue 297 via the comment blocks about `isVariableStillLiveWithinExpression` and the example  X = a && a = C / a = C && X = a distinction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix lives in the private helper DeadAssignmentsElimination.isVariableReadBeforeKill(Node, String), which is only observable indirectly through the whole-pass deletion/retention decisions of the DeadAssignmentsElimination compiler pass (class is package-private)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch also inserts an internal Preconditions.checkState(parent node token == Token.ASSIGN) assertion confining the LHS handling to plain assignment nodes; this is a fail-fast invariant, not a normal-mode observable behavior, so it is not recorded as a requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The unchanged else-branch still returns VariableLiveness.KILL when the RHS of the same-variable assignment does not read `v` first (v unwritten/unreferenced, or written before any read within RHS); that behavior predates the patch and is not a new commitment."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is the correctness fix behind issue 297: previously a rightward self-referencing assignment (`v = expr` whose RHS reads v) was misclassified as KILL, which could cause the preceding `v` assignment to be wrongly deleted."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMP-R1] (DeadAssignmentsElimination.isVariableReadBeforeKill / DAE expression-liveness scan): Dead assignment elimination no longer treats an assignment `v = RHS` (to a local variable `v`) as an unconditional kill of `v` when the assignment lies to the right of another value-producing assignment to `v` within the same expression: if `RHS`'s first reference to `v` is a read (a read occurring before any write to `v` within `RHS`), the live-ness scan reports a READ for that assignment instead of a KILL, so the earlier assignment to `v` is preserved (not eliminated) because its value is observable through that RHS read. Observable case: `if ((a=1)&&(b=a))` keeps `a=1`, and `return (x=1) && (x=f(x))` keeps `x=1`. — not entailed by S_vis (R2's testIssue297c/d reproduce SIMP-R1's same-variable observable (`return (x=1)&&(x=f(x))` keeps x=1; `(a=1)&&(a=f(a))` keeps a=1), forcing a read-before-kill style decision and thus partly pinning the fix. However S_vis never states the internal READ-not-KILL mechanism nor the distinct cross-variable observable `if((a=1)&&(b=a))` keeps a=1, leaving SIMP-R1's full scope ambiguous.); confirmed by a oracle witness: Target R1 is exactly the behavior behind issue 297: when an assignment `v = RHS` (with RHS's first self-reference being a read) lies to the right of another value-producing assignment to `v` in the same expression, DAE must report a READ (via isVariableReadBeforeKill) instead of an unconditional KILL, so the earlier assignment to `v` is preserved rather than eliminated. Observable case given in the requirement: `return (x=1) && (x=f(x))` must keep `x=1`.\n\nThe hidden test file DeadAssignmentsEliminationTest.java (labeled [HIDDEN]) contains testIssue297c, which asserts exactly: `function f(){ var x; return (x=1) && (x=f(x)); }` compiles (under the DAE pass) to `var x; return (x=1) && f(x);` — i.e. the first `x=1` is PRESERVED because the sibling `x = f(x)` assignment reads `x` first (its reference is f(x), a read before any write inside the RHS) and is therefore classified READ, not KILL.\n\nI reproduced this as the standalone method above using the public CompilerTestCase harness (with reflection only to reach the package-private DeadAssignmentsElimination constructor/NodeTraversal.traverse, since the class is package-private and not reachable from the default package). I ran the identical source against both versions: against gold it PASSED (output retained `(x=1)&&f(x)`), and against buggy it FAILED (buggy DAE eliminated the leading assignment, degrading `(x=1)` to `1`, i.e. `return 1 && f(x)`). This precisely demonstrates the newly-committed READ-vs-KILL liveness behavior, is drawn entirely from hidden test content, and is not established by any visible information. (TestIssue297c was not even required to be failing-listed, but the closely-related a/b/c... same-file issue297 tests are failing, and c is the canonical direct match for R1's stated observable.)",
+    "confidence": "High"
+  }
+}

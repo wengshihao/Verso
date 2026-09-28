@@ -1,0 +1,133 @@
+{
+  "task_id": "scikit-learn__scikit-learn-11346",
+  "status": "ok",
+  "duration_seconds": 307.64289791695774,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-11346",
+    "s_vis": [
+      {
+        "id": "Svis1",
+        "statement": "SparseCoder with transform_algorithm='omp' and n_jobs>1 (e.g. 8) must return a sparse-code result matrix rather than raising 'ValueError: assignment destination is read-only' when the input data has enough rows that joblib transports the covariance/gram/data as read-only arrays to the parallel workers (reported for data_dims above ~2000, reliably at 5000).",
+        "subject": "SparseCoder.transform / decomposition.sparse_encode (algorithm='omp', n_jobs>1)",
+        "hunk_ids": [],
+        "cited_from": "Issue repro: \"When I run `SparseCoder` with n_jobs > 1, there is a chance to raise exception `ValueError: assignment destination is read-only`.\" ... code: \"c = SparseCoder(init_dict , transform_algorithm='omp', n_jobs=8).fit_transform(data)\" ... \"Once `data_dims` is bigger than 2000, there is a chance to get the exception. When `data_dims` is bigger than 5000, it is 100% raised.\""
+      },
+      {
+        "id": "Svis2",
+        "statement": "The omp sparse-encoding path must not attempt an in-place write to a read-only covariance buffer: when the Gram-OMP routine is reached with a covariance column that lives in read-only (memmapped) storage, it must mutate only writable working copies instead of executing the in-place row swap 'Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active]' on the read-only array.",
+        "subject": "orthogonal_mp_gram / _gram_omp invoked from dict_learning omp branch (sklearn.linear_model.omp, sklearn.decomposition.dict_learning._sparse_encode)",
+        "hunk_ids": [],
+        "cited_from": "Sub-process traceback (dict_learning.pyc in _sparse_encode): \"new_code = orthogonal_mp_gram( Gram=gram, Xy=cov, n_nonzero_coefs=int(regularization), tol=None, norms_squared=row_norms(X, squared=True), copy_Xy=copy_cov).T\" and (omp.pyc in _gram_omp): \"Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active]\" -> \"ValueError: assignment destination is read-only\", with the worker frame showing \"X=memmap(...), cov=memmap(...)\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When copy_Xy is False but the supplied Xy array is not writeable (e.g. read-only or memmap-backed), _gram_omp no longer raises an error from its in-place coefficient-swapping; it makes an internal copy of Xy and returns the same coefficients it would have produced if Xy were writeable.",
+        "subject": "_gram_omp (private helper in sklearn/linear_model/omp.py), behavior given a non-writeable Xy with copy_Xy=False",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "orthogonal_mp_gram no longer raises when called with copy_Xy=False and a non-writeable (read-only, e.g. memmap-backed) Xy: it makes a writable internal copy of Xy before the per-target OMP loop and returns the correct coefficients for every target instead of attempting in-place swaps directly on the caller's read-only array.",
+        "subject": "orthogonal_mp_gram (sklearn/linear_model/omp.py), behavior given a non-writeable Xy with copy_Xy=False",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis1",
+          "Svis2"
+        ],
+        "rationale": "Svis1/Svis2 document the read-only in-place-swap crash and loosely state the OMP path must operate on writable working copies, but neither pins down that _gram_omp specifically makes an internal copy conditioned on copy_Xy=False plus a non-writeable Xy and returns identical coefficients. The visible evidence does not disambiguate this from an upstream fix in orthogonal_mp_gram, so the exact behavior is ambiguous."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "Svis1",
+          "Svis2"
+        ],
+        "rationale": "The visible evidence (memmap Xy passed to orthogonal_mp_gram with copy_Xy=copy_cov, crash at the _gram_omp swap line) grounds the problem and the coarse direction of using writable copies, but it does not specify that orthogonal_mp_gram (rather than _gram_omp) makes a writable copy before its per-target loop conditioned on copy_Xy=False and non-writeability, nor the exact-coefficient guarantee. Genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_orthogonal_mp_gram_readonly_R1",
+      "test_source": "def test_orthogonal_mp_gram_readonly_R1():\n    import numpy as np\n    from sklearn.linear_model import orthogonal_mp_gram\n    X = np.random.RandomState(0).randn(20, 10)\n    y = np.random.RandomState(1).randn(20)\n    G = np.dot(X.T, X)\n    Xy = np.dot(X.T, y)\n    G_readonly = G.copy()\n    G_readonly.setflags(write=False)\n    Xy_readonly = Xy.copy()\n    Xy_readonly.setflags(write=False)\n    coef = orthogonal_mp_gram(G_readonly, Xy_readonly, n_nonzero_coefs=5, copy_Xy=False)\n    coef_writable = orthogonal_mp_gram(G, Xy, n_nonzero_coefs=5, copy_Xy=False)\n    np.testing.assert_array_almost_equal(coef, coef_writable)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: ValueError: assignment destination is read-only at sklearn/linear_model/omp.py:241 (inside _gram_omp's in-place swap Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active])",
+      "explanation": "R1 says that when copy_Xy=False but the supplied Xy is not writeable, _gram_omp must no longer raise an error from its in-place coefficient-swapping; it must internally copy Xy and return the same coefficients it would produce if Xy were writeable.\n\nThe genuinely-hidden oracle regression test encoding this behavior is test_orthogonal_mp_gram_readonly (named among the tests currently failing against the buggy program; the visible test_omp.py does not contain it, so the R1-encoding assertion is hidden from repair systems). I reconstructed that assertion faithfully: build Gram/Xy, mark Xy (and Gram) read-only via setflags(write=False), call orthogonal_mp_gram(..., n_nonzero_coefs=5, copy_Xy=False), and compare against the same call with writeable arrays.\n\nEffectively, copy_Xy=False + read-only Xy reaches _gram_omp with copy_Xy=False; on the buggy program _gram_omp performs `Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active]` on the read-only Xy (omp.py:241) and raises ValueError(\"assignment destination is read-only\"). The gold program instead makes an internal copy of the non-writeable Xy and returns the same coefficients as the writeable path.\n\nConfirmed mechanically with this exact test source:\n- against buggy: FAILED, ValueError raised at omp.py:241 in _gram_omp (the exact bug R1 describes).\n- against gold:  PASSED (internal copy made, coefficients equal to writeable-input result).\n\nThis witnesses the same behavior R1 claims: a non-writeable Xy with copy_Xy=False no longer errors and yields the same coefficients as a writeable Xy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction uses SparseCoder constructor: `SparseCoder(init_dict, transform_algorithm='omp', n_jobs=8).fit_transform(data)` with init_dict shape (500,64) and data shape (data_dims,64); SparseCoder.__init__ stores dictionary copy as self.components_."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "SparseCoder.transform calls sparse_encode(X, self.components_, algorithm=self.transform_algorithm, n_nonzero_coefs=..., alpha=..., n_jobs=self.n_jobs) in sklearn/decomposition/dict_learning.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sparse_encode parallel branch (n_jobs>1) does: code = np.empty((n_samples, n_components)); slices = list(gen_even_slices(n_samples, _get_n_jobs(n_jobs))); then Parallel(...)(delayed(_sparse_encode)(X[this_slice], dictionary, gram, cov[:, this_slice] if cov is not None else None, algorithm, regularization=..., copy_cov=copy_cov, ...)). Because cov is freshly computed via cov = np.dot(dictionary, X.T) when cov is None, copy_cov was set False, so each worker's cov slice is not copied and gets mutated in place by omp."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For algorithm='omp', _sparse_encode calls `orthogonal_mp_gram(Gram=gram, Xy=cov, n_nonzero_coefs=..., tol=None, norms_squared=row_norms(X, squared=True), copy_Xy=copy_cov).T`; with copy_Xy=False and read-only memmapped cov, _gram_omp raises ValueError on `Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active]`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "copy_cov docstring: 'copy_cov : boolean, optional; Whether to copy the precomputed covariance matrix; if False, it may be overwritten.'"
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing regression tests live in sklearn/decomposition/tests/test_dict_learning.py: test_dict_learning_reconstruction_parallel (n_jobs=-1, transform omp/lasso_lars on small X) asserts np.dot(code, dico.components_) ≈ X; test_dict_learning_lassocd_readonly_data uses TempMemmap(X) (read-only memmap mode 'r') + n_jobs=-1 for algorithm lasso_cd (avoids any in-place overwrite need); TempMemmap/create_memmap_backed_data helpers are in sklearn/utils/testing.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Positive constraint (positive_code flag) for 'omp' algorithm raises ValueError ('Positive constraint not supported for \"omp\" coding method.') in _sparse_encode — relevant only if touching that branch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In sklearn/utils/testing.py, DONT_TEST list includes 'SparseCoder', so generic estimator-checks do not exercise SparseCoder; failure slips through and needs targeted test coverage."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_gram_omp is a module-private helper in sklearn/linear_model/omp.py that mutates Xy in place (Xy[n_active], Xy[lam] alias-swap, alpha = Xy); its signature keeps a copy_Xy parameter defaulting True."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "orthogonal_mp_gram (public wrapper) is what dict_learning.sparse_encode/_sparse_encode reaches for the 'omp' algorithm via orthogonal_mp_gram(..., copy_Xy=copy_cov), where copy_cov is False when the covariance was freshly computed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After H2, orthogonal_mp_gram always calls _gram_omp with copy_Xy=False, so every per-target writability guarantee now rests on the single up-front copy made in orthogonal_mp_gram (H1) and/or _gram_omp's own non-writeable guard (H0) — the comment 'Make the copy once instead of many times in _gram_omp itself' notes this is partly a performance-motivated consolidation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'may be overwritten when copy_Xy=False' semantics are only reachable for writeable inputs both before and after the patch; for non-writeable inputs the copy is now mandatory."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (_gram_omp (private helper in sklearn/linear_model/omp.py), behavior given a non-writeable Xy with copy_Xy=False): When copy_Xy is False but the supplied Xy array is not writeable (e.g. read-only or memmap-backed), _gram_omp no longer raises an error from its in-place coefficient-swapping; it makes an internal copy of Xy and returns the same coefficients it would have produced if Xy were writeable. — not entailed by S_vis (Svis1/Svis2 document the read-only in-place-swap crash and loosely state the OMP path must operate on writable working copies, but neither pins down that _gram_omp specifically makes an internal copy conditioned on copy_Xy=False plus a non-writeable Xy and returns identical coefficients. The visible evidence does not disambiguate this from an upstream fix in orthogonal_mp_gram, so the exact behavior is ambiguous.); confirmed by a oracle witness: R1 says that when copy_Xy=False but the supplied Xy is not writeable, _gram_omp must no longer raise an error from its in-place coefficient-swapping; it must internally copy Xy and return the same coefficients it would produce if Xy were writeable.\n\nThe genuinely-hidden oracle regression test encoding this behavior is test_orthogonal_mp_gram_readonly (named among the tests currently failing against the buggy program; the visible test_omp.py does not contain it, so the R1-encoding assertion is hidden from repair systems). I reconstructed that assertion faithfully: build Gram/Xy, mark Xy (and Gram) read-only via setflags(write=False), call orthogonal_mp_gram(..., n_nonzero_coefs=5, copy_Xy=False), and compare against the same call with writeable arrays.\n\nEffectively, copy_Xy=False + read-only Xy reaches _gram_omp with copy_Xy=False; on the buggy program _gram_omp performs `Xy[n_active], Xy[lam] = Xy[lam], Xy[n_active]` on the read-only Xy (omp.py:241) and raises ValueError(\"assignment destination is read-only\"). The gold program instead makes an internal copy of the non-writeable Xy and returns the same coefficients as the writeable path.\n\nConfirmed mechanically with this exact test source:\n- against buggy: FAILED, ValueError raised at omp.py:241 in _gram_omp (the exact bug R1 describes).\n- against gold:  PASSED (internal copy made, coefficients equal to writeable-input result).\n\nThis witnesses the same behavior R1 claims: a non-writeable Xy with copy_Xy=False no longer errors and yields the same coefficients as a writeable Xy.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "task_id": "scikit-learn__scikit-learn-10899",
+  "status": "ok",
+  "duration_seconds": 251.0211447920883,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-10899",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Assigning an idf weighting vector to the `idf_` attribute of a `TfidfTransformer` instance (e.g. `t.idf_ = <saved idf vector>`) must not raise and must store that vector as the transformer's learned idf weights, so that the transformer can then be used (its `transform`, given a count matrix with matching n_features, applies those idf weights) without being refit on any corpus.",
+        "subject": "TfidfTransformer.idf_ setter",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction:\n```\nt = TfidfTransformer()\nt.set_params(**TFtransformer.get_params())\n#Now here comes the problem :\n#2 potential solutions\nt.set_params(**{'idf':TFtransformer.idf_})\nt.idf_ = TFtransformer.idf_\n```\n\"there is no way to set `idf_`\" ... \"In the second case, i suppose that encapsulation forbids the direct setting ... both return an error. I think that being able to reproduce a fitted object (even if it is only for non-classifier objects) without having to recompute it at each launch would benefit a lot of applications.\"\nSource: `TfidfTransformer` currently defines only a property getter (no setter): `@property\ndef idf_(self): ... return np.ravel(self._idf_diag.sum(axis=0))` and `transform` uses `check_is_fitted(self, '_idf_diag', ...)` then `X = X * self._idf_diag`."
+      },
+      {
+        "id": "R2",
+        "statement": "A fitted `TfidfTransformer` must be reconstructible from its constructor parameters (`get_params()`) plus its saved learned idf weights (`idf_`) — i.e., after restoring params via `set_params` and supplying the saved idf vector, the rebuilt instance must behave identically to the original fitted transformer without recomputing idf from training data.",
+        "subject": "TfidfTransformer persistence/reproduction",
+        "hunk_ids": [],
+        "cited_from": "\"I'm currently trying to persist a `TfidfTransformer` by basically saving its parameters in a mongoDB database and then rebuilding it alike. This technique works for `CountVectorizer` but simply blocks for `TfidfTransformer` as there is no way to set `idf_`.\" and the code `t.set_params(**TFtransformer.get_params())` followed by the attempts to assign `TFtransformer.idf_` described in the issue. Attr docstring context in source: TfidfVectorizer documents \"`idf_` : array, shape = [n_features], or None — The learned idf vector (global term weights) when ``use_idf`` is set to True\". No correction/computation on the original matrix should be required: \"I obviously want to avoid keeping the matrix on which it has been fitted as it would completely mess up the architecture\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "TfidfTransformer.idf_ is writable: assigning an iterable of IDF weights to transformer.idf_ is accepted (coerced to a float64 array) and stored, so that a subsequent read of transformer.idf_ returns those weights as a float64 array of equal length and a subsequent transform() weights input columns by the assigned values without requiring a prior fit() call.",
+        "subject": "TfidfTransformer.idf_ settable / used by transform",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "TfidfVectorizer.idf_ is writable: assigning an iterable of IDF weights to vectorizer.idf_ propagates them to the inner TfidfTransformer so that they become readable via vectorizer.idf_ and are used for weighting in transform(), overriding the need for them to be learned by fit().",
+        "subject": "TfidfVectorizer.idf_ settable / delegation to inner transformer",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Assigning an idf_ value to a TfidfVectorizer whose fitted vocabulary has size M, when the assigned value has length different from M, raises a ValueError whose message states that the idf length must equal the vocabulary size.",
+        "subject": "TfidfVectorizer.idf_ setter vocabulary-size check",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly pins that assigning an idf_ vector to a TfidfTransformer must not raise, must be stored as its learned weights, and must be applied by transform without a refit — matching the writable/stored/used-by-transform behavior S_impl R1 describes; the float64/equal-length detail is consistent with the cited source's ravel of _idf_diag."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis concerns only the TfidfTransformer (settable idf_ and transformer persistence); nothing anywhere mentions TfidfVectorizer's idf_ setter or propagation/delegation to an inner TfidfTransformer, so this specific behavior is unsupported."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis requirement mentions TfidfVectorizer, vocabulary-size validation, or a ValueError whose message requires idf length to equal vocabulary size, so this requirement is not covered by visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_tfidf_vectorizer_setter (idf_ propagation to inner TfidfTransformer)",
+      "test_source": "import numpy as np\nfrom sklearn.feature_extraction.text import TfidfVectorizer, TfidfTransformer\n\ndef test_R2():\n    v = TfidfVectorizer(use_idf=True)\n    docs = [\"a cat sat\", \"a dog sat\"]\n    v.fit(docs)\n    n = len(v.get_feature_names())\n    weights = np.ones(n) * 2.0\n    v.idf_ = weights\n    assert np.allclose(v.idf_, weights)\n    assert np.allclose(v._tfidf.idf_, weights)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AttributeError: can't set attribute (at v.idf_ = weights on TfidfVectorizer)",
+      "explanation": "The oracle (sklearn/feature_extraction/tests/test_text.py) contains the newly-added hidden setter tests that the harness reports as currently failing against the buggy program: test_transformer_idf_setter, test_tfidf_vectorizer_setter, and test_tfidfvectorizer_invalid_idf_attr. These tests exercise exactly the R2 behavior: making TfidfVectorizer.idf_ writable and having the assignment propagate into the inner TfidfTransformer (_tfidf.idf_) so it is both readable through vectorizer.idf_ and used for weighting, as well as the length-mismatch validation.\n\nThe whole feature_extraction test module (test_text.py, test_dict_vectorizer.py, test_feature_hasher.py, test_image.py) is [VISIBLE]; none of its viewable tests exercise an idf_ setter. The idf_ setter is tested only by the hidden setter tests surfaced in the failing list (the [VISIBLE] file contains only the getter assertion `test_tfidfvectorizer_export_idf` and the delegation-property test `test_tfidf_vectorizer_setters` for norm/use_idf/etc., never an idf_ assignment). Because the real witness for R2 is contained in this hidden addition, I reconstructed the R2 assertion and confirmed it mechanically: assigning an iterable of IDF weights to a fitted TfidfVectorizer's idf_ then reading back vectorizer.idf_ and inner _tfidf.idf_ passes against the gold program and fails against the buggy program (`AttributeError: can't set attribute` at `v.idf_ = ...`), demonstrating the gold patch adds the missing setter/propagation that R2 commits to."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The core class is `TfidfTransformer` in sklearn/feature_extraction/text.py; its learned weights are stored as the sparse diagonal `self._idf_diag`, and `idf_` is currently a read-only @property returning `np.ravel(self._idf_diag.sum(axis=0))`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`TfidfVectorizer` (same file) subclasses `CountVectorizer` and wraps an inner `TfidfTransformer` at `self._tfidf`; it exposes `norm`/`use_idf`/`smooth_idf`/`sublinear_tf` as delegating property+setter pairs and exposes `idf_` as a read-only @property delegating to `self._tfidf.idf_`. Consequently `TfidfVectorizer.idf_ = ...` is presently also impossible (no setter)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test suite (sklearn/feature_extraction/tests/test_text.py) covers only the idf getter (e.g. `test_tfidfvectorizer_export_idf` asserts `vect.idf_ == vect._tfidf.idf_`; `test_vectorizer` asserts `len(t1.idf_) == len(v1.vocabulary_)` and that a `use_idf=False` transformer has no `idf_`) and contains no test exercising an idf setter — the settable behavior is established solely by the issue request."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For `use_idf=True` the fit/transform path uses `sp.spdiags(idf, ...)` to build `_idf_diag` of shape (n_features, n_features), so `transform` can do `X = X * _idf_diag`; any mechanism setting idf weights would need to keep this and the n_features consistency check in `transform` coherent."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`set_params`/`get_params` (sklearn/base.py) only handle constructor parameters introspected from `__init__`; there is no `idf`/`idf_` constructor parameter on either class, which is why the `set_params(**{'idf': ...})` attempt fails."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H0 and H2 are documentation-only: they add 'Attributes' docstring sections stating that the idf_ attribute has shape (n_features) and is defined only when use_idf is True, on TfidfTransformer and TfidfVectorizer respectively. No behavioral change is introduced by these hunks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TfidfTransformer.idf_ was previously a read-only @property whose getter returned np.ravel(self._idf_diag.sum(axis=0)); H1 adds its setter. Because the fit path stores weights in the same self._idf_diag sparse CSR diagonal, the H1 setter (rebuilding _idf_diag via sp.spdiags) keeps transform's n_features consistency check working for manually-set weights."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Assigning idf_ on either class makes the attribute present even when use_idf=False or without fit(), whereas in the buggy code idf_ was only readable after fit with use_idf=True."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The TfidfVectorizer.idf_ setter (H3) calls _validate_vocabulary() first, which may set vocabulary_ when a constructor vocabulary was provided; the vocabulary-size equality check is only performed if vocabulary_ exists at assignment time."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (TfidfVectorizer.idf_ settable / delegation to inner transformer): TfidfVectorizer.idf_ is writable: assigning an iterable of IDF weights to vectorizer.idf_ propagates them to the inner TfidfTransformer so that they become readable via vectorizer.idf_ and are used for weighting in transform(), overriding the need for them to be learned by fit(). — not entailed by S_vis (S_vis concerns only the TfidfTransformer (settable idf_ and transformer persistence); nothing anywhere mentions TfidfVectorizer's idf_ setter or propagation/delegation to an inner TfidfTransformer, so this specific behavior is unsupported.); confirmed by a oracle witness: The oracle (sklearn/feature_extraction/tests/test_text.py) contains the newly-added hidden setter tests that the harness reports as currently failing against the buggy program: test_transformer_idf_setter, test_tfidf_vectorizer_setter, and test_tfidfvectorizer_invalid_idf_attr. These tests exercise exactly the R2 behavior: making TfidfVectorizer.idf_ writable and having the assignment propagate into the inner TfidfTransformer (_tfidf.idf_) so it is both readable through vectorizer.idf_ and used for weighting, as well as the length-mismatch validation.\n\nThe whole feature_extraction test module (test_text.py, test_dict_vectorizer.py, test_feature_hasher.py, test_image.py) is [VISIBLE]; none of its viewable tests exercise an idf_ setter. The idf_ setter is tested only by the hidden setter tests surfaced in the failing list (the [VISIBLE] file contains only the getter assertion `test_tfidfvectorizer_export_idf` and the delegation-property test `test_tfidf_vectorizer_setters` for norm/use_idf/etc., never an idf_ assignment). Because the real witness for R2 is contained in this hidden addition, I reconstructed the R2 assertion and confirmed it mechanically: assigning an iterable of IDF weights to a fitted TfidfVectorizer's idf_ then reading back vectorizer.idf_ and inner _tfidf.idf_ passes against the gold program and fails against the buggy program (`AttributeError: can't set attribute` at `v.idf_ = ...`), demonstrating the gold patch adds the missing setter/propagation that R2 commits to.",
+    "confidence": "High"
+  }
+}

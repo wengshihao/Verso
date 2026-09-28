@@ -1,0 +1,139 @@
+{
+  "task_id": "Cli-39",
+  "status": "ok",
+  "duration_seconds": 130.44697101799966,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "Cli-39",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For an option whose value resolves through the EXISTING_FILE_VALUE branch (FileInputStream/`<` pattern), parsing a value naming an existing readable file must yield a FileInputStream instance (not a File).",
+        "subject": "TypeHandler.createValue(String,Object/Class) / existing-file option value",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"Option parser type EXISTING_FILE_VALUE not check file existing ... the expected behavior for the return value is the same type, which the user passed.\"; post-fix snippet \"FileInputStream file = (FileInputStream) cline.getParsedOptionValue(\"f\"); // it returns \"File\" object, without check File exist.\". Test testExistingFilePattern: \"final CommandLine line = parser.parse(options, new String[] { \"-g\", \"src/test/resources/existing-readable.file\" }); ... assertTrue(\"option g not FileInputStream\", parsedReadableFileStream instanceof FileInputStream);\""
+      },
+      {
+        "id": "R2",
+        "statement": "For an option whose value resolves through the EXISTING_FILE_VALUE branch (FileInputStream/`<` pattern), parsing a value naming a file that does not exist must not yield a File object/stream for that path — per the visible test the parsed option value must be null.",
+        "subject": "TypeHandler.createValue(String,Object/Class) / existing-file option value (nonexistent path)",
+        "hunk_ids": [],
+        "cited_from": "Test testExistingFilePatternFileNotExist: \"final CommandLine line = parser.parse(options, new String[] { \"-f\", \"non-existing.file\" }); assertNull(\"option f parsed\", line.getOptionObject(\"f\"));\" (contrasted with current createValue code where the EXISTING_FILE_VALUE branch does \"return createFile(str);\" which unconditionally constructs a File and never checks existence: \"public static File createFile(final String str) { return new File(str); }\")"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "TypeHandler.openFile(String str) returns a FileInputStream opened on the file at the given path when that file exists and can be opened.",
+        "subject": "TypeHandler.openFile",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the file at the given path cannot be opened because it does not exist (a FileNotFoundException occurs), TypeHandler.openFile(String str) throws a ParseException rather than returning or propagating the FileNotFoundException, and the ParseException message is \"Unable to find file: \" followed by str.",
+        "subject": "TypeHandler.openFile",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "In TypeHandler.createValue, when clazz equals PatternOptionBuilder.EXISTING_FILE_VALUE the returned value is a FileInputStream opened on str (rather than merely a File object created without existence checking): an existing file yields a FileInputStream for that file, and a nonexistent file yields a ParseException.",
+        "subject": "TypeHandler.createValue (EXISTING_FILE_VALUE branch)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only pins createValue-level behavior (EXISTING_FILE_VALUE branch yielding a FileInputStream for an existing file); nothing in the visible issue/test evidence mentions an openFile(String) helper method or specifies that such a method returns a FileInputStream for an existing file. The introduction of that helper is an internal implementation detail not visible."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions openFile, catching FileNotFoundException, throwing ParseException with message \"Unable to find file: \", or propagation details. This exception contract is entirely the developer's implementation commitment with no visible support."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The existing-file half (existing file yields a FileInputStream) is supported by S_vis R1's issue/test evidence. But the nonexistent-file half (yields a ParseException) conflicts with S_vis R2, whose visible test asserts the parsed value is null after a successful parse with no surfaced ParseException; whether a ParseException occurs internally at createValue is ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "witnessR1OpenFileOnExistingFile",
+      "test_source": "@org.junit.Test\n    public void witnessR1OpenFileOnExistingFile() throws Exception {\n        java.io.File f = java.io.File.createTempFile(\"cli-witness\", \".txt\");\n        f.deleteOnExit();\n        java.io.FileInputStream in = org.apache.commons.cli.TypeHandler.openFile(f.getPath());\n        org.junit.Assert.assertNotNull(\"openFile should return a FileInputStream for an existing readable file\", in);\n        in.close();\n    }",
+      "gold_result": "PASSED (gold implements openFile returning a FileInputStream; compiles and assertion passes against a real temp file)",
+      "buggy_result": "FAILED — compile error \"cannot find symbol: method openFile(String)\" because the buggy revision contains only the orphaned javadoc block for openFile with no method body, so the openFile method does not exist at all.",
+      "explanation": "R1 requires TypeHandler.openFile(String) to return a FileInputStream opened on the file at the given path when that file exists and is readable. In the gold revision this method exists and returns `new FileInputStream(str)`. In the buggy revision the method body is entirely absent — only its orphaned javadoc block sits above createFiles, so TypeHandler.openFile is not resolvable. This direct witness creates a guaranteed-existing, readable temp file at runtime and calls TypeHandler.openFile(...) on it, asserting a non-null FileInputStream that can be closed. It passes on gold and fails to even compile on buggy (cannot-find-symbol openFile), thereby capturing R1's distinguishing behavior. The only visible oracle exercise of this path (PatternOptionBuilderTest.testExistingFilePattern via the non-verifiable 'g<' resource path src/test/resources/existing-readable.file and indirect createValue route) uses a different input scenario; my witness supplies its own runtime temp file and calls the public openFile API directly, so it is not a restatement of already-visible content."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: src/main/java/org/apache/commons/cli/TypeHandler.java and src/test/java/org/apache/commons/cli/PatternOptionBuilderTest.java. PatternOptionBuilder (source of the EXISTING_FILE_VALUE/FILE_VALUE constants and of parsePattern) is NOT among the visible files; the tests exercise it only via its public parsePattern() API using pattern chars like '<' (existing file) and referencing existing-readable.file / non-existing.file paths."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The 'g<' (existing readable file) and 'f<' (nonexistent file) options in the two PatternOptionBuilder tests both route option values through TypeHandler.createValue; the current EXISTING_FILE_VALUE branch in createValue is: \"else if (PatternOptionBuilder.EXISTING_FILE_VALUE == clazz) { return createFile(str); }\" and createFile just does \"return new File(str);\" — i.e. never checks existence and never opens a FileInputStream."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypeHandler currently has a surplus javadoc block (createFileInputStream) above createFiles whose body is missing/empty — an unresolved/implicit stub in the visible source."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report references a proposed fix commit (github.com/schaumb/commons-cli commit abfcc821) not visible here, and the original JIRA CLI-274."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests reference a resource file src/test/resources/existing-readable.file that is not among the visible/listed files, so whether that check value truly exists on disk at runtime is not verifiable from the visible material alone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The imports for FileInputStream and FileNotFoundException were already present in the buggy source, so the patch required no import additions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the buggy file, a javadoc block describing 'the opened FileInputStream' (with @throws ParseException) sat orphaned directly above createFiles with no corresponding method body; the gold patch correctly attaches that documentation to the newly added openFile method body. This resolves the previously-source-visible 'empty stub' associated with an EXISTING_FILE handler."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "EXISTING_FILE_VALUE handling previously routed through createFile (which simply returns new File(str) and never checks existence or opens a stream); H0 replaces that delegation with openFile, which the two distinct openFile-level requirements (R1/R2) capture."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1 (TypeHandler.openFile returns a FileInputStream on an existing/readable file) is behaviorally exercised in the oracle only by the two listed failing tests, both in src/test/java/org/apache/commons/cli/PatternOptionBuilderTest.java:\n- testExistingFilePattern (pattern \"g<\", asserts getOptionObject returns a FileInputStream for an existing file src/test/resources/existing-readable.file) — genuinely tests that openFile opens a FileInputStream on an existing file, and would pass on gold (FileInputStream) and fail on buggy (which returns a bare File from createFile/createValue). But this whole file is [VISIBLE] content.\n- testExistingFilePatternFileNotExist — concerns the nonexistent-file branch (R2 territory), not the success path R1 describes.\n\nThe only other oracle file, src/test/java/org/apache/commons/cli/CommandLineTest.java ([HIDDEN]), contains no test touching files, FileInputStream, openFile, existing-file patterns, or the '<' parsing route through which openFile is reached. Its tests cover getOptionProperties, getOptions, getParsedOptionValue, and CommandLine.Builder — none related to R1.\n\nPer the requirement that a Witness must rest only on [HIDDEN] assertions, and no [HIDDEN] test exercises openFile's success behavior, no genuine [HIDDEN] witness exists in the oracle for R1. The only test that would demonstrate R1's distinguishing behavior (testExistingFilePattern) is [VISIBLE] and hence cannot serve as a witness. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (TypeHandler.openFile): TypeHandler.openFile(String str) returns a FileInputStream opened on the file at the given path when that file exists and can be opened. — not entailed by S_vis (S_vis only pins createValue-level behavior (EXISTING_FILE_VALUE branch yielding a FileInputStream for an existing file); nothing in the visible issue/test evidence mentions an openFile(String) helper method or specifies that such a method returns a FileInputStream for an existing file. The introduction of that helper is an internal implementation detail not visible.); confirmed by a synthesized witness: R1 requires TypeHandler.openFile(String) to return a FileInputStream opened on the file at the given path when that file exists and is readable. In the gold revision this method exists and returns `new FileInputStream(str)`. In the buggy revision the method body is entirely absent — only its orphaned javadoc block sits above createFiles, so TypeHandler.openFile is not resolvable. This direct witness creates a guaranteed-existing, readable temp file at runtime and calls TypeHandler.openFile(...) on it, asserting a non-null FileInputStream that can be closed. It passes on gold and fails to even compile on buggy (cannot-find-symbol openFile), thereby capturing R1's distinguishing behavior. The only visible oracle exercise of this path (PatternOptionBuilderTest.testExistingFilePattern via the non-verifiable 'g<' resource path src/test/resources/existing-readable.file and indirect createValue route) uses a different input scenario; my witness supplies its own runtime temp file and calls the public openFile API directly, so it is not a restatement of already-visible content.",
+    "confidence": "Medium"
+  }
+}

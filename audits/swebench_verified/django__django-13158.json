@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-13158",
+  "status": "ok",
+  "duration_seconds": 535.3114640419371,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13158",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling .none() on a QuerySet that was produced by a set/combined operation (specifically the result of .union()) yields a QuerySet that evaluates to zero rows (empty), rather than evaluating to the full combined result set.",
+        "subject": "QuerySet.none / Query.set_empty",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"QuerySet.none() on combined queries returns all results.\"; description: \"This Works well [with |]. However, changing the ModelMultipleChoiceField queryset to use union() breaks things... However, if you submit this form while empty (i.e. you didn't select any publications), ALL objects matching the queryset will be added. Using the OR query, NO objects are added, as I'd expect.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When an (empty-submission, non-required) ModelMultipleChoiceField whose queryset was constructed via .union() clears its value (clean() returning self.queryset.none()), saving the resulting M2M value must associate/add no Publication objects — matching the behavior of the | -combined queryset where \"NO objects are added\".",
+        "subject": "forms.ModelMultipleChoiceField.clean / ManyToManyField.save_form_data",
+        "hunk_ids": [],
+        "cited_from": "description: \"The form correctly shows only the matching objects. However, if you submit this form while empty (i.e. you didn't select any publications), ALL objects matching the queryset will be added. Using the OR query, NO objects are added, as I'd expect.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a set-combined Query (one whose combined_queries holds its constituent sub-queries, as built by QuerySet.union / union(all=True) / intersection / difference) is made empty — e.g. by Query.set_limits producing a zero-length range, or by QuerySet.none() calling set_empty() — the emptiness is recursively applied to each combined sub-query as well as to the outer query, so that evaluating the resulting combined queryset returns zero rows instead of the rows contributed by its remaining combined sub-queries.",
+        "subject": "django.db.models.sql.query.Query.set_empty",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Query.clone() (invoked whenever a QuerySet is chained/cloned, including the clone QuerySet.none() makes before it sets the query empty) produces independent clones of each of the source query's combined_queries sub-query objects rather than sharing references to them, so that mutating a clone's combined sub-queries (e.g. recursively emptying them via set_empty) does not alter the source combined queryset's constituent sub-queries.",
+        "subject": "django.db.models.sql.query.Query.clone",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins down the observable contract (none() on a union-combined queryset must evaluate to zero rows), which matches the outcome side of S_impl R1; but S_impl R1 additionally commits to a specific internal recursion of set_empty into each combined_queries sub-query and to triggering emptiness via a zero-length set_limits range, neither of which the visible issue text reveals. Unclear whether the mechanism is required by the visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 describes purely internal clone() behavior (independent clones of combined_queries rather than shared references). Neither S_vis entry or its cited issue text mentions clone(), reference sharing, or sub-query object identity at all, so no visible information would lead a repair system to this specific implementation."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_combined_queries_deep_clone_isolation",
+      "test_source": "def test_combined_queries_deep_clone_isolation():\n    from django.db.models.sql.query import Query\n\n    dummy_model = type('DummyModel', (), {})()\n    outer = Query(dummy_model)\n    sub_a = Query(dummy_model)\n    sub_b = Query(dummy_model)\n    outer.combined_queries = (sub_a, sub_b)\n\n    # Every chained/cloned queryset starts from Query.clone() (the same entry\n    # path QuerySet.none() uses before it sets the query empty), so the clone\n    # must own independent combined sub-query objects rather than references.\n    clone = outer.clone()\n\n    # A genuine clone carries as many combined sub-queries as the source.\n    assert len(clone.combined_queries) == len(outer.combined_queries)\n\n    # Empty (mutate) the clone's own combined sub-query ...\n    clone.combined_queries[0].set_empty()\n    assert clone.combined_queries[0].is_empty()\n\n    # ... which must not alter the source combined queryset's constituent\n    # sub-queries (R2: independent clones, not shared references).\n    assert not sub_a.is_empty()\n    assert not outer.combined_queries[0].is_empty()",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "Target R2 says Query.clone() must produce independent copies of the source query's combined_queries sub-queries rather than sharing references, so mutating a clone's combined sub-queries (e.g. emptying them, as QuerySet.none()'s pre-set_empty clone would need) does not alter the source combined queryset's constituent sub-queries.\n\nThe gold Query.clone() contains `obj.combined_queries = tuple(query.clone() for query in self.combined_queries)`; the buggy clone has no such line, so a clone's combined_queries tuple shares the same sub-Query objects as the source. The witness builds a Query whose `combined_queries` hold two labeled sub-Queries, calls `outer.clone()`, then empties `clone.combined_queries[0]` (the clone's own sub-query) and asserts the source's `sub_a`/combined_queries[0] was NOT emptied.\n\nGold (independent clones): the clone's combined sub-query is a distinct object, so emptying it leaves the source's sub_a non-empty -> assertion holds, test passes.\n\nBuggy (shared references): `clone.combined_queries[0] is sub_a`, so `set_empty()` on it adds a NothingNode to the very sub_a object the source still references, making `sub_a.is_empty()` True -> `assert not sub_a.is_empty()` fails.\n\nThis is purely R2 (clone-time independence/H0); it does not depend on the set_empty recursion behavior (H1). The oracle / visible tests in the repo only cover passing an already-empty queryset INTO union()/intersection()/difference(), never emptying the clone of a combined query and checking the source's internal Query objects are unchanged, so this is not an already-visible assertion. Confirmed by run_test: PASSED on gold and FAILED on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root mechanism visible in django/db/models/sql/compiler.py get_combinator_sql(): combined queries are compiled only from query.combined_queries (django/db/models/query.py _combinator_query), and SQLCompiler.as_sql() in the combinator branch never emits the outer query's WHERE clause, so the NothingNode added by Query.set_empty() (from QuerySet.none()) on a combined-query result never becomes SQL ('WHERE 0'), causing it to evaluate to the full combined result."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Query.combine (django/db/models/query.py __and__/__or__) is a separate path (| queries); .none() on those already works as expected, which is why the | example is fine but the .union() example is not."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests under tests/queries/test_qs_combinators.py (test_union_with_empty_qs etc.) cover empty sub-querysets passed to union(), not calling .none() on the combined result — that case is untested at this revision."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter's classes Publication/Article are illustrative (from Stack Overflow); the Django-repo-visible surfaces are QuerySet/Query and form/db-field code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "QuerySet._combinator_query (django/db/models/query.py) assigns combine=self.query plus other querysets' .query objects directly into clone.query.combined_queries, so a raw combinator query's combined_queries reference the un-cloned constituent queries; the fix's clone-time deep-copy in Query.clone() compensates for that."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "QuerySet.none() clones the queryset (via _chain -> Query.chain -> Query.clone) before calling Query.set_empty(), so the empty-result fix depends on both hunks cooperating: H1 propagates emptiness into combined sub-queries, and H0 isolates those sub-queries in the clone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The NothingNode added by set_empty() is compiled into each combined sub-query's own SELECT (which is wrapped in the set-operation SQL), which is why recursing into combined sub-queries — rather than only the outer where — makes emptiness reach the emitted SQL."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.is_empty() and EmptyQuerySet isinstance detection are unchanged: the outer query still gets a NothingNode added by set_empty(), so those still report the query as empty independent of H1's recursion."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target R2 requires Query.clone() to deep-copy each source query's combined_queries sub-query objects, so that emptying a clone (e.g. QuerySet.none() on a combinator result trigger set_empty which recurses/empties the clone's combined sub-queries) does not mutate the source combined queryset's constituent sub-queries.\n\nI enumerated the oracle test files and read every combinator/clone-relevant test file the oracle contains: tests/queries/test_qs_combinators.py, tests/queries/test_query.py (includes TestQuery and CloneTests material), tests/queries/tests.py (CloneTests, EmptyQuerySetTests, QuerySetBitwiseOperationTests, UnionTests), and tests/queryset_pickle/tests.py. Every one of these files is labeled [VISIBLE] (content a repair system already saw), so no assertion from them can serve as a Witness no matter how well it seemed to match R2.\n\nJudging the content itself: the existing combinator tests (test_union_with_empty_qs, test_intersection_with_empty_qs, test_difference_with_empty_qs, test_count_*_empty_result, etc.) all pass an already-empty queryset (Number.objects.none() or filter(pk__in=[])) AS AN ARGUMENT into union()/intersection()/difference(). None of them invokes QuerySet.none() (or otherwise `set_empty`/empties) ON the constructed combined/combinator queryset, which is the precise scenario R2 describes (clone-time isolation of combined_queries during the clone that QuerySet.none()/Query.chain makes before set_empty). Likewise there is no test asserting independence of a clone's combined_queries from the source's. The notebook notes confirm this: 'that case is untested at this revision.'\n\nA genuine witness therefore does not exist among content that can count as hidden. I additionally tried to establish pass/fail mechanically, but the run_test sandbox cannot load Django app registry / run DB tests (AppRegistryNotReady), and standalone pytest collection found no discoverable DB test either — confirming such a DB-backed combinator test can only run inside the repository's own test runner, in which setting no such test for R2 exists in the oracle.\n\nConclusion: nothing in the real oracle genuinely tests R2's combined_queries deep-clone/emptying behavior, hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.models.sql.query.Query.clone): Query.clone() (invoked whenever a QuerySet is chained/cloned, including the clone QuerySet.none() makes before it sets the query empty) produces independent clones of each of the source query's combined_queries sub-query objects rather than sharing references to them, so that mutating a clone's combined sub-queries (e.g. recursively emptying them via set_empty) does not alter the source combined queryset's constituent sub-queries. — not entailed by S_vis (S_impl R2 describes purely internal clone() behavior (independent clones of combined_queries rather than shared references). Neither S_vis entry or its cited issue text mentions clone(), reference sharing, or sub-query object identity at all, so no visible information would lead a repair system to this specific implementation.); confirmed by a synthesized witness: Target R2 says Query.clone() must produce independent copies of the source query's combined_queries sub-queries rather than sharing references, so mutating a clone's combined sub-queries (e.g. emptying them, as QuerySet.none()'s pre-set_empty clone would need) does not alter the source combined queryset's constituent sub-queries.\n\nThe gold Query.clone() contains `obj.combined_queries = tuple(query.clone() for query in self.combined_queries)`; the buggy clone has no such line, so a clone's combined_queries tuple shares the same sub-Query objects as the source. The witness builds a Query whose `combined_queries` hold two labeled sub-Queries, calls `outer.clone()`, then empties `clone.combined_queries[0]` (the clone's own sub-query) and asserts the source's `sub_a`/combined_queries[0] was NOT emptied.\n\nGold (independent clones): the clone's combined sub-query is a distinct object, so emptying it leaves the source's sub_a non-empty -> assertion holds, test passes.\n\nBuggy (shared references): `clone.combined_queries[0] is sub_a`, so `set_empty()` on it adds a NothingNode to the very sub_a object the source still references, making `sub_a.is_empty()` True -> `assert not sub_a.is_empty()` fails.\n\nThis is purely R2 (clone-time independence/H0); it does not depend on the set_empty recursion behavior (H1). The oracle / visible tests in the repo only cover passing an already-empty queryset INTO union()/intersection()/difference(), never emptying the clone of a combined query and checking the source's internal Query objects are unchanged, so this is not an already-visible assertion. Confirmed by run_test: PASSED on gold and FAILED on buggy.",
+    "confidence": "Medium"
+  }
+}

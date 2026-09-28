@@ -1,0 +1,115 @@
+{
+  "task_id": "scikit-learn__scikit-learn-25973",
+  "status": "ok",
+  "duration_seconds": 230.89371970796492,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-25973",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "SequentialFeatureSelector.fit must run to completion (without raising an IndexError or any other error) and produce support_/a selected feature subset when its `cv` parameter is an iterable of (train, test) index splits such as the generator returned by `LeaveOneGroupOut().split(X, y, groups=groups)`. Because the selector scores every candidate feature subset via cross_val_score, the supplied split iterable must be usable for every one of the many internal cross_val_score calls performed across candidates (not merely the first), i.e. the splits cannot be exhausted after the first evaluation.",
+        "subject": "SequentialFeatureSelector._get_best_new_feature_score / SequentialFeatureSelector.fit (cv parameter)",
+        "hunk_ids": [],
+        "cited_from": "`cv` docstring in sklearn/feature_selection/_sequential.py: \"cv : int, cross-validation generator or an iterable, default=None ... - An iterable yielding (train, test) splits as arrays of indices.\"; issue Expected Results: \"Expected to run without errors\"; issue Actual Results traceback ends \"IndexError: list index out of range ... in _aggregate_score_dicts(scores) ... -> 1930 for key in scores[0]\"; reproduction uses `splits = cv.split(X, y, groups=groups)` then `seq = SequentialFeatureSelector(clf, n_features_to_select=5, scoring='accuracy', cv=splits); seq.fit(X, y)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "SequentialFeatureSelector.fit accepts a `cv` that is a one-shot iterable/generator of (train, test) index splits (normalized once via check_cv at the start of fit into a reusable cross-validator) and evaluates every candidate feature's cross-validated score in every selection iteration against the same complete set of folds. As a result fit does not error after the first usage consumes the iterable, and produces correct support_/n_features_to_select_ even when selection requires multiple scoring passes over the folds (e.g. more than one candidate feature per iteration, or multiple iterations), rather than failing as it would if the exhausted iterable yielded empty fold sets.",
+        "subject": "sklearn.feature_selection._sequential.SequentialFeatureSelector.fit",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2",
+          "H3",
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl_2",
+        "statement": "SequentialFeatureSelector.fit determines the cross-validation splitting strategy once using a classifier-aware check (classifier=True when the wrapped estimator is a classifier and False otherwise), so any cross-validation-driven validation that depends on classifier vs regressor semantics is resolved identically for all fold usages throughout a single fit.",
+        "subject": "sklearn.feature_selection._sequential.SequentialFeatureSelector.fit",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 explicitly states that when cv is a one-shot generator of (train,test) index splits, fit must run to completion and produce support_ because the split iterable must remain usable for every internal cross_val_score call across candidates, not merely the first (i.e., cannot be exhausted after the first evaluation). This pins down the same multi-pass scoring behavior S_impl_1 commits to."
+      },
+      {
+        "requirement_id": "S_impl_2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "Nothing in S_vis (R1 or its cited evidence) mentions determining the cv strategy with a classifier-aware check or distinguishing classifier vs regressor semantics for cross-validation. That behavior is entirely absent from the visible requirements."
+      }
+    ],
+    "target_requirement_id": "S_impl_2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_cv_generator_support",
+      "test_source": "import numpy as np\nfrom sklearn.datasets import make_regression\nfrom sklearn.linear_model import LinearRegression\nfrom sklearn.model_selection import KFold\nfrom sklearn.feature_selection import SequentialFeatureSelector\n\n\ndef test_cv_generator_support():\n    X, y = make_regression(n_samples=20, n_features=5, random_state=0)\n\n    def splits():\n        cv = KFold(n_splits=2, shuffle=True, random_state=0)\n        yield from cv.split(X)\n\n    sfs = SequentialFeatureSelector(\n        LinearRegression(), n_features_to_select=2, cv=splits()\n    )\n    sfs.fit(X, y)\n    assert sfs.get_support(indices=True).shape[0] == 2\n",
+      "gold_result": "PASSED — fit completes with the generator cv, and 2 features are selected.",
+      "buggy_result": "FAILED — IndexError: list index out of range (in _aggregate_score_dicts), because each cross_val_score re-runs check_cv on the raw generator cv; after the first consumption the generator is exhausted, producing zero folds for later candidate evaluations within the same fit.",
+      "explanation": "Requirement S_impl_2 captures that SequentialFeatureSelector.fit normalizes the cv once (via check_cv with classifier awareness) at the top of fit and threads that single re-iterable splitter object into every cross_val_score call, so a one-shot/iterable cv works across all fold usages within one fit. The buggy implementation instead passes the raw self.cv into _get_best_new_feature_score, so each cross_val_score independently consumes the generator: the first fold usage wraps and drains it, and every later candidate evaluation in the same fit sees an exhausted generator → zero folds → IndexError in _aggregate_score_dicts. The witness passes a finite generator of deterministic KFold splits as cv to a multi-round forward selection (n_features_to_select=2 → 2 selection iterations, each scoring multiple candidate features). Discriminates exactly: gold (normalizing cv once) passes; buggy fails with IndexError. Verified by run_test against both programs. Visible content (test_sequential.py and the other oracle test files) contains no test that passes an iterable/generator of splits to SequentialFeatureSelector — all use plain int cv — so this observable behavior is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The selector's scoring loop lives in `_get_best_new_feature_score` (sklearn/feature_selection/_sequential.py), which passes `cv=self.cv` to `cross_val_score` once per candidate feature; `fit` calls `_get_best_new_feature_score` once per selection iteration. So `self.cv` must be iterable many times."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The one-shot exhaustion mechanism: `cross_validate`/`cross_val_score` route an iterable cv through `check_cv`, which wraps a non-splitter iterable in `_CVIterableWrapper(list(cv))` (sklearn/model_selection/_split.py), consuming a generator on first use; subsequent calls on an exhausted generator yield zero folds, and _aggregate_score_dicts then raises IndexError on `scores[0]`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the selector live in sklearn/feature_selection/tests/test_sequential.py; no existing test covers passing an iterable/generator of splits as cv."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cv is declared with the parameter constraint `\"cv\": [\"cv_object\"]` in _sequential.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The whole fix is contained in _sequential.py; the added imports (is_classifier from ..base, check_cv from ..model_selection, lines H0) are mechanical support for the change in fit (H1) and the threading of a single normalized `cv` through _get_best_new_feature_score's signature (H2,H3) into the cross_val_score call (H4)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "check_cv materializes a one-shot iterable into a _CVIterableWrapper(list(cv)) whose underlying list is re-iterated on every split() call, so the single normalized object produced once in fit supplies identical folds to every cross_val_score call."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The classifier-aware split choice (StratifiedKFold for classifier with binary/multiclass y vs KFold otherwise) is not a net new observable behavior for int/None cv, since cross_val_score already applied is_classifier(estimator) internally; it is grouped here because the patch relocates/introduces it at the fit level."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No test in sklearn/feature_selection/tests/test_sequential.py exercises an iterable/generator cv per earlier stage notes."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_2]: I searched the oracle's test suite for a witness of requirement S_impl_2 (SequentialFeatureSelector.fit resolving the cv splitting strategy once via a classifier-aware check in fit, so re-iterable/generator cv works across all fold usages in one fit). The only place such a test could live is sklearn/feature_selection/tests/test_sequential.py, which I read in full (twice to be sure). That entire file is returned labeled [VISIBLE], and it does NOT even contain the reported failing test test_cv_generator_support — nor any test that passes an iterable/generator of splits as cv (the only cv values used anywhere in the file are plain ints such as cv=2). The other feature_selection test files (test_rfe.py, test_feature_select.py) concern RFE/RFECV or univariate selection and contain no SequentialFeatureSelector cross-validation/cv-normalization test; they are also [VISIBLE]. Per the governing rule, a Witness may rest only on [HIDDEN] assertions, and every assertion relevant to S_impl_2 that I could read is within [VISIBLE] content. Since there is no accessible [HIDDEN] assertion in the oracle that tests this behavior, no genuine [HIDDEN] witness exists for me to build/test, and I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_2] (sklearn.feature_selection._sequential.SequentialFeatureSelector.fit): SequentialFeatureSelector.fit determines the cross-validation splitting strategy once using a classifier-aware check (classifier=True when the wrapped estimator is a classifier and False otherwise), so any cross-validation-driven validation that depends on classifier vs regressor semantics is resolved identically for all fold usages throughout a single fit. — not entailed by S_vis (Nothing in S_vis (R1 or its cited evidence) mentions determining the cv strategy with a classifier-aware check or distinguishing classifier vs regressor semantics for cross-validation. That behavior is entirely absent from the visible requirements.); confirmed by a synthesized witness: Requirement S_impl_2 captures that SequentialFeatureSelector.fit normalizes the cv once (via check_cv with classifier awareness) at the top of fit and threads that single re-iterable splitter object into every cross_val_score call, so a one-shot/iterable cv works across all fold usages within one fit. The buggy implementation instead passes the raw self.cv into _get_best_new_feature_score, so each cross_val_score independently consumes the generator: the first fold usage wraps and drains it, and every later candidate evaluation in the same fit sees an exhausted generator → zero folds → IndexError in _aggregate_score_dicts. The witness passes a finite generator of deterministic KFold splits as cv to a multi-round forward selection (n_features_to_select=2 → 2 selection iterations, each scoring multiple candidate features). Discriminates exactly: gold (normalizing cv once) passes; buggy fails with IndexError. Verified by run_test against both programs. Visible content (test_sequential.py and the other oracle test files) contains no test that passes an iterable/generator of splits to SequentialFeatureSelector — all use plain int cv — so this observable behavior is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

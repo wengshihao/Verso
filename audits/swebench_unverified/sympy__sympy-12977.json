@@ -1,0 +1,108 @@
+{
+  "task_id": "sympy__sympy-12977",
+  "status": "ok",
+  "duration_seconds": 764.7550672499929,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-12977",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Applying an undefined function with zero arguments — e.g. after `f = Function('f')`, calling `f()` — must be allowed and construct the applied-undefined-function object without raising ValueError (the crash currently arises from `max() arg is an empty sequence` in Function.__new__, which computes `max(cls._should_evalf(a) for a in result.args)` over the empty argument tuple).",
+        "subject": "sympy.core.function.Function.__new__ (and AppliedUndef/undefined-function application path)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"nullary functions should be allowed\"; traceback shows: `--> 284  pr = max(cls._should_evalf(a) for a in result.args)` then `ValueError: max() arg is an empty sequence` following input `In [34]: f()`."
+      },
+      {
+        "id": "R2",
+        "statement": "Explicit subclasses of Function declared with zero-argument arity (e.g. a subclass with `nargs = 0`, or a classmethod eval that takes no arguments so that `_getnargs` yields 0) must also be constructible/applicable with no arguments without raising ValueError from the empty-args max/min evalf logic.",
+        "subject": "sympy.core.function.Function subclasses with zero-argument signature",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"It should also work with explicit subclasses of Function.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "IMPL-1",
+        "statement": "Function.__new__ (and the Function-subclass/AppliedUndef construction that routes through it) successfully constructs and returns a zero-argument function instance (result.args empty) rather than raising an exception from iterating over the empty argument list inside the automatic evalf logic.",
+        "subject": "Function.__new__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "IMPL-2",
+        "statement": "For a Function instance with a non-empty argument list, __new__ performs the automatic numeric evalf exactly when evaluate is enabled, the constructed object is an instance of the class, and every argument is one that should be auto-evalf'd (all return positive _should_evalf precision); in that case it returns the result numerically evaluated to a number of decimal places derived from the maximum argument precision. When evaluate is disabled, the object is not an instance of the class, or the instance has no arguments, no auto-evaluation occurs and the constructed result is returned as-is.",
+        "subject": "Function.__new__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "IMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 directly states that calling an undefined function with zero args (f()) must construct the applied-undefined-function object without the ValueError from max over empty result.args in Function.__new__; R2 extends this to explicit Function subclasses with zero-argument arity, both covering the construct-and-return-no-crash behavior IMPL-1 describes."
+      },
+      {
+        "requirement_id": "IMPL-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The empty-argument branch of IMPL-2 (no auto-evalf, return as-is) is consistent with R1/R2, since they only demand that f() not crash and the no-args case be allowed. However, the elaborate positive-branch conditions (auto-evalf only when evaluate enabled, instance of the class, all args should_evalf, decimals derived from maximum argument precision) are not described by any visible evidence; the traceback merely reveals max(_should_evalf...args) exists, not the precise triggering conditions or output precision."
+      }
+    ],
+    "target_requirement_id": "IMPL-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_impl2_nullary_return_as_is",
+      "test_source": "def test_witness_impl2_nullary_return_as_is():\n    # IMPL-2: Function.__new__ must not auto-evalf an instance that has no\n    # arguments; when evaluate is on but result.args is empty it must return\n    # the constructed result as-is (not crash on max() of an empty sequence).\n    from sympy import Function\n    f = Function('f')()\n    assert f.args == ()",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: ValueError: max() arg is an empty sequence at sympy/core/function.py:431 (line `pr = max(cls._should_evalf(a) for a in result.args)`) during construction of Function('f')()",
+      "explanation": "IMPL-2 governs the auto-evalf gating in Function.__new__. The gold patch restructures the guard so the max()/min() generator lines over result.args are reached only when evaluate is on AND isinstance(result, cls) AND result.args is non-empty; when those conditions fail, the constructed result is returned as-is (no auto-evalf, no crash). The executable assertion I built constructs a zero-argument undefined Function with evaluation enabled — precisely the \"the instance has no arguments => no auto-evaluation, result returned as-is\" clause of IMPL-2. Buggy Function.__new__ computes `pr = max(...)`/`pr2 = min(...)` over the empty result.args and raises ValueError('max() arg is an empty sequence') at core/function.py:431, while gold skips the block and returns the unevaluated f() whose .args is the empty tuple. I confirmed by running this EXACT source (byte-for-byte) against both programs: PASSED on gold, FAILED on buggy. I also verified the behavior is not pinned down by visible content: the visible test_function.py only checks Function('f', nargs=0).nargs == FiniteSet(0) (definitional, the function is never instantiated), and the visible evalf/should_evalf tests exercise only ordinary arg-bearing predicates that pass on both programs; none constructs a nullary Function instance, so the observed regression is hidden-from-visible and a genuine Witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Both the undefined-function application path (Function('f') returns an AppliedUndef subclass whose instances are built via AppliedUndef.__new__ -> Function.__new__) and direct Function subclass instantiation flow through Function.__new__, so both nullary cases hit the same crash site: lines `pr = max(cls._should_evalf(a) for a in result.args)` / `pr2 = min(...)` which raise ValueError on an empty result.args."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FunctionClass.__init__ already accepts and canonicalizes a zero-arg arity (nargs=0), and test_nargs in sympy/core/tests/test_function.py already asserts `Function('f', nargs=0).nargs == FiniteSet(0)` and raises ValueError only for the empty-tuple form `Function('f', nargs=())`; the undefined default function has nargs Naturals0 which contains 0, so the arity check itself is not the blocker."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The auto-evalf logic guarded by these max/min lines only concerns whether floating-point args should force an evalf; a nullary function has no args and so the crash is the only thing preventing successful construction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch restructures the automatic-evalf gate in Function.__new__: it replaces the early-return form (`if not evaluate or not isinstance(result, cls): return result`, then unconditional max/min over result.args) with a single guarded block that also requires `result.args` non-empty, and folds the evalf result back into `result` before one final `return result`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The zero-argument result path (result.args empty) previously crashed at the `max(...)`/`min(...)` generator lines; the same lines also flow to even a direct Function subclass whose nargs admits 0 (FunctionClass already canonicalizes nargs=0)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [IMPL-2]: Target requirement IMPL-2 concerns Function.__new__ auto-evalf gating (including the \"no args → no auto-evalf, return as-is\" behavior) in sympy/core/function.py. I confirmed by running it that the distinguishing observable is real: constructing a zero-argument Function instance (e.g. Function('f', nargs=0)() or Function('f')()) raises ValueError(\"max() arg is an empty sequence\") on the buggy program at core/function.py:431, while gold returns the unevaluated application as-is.\n\nHowever, a Witness must rest on [HIDDEN] oracle content that genuinely tests this behavior. I examined the natural and adjacent oracle locations — sympy/core/tests/test_function.py (where the Function.__new__/should_evalf/general-function tests live), plus test_evalf.py, test_evaluate.py, test_expr.py, test_args.py, test_arit.py, test_symbol.py, and function-heavy files (test_trigonometric.py, test_complexes.py, simplify/test_function.py, solvers/test_ode.py, stats/test_rv.py). Every one of these files is labeled [VISIBLE], and none contains a test that constructs a zero-argument Function instance or asserts the nullary/auto-evalf gating behavior; the visible test_file test_function.py only checks Function('f', nargs=0).nargs == FiniteSet(0) (definition, never instantiated), exactly why no test currently fails against the buggy program (\"none recorded\"). The crash path is thus an untested-in-visible-content regression.\n\nSince the only observable for IMPL-2 (the zero-arg construction return-as-is/auto-evalf gating) exists solely in [VISIBLE] content or in ordinary co-located single-arg should_evalf tests (test_should_evalf / test_evalf_default) that pass on both and do not test the nullary clause, no genuine [HIDDEN] oracle witness exists that I could locate. I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [IMPL-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[IMPL-2] (Function.__new__): For a Function instance with a non-empty argument list, __new__ performs the automatic numeric evalf exactly when evaluate is enabled, the constructed object is an instance of the class, and every argument is one that should be auto-evalf'd (all return positive _should_evalf precision); in that case it returns the result numerically evaluated to a number of decimal places derived from the maximum argument precision. When evaluate is disabled, the object is not an instance of the class, or the instance has no arguments, no auto-evaluation occurs and the constructed result is returned as-is. — not entailed by S_vis (The empty-argument branch of IMPL-2 (no auto-evalf, return as-is) is consistent with R1/R2, since they only demand that f() not crash and the no-args case be allowed. However, the elaborate positive-branch conditions (auto-evalf only when evaluate enabled, instance of the class, all args should_evalf, decimals derived from maximum argument precision) are not described by any visible evidence; the traceback merely reveals max(_should_evalf...args) exists, not the precise triggering conditions or output precision.); confirmed by a synthesized witness: IMPL-2 governs the auto-evalf gating in Function.__new__. The gold patch restructures the guard so the max()/min() generator lines over result.args are reached only when evaluate is on AND isinstance(result, cls) AND result.args is non-empty; when those conditions fail, the constructed result is returned as-is (no auto-evalf, no crash). The executable assertion I built constructs a zero-argument undefined Function with evaluation enabled — precisely the \"the instance has no arguments => no auto-evaluation, result returned as-is\" clause of IMPL-2. Buggy Function.__new__ computes `pr = max(...)`/`pr2 = min(...)` over the empty result.args and raises ValueError('max() arg is an empty sequence') at core/function.py:431, while gold skips the block and returns the unevaluated f() whose .args is the empty tuple. I confirmed by running this EXACT source (byte-for-byte) against both programs: PASSED on gold, FAILED on buggy. I also verified the behavior is not pinned down by visible content: the visible test_function.py only checks Function('f', nargs=0).nargs == FiniteSet(0) (definitional, the function is never instantiated), and the visible evalf/should_evalf tests exercise only ordinary arg-bearing predicates that pass on both programs; none constructs a nullary Function instance, so the observed regression is hidden-from-visible and a genuine Witness.",
+    "confidence": "Medium"
+  }
+}

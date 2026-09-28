@@ -1,0 +1,146 @@
+{
+  "task_id": "tornado__16",
+  "status": "ok",
+  "duration_seconds": 86.11071016697679,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "tornado__16",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "WaitIterator continues to deliver the results of its futures (invoking next()/recording finished futures) even when no hard reference to the WaitIterator object is kept by the caller, i.e. results are not silently lost when the iterator is only reachable weakly.",
+        "subject": "gen.WaitIterator",
+        "hunk_ids": [],
+        "cited_from": "Issue/visible description: \"Fix WaitIterator when no hard reference is kept.\" Corresponding visible code in WaitIterator.__init__: `self_ref = weakref.ref(self)` ... `future.add_done_callback(functools.partial(self._done_callback, self_ref))` and the staticmethod whose body begins `self = self_ref()` / `if self is not None:`."
+      },
+      {
+        "id": "R2",
+        "statement": "Constructing a WaitIterator with both positional args and keyword args (e.g. gen.WaitIterator(False, bar=False)) raises ValueError.",
+        "subject": "gen.WaitIterator.__init__",
+        "hunk_ids": [],
+        "cited_from": "gen.py: `if args and kwargs: raise ValueError(\"You must provide args or kwargs, not both\")`; gen_test.py WaitIteratorTest.test_empty_iterator: `with self.assertRaises(ValueError): g = gen.WaitIterator(False, bar=False)`"
+      },
+      {
+        "id": "R3",
+        "statement": "For a WaitIterator created with no futures, done() returns True immediately and both current_index and current_future are None.",
+        "subject": "gen.WaitIterator.done",
+        "hunk_ids": [],
+        "cited_from": "gen_test.py WaitIteratorTest.test_empty_iterator: `g = gen.WaitIterator()` / `self.assertTrue(g.done(), 'empty generator iterated')` / `self.assertEqual(g.current_index, None, \"bad nil current index\")` / `self.assertEqual(g.current_future, None, \"bad nil current future\")`"
+      },
+      {
+        "id": "R4",
+        "statement": "next() returns a Future (not the same object as any input future) whose result is the value of the next finished input future, and each iteration sets current_future to that input future and current_index to its position (integer index for positional args, keyword for keyword args); on completion done() resets current_index and current_future to None.",
+        "subject": "gen.WaitIterator.next",
+        "hunk_ids": [],
+        "cited_from": "gen_test.py WaitIteratorTest.test_already_done: for already-done f1,f2,f3 -> `self.assertEqual(g.current_index, 0)`, `self.assertIs(g.current_future, f1)`, `self.assertEqual(r, 24)` etc.; dict form `gen.WaitIterator(f1=f1, f2=f2)` with `if dg.current_index == \"f1\":`; test_iterator: `self.assertEqual(g.current_index, 2, 'wrong index')` and on exception `self.assertIs(g.current_future, futures[0], 'exception future invalid')`; final `self.assertEqual(g.current_index, None, \"bad nil current index\")`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "WaitIterator.next() registers a done-callback on the Future it returns (the running future) that holds a strong reference to the WaitIterator, so that the WaitIterator is not garbage-collected while that returned future is still pending even when the caller retains no other reference to it.",
+        "subject": "tornado.gen.WaitIterator.next",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The done-callback added by WaitIterator.next() to the returned Future has no observable side effect: invoking it neither raises nor modifies the iterator's state (it does not alter _running_future, _unfinished, _finished, current_future, or current_index).",
+        "subject": "tornado.gen.WaitIterator.next",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis R1 only asserts the observable outcome that a WaitIterator keeps delivering results when no hard reference is kept; its cited evidence shows the fix uses weakref.ref(self) plus a None-check, i.e. no strong reference is held by the callback. S_vis never pins down (and in fact contradicts) the specific mechanism of a done-callback holding a strong reference to the WaitIterator. The other S_vis entries (R2/R3/R4) concern ValueError on mixed args, empty-iterator semantics, and next()/current_index behavior, none of which describe this GC-prevention mechanism."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "None of the S_vis entries describe the side-effect-free nature of the done-callback added to the returned future. S_vis R1 concerns GC survival, R2 concerns a ValueError for mixed positional/keyword args, R3 concerns the empty iterator, and R4 concerns next()'s returned-future and current_index/current_future bookkeeping — none pins down that invoking the callback neither raises nor modifies iterator state."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_no_ref",
+      "test_source": "def test_no_ref():\n    from tornado import gen\n    from tornado.ioloop import IOLoop\n\n    @gen.coroutine\n    def f():\n        # No hard reference to the WaitIterator is held anywhere except\n        # (potentially) by the future returned from next().\n        result = yield gen.WaitIterator(gen.sleep(0.01)).next()\n        return result\n\n    IOLoop().run_sync(lambda: f(), timeout=5)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (tornado.ioloop.TimeoutError: Operation timed out after 5 seconds)",
+      "explanation": "The oracle's hidden WaitIteratorTest.test_no_ref (tornado.test.gen_test) is the upstream test that accompanies the fix for \"WaitIterator may be garbage-collected when no reference is held\". It constructs a WaitIterator with no retained hard reference and yields only the Future returned by next(). Under the buggy program, next() registers no done-callback holding a strong reference to the WaitIterator, so the iterator (and its weakref-based _done_callback wiring) is collected, the running future never resolves, and the awaited operation hangs until the timeout — FAIL. Under the gold program, next() registers a callback on the running future that holds self, so the WaitIterator stays alive and the future resolves — PASS. This directly tests R1 (a done-callback holding a strong reference to the WaitIterator on the running future). Note: the visible tornado/test/gen_test.py contains no such test (all its WaitIteratorTest cases keep `g` in a local variable), so this behavior is established only by hidden oracle content."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: tornado/gen.py and tornado/test/gen_test.py only."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "gen.WaitIterator and its tests (class WaitIteratorTest) live in those two files; WaitIterator's docstring documents versionadded 4.1 and describes yielding next() and inspecting current_future/current_index."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The iterator maintains _unfinished (dict future->index/key), _finished (deque), current_index, current_future, _running_future; __init__ registers a _done_callback on each future via a weakref to self."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_done_callback is a staticmethod taking (self_ref, done); it early-returns when self_ref() is None, so with no hard reference the callback becomes a no-op."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "None of the visible tests construct a WaitIterator without keeping a reference (all use `g = gen.WaitIterator(...)` and keep g in scope), so the no-hard-reference case is established only by the issue text, not by a visible test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests use AsyncTestCase/gen_test; WaitIteratorTest is at the bottom of gen_test.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a comment-only change (adds a comment above the existing weakref to self in WaitIterator.__init__); it introduces no behavioral change and therefore no requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "WaitIterator.__init__ still registers _done_callback via functools.partial with a weak reference to self, so the callbacks on the input futures remain weak; the fix supplies the hard reference through the running future's callback table instead."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "WaitIterator._done_callback is a staticmethod taking (self_ref, done); when self_ref() is None it returns without doing anything, so without the running-future callback the iterator's input-future callbacks become no-ops after collection."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The lambda added in next() returns self but its return value is discarded by the Future done-callback machinery, so the only effect channel is the retained reference."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "next() still returns the same _running_future object it creates and still immediately drains _finished via _return_result when results are already queued."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (tornado.gen.WaitIterator.next): WaitIterator.next() registers a done-callback on the Future it returns (the running future) that holds a strong reference to the WaitIterator, so that the WaitIterator is not garbage-collected while that returned future is still pending even when the caller retains no other reference to it. — not entailed by S_vis (S_vis R1 only asserts the observable outcome that a WaitIterator keeps delivering results when no hard reference is kept; its cited evidence shows the fix uses weakref.ref(self) plus a None-check, i.e. no strong reference is held by the callback. S_vis never pins down (and in fact contradicts) the specific mechanism of a done-callback holding a strong reference to the WaitIterator. The other S_vis entries (R2/R3/R4) concern ValueError on mixed args, empty-iterator semantics, and next()/current_index behavior, none of which describe this GC-prevention mechanism.); confirmed by a oracle witness: The oracle's hidden WaitIteratorTest.test_no_ref (tornado.test.gen_test) is the upstream test that accompanies the fix for \"WaitIterator may be garbage-collected when no reference is held\". It constructs a WaitIterator with no retained hard reference and yields only the Future returned by next(). Under the buggy program, next() registers no done-callback holding a strong reference to the WaitIterator, so the iterator (and its weakref-based _done_callback wiring) is collected, the running future never resolves, and the awaited operation hangs until the timeout — FAIL. Under the gold program, next() registers a callback on the running future that holds self, so the WaitIterator stays alive and the future resolves — PASS. This directly tests R1 (a done-callback holding a strong reference to the WaitIterator on the running future). Note: the visible tornado/test/gen_test.py contains no such test (all its WaitIteratorTest cases keep `g` in a local variable), so this behavior is established only by hidden oracle content.",
+    "confidence": "High"
+  }
+}

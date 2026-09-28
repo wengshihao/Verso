@@ -1,0 +1,141 @@
+{
+  "task_id": "django__django-15413",
+  "status": "ok",
+  "duration_seconds": 554.9010675000027,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15413",
+    "s_vis": [
+      {
+        "id": "adapt_log_semantics",
+        "statement": "When load_middleware must adapt an asynchronous middleware so that it runs on a synchronous request path, the middleware-adaptation DEBUG record on the 'django.request' logger must be worded 'Asynchronous middleware <middleware_path> adapted.' (the adjective describing the middleware's own mode, which in this scenario is asynchronous), not 'Synchronous middleware ... adapted.'",
+        "subject": "BaseHandler.adapt_method_mode / BaseHandler.load_middleware debug logging on django.request",
+        "hunk_ids": [],
+        "cited_from": "Issue text describing the (mis-flagged) existing test: 'The test for \"Synchronous middleware ... adapted\" is instead testing an async middleware over a sync method' — MIDDLEWARE=['middleware_exceptions.middleware.async_payment_middleware'] reached via self.client (synchronous), test expecting 'cm.records[0].getMessage()': '\"Synchronous middleware \" \"middleware_exceptions.middleware.async_payment_middleware \" \"adapted.\"'. Since the issue calls this expectation wrong, adapting an async middleware (async_payment_middleware, an @async_only_middleware) into the synchronous request stack must instead log an 'Asynchronous' message."
+      },
+      {
+        "id": "sync_middleware_logged_as_synchronous",
+        "statement": "When Django runs on a synchronous context-load and must adapt a genuine synchronous (sync-only) middleware, the middleware-adaptation DEBUG record on 'django.request' must read 'Synchronous middleware <middleware_path> adapted.' — i.e. the one place 'Synchronous middleware ... adapted' is logged must unambiguously correspond to a synchronous middleware being adapted, as the issue title insists that this message is 'not logged for synchronous middleware' today.",
+        "subject": "BaseHandler.adapt_method_mode / BaseHandler.load_middleware debug logging on django.request",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"'Synchronous middleware ... adapted' is not logged for synchronous middleware\" combined with docs quote in the issue: 'To see what middleware Django has to adapt, you can turn on debug logging for the django.request logger and look for log messages about \"Synchronous middleware … adapted\".'"
+      },
+      {
+        "id": "unlabelled_method_adapt_format_preserved",
+        "statement": "For adaptations made without a middleware name (generic method adaptation of view/process_* hooks, where name is not supplied), when debug is enabled the logger must still emit a record whose text uses the inherited 'method %s()'-style name and reports whether the adapted METHOD is synchronous or asynchronous by that method's true mode (e.g. an asynchronous method is reported with 'Asynchronous' when being adapted into sync mode). A fix must preserve this distinct non-middleware labelling path rather than collapse it into the middleware labelling.",
+        "subject": "BaseHandler.adapt_method_mode debug logging on django.request",
+        "hunk_ids": [],
+        "cited_from": "Proposed fix diff in the issue: it introduces a separate variable so that when no name is passed, method_name = 'method %s()' % method.__qualname__ is used with 'if name: ... else: logger.debug(<adjective> %s adapted., method_name)', contrasting it with middleware adaptations that carry a name; and the existing calls of adapt_method_mode(is_async, mw_instance.process_view) etc. in base.py load_middleware pass no name."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When BaseHandler.adapt_method_mode adapts a synchronous method for an async mode (is_async=True and method_is_async=False) with debug=True, it emits a DEBUG record on the 'django.request' logger whose formatted message is 'Synchronous handler adapted for {name}.'.",
+        "subject": "BaseHandler.adapt_method_mode (django.core.handlers.base)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When BaseHandler.adapt_method_mode adapts an asynchronous method for a sync mode (is_async=False and method_is_async=True) with debug=True, it emits a DEBUG record on the 'django.request' logger whose formatted message is 'Asynchronous handler adapted for {name}.'.",
+        "subject": "BaseHandler.adapt_method_mode (django.core.handlers.base)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "adapt_log_semantics",
+          "sync_middleware_logged_as_synchronous",
+          "unlabelled_method_adapt_format_preserved"
+        ],
+        "rationale": "S_vis only establishes middleware wording ('<Adjective> middleware <path> adapted.') and a no-name path using 'method %s()'-style labels, with the no-name form being produced when no name is passed. R1's exact string 'Synchronous handler adapted for {name}.' — with 'handler', 'adapted for', and a {name} argument — never appears in or follows from any S_vis entry or its cited evidence."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "adapt_log_semantics",
+          "sync_middleware_logged_as_synchronous",
+          "unlabelled_method_adapt_format_preserved"
+        ],
+        "rationale": "Although R2's direction (async method adapted into sync logs an 'Asynchronous' message) is semantically consistent with adapt_log_semantics, S_vis pins that case to the 'Asynchronous middleware <path> adapted.' wording, not to 'Asynchronous handler adapted for {name}.'. No S_vis entry cites 'handler' or an 'X adapted for {name}' message, so the exact R2 formatted message is not entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_adapt_sync_for_async_logs",
+      "test_source": "import logging\nimport unittest\nfrom django.core.handlers.base import BaseHandler\n\ndef sync_method():\n    return 1\n\nclass WitnessTest(unittest.TestCase):\n    def test_adapt_sync_for_async_logs(self):\n        handler = BaseHandler()\n        logger = logging.getLogger(\"django.request\")\n        records = []\n\n        class Cap(logging.Handler):\n            def emit(self, r):\n                records.append(r)\n\n        cap = Cap()\n        logger.addHandler(cap)\n        logger.setLevel(logging.DEBUG)\n        old_propagate = logger.propagate\n        logger.propagate = False\n        try:\n            handler.adapt_method_mode(True, sync_method, method_is_async=False, debug=True, name=\"witness\")\n        finally:\n            logger.removeHandler(cap)\n            logger.propagate = old_propagate\n        msgs = [r.getMessage() for r in records]\n        self.assertIn(\"Synchronous handler adapted for witness.\", msgs)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - AssertionError: 'Synchronous handler adapted for witness.' not found in ['Synchronous witness adapted.']",
+      "explanation": "R1 requires that BaseHandler.adapt_method_mode, when adapting a synchronous method to async (is_async=True, method_is_async=False) with debug=True, emits a DEBUG record on the 'django.request' logger whose message is 'Synchronous handler adapted for {name}.'. Gold/base.py uses logger.debug(\"Synchronous handler adapted for %s.\", name) producing \"Synchronous handler adapted for witness.\", while buggy uses logger.debug(\"Synchronous %s adapted.\", name) producing \"Synchronous witness adapted.\". My test calls adapt_method_mode directly in isolation with a sync method, name=\"witness\", debug=True, is_async=True, method_is_async=False, capturing the emitted 'django.request' records via a custom logging.Handler, and asserts the exact gold-format message is present. It PASSES against gold (message present) and FAILS against buggy (only the wrong-phrasing record present). This is a fresh unit-level assertion with an invented name string, not any assertion already pinned down in the visible middleware tests."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The core logic under test is BaseHandler.adapt_method_mode in django/core/handlers/base.py, which logs DEBUG messages on the 'django.request' logger with the format 'Synchronous <name> adapted.' / 'Asynchronous <name> adapted.'"
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseHandler.load_middleware calls adapt_method_mode passing name=\"middleware %s\" % middleware_path, so a single 'name' placeholder is reused both as a middleware descriptor and as a method descriptor; process_view/process_template_response/process_exception adaptations are made without a name argument (so name falls back to 'method %s()' % method.__qualname__)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant tests live in tests/middleware_exceptions/tests.py (MiddlewareSyncAsyncTests, and MiddlewareNotUsedTests.test_async_and_sync_middleware_chain_async_call), alongside tests/middleware_exceptions/middleware.py, tests/middleware_exceptions/urls.py and views.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the current repo state several of those tests assert the BUGGY phrasing the issue complains about (e.g. MiddlewareSyncAsyncTests.test_async_middleware and test_sync_middleware_async, and MiddlewareNotUsedTests.test_async_and_sync_middleware_chain_async_call assert the descriptor that mismatches which middleware is actually synchronous/asynchronous); a passing fix will necessarily flip which of 'Synchronous'/'Asynchronous' labels these tests expect."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/topics/async.txt documents that on a fully-async request stack it is the synchronous middleware that Django must adapt and that this is reported by a debug log message reading about \"Synchronous middleware ... adapted\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Middleware definitions used by tests: PaymentMiddleware / DecoratedPaymentMiddleware are sync-only (PaymentMiddleware is a plain undecorated class whose __call__ is synchronous), while async_payment_middleware is an @async_only_middleware async function (async-capable), and SyncAndAsyncMiddleware is @sync_and_async_middleware."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug is verifiable only via which django.request DEBUG record each sync-client vs async-client middleware combination emits; there is no separate functional-return-value involvement (all the middleware succeed and return status 200/402)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a pure log-wording change in BaseHandler.adapt_method_mode; no control flow, return-value, or exception behavior is altered."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The name placeholder is passed as 'middleware <path>' for middleware adaptations via load_middleware (always supplied there), or as 'method <qualname>()' when the name arg is omitted (e.g. process_view/process_template_response/process_exception)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both changed debug messages only fire when debug=True; the adapt_method_mode debug output is gated on settings.DEBUG propagating through load_middleware's debug=settings.DEBUG argument."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The functional adaptation (sync_to_async/async_to_sync wrapping) is unchanged by this patch; only the diagnostic log text differs."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle (its full test suite) for any test that enforces R1 — that BaseHandler.adapt_method_mode, when adapting a synchronous method for an async mode with debug=True, emits a 'Synchronous ...' DEBUG record on the 'django.request' logger.\n\nThe only tests that actually exercise this adapt_method_mode DEBUG logging behavior are the middleware sync/async adaptation assertions: MiddlewareSyncAsyncTests.test_async_middleware / test_sync_middleware_async / test_async_middleware_async and MiddlewareNotUsedTests.test_async_and_sync_middleware_chain_async_call, all in tests/middleware_exceptions/tests.py (plus supporting middleware in tests/middleware_exceptions/middleware.py). That tests file is byte-for-byte labeled [VISIBLE], so none of its assertions can serve as a Witness regardless of how well they conceptually touch R1's logging behavior.\n\nI also surveyed every other test file plausibly in this domain to rule out a [HIDDEN] assertion of the R1 message: tests/handlers/tests.py, tests/async/tests.py, tests/asgi/tests.py, tests/wsgi/tests.py, tests/middleware/tests.py, tests/logging_tests/tests.py, tests/deprecation/test_middleware_mixin.py. None of them contain (visible or hidden) an assertion capturing the 'Synchronous/Synchronous handler adapted' DEBUG log line; they only assert status codes/content/signals, not the adapt log text.\n\nFinally, the task states that no tests currently fail against the buggy program, which is a necessary precondition for any Witness — and consistent with the fact that the only tests that discriminate buggy vs gold log wording live in a [VISIBLE] file. Consequently no genuine [HIDDEN] witness for R1 exists in the oracle, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (BaseHandler.adapt_method_mode (django.core.handlers.base)): When BaseHandler.adapt_method_mode adapts a synchronous method for an async mode (is_async=True and method_is_async=False) with debug=True, it emits a DEBUG record on the 'django.request' logger whose formatted message is 'Synchronous handler adapted for {name}.'. — not entailed by S_vis (S_vis only establishes middleware wording ('<Adjective> middleware <path> adapted.') and a no-name path using 'method %s()'-style labels, with the no-name form being produced when no name is passed. R1's exact string 'Synchronous handler adapted for {name}.' — with 'handler', 'adapted for', and a {name} argument — never appears in or follows from any S_vis entry or its cited evidence.); confirmed by a synthesized witness: R1 requires that BaseHandler.adapt_method_mode, when adapting a synchronous method to async (is_async=True, method_is_async=False) with debug=True, emits a DEBUG record on the 'django.request' logger whose message is 'Synchronous handler adapted for {name}.'. Gold/base.py uses logger.debug(\"Synchronous handler adapted for %s.\", name) producing \"Synchronous handler adapted for witness.\", while buggy uses logger.debug(\"Synchronous %s adapted.\", name) producing \"Synchronous witness adapted.\". My test calls adapt_method_mode directly in isolation with a sync method, name=\"witness\", debug=True, is_async=True, method_is_async=False, capturing the emitted 'django.request' records via a custom logging.Handler, and asserts the exact gold-format message is present. It PASSES against gold (message present) and FAILS against buggy (only the wrong-phrasing record present). This is a fresh unit-level assertion with an invented name string, not any assertion already pinned down in the visible middleware tests.",
+    "confidence": "Medium"
+  }
+}

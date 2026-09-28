@@ -1,0 +1,134 @@
+{
+  "task_id": "sphinx-doc__sphinx-11510",
+  "status": "ok",
+  "duration_seconds": 448.4981228749966,
+  "llm_calls": 39,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-11510",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When building the provided reproduction project (index.rst that ``.. include::``s something-to-include.rst) with an extension whose ``source-read`` handler replaces every occurrence of the literal text ``&REPLACE_ME;`` with ``REPLACED`` (by mutating ``source[0]``), the produced ``build/index.html`` must reflect that substitution both for the paragraph coming from the included file and for the ``&REPLACE_ME;`` paragraph written directly in index.rst, i.e. the rendered section must contain two ``REPLACED`` paragraphs rather than one ``&amp;REPLACE_ME;`` paragraph. In concrete terms the final HTML for the 'Testing' section must match the issue's expected output where the include'd file's ``&REPLACE_ME;`` no longer appears as the un-replaced text ``&amp;REPLACE_ME;``.",
+        "subject": "document read pipeline (source-read event + ``.. include::`` handling)",
+        "hunk_ids": [],
+        "cited_from": "Expected behavior: `build/index.html` should contain: ... <div class=\"section\" id=\"testing\"> <h1>Testing<a class=\"headerlink\" href=\"#testing\" title=\"Permalink to this heading\">¶</a></h1> <p>REPLACED</p> <p>REPLACED</p> </div>  Bug text: \"source-read event does not modify include'd files source\" and \"Note that the dumping docname and source[0] shows that the function actually gets called for something-to-include.rst file and its content is correctly replaced in source[0], it just does not make it to the final HTML file for some reason.\" plus buggy observed output `...<p>&amp;REPLACE_ME;</p><p>REPLACED</p>...`"
+      },
+      {
+        "id": "R2",
+        "statement": "The image of the buggy behavior is that content introduced into a to-be-rendered document through the reST ``.. include::`` directive is read/embedded without having been processed by the ``source-read`` event's source[0] in-place edit, even though a ``source-read`` handler for that included document's docname runs and reports the correctly substituted source text. After the fix these two must agree: a ``source-read`` substitution recorded for an included source file must be applied to the version of that file's content that ends up embedded/rendered in the final HTML.",
+        "subject": "``source-read`` event applied to reST ``.. include::``-introduced content",
+        "hunk_ids": [],
+        "cited_from": "Bug report: \"this does not work on all files and some are left out of this mechanism. Such is the case for include'd files.\" ... \"Note that the dumping docname and source[0] shows that the function actually gets called for something-to-include.rst file and its content is correctly replaced in source[0], it just does not make it to the final HTML file for some reason.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When at least one 'source-read' event listener is registered on the Sphinx application, RST text pulled into a document through the Include directive (i.e. `.. include::`) is subsequently passed through those 'source-read' handlers before it is parsed, so that textual transformations the handlers make (e.g. replacing a marker/entity such as &REPLACE_ME;) are reflected in the RST content that the include contributes to the output document.",
+        "subject": "sphinx.directives.other.Include.run -> 'source-read' event (included RST content round-trip)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For each file whose content is spliced into the current document via the Include directive while a 'source-read' listener is registered, the emitted 'source-read' event reports the included file's own docname — computed from the included file's path via env.path2doc — rather than the name of the document containing the include directive.",
+        "subject": "sphinx.directives.other.Include.run -> docname argument of emitted 'source-read' event for includes",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The source text argument delivered to a 'source-read' handler for included RST content is the included file's actual content — its lines joined with '\n' — excluding the two trailing marker/sentinel lines that docutils (>=0.18) appends to the include input; after the handler returns, the possibly-modified text is re-split into lines and those two marker lines are re-attached so that parsing of the included content continues identically to before the handler ran.",
+        "subject": "sphinx.directives.other.Include.run -> source-text argument and marker-line handling of emitted 'source-read' event",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's expected HTML output requires REPLACED in both the include'd paragraph and the direct paragraph, and S_vis R2's cited bug text confirms source-read already substitutes the include'd content correctly but it fails to reach the final HTML. Together these pin down that source-read transformations on include'd content must be applied so the transformed text appears in output."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 notes a source-read handler for the included document's docname ('something-to-include.rst') runs and reports corrected source, indicating the included docname is reported rather than the containing document. However, the visible evidence does not explicitly pin the specific mechanism that the emitted event's docname is computed from the included path via env.path2doc, leaving the precise fix routing ambiguous."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry mentions the two trailing docutils (>=0.18) marker/sentinel lines appended to include input, the re-splitting of handler-modified text into lines, or re-attaching those markers afterward. This marker-line round-trip is a pure implementation detail that cannot be inferred from the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_include_source_read_witness",
+      "test_source": "import tempfile\nfrom pathlib import Path\nfrom io import StringIO\n\n\ndef test_include_source_read_witness():\n    from sphinx.testing.util import SphinxTestApp\n    from sphinx.testing.restructuredtext import parse\n\n    srcdir = Path(tempfile.mkdtemp())\n    (srcdir / 'conf.py').write_text(\"\", encoding='utf-8')\n    (srcdir / 'included.rst').write_text(\n        \"Included BODY_MARK content here.\\n\", encoding='utf-8')\n    src = (\"Title\\n\"\n           \"=====\\n\\n\"\n           \".. include:: included.rst\\n\\n\"\n           \"After.\\n\")\n\n    events = []\n\n    def handler(app, docname, source):\n        if docname and str(docname) == 'included':\n            events.append(source[0])\n        source[0] = source[0].replace('BODY_MARK', 'REPLACED')\n\n    app = SphinxTestApp(srcdir=srcdir, status=StringIO(), warning=StringIO())\n    try:\n        app.connect('source-read', handler)\n        doctree = parse(app, src, 'index')\n        text = doctree.astext()\n        assert 'REPLACED' in text, \"included content was not routed through the source-read handler on gold\"\n        assert events, \"expected a source-read event to be fired for the included document\"\n        assert 'BODY_MARK content here.' in events[0].replace('BODY_MARK', 'BODY_MARK')\n    finally:\n        app.cleanup()\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: included content was not routed through the source-read handler on gold; doctree text is 'Title\\n\\nIncluded BODY_MARK content here.\\n\\nAfter.' with BODY_MARK unsubstituted and no source-read event recorded for the included document)",
+      "explanation": "Target R3 is the buggy→gold change inside sphinx.directives.other.Include.run: on gold, Sphinx patches the docutils StateMachine.insert_input so that RST text pulled in by a plain ``.. include::`` is re-routed through the app's 'source-read' event (content supplied minus the two docutils marker lines, then markers re-attached after the handler returns so parsing continues). On buggy (pre-fix) the include content is never routed through that event.\n\nThe witness creates a temp srcdir with conf.py, included.rst containing the sentinel 'BODY_MARK', and index.rst that does ``.. include:: included.rst``. It registers a 'source-read' handler that records the delivered (docname, source) and replaces BODY_MARK with REPLACED, then parses index from within the app. On gold, the patch's interception fires a source-read for docname 'included', routes the actual file content to the handler, and after the handler's edit re-splits/re-attaches the markers so parsing proceeds identically — producing doctree text '...REPLACED...'. On buggy, no interception occurs: the include content keeps 'BODY_MARK', no source-read for the included document is emitted, and the assertions fail. Confirmed by run_test: PASSED against gold and FAILED against buggy. The behavior is not pinned down anywhere in the visible test suite (tests/test_directive_other.py only exercises the toctree directive; no test asserts included-content source-read propagation, marker stripping, or post-handler re-parse)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "source-read is emitted once per top-level document read in SphinxStandaloneReader.read_source() (sphinx/io.py): it reads the source, wraps content in a one-element list `arg`, emits `env.events.emit('source-read', env.docname, arg)`, and returns the (possibly handler-modified) `arg[0]`. The reproduction project registers `app.connect('source-read', subst_vars_replace)` with a handler that does `source[0] = source[0].replace('&REPLACE_ME;', 'REPLACED')`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the repro, something-to-include.rst carries the default `.rst` source suffix and, being inside the source dir, is also a found document of the project; the reST content pulled into index.rst is embedded through docutils' `.. include::` directive path (Sphinx overrides `literalinclude` in sphinx/directives/code.py but not the plain `include`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The sphinx_events/core_events table documents the source-read signature as 'source-read': 'docname, source text', confirming the handler receives (docname, source-list)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The behavioral change is concentrated entirely in hunk H2; hunks H0 (adds `from docutils.statemachine import StateMachine`) and H1 (adds `from sphinx.util.osutil import os_path`) are supporting imports used by H2's new code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new insert_input patch is installed instance-wide on `self.state_machine` and is installed before the `arguments[0]` `<...>`/`>...` branch, so it also applies to docutils 'standard' `<>` includes (where path2doc typically returns None) and not only to path-based includes, whenever a 'source-read' listener exists."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is guarded by `if self.env.app.events.listeners.get('source-read')`, so the insert_input interception / source-read round-trip for includes only activates when the application has registered at least one 'source-read' listener; this guard is an implementation detail with no externally observable 'no-listener' behavior for a running process."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing non-'<>' include path still resolves the file via `relfn2path`, records it with `env.note_included(filename)`, and delegates to `super().run()` unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: Target R3 is the (buggy→gold) behavioral change in sphinx.directives.other.Include.run that re-routes each included RST document's source through the 'source-read' event (stripping the two docutils marker lines, re-attaching them after the handler returns), so an included file's real content (joined with '\\n', minus the trailing markers) reaches an 'include' handler.\n\nI audited the oracle's own test files. The two node ids given (test_include_source_read_event, test_include_source_read_event_nested_includes in tests/test_directive_other.py) are the *gold-added* regression tests for this very patch (they fail on buggy precisely because the fix is absent); they are not pre-existing oracle coverage. In the pre-fix tree (which is what all the readable oracle files reflect — note sphinx/directives/other.py's Include.run still contains the plain pre-patch implementation), the oracle's tests/test_directive_other.py contains only the toctree group of tests and is itself labeled [VISIBLE], so none of its N (absence of include/'source-read') content can supply an assertion about included-content source text or the marker-line round trip. I also inspected the other plausible hosts for such a test (test_directive_patch.py, test_directive_code.py, tests/test_serialize*.no…, test_events.py, test_markup.py, test_directives_no_typesetting.py, and the directive-source file) plus conftest/fixtures/parse helpers; none contains an assertion that an included RST document's content (rather than that of the top-level file) is what a 'source-read' handler receives, or that the docutils marker lines are stripped/re-attached around the handler call.\n\nConsequently no test in the real pre-existing test suite enforces this (novel, fix-introduced) requirement — the behavior is regulated only by the regression tests that ship inside the gold patch itself. Since pre-existing coverage of R3 does not exist and every relevant pre-existing file is [VISIBLE] anyway, there is no [HIDDEN] pre-existing oracle witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (sphinx.directives.other.Include.run -> source-text argument and marker-line handling of emitted 'source-read' event): The source text argument delivered to a 'source-read' handler for included RST content is the included file's actual content — its lines joined with '\n' — excluding the two trailing marker/sentinel lines that docutils (>=0.18) appends to the include input; after the handler returns, the possibly-modified text is re-split into lines and those two marker lines are re-attached so that parsing of the included content continues identically to before the handler ran. — not entailed by S_vis (Neither S_vis entry mentions the two trailing docutils (>=0.18) marker/sentinel lines appended to include input, the re-splitting of handler-modified text into lines, or re-attaching those markers afterward. This marker-line round-trip is a pure implementation detail that cannot be inferred from the visible evidence.); confirmed by a synthesized witness: Target R3 is the buggy→gold change inside sphinx.directives.other.Include.run: on gold, Sphinx patches the docutils StateMachine.insert_input so that RST text pulled in by a plain ``.. include::`` is re-routed through the app's 'source-read' event (content supplied minus the two docutils marker lines, then markers re-attached after the handler returns so parsing continues). On buggy (pre-fix) the include content is never routed through that event.\n\nThe witness creates a temp srcdir with conf.py, included.rst containing the sentinel 'BODY_MARK', and index.rst that does ``.. include:: included.rst``. It registers a 'source-read' handler that records the delivered (docname, source) and replaces BODY_MARK with REPLACED, then parses index from within the app. On gold, the patch's interception fires a source-read for docname 'included', routes the actual file content to the handler, and after the handler's edit re-splits/re-attaches the markers so parsing proceeds identically — producing doctree text '...REPLACED...'. On buggy, no interception occurs: the include content keeps 'BODY_MARK', no source-read for the included document is emitted, and the assertions fail. Confirmed by run_test: PASSED against gold and FAILED against buggy. The behavior is not pinned down anywhere in the visible test suite (tests/test_directive_other.py only exercises the toctree directive; no test asserts included-content source-read propagation, marker stripping, or post-handler re-parse).",
+    "confidence": "Medium"
+  }
+}

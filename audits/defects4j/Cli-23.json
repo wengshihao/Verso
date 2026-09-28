@@ -1,0 +1,136 @@
+{
+  "task_id": "Cli-23",
+  "status": "ok",
+  "duration_seconds": 197.99011650600005,
+  "llm_calls": 15,
+  "error": null,
+  "record": {
+    "task_id": "Cli-23",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Wrapping help text must not run forever / the process must not crash with OutOfMemoryError when there is not enough space to display a word on a single line (insufficient text width): the wrapping loop must terminate in this situation rather than repeatedly finding a non-advancing wrap position.",
+        "subject": "HelpFormatter wrapping (renderWrappedText / option description rendering)",
+        "hunk_ids": [],
+        "cited_from": "\"If there is not enough space to display a word on a single line, HelpFormatter goes into a infinite loops until the JVM crashes with an OutOfMemoryError.\""
+      },
+      {
+        "id": "S2",
+        "statement": "When the available width cannot display a word on one line, the wrapping routine must signal the problem with an informative exception (rather than an OutOfMemoryError); concretely the code guards this by throwing an exception when the recomputed wrap position equals the previous position (pos == lastPos).",
+        "subject": "HelpFormatter.renderWrappedText",
+        "hunk_ids": [],
+        "cited_from": "\"An helpful exception indicating the insufficient width would be more appropriate than an OutOfMemoryError.\" and source: \"Text too long for line - throwing exception to avoid infinite loop [CLI-162]: \" (+ \"if (pos == lastPos) { throw new RuntimeException(...); }\")"
+      },
+      {
+        "id": "S3",
+        "statement": "For the exact reported scenario — Options containing addOption(\"h\",\"help\",false,\"This is a looooong description\"), formatter.setWidth(20), then formatter.printHelp(\"app\", options) — the call must terminate and complete without hanging (\"hang & crash\") and without throwing an exception that would fail the JUnit test (the test declares no expected exception).",
+        "subject": "HelpFormatter.printHelp(String, Options)",
+        "hunk_ids": [],
+        "cited_from": "\"formatter.setWidth(20);\\nformatter.printHelp(\"app\", options); // hang & crash\" and test comment \"// used to hang & crash\""
+      },
+      {
+        "id": "S4",
+        "statement": "Rendering help output with a default-width HelpFormatter for a realistic large Options set built in testPrintHelpLongLines (many options whose descriptions contain long unbroken tokens such as the URL \"http://docs.codehaus.org/display/JETTY/Securing+Passwords\", SQL fragments like \"{call stored_procedure(?, ?)}\", and character-string examples) must complete normally — terminating without hanging and without throwing a runtime error.",
+        "subject": "HelpFormatter.printHelp(String, Options) at default width",
+        "hunk_ids": [],
+        "cited_from": "testPrintHelpLongLines calls this.testPrintHelp(commandLineOptions) where testPrintHelp does \"new HelpFormatter().printHelp(this.getClass().getName(), options)\" (default width), with options as built by \"commandLineOptions.addOption(...)\" entries in that test."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "renderWrappedText, when a continuation line of the wrapped text is longer than the configured width and its computed wrap position has fallen back to the end of the leading indentation padding (i.e. wrapping would only split off the padding/prefix column rather than any content), appends the entire remaining text as a final line and returns normally, instead of repeatedly re-splitting at that same padding position.",
+        "subject": "HelpFormatter.renderWrappedText(StringBuffer,int,int,String)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "renderWrappedText no longer throws a RuntimeException with the 'Text too long for line - throwing exception to avoid infinite loop [CLI-162]' message: for inputs that overflow the wrap width the method now always terminates normally (returning the accumulated StringBuffer) rather than ever raising that exception.",
+        "subject": "HelpFormatter.renderWrappedText(StringBuffer,int,int,String)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3",
+          "S4"
+        ],
+        "rationale": "R1 pins down a concrete fix mechanism — when the computed wrap position falls back to the leading padding position, append the entire remaining text as a single final line and return normally. No S_vis entry describes that mechanism; S1/S3/S4 only require termination without infinite looping/OOM/hanging, and S2 actually documents the old exception-throwing guard (pos==lastPos) instead of the append-and-return behavior, so the same behavior is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3",
+          "S4"
+        ],
+        "rationale": "R2 asserts renderWrappedText no longer ever throws the 'Text too long for line [CLI-162]' RuntimeException and always returns the StringBuffer. Nothing in S_vis establishes that removal; S2 in fact documents that the throwing implementation ('if (pos == lastPos) throw new RuntimeException... [CLI-162]') exists/guards the code, which runs contrary to R2's claim, and S3/S4 only cover specific scenarios terminating without exceptions rather than the method never raising that message."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testInfiniteLoop",
+      "test_source": "@Test\npublic void testInfiniteLoop() {\n    org.apache.commons.cli.Options options = new org.apache.commons.cli.Options();\n    options.addOption(\"h\", \"help\", false, \"This is a looooong description\");\n    org.apache.commons.cli.HelpFormatter formatter = new org.apache.commons.cli.HelpFormatter();\n    formatter.setWidth(20);\n    formatter.printHelp(\"app\", options);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (java.lang.RuntimeException: Text too long for line - throwing exception to avoid infinite loop [CLI-162] at HelpFormatter.renderWrappedText)",
+      "explanation": "BugCLI162Test.testInfiniteLoop (a pre-existing [HIDDEN] oracle test that already fails on the buggy build) drives the exact renderWrappedText path R1 describes: with width=20 and option \"h\",\"help\" whose description \"This is a looooong description\" is longer than the width, the continuation line overflows and wrap position collapses to the leading-padding column, so the previous (buggy) implementation repeatedly re-splits at that same padding position and must fall back to throwing its RuntimeException(\"Text too long for line [CLI-162]\"). The gold program instead appends the remaining text as a final over-width line and returns normally. Confirmed by mechanical runs: against the buggy program this test FAILS with that exact RuntimeException thrown from renderWrappedText; against the gold program it PASSES (printHelp completes normally). This is the same behavior R1 commits to (returns normally by appending the remainder rather than re-splitting at the same padding/throwing), not merely a co-located assertion: no other failing or hidden test asserts the distinctive over-width-final-line wrap behavior, and testInfiniteLoop is the minimal regression that discriminates the collapsed-wrap/infinite-loop CLI-162 case. BugCLI162Test.java content is [HIDDEN] (not part of visible disclosure), so a witness may rest on it."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Test/source layout: production code is under src/java/org/apache/commons/cli/HelpFormatter.java; the disclosed regression test lives at src/test/org/apache/commons/cli/bug/BugCLI162Test.java (JUnit 3 style, extends TestCase)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible HelpFormatter.java already contains a guard inside renderWrappedText that throws a RuntimeException (message \"Text too long for line - throwing exception to avoid infinite loop [CLI-162]\") when the recomputed wrap position does not advance (pos == lastPos); this is the concrete mechanism the repo associates with the CLI-162 fix, and no other wrapping-related files exist."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug/issue concerns only the text-wrapping logic in HelpFormatter; Options/Option/printHelp plumbing shown in the test file is incidental scaffolding to reach that wrapping."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No fix patch was shown; only the issue, source, and two visible test methods (testInfiniteLoop, testPrintHelpLongLines) were available."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is entirely within the while(true) wrapping loop of renderWrappedText (protected method, reached via public printWrapped/printUsage/printOptions/renderOptions)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy revision capped each wrap iteration's no-progress case with a RuntimeException throw; the gold revision deletes the lastPos tracking variable and replaces the throw with an early termination that emits the remaining (padding-prefixed) text as the final line."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold early-return guard condition (text.length() > width && pos == nextLineTabStop - 1) can therefore produce a final emitted line whose length exceeds the configured width."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "findWrapPos, rtrim, and createPadding are unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (HelpFormatter.renderWrappedText(StringBuffer,int,int,String)): renderWrappedText, when a continuation line of the wrapped text is longer than the configured width and its computed wrap position has fallen back to the end of the leading indentation padding (i.e. wrapping would only split off the padding/prefix column rather than any content), appends the entire remaining text as a final line and returns normally, instead of repeatedly re-splitting at that same padding position. — not entailed by S_vis (R1 pins down a concrete fix mechanism — when the computed wrap position falls back to the leading padding position, append the entire remaining text as a single final line and return normally. No S_vis entry describes that mechanism; S1/S3/S4 only require termination without infinite looping/OOM/hanging, and S2 actually documents the old exception-throwing guard (pos==lastPos) instead of the append-and-return behavior, so the same behavior is not pinned down.); confirmed by a oracle witness: BugCLI162Test.testInfiniteLoop (a pre-existing [HIDDEN] oracle test that already fails on the buggy build) drives the exact renderWrappedText path R1 describes: with width=20 and option \"h\",\"help\" whose description \"This is a looooong description\" is longer than the width, the continuation line overflows and wrap position collapses to the leading-padding column, so the previous (buggy) implementation repeatedly re-splits at that same padding position and must fall back to throwing its RuntimeException(\"Text too long for line [CLI-162]\"). The gold program instead appends the remaining text as a final over-width line and returns normally. Confirmed by mechanical runs: against the buggy program this test FAILS with that exact RuntimeException thrown from renderWrappedText; against the gold program it PASSES (printHelp completes normally). This is the same behavior R1 commits to (returns normally by appending the remainder rather than re-splitting at the same padding/throwing), not merely a co-located assertion: no other failing or hidden test asserts the distinctive over-width-final-line wrap behavior, and testInfiniteLoop is the minimal regression that discriminates the collapsed-wrap/infinite-loop CLI-162 case. BugCLI162Test.java content is [HIDDEN] (not part of visible disclosure), so a witness may rest on it.",
+    "confidence": "High"
+  }
+}

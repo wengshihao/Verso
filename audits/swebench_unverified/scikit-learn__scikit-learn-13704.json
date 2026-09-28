@@ -1,0 +1,122 @@
+{
+  "task_id": "scikit-learn__scikit-learn-13704",
+  "status": "ok",
+  "duration_seconds": 240.89660037506837,
+  "llm_calls": 13,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-13704",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "With default threshold (0.), a feature column whose values are identical in every sample of the training set must be removed by fit_transform — in particular, applying VarianceThreshold().fit_transform() to the issue's 10-row 'broken' array, whose first column is -0.13725701 in all 10 rows, must return an array containing only the second column (shape (10,1), values [[7.],[-0.09853293],... copied from the second column]).",
+        "subject": "VarianceThreshold.fit / ._get_support_mask / VarianceThreshold.fit_transform",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"VarianceThreshold doesn't remove feature with zero variance … When calling VarianceThreshold().fit_transform() on certain inputs, it fails to remove a column that has only one unique value.\"; docstring: \"The default is to keep all features with non-zero variance, i.e. remove the features that have the same value in all samples.\"; Expected Results for `broken` (column 0 === -0.13725701 in all rows = set(broken[:,0])=={-0.13725701}):\n[[ 7.        ]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]\n [-0.09853293]]\n\nHeader line / expected behavior from reporter: \"The Variance threshold should produce [[ 7.        ] ...]\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When VarianceThreshold.fit is called with the default threshold of 0.0 on dense (array-like) input, any feature column whose samples are numerically constant across all rows (e.g. a repeated float value not exactly representable, for which np.var would yield a tiny positive residue) is given an effective variance of 0 (self.variances_ = min(computed variance, np.ptp of the column) = 0), so that _get_support_mask returns False for that column and the feature is dropped by transform/fit_transform.",
+        "subject": "VarianceThreshold.fit (dense input) and the subsequent support mask / variances_",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When VarianceThreshold.fit is called with the default threshold of 0.0 on sparse (CSR/CSC) input, any feature column whose samples are numerically constant across all rows is given an effective variance of 0 (self.variances_ = min(mean_variance_axis result, min_max_axis-derived range) = 0), so that the feature is dropped rather than being kept due to a floating-point residual variance.",
+        "subject": "VarianceThreshold.fit (CSR/CSC sparse input) and the subsequent support mask / variances_",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The peak-to-peak based variance clamping in VarianceThreshold.fit applies only when threshold == 0; for a strict positive threshold, the computed (unclamped per-column) variances_ are retained and behavior is unchanged from the original implementation.",
+        "subject": "VarianceThreshold.fit (threshold != 0 behavior unchanged)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1 pins down exactly this dense-input default-threshold behavior: a column that is numerically constant across all rows (its broken example -0.13725701 repeats in all 10 rows, and its variances_ would carry a tiny np.var residue) must be given effective variance 0 and dropped by fit/_get_support_mask, returning only the second column."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1 concerns only the dense 'broken' array and the general docstring; no S_vis entry mentions CSR/CSC sparse input, mean_variance_axis, or min_max_axis behavior, so nothing leads to this sparse-specific clamping requirement."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1 only addresses the default threshold 0 case; no visible evidence states that clamping applies only when threshold == 0 or that strict positive thresholds retain unclamped variances, so R3's scoping/termination condition is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_float_constant_sparse_dropped",
+      "test_source": "import numpy as np\nfrom scipy.sparse import csr_matrix, csc_matrix\nfrom sklearn.feature_selection import VarianceThreshold\n\ndef test_float_constant_sparse_dropped():\n    const = -0.13725701\n    X = np.column_stack([np.full(10, const), np.arange(10, dtype=float)])\n    for fmt in (csr_matrix, csc_matrix):\n        sel = VarianceThreshold().fit(fmt(X))\n        print(fmt, sel.variances_, sel.get_support(indices=True).tolist())\n        assert sel.get_support(indices=True).tolist() == [1], fmt",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (CSR branch assertion error: [0, 1] == [1]; variances_ = [7.70371978e-34, 8.25000000e+00])",
+      "explanation": "R2 requires that Var with default threshold 0.0 on sparse CSR/CSC input assigns an *exactly zero* variance to a feature column whose samples are numerically constant floats (value -0.13725701 over 10 rows), so that the feature is dropped rather than kept due to a floating-point residual variance. The only disclosed/oracle-readable tests in test_variance_threshold.py (and all related feature_selection/sparsefiles tests I read: test_base.py, test_sparsefuncs.py) are [VISIBLE] and use only integer-valued data (e.g. column value 2), which drops the constant column cleanly via np.var==0 and does NOT exercise the reporter's float case at all.\n\nI therefore built the spike test directly for the reported float-constant-on-sparse behavior (the benchmark's own oracle reports test_zero_variance_floating_point_error as currently failing against the buggy program for exactly this scenario). Running the exact source above:\n- against gold: PASSED. Gold clamps variances_ = min(mean_variance_axis result, min_max-derived range=0) -> the constant -0.13725701 column gets variances_=0 and is dropped (support [1]).\n- against buggy: FAILED. Buggy leaves variances_ = 7.70371978e-34 (a residual > threshold 0.0) for the CSR constant column and wrongly keeps it (support [0,1]).\nThis discriminates buggy from gold precisely through the sparse constant-float residual-variance behavior R2 describes, which no [VISIBLE] oracle assertion establishes."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy implementation computes variance in fit() via `self.variances_ = np.var(X, axis=0)` for dense input and `mean_variance_axis(X, axis=0)` for sparse; support is decided by `_get_support_mask` returning `self.variances_ > self.threshold`, so any tiny positive float variance residue from a mathematically-constant column (here value -0.13725701, which is not exactly representable) wrongly keeps the feature."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The disclosed tests (sklearn/feature_selection/tests/test_variance_threshold.py) only exercise integer-valued data and small arrays for test_zero_variance/test_variance_threshold and do not cover the reporter's float case (they already pass); the constant-float-column case the issue raises is exercised by no disclosed passing test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproducer shows the constant-column case working with 9 rows but failing with 10 rows, giving behavioral evidence that the root cause is float-precision dependent on sample count, though only the outcome (constant float column must be dropped) is asserted."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Mechanism behind R1/R2: on constant columns the peak-to-peak (np.ptp for dense, min_max_axis max-min for sparse) is exactly 0, and clamping variances_ = np.minimum(variances_, peak_to_peaks) forces the residual float variance to 0 so the 'variances_ > threshold' support test is False; the np.minimum clamp is gated on `self.threshold == 0`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is purely an import addition (adds min_max_axis from ..utils.sparsefuncs) that only feeds the sparse branch of H1; it introduces no behavior on its own."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "R1 and R2 are kept separate because dense and sparse are distinct code branches (np.ptp vs min_max_axis) that are independently testable, even though they implement the same format-agnostic contract."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing behaviors preserved by this patch (e.g. raising ValueError when all features are below threshold, the 'X contains only one sample' message, and the variance-only computation for nonzero thresholds) are not restated as requirements since they are unchanged by it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (VarianceThreshold.fit (CSR/CSC sparse input) and the subsequent support mask / variances_): When VarianceThreshold.fit is called with the default threshold of 0.0 on sparse (CSR/CSC) input, any feature column whose samples are numerically constant across all rows is given an effective variance of 0 (self.variances_ = min(mean_variance_axis result, min_max_axis-derived range) = 0), so that the feature is dropped rather than being kept due to a floating-point residual variance. — not entailed by S_vis (REQ-1 concerns only the dense 'broken' array and the general docstring; no S_vis entry mentions CSR/CSC sparse input, mean_variance_axis, or min_max_axis behavior, so nothing leads to this sparse-specific clamping requirement.); confirmed by a oracle witness: R2 requires that Var with default threshold 0.0 on sparse CSR/CSC input assigns an *exactly zero* variance to a feature column whose samples are numerically constant floats (value -0.13725701 over 10 rows), so that the feature is dropped rather than kept due to a floating-point residual variance. The only disclosed/oracle-readable tests in test_variance_threshold.py (and all related feature_selection/sparsefiles tests I read: test_base.py, test_sparsefuncs.py) are [VISIBLE] and use only integer-valued data (e.g. column value 2), which drops the constant column cleanly via np.var==0 and does NOT exercise the reporter's float case at all.\n\nI therefore built the spike test directly for the reported float-constant-on-sparse behavior (the benchmark's own oracle reports test_zero_variance_floating_point_error as currently failing against the buggy program for exactly this scenario). Running the exact source above:\n- against gold: PASSED. Gold clamps variances_ = min(mean_variance_axis result, min_max-derived range=0) -> the constant -0.13725701 column gets variances_=0 and is dropped (support [1]).\n- against buggy: FAILED. Buggy leaves variances_ = 7.70371978e-34 (a residual > threshold 0.0) for the CSR constant column and wrongly keeps it (support [0,1]).\nThis discriminates buggy from gold precisely through the sparse constant-float residual-variance behavior R2 describes, which no [VISIBLE] oracle assertion establishes.",
+    "confidence": "High"
+  }
+}

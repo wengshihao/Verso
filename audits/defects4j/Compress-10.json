@@ -1,0 +1,126 @@
+{
+  "task_id": "Compress-10",
+  "status": "ok",
+  "duration_seconds": 347.62385282500145,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "Compress-10",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a WinZip-created archive whose Unicode extra fields appear only in the central directory, opened via `new ZipFile(file, null, true)` (unicode-extra-field processing enabled), ZipFile.getEntry(String) must return a non-null ZipArchiveEntry for each of the names ASCII_TXT \"ascii.txt\", EURO_FOR_DOLLAR_TXT \"\\u20AC_for_Dollar.txt\", and OIL_BARREL_TXT \"\\u00D6lf\\u00E4sser.txt\".",
+        "subject": "ZipFile.getEntry(String)",
+        "hunk_ids": [],
+        "cited_from": "from UTF8ZipFilesTest.testReadWinZipArchive: `zf = new ZipFile(archive, null, true); assertCanRead(zf, ASCII_TXT); assertCanRead(zf, EURO_FOR_DOLLAR_TXT); assertCanRead(zf, OIL_BARREL_TXT);` where ASCII_TXT=\"ascii.txt\", EURO_FOR_DOLLAR_TXT=\"\\u20AC_for_Dollar.txt\", OIL_BARREL_TXT=\"\\u00D6lf\\u00E4sser.txt\"; assertCanRead does `ZipArchiveEntry entry = zf.getEntry(fileName); assertNotNull(\"Entry doesn't exist\", entry);`"
+      },
+      {
+        "id": "R2",
+        "statement": "For a WinZip-created archive with Unicode extra fields only in the central directory, opened via `new ZipFile(file, null, true)`, each ZipArchiveEntry obtained from getEntry for the names \"ascii.txt\", \"\\u20AC_for_Dollar.txt\", and \"\\u00D6lf\\u00E4sser.txt\" must have getInputStream(entry) return a non-null InputStream from which at least one byte can be read — it must not return null merely because Unicode-extra-field parsing changed the entry's name (and thus its hash code) after the internal entries map was populated.",
+        "subject": "ZipFile.getInputStream(ZipArchiveEntry)",
+        "hunk_ids": [],
+        "cited_from": "issue report: \"ZipFile.getInputStream() returns null for ZipArchiveEntries previously retrieved with ZipFile.getEntry() ... the unicode extra fields are read, which leads to a change of the ZipArchiveEntry name, and therefore a change of its hash code. Because of this, subsequent gets on the HashMap fail to retrieve the original values.\"; test assertCanRead: `InputStream is = zf.getInputStream(entry); assertNotNull(\"InputStream is null\", is); try { is.read(); } finally { is.close(); }`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ_1",
+        "statement": "When a ZipFile is opened on an archive whose entries do not have the UTF-8 name flag set but whose local file header carries a Unicode (effective) name (so a ZipArchiveEntry's name is changed during construction by ZipUtil.setNameAndCommentFromExtraFields), each such ZipArchiveEntry is nevertheless mapped in ZipFile's offset table under its final/corrected name, so that calling getInputStream on that entry returns a non-null InputStream carrying that entry's actual data instead of returning null.",
+        "subject": "ZipFile construction / resolveLocalFileHeaderData / getInputStream",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ_2",
+        "statement": "Rebuilding ZipFile's entry-to-offset table during resolveLocalFileHeaderData re-registers every entry (with its OffsetEntry) in the same central-directory enumeration order regardless of whether that entry's name was changed to its Unicode form, so that no entry is lost, dropped, or reordered out of central-directory order by the reconstruction.",
+        "subject": "ZipFile entries map reconstruction / getEntries ordering",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2's issue-report citation and test assert exactly this: because unicode-extra-field parsing changed an entry's name (and hash code) after the internal table was populated, getInputStream on that entry must still return a non-null readable InputStream rather than null, which requires the entry to be mapped under its final/corrected name. R1 confirms getEntry finds those renamed entries."
+      },
+      {
+        "requirement_id": "REQ_2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible tests only confirm that three named entries are found and readable; they do not enumerate all archive entries, verify central-directory ordering, or assert that the reconstruction never drops/reorders entries with their OffsetEntry. REQ_2's stronger procedural/order-preservation claim is not pinned down by S_vis."
+      }
+    ],
+    "target_requirement_id": "REQ_2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "rebuildRegisterUnicodeRenamedEntryStreamReadable",
+      "test_source": "import java.io.ByteArrayOutputStream;\nimport java.io.File;\nimport java.io.IOException;\nimport java.io.InputStream;\n\nimport org.apache.commons.compress.archivers.zip.ZipArchiveEntry;\nimport org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;\nimport org.apache.commons.compress.archivers.zip.ZipFile;\nimport org.junit.Assert;\nimport org.junit.Test;\n\n@Test\npublic void t() throws Exception {\n    File file = File.createTempFile(\"diag\", \".zip\");\n    file.deleteOnExit();\n    String euro = new String(Character.toChars(0x20AC)) + \"_for_Dollar.txt\";\n    byte[] payload = \"Give me your money!\".getBytes(\"US-ASCII\");\n    ZipArchiveOutputStream zos = null;\n    try {\n        zos = new ZipArchiveOutputStream(file);\n        zos.setEncoding(\"cp437\");\n        zos.setUseLanguageEncodingFlag(false);\n        zos.setCreateUnicodeExtraFields(\n            ZipArchiveOutputStream.UnicodeExtraFieldPolicy.ALWAYS);\n        ZipArchiveEntry ze = new ZipArchiveEntry(euro);\n        zos.putArchiveEntry(ze);\n        zos.write(payload);\n        zos.closeArchiveEntry();\n        ze = new ZipArchiveEntry(\"ascii.txt\");\n        zos.putArchiveEntry(ze);\n        zos.write(\"ascii\".getBytes(\"US-ASCII\"));\n        zos.closeArchiveEntry();\n    } finally {\n        if (zos != null) { try { zos.close(); } catch (IOException e) { } }\n    }\n    ZipFile zf = null;\n    try {\n        zf = new ZipFile(file, \"cp437\", true);\n        ZipArchiveEntry euroEntry = zf.getEntry(euro);\n        Assert.assertNotNull(\"euro not found after unicode rename\", euroEntry);\n        InputStream is = zf.getInputStream(euroEntry);\n        Assert.assertNotNull(\"input stream null for renamed entry\", is);\n        ByteArrayOutputStream out = new ByteArrayOutputStream();\n        byte[] buf = new byte[1024];\n        int n;\n        while ((n = is.read(buf)) != -1) {\n            out.write(buf, 0, n);\n        }\n        Assert.assertArrayEquals(payload, out.toByteArray());\n    } finally {\n        ZipFile.closeQuietly(zf);\n        file.delete();\n    }\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: \"input stream null for renamed entry\" - ZipFile.getInputStream returns null)",
+      "explanation": "A genuine, execution-confirmed witness for REQ_2. The test self-constructs a small ZIP archive whose entry name contains U+20AC (euro sign), which is not representable in the archive's cp437 encoding, so ZipArchiveOutputStream auto-generates a central-directory Unicode Path extra field (UnicodeExtraFieldPolicy.ALWAYS, no EFS flag). Opening it with `new ZipFile(file, \"cp437\", true)` drives resolveLocalFileHeaderData: the entry without the UTF-8/EFS flag is renamed during reconstruction from its raw cp437 form to its Unicode form (€_for_Dollar.txt), i.e. exactly the name-change-triggers-hashcode-change (COMPRESS-164) situation REQ_2 targets.\n\nThe discriminating assertion is that the renamed entry remains registered in ZipFile so getInputStream(euroEntry) returns a readable stream of the payload. In the buggy code resolveLocalFileHeaderData mutates the entry's name (changing its hashCode) but never re-registers the entry+OffsetEntry in the entries LinkedHashMap keyed by ZipArchiveEntry, so `entries.get(ze)` misses and getInputStream returns null -> test FAILS with \"input stream null for renamed entry\". In the gold code the map is rebuilt via a LinkedHashMap snapshot (entries.clear + entries.put after each finalize), re-keying every entry by its finalized hashCode in central-directory order, so getInputStream returns the readable stream -> test PASSES. Verified by run_test: gold PASSED, buggy FAILED.\n\nThe scenario is genuinely unpinned by visible content: the visible self-construction leaf (testZipArchiveInputStreamReadsUnicodeFields) only calls zf.getEntry(...) for names after opening a self-built archive; it never asserts that getInputStream returns a non-null/readable stream for a unicode-renamed entry of a self-constructed archive. No visible oracle test covers this self-built cp437/ALWAYS archive plus getInputStream-read discrimination for REQ_2."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three source files are visible: src/main/java/org/apache/commons/compress/archivers/zip/ZipFile.java, src/test/java/org/apache/commons/compress/archivers/zip/UTF8ZipFilesTest.java, and src/test/java/org/apache/commons/compress/AbstractTestCase.java. Dependent classes (ZipArchiveEntry, ZipEncodingHelper, ZipUtil, ExtraFieldUtils, GeneralPurposeBit, ZipConstants) are referenced but not visible in this listing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ZipFile keeps two internal tables: `entries` (LinkedHashMap<ZipArchiveEntry, OffsetEntry>) and `nameMap` (HashMap<String, ZipArchiveEntry>). Both are populated in readCentralDirectoryEntry; the hash of a ZipArchiveEntry key depends on its name."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "resolveLocalFileHeaderData contains a comment 'changing the name of a ZipArchiveEntry is going to change the hashcode - see COMPRESS-164 / Map needs to be reconstructed in order to keep central directory order', and it updates nameMap when `orig.equals(ze.getName())` is false (remove(orig); put(newName)), but it does not rebuild the `entries` map that is keyed by the ZipArchiveEntry — the reported cause of getInputStream returning null."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getInputStream looks up `entries.get(ze)` and returns null when the lookup misses (offsetEntry == null)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "UTF8ZipFilesTest extends junit-framework AbstractTestCase; it relies on resources under src/test/resources (utf8-winzip-test.zip and utf8-7zip-test.zip). testReadWinZipArchive is the regression test exercising the reported bug (it actually reads the entries, unlike an earlier test)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible constants: ASCII_TXT=\"ascii.txt\", EURO_FOR_DOLLAR_TXT=\"\\u20AC_for_Dollar.txt\", OIL_BARREL_TXT=\"\\u00D6lf\\u00E4sser.txt\"."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix operates in resolveLocalFileHeaderData, which is invoked from the ZipFile constructor (after populateFromCentralDirectory()). Entries in entriesWithoutUTF8Flag (entries lacking the UTF-8 flag when useUnicodeExtraFields is enabled) are the ones eligible for renaming."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy code iterated the single live 'entries' LinkedHashMap keyed by ZipArchiveEntry (whose hashCode depends on name), mutating entry names in place; the gold code iterates a snapshot origMap and writes each entry back via entries.put only after its name is finalized, re-keying it by its new hashcode."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ZipFile.getInputStream returns null (rather than throwing) when entries.get(ze) misses — that null return is the externally visible regression symptom the patch removes."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ_2]: I read every test file in the oracle (6 files total). Only UTF8ZipFilesTest.java is [VISIBLE]; all others (ZipFileTest, EncryptedArchiveTest, Maven221MultiVolumeTest, ZipTestCase, JarArchiveOutputStreamTest) are [HIDDEN].\n\nREQ_2 is about ZipFile re-registering every entry with its OffsetEntry in central-directory order during resolveLocalFileHeaderData after renaming entries to their Unicode form (COMPRESS-164 style: getInputStream returns null because entries.get(ze) misses after the key's name/hash changed).\n\nThe only test that (a) actually triggers the rename/reconstruction path (a WinZIP archive that stores Unicode path extra fields only in the central directory) and (b) fails against the buggy program is testReadWinZipArchive, whose assertCanRead/getInputStream-not-null assertion directly exercises this exact behavior. That test — along with every other unicode/rename reconstruction test (testUtf8Interoperability, testZipArchiveInputStreamReadsUnicodeFields, testReadWinZipArchiveForStream...) — lives entirely in the [VISIBLE] UTF8ZipFilesTest.java. Per the rules, an assertion drawn from [VISIBLE] content can never be a Witness, so this cannot be submitted.\n\nI checked the [HIDDEN] candidates for any that exercise REQ_2: ZipFileTest.testCDOrder/testPhysicalOrder assert central-directory ordering but do so against ordertest.zip opened with plain `new ZipFile(archive)` (no unicode-rename triggering), and I mechanically confirmed testCDOrder PASSES against the buggy program (so it does not discriminate buggy vs gold — not a failing test). The remaining hidden files (EncryptedArchiveTest, Maven221MultiVolumeTest, ZipTestCase, JarArchiveOutputStreamTest) do not drive the resolveLocalFileHeaderData unicode rename/reconstruction path in a way that would expose the OffsetEntry-loss bug, and the problem statement confirms the sole failing test is the visible testReadWinZipArchive.\n\nSince no [HIDDEN] oracle test genuinely witnesses REQ_2 (the real oracle witness is [VISIBLE], and the hidden order test doesn't detect the bug), I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ_2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ_2] (ZipFile entries map reconstruction / getEntries ordering): Rebuilding ZipFile's entry-to-offset table during resolveLocalFileHeaderData re-registers every entry (with its OffsetEntry) in the same central-directory enumeration order regardless of whether that entry's name was changed to its Unicode form, so that no entry is lost, dropped, or reordered out of central-directory order by the reconstruction. — not entailed by S_vis (The visible tests only confirm that three named entries are found and readable; they do not enumerate all archive entries, verify central-directory ordering, or assert that the reconstruction never drops/reorders entries with their OffsetEntry. REQ_2's stronger procedural/order-preservation claim is not pinned down by S_vis.); confirmed by a synthesized witness: A genuine, execution-confirmed witness for REQ_2. The test self-constructs a small ZIP archive whose entry name contains U+20AC (euro sign), which is not representable in the archive's cp437 encoding, so ZipArchiveOutputStream auto-generates a central-directory Unicode Path extra field (UnicodeExtraFieldPolicy.ALWAYS, no EFS flag). Opening it with `new ZipFile(file, \"cp437\", true)` drives resolveLocalFileHeaderData: the entry without the UTF-8/EFS flag is renamed during reconstruction from its raw cp437 form to its Unicode form (€_for_Dollar.txt), i.e. exactly the name-change-triggers-hashcode-change (COMPRESS-164) situation REQ_2 targets.\n\nThe discriminating assertion is that the renamed entry remains registered in ZipFile so getInputStream(euroEntry) returns a readable stream of the payload. In the buggy code resolveLocalFileHeaderData mutates the entry's name (changing its hashCode) but never re-registers the entry+OffsetEntry in the entries LinkedHashMap keyed by ZipArchiveEntry, so `entries.get(ze)` misses and getInputStream returns null -> test FAILS with \"input stream null for renamed entry\". In the gold code the map is rebuilt via a LinkedHashMap snapshot (entries.clear + entries.put after each finalize), re-keying every entry by its finalized hashCode in central-directory order, so getInputStream returns the readable stream -> test PASSES. Verified by run_test: gold PASSED, buggy FAILED.\n\nThe scenario is genuinely unpinned by visible content: the visible self-construction leaf (testZipArchiveInputStreamReadsUnicodeFields) only calls zf.getEntry(...) for names after opening a self-built archive; it never asserts that getInputStream returns a non-null/readable stream for a unicode-renamed entry of a self-constructed archive. No visible oracle test covers this self-built cp437/ALWAYS archive plus getInputStream-read discrimination for REQ_2.",
+    "confidence": "Medium"
+  }
+}

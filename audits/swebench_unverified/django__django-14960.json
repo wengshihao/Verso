@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-14960",
+  "status": "ok",
+  "duration_seconds": 429.68977633304894,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14960",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the createsuperuser management command runs in interactive mode, a REQUIRED_FIELDS value that is supplied via its command-line option (rather than interactively entered at a prompt) must still be validated through the field's clean (field.clean(value)) before being forwarded into user_data / passed to the user manager's create_superuser — so that a raw unvalidated value, e.g. a non-integer string for a REQUIRED_FIELDS ForeignKey that needs an integer PK, is not passed through verbatim the way it currently is.",
+        "subject": "createsuperuser Command.handle interactive REQUIRED_FIELDS validation (django/contrib/auth/management/commands/createsuperuser.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"createsuperuser command will alway perform a field validation using field.clean when creating a new user. In non-interactive mode, it is done here. In interactive mode, it is performed in get_input_data when the value is requested from input. But if the valued was passed using -- command, the field is never validated. The consequence is it ends up passing a non-validated string to UserManager.create_superuser instead of a integer corresponding to an actual PK in DB.\"  Code in django/contrib/auth/management/commands/createsuperuser.py (interactive branch): \"for field_name in self.UserModel.REQUIRED_FIELDS: ... user_data[field_name] = options[field_name]; while user_data[field_name] is None: ... input_value = self.get_input_data(field, message)\" — i.e. field.clean (inside get_input_data) is only invoked when the option was not provided; contrast the non-interactive branch: \"user_data[field_name] = field.clean(value, None)\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "In interactive superuser creation, when a REQUIRED_FIELDS option is supplied a non-None value via the command line (rather than being prompted), that value is validated by passing it through field.clean(value, None); if field.clean raises a ValidationError, the command terminates with a CommandError whose message is the ValidationError messages joined by '; ', rather than silently using the raw unvalidated value for the user.",
+        "subject": "createsuperuser.Command.handle (interactive REQUIRED_FIELDS option validation)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_2",
+        "statement": "In interactive superuser creation, when a REQUIRED_FIELDS option is supplied a non-None value via the command line, the cleaned (field.clean) result of that value — not the raw supplied string — is what populates user_data passed to create_superuser and consequently what feeds any derived fake_user_data (so a create_superuser invocation receives the cleaned value).",
+        "subject": "createsuperuser.Command.handle (interactive REQUIRED_FIELDS option cleaning)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 pins down that a command-line-supplied REQUIRED_FIELDS value must be run through field.clean (as in the non-interactive branch) rather than passed raw, which covers the validation core of S_IMPL_1. However, R1 says nothing about the specific failure handling — that a raised ValidationError terminates the command with a CommandError whose message is the validation messages joined by '; ' — so that exact behavior is not entailed."
+      },
+      {
+        "requirement_id": "S_IMPL_2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 explicitly states that the cleaned result of field.clean on a command-line-supplied REQUIRED_FIELDS value — not the raw unvalidated string — must be forwarded into user_data and passed to create_superuser, directly matching the core of S_IMPL_2. The derived fake_user_data consequence logically follows from user_data carrying the cleaned value, so the primary behavior is entailed."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_invalid_email_required_field_option_interactive",
+      "test_source": "def test_invalid_email_required_field_option_interactive(tmp_path):\n    import os\n    db_path = str(tmp_path / 'db.sqlite3')\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=[\n                'django.contrib.contenttypes',\n                'django.contrib.auth',\n                'django.contrib.sessions',\n                'django.contrib.messages',\n                'django.contrib.staticfiles',\n                'django.contrib.sites',\n            ],\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': db_path}},\n            SECRET_KEY='django-tests-secret-key',\n            AUTH_PASSWORD_VALIDATORS=[],\n            USE_TZ=False,\n            DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n            SITE_ID=1,\n            SILENCED_SYSTEM_CHECKS=['fields.W342', 'auth.E003'],\n        )\n    import django\n    django.setup()\n\n    from io import StringIO\n    from unittest import mock\n    from django.core.management import call_command\n    from django.core.management.base import CommandError\n\n    call_command('migrate', run_syncdb=True, interactive=False, verbosity=0)\n\n    class FakeStdin:\n        def isatty(self):\n            return True\n\n    out = StringIO()\n    err = StringIO()\n    with mock.patch('getpass.getpass', return_value='somepassword123'):\n        try:\n            call_command(\n                'createsuperuser',\n                interactive=True,\n                username='joe',\n                email='not-an-email-address',\n                stdin=FakeStdin(),\n                stdout=out,\n                stderr=err,\n                verbosity=1,\n            )\n        except CommandError as e:\n            assert 'Enter a valid email address.' in str(e), e\n        except Exception as e:\n            raise AssertionError('Unexpected non-CommandError: %r' % (e,))\n        else:\n            raise AssertionError('Expected CommandError but command succeeded')",
+      "gold_result": "PASSED - Command.handle raises CommandError whose message contains 'Enter a valid email address.' after passing the invalid non-None email option through field.clean.",
+      "buggy_result": "FAILED - the command succeeded (AssertionError: Expected CommandError but command succeeded), because without the field.clean call the raw invalid 'not-an-email-address' value was silently stored for the user.",
+      "explanation": "S_IMPL_1: in interactive superuser creation, when a REQUIRED_FIELDS option is supplied a non-None value via the command line (rather than prompted), that value must be validated by passing it through field.clean(value, None); if field.clean raises ValidationError the command must terminate with a CommandError whose message is the ValidationError messages joined by '; '. The oracle Search Agent found that tests/auth_tests/test_management.py (the only relevant oracle) is entirely VISIBLE and only ever passes VALID REQUIRED_FIELDS option values in interactive mode (and asserts success or password-similarity output), so no existing/visible assertion pins down the invalid-input CommandError requirement in this branch; the only CommandError-on-invalid test there is interactive=False, exercising the pre-existing non-interactive clean.\n\nMy witness goes through the real buggy/gold Command.handle flow against the default auth User model (REQUIRED_FIELDS = ['email']), in interactive=True mode, supplying a valid username via option and an INVALID non-None email ('not-an-email-address') via option. On gold the added line runs field.clean(invalid, None), the EmailField validator rejects it, and handle terminates with CommandError containing 'Enter a valid email address.' (PASSED). On buggy there is no clean call, so the raw invalid value flows to create_superuser and the command merely succeeds (FAILED with 'Expected CommandError but command succeeded'). The run was confirmed via run_test against both gold (PASSED) and buggy (FAILED) with this exact source, and the invalid-input-interactive scenario is not pinned down by any visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant source is django/contrib/auth/management/commands/createsuperuser.py; its Command.handle() has two branches: interactive (options['interactive']) and non-interactive. In the non-interactive branch every REQUIRED_FIELDS option/env value is passed through field.clean(value, None); in the interactive branch the loop sets user_data[field_name] = options[field_name] and only calls get_input_data (which runs field.clean and catches ValidationError to write 'Error: ...') for fields whose option value is None."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Interactive REQUIRED_FIELDS prompt/validation logic also builds fake_user_data: fields that are many_to_one get wrapped as field.remote_field.model(user_data[field_name]), and fake_user_data is used only for password-similarity validation, whereas user_data goes to create_superuser."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/auth_tests/test_management.py; the relevant interactive-with-option FOREIGN KEY / M2M tests currently only pass valid values (e.g. test_fields_with_fk_via_option_interactive passes username=email.pk, email=email.email, group=group.pk), so they succeed even with the unvalidated-pass-through behavior and do not by themselves pin down the invalid-input validity requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test models used: CustomUser (email USERNAME_FIELD, REQUIRED_FIELDS date_of_birth DateField, first_name), CustomUserWithFK (username FK to Email, REQUIRED_FIELDS email FK to Email to_field='email', group FK to Group), CustomUserWithM2M (REQUIRED_FIELDS orgs ManyToManyField)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/ref/django-admin.txt documents createsuperuser and notes a user may subclass the command and override get_input_data() to customize data input/validation, and that required fields may be supplied via DJANGO_SUPERUSER_<FIELD> env vars or command line args (the latter relevant in non-interactive context)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only hunk H0 is present in the developer patch; it touches the interactive branch only. The non-interactive branch already performed field.clean on each required field's option/env value, so the patch brings interactive mode's treatment of supplied option values in line with that."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Positioning of the added code: it runs only when options[field_name] is not None. Whenever the option value is None the behavior is unchanged (user is prompted via get_input_data)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the added clean call executes before the fake_user_data wrapping (field.many_to_one -> field.remote_field.model(user_data[field_name])), the cleaned value is also what gets wrapped for fake_user_data."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_1]: The only oracle test file exercising createsuperuser Command.handle is tests/auth_tests/test_management.py, which is labeled [VISIBLE] in its entirety. I read it fully. For the interactive-with-command-line-option path, all tests pass only VALID REQUIRED_FIELDS option values (e.g. test_fields_with_fk_via_option_interactive uses real email.pk/email.email/group.pk; test_validate_password_against_required_fields_via_option uses a valid date_of_birth) and merely assert successful creation or password-similarity messaging — outcomes that are identical whether or not the patched field.clean call exists, so none pins down the invalid-value CommandError requirement. The only CommandError-on-invalid-REQUIRED_FIELDS test (test_fields_with_fk, asserting on a non-existent email) runs with interactive=False, exercising the non-interactive branch that already performed field.clean before the patch. No test supplies an invalid non-None REQUIRED_FIELDS option in INTERACTIVE mode and asserts the joined ValidationError CommandError. No failing tests were recorded against the buggy program, and no other oracle file covers this niche behavior. Because the only relevant content is [VISIBLE] and, moreover, does not actually assert the requirement's behavior, there is no Witness — found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL_1] (createsuperuser.Command.handle (interactive REQUIRED_FIELDS option validation)): In interactive superuser creation, when a REQUIRED_FIELDS option is supplied a non-None value via the command line (rather than being prompted), that value is validated by passing it through field.clean(value, None); if field.clean raises a ValidationError, the command terminates with a CommandError whose message is the ValidationError messages joined by '; ', rather than silently using the raw unvalidated value for the user. — not entailed by S_vis (R1 pins down that a command-line-supplied REQUIRED_FIELDS value must be run through field.clean (as in the non-interactive branch) rather than passed raw, which covers the validation core of S_IMPL_1. However, R1 says nothing about the specific failure handling — that a raised ValidationError terminates the command with a CommandError whose message is the validation messages joined by '; ' — so that exact behavior is not entailed.); confirmed by a synthesized witness: S_IMPL_1: in interactive superuser creation, when a REQUIRED_FIELDS option is supplied a non-None value via the command line (rather than prompted), that value must be validated by passing it through field.clean(value, None); if field.clean raises ValidationError the command must terminate with a CommandError whose message is the ValidationError messages joined by '; '. The oracle Search Agent found that tests/auth_tests/test_management.py (the only relevant oracle) is entirely VISIBLE and only ever passes VALID REQUIRED_FIELDS option values in interactive mode (and asserts success or password-similarity output), so no existing/visible assertion pins down the invalid-input CommandError requirement in this branch; the only CommandError-on-invalid test there is interactive=False, exercising the pre-existing non-interactive clean.\n\nMy witness goes through the real buggy/gold Command.handle flow against the default auth User model (REQUIRED_FIELDS = ['email']), in interactive=True mode, supplying a valid username via option and an INVALID non-None email ('not-an-email-address') via option. On gold the added line runs field.clean(invalid, None), the EmailField validator rejects it, and handle terminates with CommandError containing 'Enter a valid email address.' (PASSED). On buggy there is no clean call, so the raw invalid value flows to create_superuser and the command merely succeeds (FAILED with 'Expected CommandError but command succeeded'). The run was confirmed via run_test against both gold (PASSED) and buggy (FAILED) with this exact source, and the invalid-input-interactive scenario is not pinned down by any visible material.",
+    "confidence": "Medium"
+  }
+}

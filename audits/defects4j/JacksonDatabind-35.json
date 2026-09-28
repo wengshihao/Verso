@@ -1,0 +1,124 @@
+{
+  "task_id": "JacksonDatabind-35",
+  "status": "ok",
+  "duration_seconds": 281.0453269210011,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-35",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a Company whose `computers` list holds Desktop/Laptop Computer instances (each bearing a distinct object-id via @JsonIdentityInfo property \"id\" and typed via @JsonTypeInfo(Id.NAME, As.WRAPPER_OBJECT, property=\"type\")) is serialized with `mapper.writerWithDefaultPrettyPrinter()` and the resulting JSON is read back with `mapper.readValue(json, Company.class)`, the deserialization must succeed and yield a Company whose `computers` list is non-null and contains exactly 3 elements (the round trip through WRAPPER_OBJECT-typed polymorphic Computer values combined with object identity must not lose or corrupt any entry).",
+        "subject": "as_wrapper_type_deserializer.deserialize_under_object_id / WrapperObjectWithObjectIdTest.testSimple round-trip",
+        "hunk_ids": [],
+        "cited_from": "Company comp = new Company();\n        comp.addComputer(new DesktopComputer(\"computer-1\", \"Bangkok\"));\n        comp.addComputer(new DesktopComputer(\"computer-2\", \"Pattaya\"));\n        comp.addComputer(new LaptopComputer(\"computer-3\", \"Apple\"));\n\n        final ObjectMapper mapper = new ObjectMapper();\n\n        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(comp);\n\n        Company result = mapper.readValue(json, Company.class);\n        assertNotNull(result);\n        assertNotNull(result.computers);\n        assertEquals(3, result.computers.size());\nand\n@JsonIdentityInfo(generator = ObjectIdGenerators.PropertyGenerator.class, property = \"id\")\n    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.WRAPPER_OBJECT, property = \"type\")\n    @JsonSubTypes({ @JsonSubTypes.Type(value = DesktopComputer.class, name = \"desktop\"), @JsonSubTypes.Type(value = LaptopComputer.class, name = \"laptop\") })\n    static class Computer {...}"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When AsWrapperTypeDeserializer deserialization begins with the parser's current token already being a FIELD_NAME (rather than a START_OBJECT), the type id is read from that current FIELD_NAME without advancing the parser first, and WRAPPER_OBJECT type deserialization proceeds normally instead of raising an error about needing a JSON Object.",
+        "subject": "AsWrapperTypeDeserializer._deserialize(JsonParser, DeserializationContext)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ2",
+        "statement": "When the parser's current token is START_OBJECT, AsWrapperTypeDeserializer advances one token and requires it to be a FIELD_NAME; otherwise it raises a wrongTokenException expecting FIELD_NAME with the message 'need JSON String that contains type id (for subtype of <baseTypeName>)'.",
+        "subject": "AsWrapperTypeDeserializer._deserialize(JsonParser, DeserializationContext)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ3",
+        "statement": "When the parser's current token is neither START_OBJECT nor FIELD_NAME, AsWrapperTypeDeserializer raises a wrongTokenException expecting START_OBJECT with the message 'need JSON Object to contain As.WRAPPER_OBJECT type information for class <baseTypeName>'.",
+        "subject": "AsWrapperTypeDeserializer._deserialize(JsonParser, DeserializationContext)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 is a happy-path round-trip test that never feeds the deserializer input beginning at a FIELD_NAME token, so it provides no evidence about the current-token-is-FIELD_NAME handling described in REQ1. The specific code path of reading the type id from a current FIELD_NAME without advancing is not pinned down by the visible evidence."
+      },
+      {
+        "requirement_id": "REQ2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 only asserts that a well-formed round trip yields 3 non-null computers; it says nothing about the parser advancing from START_OBJECT and throwing a wrongTokenException expecting FIELD_NAME with the specified message when a FIELD_NAME is not found. This exact error-handling behavior and message are not covered by visible evidence."
+      },
+      {
+        "requirement_id": "REQ3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 contains no malformed-input case where the parser is at a token other than START_OBJECT/FIELD_NAME, so nothing visible indicates a wrongTokenException expecting START_OBJECT with the message 'need JSON Object to contain As.WRAPPER_OBJECT type information'. This rejection branch is not entailed."
+      }
+    ],
+    "target_requirement_id": "REQ1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I was able to build several standalone JUnit reproductions for REQ1 (e.g. a Dept{Computer head; List<Computer> team} where the very same Laptop/Desktop instance is placed in both head and team, so team slot 0 becomes a bare object-id back-reference while head is walked via ObjectIdReferenceProperty, plus assertSame identity-linking assertions). All variants pass on gold and fail on buggy at AsWrapperTypeDeserializer._deserialize (the \"need JSON Object\" check), confirming they exercise the parser-already-at-FIELD_NAME WRAPPER_OBJECT path of REQ1.\n\nHowever, per the audit's \"hidden fact\" rule this is not a valid Witness. The mechanism that lands the WRAPPER_OBJECT deserializer at a current FIELD_NAME is uniquely the @JsonTypeInfo(include=As.WRAPPER_OBJECT) + @JsonIdentityInfo(ObjectIdGenerators.PropertyGenerator) combination: I confirmed even the simplest such list (3 distinct computers, mirroring the visible test) throws the buggy error already at the first element, i.e. just having ObjectId + As.WRAPPER_OBJECT active changes the parser to FIELD_NAME-at-entry. That exact composition is precisely what the only visible regression test, WrapperObjectWithObjectIdTest.testSimple (databind#1051), already round-trips and asserts. Consequently any discriminating input for REQ1 collapses to re-deriving the fact already pinned by that visible test (whose oracle was never hidden): any hidden test on this same parse path would equally have failed the buggy program before reaching its own assertions, and would therefore already appear in the failing list. Since testSimple is the sole failing test, no hidden oracle genuinely covers REQ1, so found=false. (My discarded candidates were byte-confirmed: PASS vs buggy-FAILED on both a 3-distinct-computer Company clone and on the repeated-reference Dept variant with assertSame linking.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug-report text for Databind#1051 was not fetched; only a citation fallback was visible. All extractable requirements come from the disclosed failing/regression test source."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The only fix-relevant production class visible is AsWrapperTypeDeserializer (with its base TypeDeserializerBase and the abstract TypeDeserializer interface). The test is the sole observable behavioral spec; it exercises the WRAPPER_OBJECT type-deserialization path in combination with @JsonIdentityInfo object ids."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In _deserialize, after wrapping the parser via JsonParserSequence the code does not (currently) reset/re-check the current token the way the leading token checks do; the reference-combination scenario of issue 1051 is exposed only through the round-trip test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test lives under src/test/java/com/fasterxml/jackson/databind/jsontype/ and extends BaseMapTest (not among visible files here)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 rewrites the leading sanity-check block in _deserialize from a check that the current token be START_OBJECT (followed by an unconditional advance) into a branch that accepts an already-present FIELD_NAME current token as the type-id position. The subsequent type-id read, _findDeserializer call, and 'nextToken' advance after typeId are unchanged between revisions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change enables the scenario (seen with @JsonIdentityInfo reference handling / issue 1051) where the deserialization entry parser is already positioned at the FIELD_NAME, not at the enclosing START_OBJECT. Program flow after the guard (reading typeId, finding deserializer, advancing, END_OBJECT check) is identical pre/post patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_deserialize is private and invoked via all four public deserializeTypedFrom* methods, so the behavior applies to array, scalar, any, and object entry points alike."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ1]: The target requirement REQ1 concerns AsWrapperTypeDeserializer._deserialize accepting a parser that is already positioned at a FIELD_NAME (the WRAPPER_OBJECT-type + ObjectId scenario of databind#1051) instead of requiring a leading START_OBJECT to advance from.\n\nThe only test listed as failing against the buggy program is com.fasterxml.jackson.databind.jsontype.WrapperObjectWithObjectIdTest::testSimple (issue #1051: WRAPPER_OBJECT type info combined with @JsonIdentityInfo). Reading that file shows it is exactly the test that exercises REQ1's behavior (full round-trip of a Company/Computer/LaptopComputer object graph under WRAPPER_OBJECT + PropertyGenerator object-ids). However, that file's content is labeled [VISIBLE], and a Witness may rest only on [HIDDEN] assertions. Since this sole matching test is VISIBLE it cannot serve as the witness.\n\nBecause testSimple is the ONLY test failing against the buggy program, and a witness for REQ1 must fail against the buggy program, no [HIDDEN] test can qualify regardless of content — had any hidden test exercised this same parser-at-FIELD_NAME WRAPPER_OBJECT path it would also have failed and appeared in the failure list (it would error out before its assertions otherwise). To be thorough I also read the other object-id/polymorphic oracle files (TestAbstractWithObjectId, TestObjectIdWithPolymorphic, TestBackRefsWithPolymorphic, TestParentChildReferences, TestForwardReference, JSOGDeserialize622Test): all use PROPERTY/CLASS/default-typing inclusion (or @JsonBackReference/@JsonManagedReference), never JsonTypeInfo.As.WRAPPER_OBJECT, so none touch the REQ1 code path. No hidden test in the oracle genuinely tests REQ1, hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ1]: I was able to build several standalone JUnit reproductions for REQ1 (e.g. a Dept{Computer head; List<Computer> team} where the very same Laptop/Desktop instance is placed in both head and team, so team slot 0 becomes a bare object-id back-reference while head is walked via ObjectIdReferenceProperty, plus assertSame identity-linking assertions). All variants pass on gold and fail on buggy at AsWrapperTypeDeserializer._deserialize (the \"need JSON Object\" check), confirming they exercise the parser-already-at-FIELD_NAME WRAPPER_OBJECT path of REQ1.\n\nHowever, per the audit's \"hidden fact\" rule this is not a valid Witness. The mechanism that lands the WRAPPER_OBJECT deserializer at a current FIELD_NAME is uniquely the @JsonTypeInfo(include=As.WRAPPER_OBJECT) + @JsonIdentityInfo(ObjectIdGenerators.PropertyGenerator) combination: I confirmed even the simplest such list (3 distinct computers, mirroring the visible test) throws the buggy error already at the first element, i.e. just having ObjectId + As.WRAPPER_OBJECT active changes the parser to FIELD_NAME-at-entry. That exact composition is precisely what the only visible regression test, WrapperObjectWithObjectIdTest.testSimple (databind#1051), already round-trips and asserts. Consequently any discriminating input for REQ1 collapses to re-deriving the fact already pinned by that visible test (whose oracle was never hidden): any hidden test on this same parse path would equally have failed the buggy program before reaching its own assertions, and would therefore already appear in the failing list. Since testSimple is the sole failing test, no hidden oracle genuinely covers REQ1, so found=false. (My discarded candidates were byte-confirmed: PASS vs buggy-FAILED on both a 3-distinct-computer Company clone and on the repeated-reference Dept variant with assertSame linking.)"
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ1] (AsWrapperTypeDeserializer._deserialize(JsonParser, DeserializationContext)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I was able to build several standalone JUnit reproductions for REQ1 (e.g. a Dept{Computer head; List<Computer> team} where the very same Laptop/Desktop instance is placed in both head and team, so team slot 0 becomes a bare object-id back-reference while head is walked via ObjectIdReferenceProperty, plus assertSame identity-linking assertions). All variants pass on gold and fail on buggy at AsWrapperTypeDeserializer._deserialize (the \"need JSON Object\" check), confirming they exercise the parser-already-at-FIELD_NAME WRAPPER_OBJECT path of REQ1.\n\nHowever, per the audit's \"hidden fact\" rule this is not a valid Witness. The mechanism that lands the WRAPPER_OBJECT deserializer at a current FIELD_NAME is uniquely the @JsonTypeInfo(include=As.WRAPPER_OBJECT) + @JsonIdentityInfo(ObjectIdGenerators.PropertyGenerator) combination: I confirmed even the simplest such list (3 distinct computers, mirroring the visible test) throws the buggy error already at the first element, i.e. just having ObjectId + As.WRAPPER_OBJECT active changes the parser to FIELD_NAME-at-entry. That exact composition is precisely what the only visible regression test, WrapperObjectWithObjectIdTest.testSimple (databind#1051), already round-trips and asserts. Consequently any discriminating input for REQ1 collapses to re-deriving the fact already pinned by that visible test (whose oracle was never hidden): any hidden test on this same parse path would equally have failed the buggy program before reaching its own assertions, and would therefore already appear in the failing list. Since testSimple is the sole failing test, no hidden oracle genuinely covers REQ1, so found=false. (My discarded candidates were byte-confirmed: PASS vs buggy-FAILED on both a 3-distinct-computer Company clone and on the repeated-reference Dept variant with assertSame linking.)",
+    "confidence": "Medium"
+  }
+}

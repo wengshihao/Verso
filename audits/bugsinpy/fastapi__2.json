@@ -1,0 +1,164 @@
+{
+  "task_id": "fastapi__2",
+  "status": "ok",
+  "duration_seconds": 416.3039027909981,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "fastapi__2",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "APIRouter.add_api_websocket_route must pass the router's dependency_overrides_provider (self.dependency_overrides_provider) to the APIWebSocketRoute it constructs, so that dependencies of websocket routes are resolved using the provider's overrides rather than the original dependency.",
+        "subject": "fastapi.routing.APIRouter.add_api_websocket_route",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The function `add_api_websocket_route` does not add `dependency_overrides_provider` to `APIWebSocketRoute`.\" Buggy code: `def add_api_websocket_route(self, path: str, endpoint: Callable, name: str = None) -> None: route = APIWebSocketRoute(path, endpoint=endpoint, name=name)` — note APIWebSocketRoute accepts `dependency_overrides_provider: Any = None` but it is never passed. Expected behavior per issue: \"The overrides should be taken into account, but the test uses the original dependency.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When APIRouter.include_router copies an APIWebSocketRoute from a child router, the dependency_overrides_provider of the including (parent) router must be propagated to the newly registered websocket route (i.e. include_router must not lose the provider when re-adding websocket routes).",
+        "subject": "fastapi.routing.APIRouter.include_router",
+        "hunk_ids": [],
+        "cited_from": "Buggy code in include_router: `elif isinstance(route, APIWebSocketRoute): self.add_api_websocket_route(prefix + route.path, route.endpoint, name=route.name)` — no dependency_overrides_provider forwarded (contrast with the APIRoute branch, which passes `dependency_overrides_provider=self.dependency_overrides_provider` implicitly via add_api_route, and the routing.Route branch)."
+      },
+      {
+        "id": "R3",
+        "statement": "get_websocket_app, given a solved dependant with a dependency override for the provider, resolves dependencies via solve_dependencies with the supplied dependency_overrides_provider, so an overridden dependency's replacement value is what is passed to the websocket endpoint call rather than the original dependency's value.",
+        "subject": "fastapi.routing.get_websocket_app",
+        "hunk_ids": [],
+        "cited_from": "Existing signature: `def get_websocket_app(dependant: Dependant, dependency_overrides_provider: Any = None) -> Callable:` and body calls `solve_dependencies(request=websocket, dependant=dependant, dependency_overrides_provider=dependency_overrides_provider)`. The mechanism is present; the issue is that APIWebSocketRoute is never given the provider from add_api_websocket_route."
+      },
+      {
+        "id": "R4",
+        "statement": "Websocket routes registered on a FastAPI app (via app.websocket_route) continue to function: connecting and receiving text works, e.g. connecting to \"/\" receives \"Hello, world!\", and routes added through routers and routers with prefixes remain reachable at their prefixed paths.",
+        "subject": "fastapi.routing.APIWebSocketRoute / APIRouter.websocket_route",
+        "hunk_ids": [],
+        "cited_from": "tests/test_ws_router.py: `with client.websocket_connect(\"/\") as websocket: data = websocket.receive_text(); assert data == \"Hello, world!\"`; `test_router` asserts `\"Hello, router!\"` on \"/router\"; `test_prefix_router` asserts `\"Hello, router with prefix!\"` on \"/prefix/\"; `test_router2` asserts `\"Hello, router!\"` on \"/router2\" via `@router.websocket(\"/router2\")`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "APIRouter.add_api_websocket_route registers the websocket route such that the router's own dependency_overrides_provider is used when resolving the websocket endpoint's dependencies — i.e. an app-level / router-level dependency override is honored for websocket endpoints added via add_api_websocket_route (or the websocket() decorator).",
+        "subject": "APIRouter.add_api_websocket_route",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Websocket routes re-registered through APIRouter.include_router (i.e. APIWebSocketRoute instances on a child router) also have the dependency overrides of the router performing include_router applied when their dependencies are solved.",
+        "subject": "APIRouter.include_router (APIWebSocketRoute branch)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Constructing an APIWebSocketRoute / registering a websocket route continues to succeed with no dependency_overrides_provider configured (the provider defaults to None), and the endpoint still calls the websocket endpoint function with the solved dependency values.",
+        "subject": "APIWebSocketRoute",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "S_vis R1 explicitly states add_api_websocket_route must pass the router's dependency_overrides_provider to the APIWebSocketRoute it constructs so overrides are honored, which is exactly the behavior S_impl R1 describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R2"
+        ],
+        "rationale": "S_vis R2 states that when include_router copies an APIWebSocketRoute the parent router's dependency_overrides_provider must be propagated to the re-registered websocket route, matching S_impl R2 exactly."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis R1's citation notes APIWebSocketRoute accepts dependency_overrides_provider defaulting to None and S_vis R4 shows websocket routes functioning, but neither S_vis entry explicitly pins the specific behavior that registration succeeds with no provider configured AND the endpoint is still called with solved dependency values; the evidence is only adjacent."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_router_ws_depends_with_override",
+      "test_source": "from fastapi import APIRouter, Depends, FastAPI, WebSocket\nfrom fastapi.testclient import TestClient\n\n\nasync def ws_dependency():\n    return \"Socket Dependency\"\n\n\nrouter_ws = APIRouter()\n\n\n@router_ws.websocket(\"/router-ws-depends/\")\nasync def router_ws_decorator_depends(websocket: WebSocket, data=Depends(ws_dependency)):\n    await websocket.accept()\n    await websocket.send_text(data)\n    await websocket.close()\n\n\napp = FastAPI()\napp.include_router(router_ws)\n\n\ndef test_router_ws_depends_with_override():\n    client = TestClient(app)\n    app.dependency_overrides[ws_dependency] = lambda: \"Override\"\n    with client.websocket_connect(\"/router-ws-depends/\") as websocket:\n        data = websocket.receive_text()\n        assert data == \"Override\"\n    app.dependency_overrides = {}\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The target requirement R3 concerns APIWebSocketRoute being constructible/registered with dependency_overrides_provider defaulting to None, while still invoking the websocket endpoint with solved dependency values (including app.dependency_overrides). The oracle's failing test tests/test_ws_router.py::test_router_ws_depends_with_override (part of the full oracle suite, hidden relative to the visible test_ws_router.py which only contains basic echo tests) exercises exactly this: it registers a websocket route on an APIRouter, includes it in a FastAPI app, sets app.dependency_overrides[ws_dependency], and asserts the endpoint receives the overridden value (\"Override\"). I reproduced that test's assertion as a standalone method and confirmed mechanically: it PASSES against the gold (fixed) program and FAILS against the buggy program (which returns \"Socket Dependency\" instead of \"Override\"), because the buggy add_api_websocket_route fails to forward dependency_overrides_provider to APIWebSocketRoute → solve_dependencies. This behavior is NOT established by visible information (the visible test file has no override/App-level dependency test), so it qualifies as a genuine Witness. The test also confirms route construction succeeds with no explicit provider configured (default None), matching R3's first clause."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are only fastapi/routing.py and tests/test_ws_router.py — no other source or config is disclosed."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "APIRoute already plumbs dependency_overrides_provider: its __init__ stores `self.dependency_overrides_provider = dependency_overrides_provider` and get_route_handler() forwards it to get_request_handler, which passes it to solve_dependencies. The websocket path is the analogue that is missing the plumbing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "APIWebSocketRoute.__init__ already accepts `dependency_overrides_provider: Any = None` and forwards it into get_websocket_app → solve_dependencies; only the callers (add_api_websocket_route, and include_router's re-registration) fail to supply it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "APIRouter stores `self.dependency_overrides_provider` in __init__; add_api_route passes `dependency_overrides_provider=self.dependency_overrides_provider` when constructing APIRoute."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test file tests/test_ws_router.py contains NO dependency-override test — it only exercises basic websocket echo behavior; the override expectation comes solely from the issue text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "include_router has separate branches for APIRoute, routing.Route, APIWebSocketRoute, and routing.WebSocketRoute; websocket routes are re-registered through add_api_websocket_route, so a fix in add_api_websocket_route alone would not fix the include_router propagation unless that call site is handled too."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "get_websocket_app closes the websocket with WS_1008_POLICY_VIOLATION and raises WebSocketRequestValidationError when solve_dependencies returns errors."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only one hunk (H0) in the patch; it changes only the APIWebSocketRoute construction call inside APIRouter.add_api_websocket_route."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "APIWebSocketRoute.__init__ and get_websocket_app already accepted/forwarded dependency_overrides_provider to solve_dependencies; the patch supplies the value at the call site rather than changing those signatures."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "APIRouter.__init__ stores self.dependency_overrides_provider (unchanged by the patch); add_api_route already forwarded it to APIRoute."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "include_router's APIWebSocketRoute branch was not edited; it calls self.add_api_websocket_route(...), so the new propagation reaches included websocket routes transitively."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_websocket_app closes the socket with WS_1008_POLICY_VIOLATION and raises WebSocketRequestValidationError on dependency validation errors (pre-existing, unchanged)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (APIWebSocketRoute): Constructing an APIWebSocketRoute / registering a websocket route continues to succeed with no dependency_overrides_provider configured (the provider defaults to None), and the endpoint still calls the websocket endpoint function with the solved dependency values. — not entailed by S_vis (S_vis R1's citation notes APIWebSocketRoute accepts dependency_overrides_provider defaulting to None and S_vis R4 shows websocket routes functioning, but neither S_vis entry explicitly pins the specific behavior that registration succeeds with no provider configured AND the endpoint is still called with solved dependency values; the evidence is only adjacent.); confirmed by a oracle witness: The target requirement R3 concerns APIWebSocketRoute being constructible/registered with dependency_overrides_provider defaulting to None, while still invoking the websocket endpoint with solved dependency values (including app.dependency_overrides). The oracle's failing test tests/test_ws_router.py::test_router_ws_depends_with_override (part of the full oracle suite, hidden relative to the visible test_ws_router.py which only contains basic echo tests) exercises exactly this: it registers a websocket route on an APIRouter, includes it in a FastAPI app, sets app.dependency_overrides[ws_dependency], and asserts the endpoint receives the overridden value (\"Override\"). I reproduced that test's assertion as a standalone method and confirmed mechanically: it PASSES against the gold (fixed) program and FAILS against the buggy program (which returns \"Socket Dependency\" instead of \"Override\"), because the buggy add_api_websocket_route fails to forward dependency_overrides_provider to APIWebSocketRoute → solve_dependencies. This behavior is NOT established by visible information (the visible test file has no override/App-level dependency test), so it qualifies as a genuine Witness. The test also confirms route construction succeeds with no explicit provider configured (default None), matching R3's first clause.",
+    "confidence": "High"
+  }
+}

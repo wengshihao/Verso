@@ -1,0 +1,102 @@
+{
+  "task_id": "django__django-14580",
+  "status": "ok",
+  "duration_seconds": 953.8484226249857,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14580",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a generated migration contains a CreateModel whose `bases` tuple includes `models.Model` (i.e., requires the name `models` in the generated Python), the generated file's import block must bind the `models` name (the `from django.db import migrations, models` line), so that the migration file is valid, importable Python and does not raise NameError.",
+        "subject": "django.db.migrations.writer.MigrationWriter.as_string / OperationWriter serialization of CreateModel bases",
+        "hunk_ids": [],
+        "cited_from": "Issue report models.py:\nfrom django.db import models\nclass MyField(models.TextField):\n\tpass\nclass MyBaseModel(models.Model):\n\tclass Meta:\n\t\tabstract = True\nclass MyMixin:\n\tpass\nclass MyModel(MyMixin, MyBaseModel):\n\tname = MyField(primary_key=True)\n\nGenerated file code (verbatim from report):\nimport app.models\nfrom django.db import migrations\nclass Migration(migrations.Migration):\n\t...\n\toperations = [\n\t\tmigrations.CreateModel(\n\t\t\tname='MyModel',\n\t\t\tfields=[\n\t\t\t\t('name', app.models.MyField(primary_key=True, serialize=False)),\n\t\t\t],\n\t\t\toptions={'abstract': False},\n\t\t\tbases=(app.models.MyMixin, models.Model),\n\t\t),\n\t]\n\nRuntime error (verbatim):\nbases=(app.models.MyMixin, models.Model),\nNameError: name 'models' is not defined\n\nExpected behavior (verbatim): \"Expected behavior: Django generates a migration file that is valid Python. Actual behavior: Django generates a migration file that is missing an import statement.\""
+      },
+      {
+        "id": "R2",
+        "statement": "For the concrete reported models (custom MyField; abstract MyBaseModel; plain MyMixin; concrete MyModel(MyMixin, MyBaseModel) whose only field is name=MyField(primary_key=True)), makemigrations must not emit a migration whose bases line references `models.Model` while the file lacks a `models` import.",
+        "subject": "make_migrations command output (migration writer)",
+        "hunk_ids": [],
+        "cited_from": "Issue report reproduction and error:\n\"Which will then fail with the following error:\n File \".../app/migrations/0001_initial.py\", line 23, in Migration\n\tbases=(app.models.MyMixin, models.Model),\nNameError: name 'models' is not defined\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-1",
+        "statement": "When the value being serialized by TypeSerializer (via serializer_factory / MigrationWriter.serialize) is exactly the models.Model class type (identity match in the special_cases list), the serialization result is the string 'models.Model' with the import set {'from django.db import models'}, so that this import is propagated into the writer's imports and a generated migration referencing models.Model (e.g. as a CreateModel base) ends up importing models from django.db.",
+        "subject": "django.db.migrations.serializer.TypeSerializer.serialize",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis (R1/R2) pins down the macro-level outcome that a generated migration referencing models.Model must have a `from django.db import ... models` import and must not raise NameError, which is exactly the purpose REQ-1's mechanism serves. However, REQ-1 additionally specifies an implementation-level detail—TypeSerializer.serialize matching models.Model by identity in a special_cases list and emitting the string 'models.Model' with import {'from django.db import models'}—which the visible evidence does not explicitly describe, so the exact behavior REQ-1 states is not fully pinned down."
+      }
+    ],
+    "target_requirement_id": "REQ-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_create_model_base_models_model_propagates_models_import",
+      "test_source": "from django.db import migrations, models\nfrom django.db.migrations.writer import MigrationWriter\n\n\ndef test_create_model_base_models_model_propagates_models_import():\n    # A CreateModel whose bases are non-default and reference models.Model,\n    # with no fields producing any models import, so the 'from django.db\n    # import models' import can come only from serializing the models.Model\n    # base itself.\n    migration = type(\"Migration\", (migrations.Migration,), {\n        \"operations\": [\n            migrations.CreateModel(\n                name=\"MyModel\",\n                fields=(),\n                bases=(str, models.Model),\n            ),\n        ],\n        \"dependencies\": [],\n    })\n    output = MigrationWriter(migration, include_header=False).as_string()\n    assert \"bases=(str, models.Model),\" in output\n    assert \"from django.db import migrations, models\" in output\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (output emitted only 'from django.db import migrations' with no models import even though the generated file references models.Model as a base)",
+      "explanation": "REQ-1 states that when the exact models.Model class is serialized by TypeSerializer, the result must include the import 'from django.db import models', so a generated migration referencing models.Model (e.g. as a CreateModel base alongside non-default bases) ends up importing models from django.db. The gold TypeSerializer.serialize special-case tuple for (models.Model, ...) now carries ['from django.db import models']; buggy carries [] so it yields an empty imports set.\n\nThe witness builds a real Migration whose only CreateModel contributes no models import through any other channel: it has fields=() (empty field list), and a non-default bases tuple (str, models.Model). `str` serializes via the builtin branch to plain 'str' with no imports, so the sole possible source of the 'from django.db import models' line in MigrationWriter.as_string output is the serialization of the models.Model base itself. as_string runs run with include_header=False so no settings needed for the timestamp, and the migration's only operation deconstructs into bases=(... ) even with empty fields.\n\nResult: on gold the generated text contains 'from django.db import migrations, models' (pass); on buggy as_string assembles the same file with bases=(str, models.Model) but only emits 'from django.db import migrations' (fail) — a generated migration that references models.Model without importing models. This was confirmed by running the identical test_source against both revisions. The visible writer tests (test_simple_migration, test_custom_operation) always pair CreateModel with real django.db.models fields or other operations that add the models import themselves, and test_models_import_omitted asserts the opposite (no import when models is unused), so this identity/single-source model.Model scenario is not already pinned down by visible assertions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Affected module per reporter and code: django/db/migrations/writer.py (`MigrationWriter.as_string`, `OperationWriter`), with the raw serialization in django/db/migrations/serializer.py (`TypeSerializer`, whose special-case list maps `models.Model` -> string 'models.Model' with an empty imports set; and `DeconstructableSerializer._serialize_path` which for `django.db.models` paths emits {'from django.db import models'})."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Root-cause mechanics visible in code: MigrationWriter.as_string merges `models` into the header ONLY as `if \"from django.db import models\" in imports: ... imports.add(\"from django.db import migrations, models\") else: imports.add(\"from django.db import migrations\")`. So whether the generated file imports `models` depends entirely on some serialized value adding the literal 'from django.db import models' line; a CreateModel base `models.Model` serializes to text 'models.Model' without contributing that import."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CreateModel only includes a `bases` kwarg when bases differ from the default `(models.Model,)` (see operations/models.py deconstruct); the failing scenario's bases are `(MyMixin, models.Model)` which is non-default, and no field is a `django.db.models` type, so neither adds the models import."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Migration-writer tests live in tests/migrations/test_writer.py (WriterTests use a safe_exec helper to exec generated strings); autodetector ordering tests are in tests/migrations/test_autodetector.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch changes only the third element (imports list) of the (models.Model, 'models.Model', [...]) special-case tuple in TypeSerializer.serialize from [] to ['from django.db import models']; the serialized string 'models.Model' and the type(None) special case ('type(None)', []) are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TypeSerializer.serialize matches the special case by identity (`case is self.value`), so the changed requirement applies only when the exact models.Model class object is serialized (models.Model has no __module__ of django.db.models path handling here; the matching special case short-circuits before the generic module branch)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TypeSerializer.__init__/serialize contract: returns a (string, imports) tuple consumed by the writer's imports merge; an empty imports set contributes nothing, whereas the added import later causes MigrationWriter.as_string to emit 'from django.db import migrations, models' rather than 'from django.db import migrations'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This is the class of fix that only matters when serializing models.Model itself; ordinary field/base classes whose module is django.db.models are handled by DeconstructableSerializer._serialize_path which already emits {'from django.db import models'}."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-1]: I investigated REQ-1 (TypeSerializer.serialize of the exact models.Model class must yield ('models.Model', {'from django.db import models'}) so the models import propagates into generated migrations).\n\nI read the full oracle test surface where behavior relevant to this requirement could plausibly live: tests/migrations/test_writer.py (WriterTests/OperationWriterTests — serialization of values, imports merging, test_models_import_omitted, test_simple_migration, test_custom_operation), tests/migrations/test_autodetector.py (ModelState/CreateModel ordering, bases handling), tests/migrations/test_operations.py (CreateModel with bases=(Mixin, models.Model) / duplicate-base checks), tests/migrations/test_optimizer.py, tests/migrations/test_commands.py (makemigrations/squashmigrations), and the migration_serializer infrastructure referenced therein.\n\nEvery one of these files is labeled [VISIBLE], i.e. their content is information a repair system/performer would already have seen. The Verso rules are strict: a Witness may ONLY rest on [HIDDEN] assertion content. No [HIDDEN] test – in any of the migration test files relevant to serializing models.Model / the propagation of the 'from django.db import models' import – exists in the oracle's real test suite that I could locate. Where tests do exercise CreateModel-with-non-default-bases or import-emission (e.g. test_operations `test_create_model_with_duplicate_base`, `TestCreateModel.test_references_model_mixin`, or writer's import tests), they live in [VISIBLE] files and do not assert the exact requirement (identity-serialization of models.Model adding the models import), and cannot serve as a witness regardless.\n\nA genuine witness would have to be a [HIDDEN] oracle test asserting the models import is produced when models.Model is serialized (and passing on gold/failing on the buggy program). Since the relevant assertion-bearing content in the oracle is entirely [VISIBLE], no such witness can be grounded in hidden content; I therefore report found=false rather than fabricating a source from visible assertions."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ-1] (django.db.migrations.serializer.TypeSerializer.serialize): When the value being serialized by TypeSerializer (via serializer_factory / MigrationWriter.serialize) is exactly the models.Model class type (identity match in the special_cases list), the serialization result is the string 'models.Model' with the import set {'from django.db import models'}, so that this import is propagated into the writer's imports and a generated migration referencing models.Model (e.g. as a CreateModel base) ends up importing models from django.db. — not entailed by S_vis (S_vis (R1/R2) pins down the macro-level outcome that a generated migration referencing models.Model must have a `from django.db import ... models` import and must not raise NameError, which is exactly the purpose REQ-1's mechanism serves. However, REQ-1 additionally specifies an implementation-level detail—TypeSerializer.serialize matching models.Model by identity in a special_cases list and emitting the string 'models.Model' with import {'from django.db import models'}—which the visible evidence does not explicitly describe, so the exact behavior REQ-1 states is not fully pinned down.); confirmed by a synthesized witness: REQ-1 states that when the exact models.Model class is serialized by TypeSerializer, the result must include the import 'from django.db import models', so a generated migration referencing models.Model (e.g. as a CreateModel base alongside non-default bases) ends up importing models from django.db. The gold TypeSerializer.serialize special-case tuple for (models.Model, ...) now carries ['from django.db import models']; buggy carries [] so it yields an empty imports set.\n\nThe witness builds a real Migration whose only CreateModel contributes no models import through any other channel: it has fields=() (empty field list), and a non-default bases tuple (str, models.Model). `str` serializes via the builtin branch to plain 'str' with no imports, so the sole possible source of the 'from django.db import models' line in MigrationWriter.as_string output is the serialization of the models.Model base itself. as_string runs run with include_header=False so no settings needed for the timestamp, and the migration's only operation deconstructs into bases=(... ) even with empty fields.\n\nResult: on gold the generated text contains 'from django.db import migrations, models' (pass); on buggy as_string assembles the same file with bases=(str, models.Model) but only emits 'from django.db import migrations' (fail) — a generated migration that references models.Model without importing models. This was confirmed by running the identical test_source against both revisions. The visible writer tests (test_simple_migration, test_custom_operation) always pair CreateModel with real django.db.models fields or other operations that add the models import themselves, and test_models_import_omitted asserts the opposite (no import when models is unused), so this identity/single-source model.Model scenario is not already pinned down by visible assertions.",
+    "confidence": "Medium"
+  }
+}

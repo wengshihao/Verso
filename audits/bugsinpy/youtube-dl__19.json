@@ -1,0 +1,142 @@
+{
+  "task_id": "youtube-dl__19",
+  "status": "ok",
+  "duration_seconds": 115.04940904199611,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "youtube-dl__19",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "YoutubeDL.prepare_filename must not expand environment variables contained in the values of info_dict meta fields that are substituted into the output template; e.g. a field value containing '$HOME' (or '${VAR}') must appear literally in the returned filename rather than being replaced by the environment variable's value.",
+        "subject": "YoutubeDL.prepare_filename",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"[YoutubeDL] Don't expand env variables in meta fields (closes #13637)\"; YoutubeDL.py prepare_filename ends with: `filename = expand_path(outtmpl % template_dict)` where `template_dict` is built from `info_dict` via `template_dict = dict(info_dict)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "prepare_filename does not apply environment-variable or user-home (`~`) expansion to the values substituted in from info_dict: a field value containing e.g. `$PATH` is inserted into the generated filename verbatim, so with outtmpl `%(title)s.%(ext)s` and title `Hello $PATH` the returned filename is `Hello $PATH.mp4` rather than an expanded path.",
+        "subject": "YoutubeDL.prepare_filename",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "prepare_filename still applies environment-variable and user-home (`~`) expansion to the output template string itself (the `outtmpl` parameter) before field substitution, so `$VAR`/`~` written directly in outtmpl is expanded in the returned filename.",
+        "subject": "YoutubeDL.prepare_filename",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Escaped `%%` and `$$` sequences present in the output template are not consumed by the pre-substitution expansion step: `%%` in the template yields a literal single `%` in the returned filename (e.g. outtmpl `%%(height)06d.%(ext)s` returns `%(height)06d.mp4`), and `$$` in the template survives the expansion step unaltered.",
+        "subject": "YoutubeDL.prepare_filename",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1's statement plus its citation (outtmpl % template_dict where template_dict comes from info_dict, with expansion applied only afterward via expand_path) directly pins down that meta-field values containing '$VAR' appear literally rather than being expanded, matching S_impl R1's core behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The R1 citation shows the final filename is computed as expand_path(outtmpl % template_dict), so an unexpanded template's own '$VAR'/'~' written directly in outtmpl would still be expanded by expand_path — the same observable behavior S_impl R2 describes, though the summary's statement itself only addresses meta fields."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 and its citation say nothing about escaped '%%' or '$$' sequences or how escaping interacts with the pre-substitution expansion step; this specific behavior is not pinned down by any visible requirement."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r3_escaping_not_consumed_by_pre_substitution_expand",
+      "test_source": "def test_r3_escaping_not_consumed_by_pre_substitution_expand():\n    import os\n    from youtube_dl import YoutubeDL\n\n    info = {\n        'id': '1234',\n        'ext': 'mp4',\n        'width': None,\n        'height': 1080,\n        'title': 'Hello $VERSOFIELDVAR world',\n    }\n\n    os.environ['VERSOFIELDVAR'] = 'EXPANDED_VALUE'\n\n    def fname(templ):\n        return YoutubeDL({'outtmpl': templ}).prepare_filename(info)\n\n    # Template '%%' collapses to a single literal '%' (not consumed twice, and\n    # the escaped numeric field is not subjected to the numeric-field patching).\n    assert fname('%%(height)06d.%(ext)s') == '%(height)06d.mp4'\n\n    # Template '$$' survives the pre-substitution expansion step unaltered.\n    assert fname('%(id)s$$.%(ext)s') == '1234$$.mp4'\n\n    # The pre-substitution expansion must run on the template only: a '$VAR'\n    # occurring inside a *field value* must NOT be environment-expanded.\n    assert fname('%(title)s.%(ext)s') == 'Hello $VERSOFIELDVAR world.mp4'\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "Target R3 concerns YoutubeDL.prepare_filename's pre-substitution expansion step: escaped `%%`/`$$` in the output template must not be consumed by expand_path, and (per the fix's own comment) expand_path must run on the TEMPLATE before the `% template_dict` substitution so that content coming from substituted meta-fields is not environment-expanded.\n\nI verified the fixed/gold behavior at this exact location. In this environment `utils.expand_path` expands `$VAR`/`${VAR}` and leading `~`, but is a no-op for `%%`/`$$` (confirmed by direct probe: expand_path('a$$b') == 'a$$b'). Consequently the literal template-`%%`→`%` and template-`$$`-survival assertions behave identically in both revisions, so they cannot by themselves discriminate — the genuine observable difference of the reordering is exactly what the fix's comment describes: the buggy code computes `expand_path(outtmpl % template_dict)`, i.e. it runs the expansion step AFTER field substitution, so an environment-variable-looking sequence inside a *substituted field value* gets consumed by the expansion.\n\nThe witness runs all three prepare_filename calls. On gold: `%%(height)06d.%(ext)s`→`%(height)06d.mp4` (R3's example), `%(id)s$$.%(ext)s`→`1234$$.mp4` (R3's `$$` survives unaltered), and `%(title)s.%(ext)s` with title `Hello $VERSOFIELDVAR world`→`Hello $VERSOFIELDVAR world.mp4` (expansion stayed on the template, field left intact). On buggy the first two still pass but the third yields `Hello EXPANDED_VALUE world.mp4` because the expansion ran on the already-substituted filename, so the test FAILS. Hence gold PASSED / buggy FAILED is a genuine, execution-confirmed discriminating witness for R3's \"escaped sequences are not consumed by the pre-substitution expansion step\" semantics at this location.\n\nInput choice was checked against visible material: test_YoutubeDL.py::test_prepare_filename already pins the template-`%%` cases (`%%(height)06d.%(ext)s` and `%%(width)06d.%(ext)s`), and contains no `$$` assertion and no env-var-in-field assertion, so the `$$` survival plus the field-not-expanded scenarios (which carry the discrimination) are not reinvented from visible tests."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible in this benchmark: youtube_dl/YoutubeDL.py and test/test_YoutubeDL.py (no utils.py, no helper.py are disclosed)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "expand_path is imported from .utils into YoutubeDL.py and is the function applied to the fully-substituted output template in prepare_filename (`filename = expand_path(outtmpl % template_dict)`); it is also used on the cookiefile path in _setup_opener (`opts_cookiefile = expand_path(opts_cookiefile)`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The output template is substituted with template_dict, which is initialized as `template_dict = dict(info_dict)` and augmented with synthetic keys (epoch, autonumber, resolution, n_entries) before `outtmpl % template_dict` is evaluated."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test/test_YoutubeDL.py contains TestYoutubeDL.test_prepare_filename, which asserts only %(field)s substitution and numeric formatting behavior (e.g. fname('%(id)s.%(ext)s') == '1234.mp4', fname('%%(height)06d.%(ext)s') == '%(height)06d.mp4'); it contains NO test that exercises environment-variable expansion in templates, so no visible test witnesses the required behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test/test_YoutubeDL.py imports FakeYDL and assertRegexpMatches from test.helper and uses YDL (a FakeYDL subclass) that records downloaded_info_dicts and msgs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch modifies only youtube_dl/YoutubeDL.py; the whole behavioral change is the reordering inside prepare_filename (expand_path applied to the template before template_dict substitution instead of to the substituted result)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 (`import string`) has no independent observable behavior; it only supplies the alphabet used to build the random 32-character separator on which H1's escape protection relies. `random` was already imported in the buggy revision (used by playlistrandom)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The escape protection works by replacing `%%` with `%<sep>%` and `$$` with `$<sep>$` (sep = 32 random ASCII letters), running expand_path, then deleting sep; if a template/field content happened to contain the generated 32-letter sequence those characters would be stripped."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "utils.expand_path is imported into YoutubeDL.py but youtube_dl/utils.py is not among the files disclosed for this benchmark, so the exact rewrite expand_path performs on `%%`/`$$` (e.g. whether it collapses `$$` to `$`) cannot be confirmed from the available sources; the exported filename is additionally passed through sanitize_filename per field and sanitize_path at the end, which are unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The loop that patches missing numeric fields to `%({field})s`, the FIELD_SIZE_COMPAT handling of `playlist_index`/`autonumber`, the `sys.version_info < (3, 0) and win32` encodeFilename step, and the ValueError/`Error in output template` reporting path in prepare_filename are all untouched by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible test test_prepare_filename in test/test_YoutubeDL.py exercises only `%(field)s` substitution and the `%%(height)06d` case; it contains no assertion about environment-variable expansion, so the ordering change of H1 is not witnessed by that test."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: I read every test file in the oracle (list_test_files) and inspected the content of all of them. The ONLY test that exercises YoutubeDL.prepare_filename with an escaped ('%%') output template is test/test_YoutubeDL.py::TestYoutubeDL::test_prepare_filename (assertions like fname('%%(height)06d.%(ext)s') == '%(height)06d.mp4' and fname('%(width)06d.%%(ext)s') == 'NA.%(ext)s'). However, test/test_YoutubeDL.py is labeled [VISIBLE] — content a repair system already saw — so its assertions cannot serve as a Witness for R3, no matter how precisely they match the requirement. Every other test file is [HIDDEN], but none of them tests R3's behavior: test/test_utils.py [HIDDEN] test_expand_path only tests expand_path directly with env vars/'~' (different behavior, and it is about expand_path in isolation, not prepare_filename's %% / $$ escaping); test/test_download.py [HIDDEN] calls ydl.prepare_filename only to compute expected download file paths and never asserts anything about %%/'$$' escaping; test/test_postprocessors.py [HIDDEN] uses '%(title)s - %(artist)s' only inside MetadataFromTitlePP, unrelated to prepare_filename. No [HIDDEN] test asserts that '%%' collapses to a literal '%' or that '$$' survives prepare_filename's pre-substitution expansion. Since the sole relevant assertion lives in [VISIBLE] content, no genuine hidden witness exists for R3, and I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (YoutubeDL.prepare_filename): Escaped `%%` and `$$` sequences present in the output template are not consumed by the pre-substitution expansion step: `%%` in the template yields a literal single `%` in the returned filename (e.g. outtmpl `%%(height)06d.%(ext)s` returns `%(height)06d.mp4`), and `$$` in the template survives the expansion step unaltered. — not entailed by S_vis (S_vis R1 and its citation say nothing about escaped '%%' or '$$' sequences or how escaping interacts with the pre-substitution expansion step; this specific behavior is not pinned down by any visible requirement.); confirmed by a synthesized witness: Target R3 concerns YoutubeDL.prepare_filename's pre-substitution expansion step: escaped `%%`/`$$` in the output template must not be consumed by expand_path, and (per the fix's own comment) expand_path must run on the TEMPLATE before the `% template_dict` substitution so that content coming from substituted meta-fields is not environment-expanded.\n\nI verified the fixed/gold behavior at this exact location. In this environment `utils.expand_path` expands `$VAR`/`${VAR}` and leading `~`, but is a no-op for `%%`/`$$` (confirmed by direct probe: expand_path('a$$b') == 'a$$b'). Consequently the literal template-`%%`→`%` and template-`$$`-survival assertions behave identically in both revisions, so they cannot by themselves discriminate — the genuine observable difference of the reordering is exactly what the fix's comment describes: the buggy code computes `expand_path(outtmpl % template_dict)`, i.e. it runs the expansion step AFTER field substitution, so an environment-variable-looking sequence inside a *substituted field value* gets consumed by the expansion.\n\nThe witness runs all three prepare_filename calls. On gold: `%%(height)06d.%(ext)s`→`%(height)06d.mp4` (R3's example), `%(id)s$$.%(ext)s`→`1234$$.mp4` (R3's `$$` survives unaltered), and `%(title)s.%(ext)s` with title `Hello $VERSOFIELDVAR world`→`Hello $VERSOFIELDVAR world.mp4` (expansion stayed on the template, field left intact). On buggy the first two still pass but the third yields `Hello EXPANDED_VALUE world.mp4` because the expansion ran on the already-substituted filename, so the test FAILS. Hence gold PASSED / buggy FAILED is a genuine, execution-confirmed discriminating witness for R3's \"escaped sequences are not consumed by the pre-substitution expansion step\" semantics at this location.\n\nInput choice was checked against visible material: test_YoutubeDL.py::test_prepare_filename already pins the template-`%%` cases (`%%(height)06d.%(ext)s` and `%%(width)06d.%(ext)s`), and contains no `$$` assertion and no env-var-in-field assertion, so the `$$` survival plus the field-not-expanded scenarios (which carry the discrimination) are not reinvented from visible tests.",
+    "confidence": "Medium"
+  }
+}

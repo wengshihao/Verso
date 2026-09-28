@@ -1,0 +1,102 @@
+{
+  "task_id": "psf__requests-774",
+  "status": "ok",
+  "duration_seconds": 156.73859987501055,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-774",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When building a Request's full URL (Request.full_url), applying `netloc.encode('idna').decode('utf-8')` to the netloc of the request URL must not let a raw UnicodeError raised by the Python 'idna' codec (e.g. 'label empty or too long' for an empty or over-length IDNA label in the hostname) escape uncaught through the request pipeline; that error must be caught/translated into an appropriate handled exception so a request such as `head()` does not crash with the bare `UnicodeError: label empty or too long`.",
+        "subject": "requests.models.Request.full_url",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Catch UnicodeError coming from encodings/idna.py\". Issue body: \"Looks like the call to `netloc.encode('idna').decode('utf-8')` needs a try/except.\" plus traceback ending: \"File .../requests/models.py\", line 388, in full_url /     netloc = netloc.encode('idna').decode('utf-8') / ... raise UnicodeError(\"label empty or too long\") / UnicodeError: label empty or too long\". Source line (requests/models.py full_url): \"netloc = netloc.encode('idna').decode('utf-8')\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When evaluating Request.full_url (directly, or transitively via Request.send/path_url/response building), if the parsed netloc causes netloc.encode('idna') to raise a UnicodeError (e.g. an empty, too-long, or otherwise invalid IDNA label in an otherwise scheme-supported URL), the operation raises an InvalidURL exception carrying the message 'URL has an invalid label.' rather than letting the raw UnicodeError propagate out.",
+        "subject": "Request.full_url (@property in requests.models.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis confirms the core behavior that a raw UnicodeError from netloc.encode('idna') in Request.full_url must be caught and translated into an appropriate handled exception so requests like head() don't crash with the bare UnicodeError. However, it does not pin down the exact handled exception type (InvalidURL) nor its exact message ('URL has an invalid label.'), which S_impl commits to; those specifics go beyond the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_invalid_label_raises_invalid_url",
+      "test_source": "def test_invalid_label_raises_invalid_url():\n    import requests\n    from requests.exceptions import InvalidURL\n    long_label = 'a' * 70\n    req = requests.Request('http://' + long_label + '/')\n    try:\n        req.full_url\n    except InvalidURL as e:\n        assert str(e) == 'URL has an invalid label.'\n    except Exception as exc:\n        raise AssertionError('wrong exception type: %r' % (exc,))\n    else:\n        raise AssertionError('expected InvalidURL for over-long IDNA label')\n",
+      "gold_result": "PASSED — accessing req.full_url on 'http://<70 a's>/' raises requests.exceptions.InvalidURL with message 'URL has an invalid label.' (gold wraps the idna UnicodeError).",
+      "buggy_result": "FAILED — buggy lets the raw UnicodeError(\"encoding with 'idna' codec failed (UnicodeError: label too long)\") propagate out of full_url, so the test's 'wrong exception type' assertion fails.",
+      "explanation": "Target R1 is specifically that a scheme-supported URL whose netloc causes netloc.encode('idna') to raise UnicodeError must be surfaced as requests.exceptions.InvalidURL with the message 'URL has an invalid label.' rather than the raw UnicodeError escaping. I construct a host label of 70 'a' chars ('http://' + 'a'*70 + '/'), which is a *scheme-supported* URL (http is in SCHEMAS) whose netloc is non-empty, so execution reaches exactly the `netloc = netloc.encode('idna').decode('utf-8')` line in full_url. IDNA rejects that too-long label with UnicodeError('label too long'). Gold catches it and re-raises InvalidURL('URL has an invalid label.') → test PASSES on gold; the buggy revision has no try/except around the encode so the raw UnicodeError propagates → test FAILS on buggy. This discriminates precisely on R1's changed behavior. The visible oracle tests (test_invalid_url uses a schemaless URL that dies at the MissingSchema check, and no visible test exercises an over-long/invalid IDNA label on an http/https URL) do not pin down this behavior, so it is a genuine hidden-requirement witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The offending line is in requests/models.py, in the @property full_url of class Request: 'netloc = netloc.encode('idna').decode('utf-8')'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The request pipeline reaches full_url multipled times: Request.send(), Request._build_response() -> build(), Request.path_url (via send path_url), all depend on full_url."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "requests/exceptions.py defines InvalidURL(RequestException, ValueError) — an existing Requests exception for invalid URLs that a catch could translate the UnicodeError into (but the visible material does not specify the exact type; it only asks to catch/contain the UnicodeError)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "requests/safe_mode.py catches only (RequestException, ConnectionError, HTTPError, socket.timeout, socket.gaierror); a bare UnicodeError/ValueError from full_url is not among these, so it escapes even in safe mode — consistent with the reported traceback."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Python built-in UnicodeError is a subclass of ValueError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The tests (tests/test_requests*.py) contain no test specifically exercising the IDNA 'label empty or too long' UnicodeError case; existing test_invalid_url asserts ValueError for a schemaless URL ('hiwpefhipowhefopw'), which fails earlier on the missing-schema check, not on IDNA decoding."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 is the only change; it wraps IDNA netloc encoding in full_url with try/except UnicodeError -> raise InvalidURL. All other pre-existing validation (URLRequired/MissingSchema/InvalidSchema) is unchanged by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "InvalidURL is defined in requests/exceptions.py as class InvalidURL(RequestException, ValueError), so the newly raised exception is both a RequestException and a ValueError."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "full_url is invoked from multiple call sites: send(), _build_response()/build(), and path_url; the catch location in full_url means whichever path hits it first triggers the new behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A netloc.encode('idna') call succeeds for ASCII-only labels that fit IDNA rules, so such URLs are unaffected by this patch — only genuinely UnicodeError-triggering labels change behavior."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined the complete list of oracle test files (6 files). The test files that touch Requests' request/URL handling are tests/test_requests.py, tests/test_requests_ext.py, tests/test_requests_https.py, and tests/test_cookies.py — all labeled [VISIBLE]. None of them contains an assertion dedicated to R1's specific behavior (netloc.encode('idna') raising UnicodeError → raise InvalidURL with message 'URL has an invalid label.'). The only [HIDDEN] files are requests/packages/chardet2/test.py (a UniversalDetector chardet self-test script) and tests/informal/test_leaked_connections.py (a manual connection-leak checker); neither touches Request.full_url, IDNA label handling, or URL validation at all, so neither can possibly witness R1. The closest visible test candidate, test_invalid_url in tests/test_requests.py, only asserts ValueError for a schemaless URL ('hiwpefhipowhefopw') which, per earlier analysis, fails at the missing-schema check rather than at the IDNA decode stage, and it does not check the InvalidURL type or the exact message 'URL has an invalid label.'; in any case it is [VISIBLE] content and can never serve as a witness. Requirements-for-witness rules require an assertion from [HIDDEN] content that genuinely tests the same behavior as R1, and no such assertion exists in this oracle. Therefore found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Request.full_url (@property in requests.models.py)): When evaluating Request.full_url (directly, or transitively via Request.send/path_url/response building), if the parsed netloc causes netloc.encode('idna') to raise a UnicodeError (e.g. an empty, too-long, or otherwise invalid IDNA label in an otherwise scheme-supported URL), the operation raises an InvalidURL exception carrying the message 'URL has an invalid label.' rather than letting the raw UnicodeError propagate out. — not entailed by S_vis (S_vis confirms the core behavior that a raw UnicodeError from netloc.encode('idna') in Request.full_url must be caught and translated into an appropriate handled exception so requests like head() don't crash with the bare UnicodeError. However, it does not pin down the exact handled exception type (InvalidURL) nor its exact message ('URL has an invalid label.'), which S_impl commits to; those specifics go beyond the visible evidence.); confirmed by a synthesized witness: Target R1 is specifically that a scheme-supported URL whose netloc causes netloc.encode('idna') to raise UnicodeError must be surfaced as requests.exceptions.InvalidURL with the message 'URL has an invalid label.' rather than the raw UnicodeError escaping. I construct a host label of 70 'a' chars ('http://' + 'a'*70 + '/'), which is a *scheme-supported* URL (http is in SCHEMAS) whose netloc is non-empty, so execution reaches exactly the `netloc = netloc.encode('idna').decode('utf-8')` line in full_url. IDNA rejects that too-long label with UnicodeError('label too long'). Gold catches it and re-raises InvalidURL('URL has an invalid label.') → test PASSES on gold; the buggy revision has no try/except around the encode so the raw UnicodeError propagates → test FAILS on buggy. This discriminates precisely on R1's changed behavior. The visible oracle tests (test_invalid_url uses a schemaless URL that dies at the MissingSchema check, and no visible test exercises an over-long/invalid IDNA label on an http/https URL) do not pin down this behavior, so it is a genuine hidden-requirement witness.",
+    "confidence": "Medium"
+  }
+}

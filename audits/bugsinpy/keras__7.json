@@ -1,0 +1,127 @@
+{
+  "task_id": "keras__7",
+  "status": "ok",
+  "duration_seconds": 310.84634216700215,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "keras__7",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "KerasRegressor.predict(x) returns a 1-dimensional array of shape (n_samples,) rather than a 0-dimensional scalar array when the model output has a single feature dimension: for input x of shape (1, num_features) the returned array has shape (1,), not ().",
+        "subject": "keras.wrappers.scikit_learn.KerasRegressor.predict",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'If predict() is called on input with shape `(1, num_features)`, then the output is a 0-dimensional array instead of a 1-dimensional array with 1 element.' and 'X = np.zeros((1, 2)) ... Y_pred = regressor.predict(X) ... print(Y_pred.shape)  # Is (), should be (1,)'. Source: `return np.squeeze(self.model.predict(x, **kwargs))`."
+      },
+      {
+        "id": "R2",
+        "statement": "KerasRegressor.predict(x) returns predictions with shape (num_test,) when called on a batch of num_test samples (regression test expects preds.shape == (num_test,)).",
+        "subject": "keras.wrappers.scikit_learn.KerasRegressor.predict",
+        "hunk_ids": [],
+        "cited_from": "Test: 'preds = reg.predict(X_test, batch_size=batch_size)' followed by 'assert preds.shape == (num_test, )' in `assert_regression_works`."
+      },
+      {
+        "id": "R3",
+        "statement": "KerasClassifier.predict(x) returns class predictions with shape (n_samples,), i.e. preds.shape == (num_test,) for a test set of num_test samples.",
+        "subject": "keras.wrappers.scikit_learn.KerasClassifier.predict",
+        "hunk_ids": [],
+        "cited_from": "Docstring: 'preds: array-like, shape `(n_samples,)` Class predictions.'; Test: 'preds = clf.predict(X_test, batch_size=batch_size)' then 'assert preds.shape == (num_test, )'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "KerasRegressor.predict returns predictions squeezed only along the last (output) axis, so a model output of shape (n_samples, 1) yields a result of shape (n_samples,) and a size-1 batch (n_samples == 1) is preserved as a length-1 result rather than collapsing to a scalar.",
+        "subject": "KerasRegressor.predict",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "KerasRegressor.predict still forwards kwargs filtered through filter_sk_params(Sequential.predict) to self.model.predict, and its return value remains a numpy array (not a list) of the model's predictions.",
+        "subject": "KerasRegressor.predict",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins that input of shape (1, num_features) must yield shape (1,) rather than a 0-d scalar, and S_vis R2 pins batch output shape (num_test,); together these fix exactly the size-1-batch-preserved-as-length-1 / output-axis-squeeze behavior R1 describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R2",
+          "R1"
+        ],
+        "rationale": "S_vis R2 shows predict called with batch_size kwarg and the result's .shape accessed, weakly implying kwargs forwarding and an array return, but nowhere pins the filter_sk_params filtering mechanism nor explicitly that the return is a numpy array rather than list."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_regression_predict_shape_correct_num_test_1",
+      "test_source": "import numpy as np\nfrom keras.models import Sequential\nfrom keras.layers.core import Dense, Activation\nfrom keras.wrappers.scikit_learn import KerasRegressor\nfrom keras.utils.test_utils import get_test_data\n\ndef test_regression_predict_shape_correct_num_test_1():\n    input_dim = 5\n    hidden_dims = 5\n    num_train = 100\n    num_test = 1\n    batch_size = 32\n    epochs = 1\n    np.random.seed(42)\n    (X_train, y_train), (X_test, y_test) = get_test_data(\n        num_train=num_train, num_test=num_test, input_shape=(input_dim,),\n        classification=True, num_classes=3)\n\n    def build_fn_reg(hidden_dims=50):\n        model = Sequential()\n        model.add(Dense(input_dim, input_shape=(input_dim,)))\n        model.add(Activation('relu'))\n        model.add(Dense(hidden_dims))\n        model.add(Activation('relu'))\n        model.add(Dense(1))\n        model.add(Activation('linear'))\n        model.compile(optimizer='sgd', loss='mean_absolute_error', metrics=['accuracy'])\n        return model\n\n    reg = KerasRegressor(build_fn=build_fn_reg, hidden_dims=hidden_dims,\n                         batch_size=batch_size, epochs=epochs)\n    reg.fit(X_train, y_train, batch_size=batch_size, epochs=epochs)\n    preds = reg.predict(X_test, batch_size=batch_size)\n    assert isinstance(preds, np.ndarray)\n    assert preds.shape == (num_test, )\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert () == (1,))",
+      "explanation": "The target requirement R2 states that KerasRegressor.predict forwards its kwargs (filtered through filter_sk_params(Sequential.predict)) to self.model.predict and returns a numpy array of the model's predictions. This witness instantiates a KerasRegressor with the regression build_fn, fits it, and calls reg.predict(X_test, batch_size=batch_size) — exercising kwargs forwarding — then asserts the return is a numpy ndarray whose shape equals (num_test,) for a size-1 batch (num_test=1).\n\nThis is precisely the behavior the buggy code breaks: the buggy KerasRegressor.predict returns np.squeeze(self.model.predict(x, **kwargs)), which collapses the sample axis for a single-sample batch, yielding a 0-d scalar (shape ()) instead of a (1,) numpy array of predictions. The gold fix np.squeeze(preds, axis=-1) preserves the sample axis and yields shape (1,).\n\nMechanically confirmed: against the buggy program this test FAILS with \"assert () == (1,)\" and against the gold program it PASSES. The oracle contains a test of exactly this name/behavior (test_regression_predict_shape_correct_num_test_1, listed as failing against the buggy program); the additional num_test=1 case is not established by the visible scikit_learn_test.py content, which only checks the multi-sample (num_test=50) shape and never exercises a size-1 batch, so this assertion is not derivable from visible information. Unlike the visible assert (num_test=50) which passes on both programs, this size-1 shape assertion genuinely distinguishes buggy from gold and enforces the exact R2 behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: keras/wrappers/scikit_learn.py (source) and tests/keras/wrappers/scikit_learn_test.py (tests)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The offending line is in KerasRegressor.predict: 'return np.squeeze(self.model.predict(x, **kwargs))' — np.squeeze collapses ALL size-1 axes, including the sample axis."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "KerasRegressor has no predict of its own besides the above; it inherits fit from BaseWrapper and defines score."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing regression test only checks the multi-sample shape (num_test,) with num_test=50; it does not exercise a size-1 batch, which is exactly the case in the issue report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "KerasClassifier.predict handles binary case via '(proba > 0.5).astype('int32')' and multi-class via argmax, then indexes self.classes_."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a single-line change in keras/wrappers/scikit_learn.py inside KerasRegressor.predict: np.squeeze(preds) -> np.squeeze(preds, axis=-1)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "np.squeeze with axis=-1 raises ValueError if the last axis has size != 1; Sequential.predict output shapes in this repo (n_samples, n_outputs) thus still reduce only when n_outputs == 1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "KerasRegressor scores as -loss (or -loss[0]); unchanged by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "KerasClassifier.predict and predict_proba are untouched by the patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (KerasRegressor.predict): KerasRegressor.predict still forwards kwargs filtered through filter_sk_params(Sequential.predict) to self.model.predict, and its return value remains a numpy array (not a list) of the model's predictions. — not entailed by S_vis (S_vis R2 shows predict called with batch_size kwarg and the result's .shape accessed, weakly implying kwargs forwarding and an array return, but nowhere pins the filter_sk_params filtering mechanism nor explicitly that the return is a numpy array rather than list.); confirmed by a oracle witness: The target requirement R2 states that KerasRegressor.predict forwards its kwargs (filtered through filter_sk_params(Sequential.predict)) to self.model.predict and returns a numpy array of the model's predictions. This witness instantiates a KerasRegressor with the regression build_fn, fits it, and calls reg.predict(X_test, batch_size=batch_size) — exercising kwargs forwarding — then asserts the return is a numpy ndarray whose shape equals (num_test,) for a size-1 batch (num_test=1).\n\nThis is precisely the behavior the buggy code breaks: the buggy KerasRegressor.predict returns np.squeeze(self.model.predict(x, **kwargs)), which collapses the sample axis for a single-sample batch, yielding a 0-d scalar (shape ()) instead of a (1,) numpy array of predictions. The gold fix np.squeeze(preds, axis=-1) preserves the sample axis and yields shape (1,).\n\nMechanically confirmed: against the buggy program this test FAILS with \"assert () == (1,)\" and against the gold program it PASSES. The oracle contains a test of exactly this name/behavior (test_regression_predict_shape_correct_num_test_1, listed as failing against the buggy program); the additional num_test=1 case is not established by the visible scikit_learn_test.py content, which only checks the multi-sample (num_test=50) shape and never exercises a size-1 batch, so this assertion is not derivable from visible information. Unlike the visible assert (num_test=50) which passes on both programs, this size-1 shape assertion genuinely distinguishes buggy from gold and enforces the exact R2 behavior.",
+    "confidence": "High"
+  }
+}

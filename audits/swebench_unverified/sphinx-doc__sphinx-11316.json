@@ -1,0 +1,119 @@
+{
+  "task_id": "sphinx-doc__sphinx-11316",
+  "status": "ok",
+  "duration_seconds": 337.81531108298805,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-11316",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When napoleon processes the docstring of a dataclass (class) attribute whose first content line contains an inline reST phrase/URL reference (e.g. ``Here some text. `Here a reference <https://example.org>`_``) together with preceding body text on that same first line, it must NOT lead docutils to emit the warning \"Inline interpreted text or phrase reference start-string without end-string\" — the reference is still rendered as a working link, exactly as happens when the same reference appears on a later, separate line of the docstring.",
+        "subject": "sphinx.ext.napoleon attribute/docstring parsing (GoogleDocstring._consume_inline_attribute / _parse_attribute_docstring)",
+        "hunk_ids": [],
+        "cited_from": "BUG in issue: \"When using `ext.napoleon`, a docstring of a dataclass attribute will cause an `Inline interpreted text or phrase reference start-string without end-string` warning for a reference that's placed on the first line of this docstring. The reference itself is processed correctly.\" First repro (“this causes the warning”):\n```python\n@dataclass\nclass Thing:\n    attribute: str = \"anything\"\n    \"\"\"\n    Here some text. `Here a reference <https://example.org>`_\n    \"\"\"\n```\nSecond repro (“This one works just fine. Notice the linebreak in the docstring”):\n```python\n@dataclass\nclass Thing:\n    attribute: str = \"anything\"\n    \"\"\"\n    Here some text. \n    `Here a reference <https://example.org>`_\n    \"\"\"\n```"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "si1",
+        "statement": "When partitioning a docstring line into a leading part and its colon-separated description, an interpreted-text-with-explicit-target embedded reference of reStructuredText form `` `TITLE <TARGET>` `` (a backtick phrase whose body contains whitespace followed by ``<TARGET>``, e.g. a compact link `` `some text <https://host/a:b>` ``) is treated as a single atomic/protected unit, so a colon occurring inside it (e.g. inside a URI/URL target) is not recognized as the leading/description boundary; consequently a docstring whose first line holds such a link parses without that token's interior being mis-split into a bogus type and description (which previously produced malformed reST / a spurious warning that the same link on a later, un-partitioned line did not).",
+        "subject": "sphinx.ext.napoleon.docstring field/type-description colon partitioning (_partition_field_on_colon), used for inline-attribute and field/field-section docstring parsing in both GoogleDocstring and NumpyDocstring",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "si2",
+        "statement": "When partitioning a docstring line into a leading part and its colon-separated description, a text run starting with the literal token ``:meta `` followed by further colon-delimited content (of shape `:meta KEY: VALUE...`, i.e. a ``:meta ...: ...`` construct) is treated as a single atomic/protected unit, so none of the colons inside it is taken as the leading/description boundary; text such as a ``:meta``-style embedded annotation on a parsed line is not split in the middle and remains attributed to the preceding field rather than being shifted into the description.",
+        "subject": "sphinx.ext.napoleon.docstring field/type-description colon partitioning (_partition_field_on_colon), used for inline-attribute and field/field-section docstring parsing in both GoogleDocstring and NumpyDocstring",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "si1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] reports the same symptom family — a first-line inline reST reference in an attribute docstring producing a spurious warning while the same link on a later un-partitioned line does not — which strongly motivates a fix in line partitioning. But it never states that an embedded reference whose target contains a colon must be protected as atomic during colon partitioning, nor does its repro highlight a colon inside the target, so the exact committed mechanism is not pinned down."
+      },
+      {
+        "requirement_id": "si2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "Nothing in S_vis [1] (the only visible entry) mentions `:meta` constructs, leading-token protection, or the partitioning of any colon-delimited annotation of that shape, so the visible evidence could not lead a system to the committed behavior of keeping a `:meta ...: ...` run atomic."
+      }
+    ],
+    "target_requirement_id": "si2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_meta_atomic",
+      "test_source": "from sphinx.ext.napoleon.docstring import GoogleDocstring\n\ndef test_meta_atomic():\n    g = GoogleDocstring('')\n    before, colon, after = g._partition_field_on_colon('prefix :meta key: some value')\n    assert colon == '', repr((before, colon, after))\n    assert 'some value' in before\n    assert before == 'prefix :meta key: some value'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: ('prefix', ':', 'meta key: some value'): colon in buggy splits inside ':meta' construct)",
+      "explanation": "Target requirement [si2] is precisely that _partition_field_on_colon treats a ':meta KEY: VALUE...'/':meta ...: ...' construct as an atomic/protected run, so no internal colon becomes the leading/description boundary. The execution harness here uses pytest (not JUnit despite the generic prompt), so the test is written as a pytest test function. The test drives the exact target function, _partition_field_on_colon, with the line 'prefix :meta key: some value'.\n\nIn the gold program, the added regex alternative '(?::meta .+:.*)' makes _xref_or_code_regex.split protect the whole ':meta key: some value' segment as an odd-indexed (captured) split element, which the partitioning loop never searches for a single-colon boundary. Hence colon == '' and the full construct is attributed to the leading (before) part — this is exactly the required behavior (the ':meta...: ...' annotation is not split in the middle / not shifted into the description).\n\nIn the buggy program (no :meta alternative), the regex does not match, the whole string is one even-indexed segment, and _single_colon_regex finds the ':' inside ':meta', returning ('prefix', ':', 'meta key: some value') — i.e. the atomic construct is split and shifted into the description. The assertion colon == '' (and that the whole construct remains in `before`) PASSES on gold and FAILS on buggy (confirmed via run_test against both revisions).\n\nI verified the candidate is not redundant: the visible tests/test_ext_napoleon_docstring.py (the only unit test file driving this function, e.g. TestInlineAttribute etc.) contains no ':meta ' string exercising a colon partition, so this input/behavior is not already pinned by the visible oracle. The input scenario ('x :meta key: value' style embedded field annotation on a parsed line) is genuinely new."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Napoleon processes autodoc-provided docstrings via _process_docstring in sphinx/ext/napoleon/__init__.py, and RST transformation lives in sphinx/ext/napoleon/docstring.py (GoogleDocstring and its NumpyDocstring subclass)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For objects whose docstring is an attribute/data/property, GoogleDocstring._parse() short-circuits to _parse_attribute_docstring(), which delegates to _consume_inline_attribute(); the first line is split on a colon to separate a leading type from the description, and the remaining description lines are re-parsed by a new GoogleDocstring/NumpyDocstring instance."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The two-code-block contrast in the issue is the load-bearing visible evidence: identical inline phrase reference `...`_ on the docstring first line currently warns while the same reference on a separate later line does not, establishing that the reference content itself is valid."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Attribute-docstring handling and formatting are also exercised by TestInlineAttribute in tests/test_ext_napoleon_docstring.py, and PEP 526 class/module attribute docstrings by tests/ext_napoleon_pep526_data_{google,numpy}.py + test_pep526_annotations."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The two repro snippets describe the same required behavior from the same fix (no spurious warning while the link still renders), so they are captured as a single S_vis requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The whole change is confined to one regular expression, `_xref_or_code_regex` in sphinx/ext/napoleon/docstring.py; no surrounding logic was altered."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The regex is used as a capturing split pattern in `_partition_field_on_colon`, where odd-indexed split segments (the regex matches) are scanned-out/protected and never contribute the sought single field-separator colon."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two pre-existing alternatives (role xref spans `:role:`text`` and double-backtick code spans `` ``..`` ``) are retained unchanged, so their behavior is not part of this patch's new commitment."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`_xref_or_code_regex` reaches partitioning via `_partition_field_on_colon`, which is exercised for inline attribute/data/property docstrings (`_consume_inline_attribute`), field entries (`_consume_field`), and return sections."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The newer fourth alternative requires whitespace (optional) between the closing backtick of the phrase title and the ``<TARGET>``, i.e. it matches an explicit-target embedded link reference, not a bare phrasal reference."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [si2]: The target requirement [si2] concerns Napoleon's `_partition_field_on_colon` treating a `:meta KEY: VALUE...` construct as an atomic/protected unit so none of its internal colons becomes the leading/description boundary during inline-attribute and field/field-section docstring parsing (GoogleDocstring / NumpyDocstring).\n\nTo find a witness I inspected every Napoleon/oracle test file that could exercise this code path:\n- tests/test_ext_napoleon_docstring.py — [VISIBLE] in full; this is the only JUnit-style oracle unit-test file that drives `_partition_field_on_colon` (via TestInlineAttribute, field/Args/Returns sections, etc.). It contains NO assertion involving a `:meta` construct being kept atomic (no `:meta ` string in any docstring/expected output that exercises partitioning).\n- tests/test_ext_napoleon.py — [VISIBLE]; tests `_process_docstring`, config registration, and member skipping; nothing about `:meta` colon partitioning.\n- tests/ext_napoleon_pep526_data_google.py and tests/ext_napoleon_pep526_data_numpy.py — [HIDDEN], but these are pure fixture data classes with plain attribute docstrings (no `:meta`), consumed only by the [VISIBLE] `test_pep526_annotations` methods whose assertions are themselves visible and do not touch colon partitioning of `:meta`.\n- tests/roots/test-ext-napoleon/* — [HIDDEN] data only (typehints example), unrelated to `:meta`.\n- tests/test_ext_autodoc_autoattribute.py and tests/roots/test-ext-autodoc/target/hide_value.py — these exercise the *autodoc/domain* `:meta hide-value:` object metadata (rendered as `:meta hide-value:` inside a generated `.. py:attribute::`), which is a distinct code path and does not assert anything about Napoleon `_partition_field_on_colon`. Also the asserting test is [VISIBLE].\n\nAdditionally, no tests are recorded as currently failing against the buggy program, consistent with no oracle assertion covering this Napoleon `:meta` partition behavior. Since the only unit-test source that can exercise `_partition_field_on_colon` is entirely [VISIBLE] and contains no such assertion, and no [HIDDEN] assertion anywhere tests the `:meta` construct atomicity, no genuine witness exists in the oracle. (Per the rules, a [VISIBLE] assertion can never serve as a witness even if it matched.)"
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [si2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[si2] (sphinx.ext.napoleon.docstring field/type-description colon partitioning (_partition_field_on_colon), used for inline-attribute and field/field-section docstring parsing in both GoogleDocstring and NumpyDocstring): When partitioning a docstring line into a leading part and its colon-separated description, a text run starting with the literal token ``:meta `` followed by further colon-delimited content (of shape `:meta KEY: VALUE...`, i.e. a ``:meta ...: ...`` construct) is treated as a single atomic/protected unit, so none of the colons inside it is taken as the leading/description boundary; text such as a ``:meta``-style embedded annotation on a parsed line is not split in the middle and remains attributed to the preceding field rather than being shifted into the description. — not entailed by S_vis (Nothing in S_vis [1] (the only visible entry) mentions `:meta` constructs, leading-token protection, or the partitioning of any colon-delimited annotation of that shape, so the visible evidence could not lead a system to the committed behavior of keeping a `:meta ...: ...` run atomic.); confirmed by a synthesized witness: Target requirement [si2] is precisely that _partition_field_on_colon treats a ':meta KEY: VALUE...'/':meta ...: ...' construct as an atomic/protected run, so no internal colon becomes the leading/description boundary. The execution harness here uses pytest (not JUnit despite the generic prompt), so the test is written as a pytest test function. The test drives the exact target function, _partition_field_on_colon, with the line 'prefix :meta key: some value'.\n\nIn the gold program, the added regex alternative '(?::meta .+:.*)' makes _xref_or_code_regex.split protect the whole ':meta key: some value' segment as an odd-indexed (captured) split element, which the partitioning loop never searches for a single-colon boundary. Hence colon == '' and the full construct is attributed to the leading (before) part — this is exactly the required behavior (the ':meta...: ...' annotation is not split in the middle / not shifted into the description).\n\nIn the buggy program (no :meta alternative), the regex does not match, the whole string is one even-indexed segment, and _single_colon_regex finds the ':' inside ':meta', returning ('prefix', ':', 'meta key: some value') — i.e. the atomic construct is split and shifted into the description. The assertion colon == '' (and that the whole construct remains in `before`) PASSES on gold and FAILS on buggy (confirmed via run_test against both revisions).\n\nI verified the candidate is not redundant: the visible tests/test_ext_napoleon_docstring.py (the only unit test file driving this function, e.g. TestInlineAttribute etc.) contains no ':meta ' string exercising a colon partition, so this input/behavior is not already pinned by the visible oracle. The input scenario ('x :meta key: value' style embedded field annotation on a parsed line) is genuinely new.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "task_id": "JacksonDatabind-105",
+  "status": "ok",
+  "duration_seconds": 155.84137582100084,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-105",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Deserializing a JSON object into a bean that has a public field of type java.lang.Void must succeed when the JSON provides that field with a non-null scalar value (e.g. a number), and must bind the field to null.",
+        "subject": "java.lang.Void deserialization into a property of type Void (VoidBean / ObjectMapper.readValue)",
+        "hunk_ids": [],
+        "cited_from": "Test [databind#2197]: \"static class VoidBean { public Void value; }\" and \"public void testVoidDeser() throws Exception { VoidBean bean = MAPPER.readValue(aposToQuotes(\"{'value' : 123 }\"), VoidBean.class); assertNull(bean.value); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "r1",
+        "statement": "JdkDeserializers.find(Void.class, ...) — i.e. resolution for the java.lang.Void target type — returns NullifyingDeserializer.instance (a non-null deserializer that discards/nullifies the JSON value to null) instead of returning null, so deserializing into a java.lang.Void type no longer falls through to reflective default construction of Void's private constructor.",
+        "subject": "JdkDeserializers.find",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "r1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (the VoidBean test) pins the observable outcome: a numeric JSON value into a public Void field must deserialize successfully and bind to null, which does rule out the previous fail-by-reflective-construction behavior. But it does not pin down r1's specific mechanism — that JdkDeserializers.find(Void.class) returns NullifyingDeserializer.instance rather than null — since several internal implementations could satisfy the test. The behavioral core is covered, the stated code-path detail is not."
+      }
+    ],
+    "target_requirement_id": "r1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    Void v = mapper.readValue(\"123\", Void.class);\n    if (v != null) {\n        throw new AssertionError(\"Expected Void deserialization to yield null but got: \" + v);\n    }\n}",
+      "gold_result": "PASSED (returns null when deserializing JSON number 123 into root type java.lang.Void)",
+      "buggy_result": "FAILED: MismatchedInputException \"Cannot construct instance of `java.lang.Void` ... no int/Int-argument constructor/factory method to deserialize from Number value (123)\" plus illegal reflective access warning to private Void() ctor",
+      "explanation": "Requirement r1 is that JdkDeserializers.find(Void.class,...) resolves Void to NullifyingDeserializer.instance (a non-null deserializer that nullifies JSON into null), instead of returning null and letting Void deserialization fall through to reflective default construction of Void's private constructor. The only visible test (testVoidDeser in JDKScalarsTest.java) pins down ONE scenario: binding a JSON number into a POJO Void field wrapped in VoidBean. That leaves genuinely distinct scenarios unpinned. I chose a top-level/root-type deserialization — mapper.readValue(\"123\", Void.class) with NO POJO wrapper — a case the visible test does not touch. Empirically confirmed via run_test with the exact submitted source: against gold it PASSED (the nullifying deserializer discards 123 and returns null); against buggy it FAILED — without the fix, JdkDeserializers.find(Void) returns null so Jackson falls into ValueInstantiator/BeanDeserializer default construction and throws MismatchedInputException (with the concurrent illegal-reflective-access warning to Void()). This is a genuine PASS-on-gold/FAIL-on-buggy witness exercising the same underlying find() path and Void nullification behavior as r1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are only src/main/java/com/fasterxml/jackson/databind/deser/std/JdkDeserializers.java and src/test/java/com/fasterxml/jackson/databind/deser/jdk/JDKScalarsTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug (databind#2197) is that using java.lang.Void as the value/generic type triggers an illegal-reflective-access WARNING because ClassUtil reflects into the private java.lang.Void() constructor; the reproducer in the issue shows the warning text and notes 'The problem disappears if String is used as generic type'. This causal claim is only from the issue text, not reflected as an assertion in the test file."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "JdkDeserializers.find() only registers UUID, AtomicBoolean, StackTraceElement, ByteBuffer plus FromStringDeserializer types in _classNames; Void is not among them, so this file's visible code is where a Void-aware deserializer/lookup would need to be wired in (the only behavioral fix target visible here is the #[databind#2197] test in JDKScalarsTest)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test asserting Void-handling behavior only covers a non-null number bound to a Void field via a POJO; there is no visible test covering Void.class as a top-level root type or a JSON null body."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 alone only adds Void's class name (java.lang.Void) to the private static _classNames gate; it is not independently observable apart from enabling the Void case in H1. H1 alone would not fire for a Void rawType because the _classNames gate at find() entry would reject it first. The two hunks must work together to change the observable result of find for a Void target type."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Code comment states primitive types can be skipped since they are otherwise checked; Void is a reference wrapper type and is listed explicitly."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "NullifyingDeserializer.instance is referenced (a shared singleton), so the returned deserializer is guaranteed non-null for the Void case."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [r1]: Requirement r1 concerns JdkDeserializers.find(java.lang.Void) resolving to NullifyingDeserializer.instance so that a JSON value bound into a java.lang.Void type is discarded to null instead of falling through to reflective construction of Void's private constructor. The lone test in the entire oracle that genuinely exercises this exact behavior is `testVoidDeser` in src/test/java/com/fasterxml/jackson/databind/deser/jdk/JDKScalarsTest.java (`VoidBean { public Void value; }` reading `{'value':123}` and asserting `bean.value == null`). That is the test reported as currently failing against the buggy program — but it is explicitly labeled [VISIBLE]: its file (JDKScalarsTest.java) is among the visible files the repair system already saw. Only [HIDDEN] assertions can serve as a Witness, so this exact-match test is disqualified regardless of its correctness.\n\nI then systematically searched the [HIDDEN] portion of the oracle. I read every deser/jdk package test file (JDKAtomicTypesTest, JDKStringLikeTypesTest, UntypedDeserializationTest, JDKNumberDeserTest, JDKCollectionsDeserTest, MapRelatedTypesDeserTest, CollectionDeserTest, EnumDeserializationTest, EnumAltIdTest, DateDeserializationTest, DateDeserializationTZTest, MapDeserializationTest, MapDeserializerCachingTest, EnumMapDeserializationTest, MapKeyDeserializationTest) plus broadly relevant non-jdk tests (JDKStringLikeCharset/Class/Custom creator tests, NullConversions{Generic,Skip,Pojo}Test, NullHandlingTest, TestValueInstantiator, TestJacksonTypes, TestScalars/jsontype, TypeAliasesTest, DeprecatedTypeHandling1102Test, IllegalTypesCheckTest[VISIBLE], convert/TestStringConversions, RoundtripTest). None of these [HIDDEN] files contains any assertion that feeds a JSON value into java.lang.Void or otherwise exercises the JdkDeserializers.find(Void) NullifyingDeserializer path. (The only Void references anywhere are `Void.TYPE`/\"void\" in JDKStringLikeTypesTest.testClass — about resolving the `void` keyword to java.lang.Void.TYPE, a different unrelated behavior.)\n\nConclusion: the only genuine match for r1 (testVoidDeser) is [VISIBLE] content, and no [HIDDEN] test implements this requirement. Therefore no valid oracle Witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [r1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[r1] (JdkDeserializers.find): JdkDeserializers.find(Void.class, ...) — i.e. resolution for the java.lang.Void target type — returns NullifyingDeserializer.instance (a non-null deserializer that discards/nullifies the JSON value to null) instead of returning null, so deserializing into a java.lang.Void type no longer falls through to reflective default construction of Void's private constructor. — not entailed by S_vis (S_vis R1 (the VoidBean test) pins the observable outcome: a numeric JSON value into a public Void field must deserialize successfully and bind to null, which does rule out the previous fail-by-reflective-construction behavior. But it does not pin down r1's specific mechanism — that JdkDeserializers.find(Void.class) returns NullifyingDeserializer.instance rather than null — since several internal implementations could satisfy the test. The behavioral core is covered, the stated code-path detail is not.); confirmed by a synthesized witness: Requirement r1 is that JdkDeserializers.find(Void.class,...) resolves Void to NullifyingDeserializer.instance (a non-null deserializer that nullifies JSON into null), instead of returning null and letting Void deserialization fall through to reflective default construction of Void's private constructor. The only visible test (testVoidDeser in JDKScalarsTest.java) pins down ONE scenario: binding a JSON number into a POJO Void field wrapped in VoidBean. That leaves genuinely distinct scenarios unpinned. I chose a top-level/root-type deserialization — mapper.readValue(\"123\", Void.class) with NO POJO wrapper — a case the visible test does not touch. Empirically confirmed via run_test with the exact submitted source: against gold it PASSED (the nullifying deserializer discards 123 and returns null); against buggy it FAILED — without the fix, JdkDeserializers.find(Void) returns null so Jackson falls into ValueInstantiator/BeanDeserializer default construction and throws MismatchedInputException (with the concurrent illegal-reflective-access warning to Void()). This is a genuine PASS-on-gold/FAIL-on-buggy witness exercising the same underlying find() path and Void nullification behavior as r1.",
+    "confidence": "Medium"
+  }
+}

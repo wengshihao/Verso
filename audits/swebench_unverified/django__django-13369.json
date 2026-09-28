@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-13369",
+  "status": "ok",
+  "duration_seconds": 324.3228240000317,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13369",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Constructing and evaluating `expr = Value(3) * F('id')` (an arithmetic CombinedExpression between an integer-typed Value and a column whose output field is an AutoField) and using it in an annotation chain such as `o.values('field_name').annotate(expr=expr).values('expr')` must not raise `FieldError: Expression contains mixed types: IntegerField, AutoField. You must set output_field.` — the expression's output field must be resolved automatically (AutoField being IntegerField-compatible) instead of requiring the user to set the annotation's output_field explicitly.",
+        "subject": "django.db.models.expressions.CombinedExpression._resolve_output_field / _resolve_combined_type (expression output-field resolution)",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"expr = Value(3) * F('id') ... prints... crashes with a FieldError exception. ... django.core.exceptions.FieldError: Expression contains mixed types: IntegerField, AutoField. You must set output_field.\" and \"This should be a regression bug because the previous query works in Django 3.1\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "A combined arithmetic expression (CombinedExpression using ADD, SUB, MUL or DIV) whose two source sub-expressions have output fields that are integer-kind fields — i.e. any pair that are each IntegerField or an IntegerField subclass such as AutoField, SmallAutoField or BigAutoField (distinct classes, e.g. a plain IntegerField from Value(3) combined with an AutoField column) — resolves to an IntegerField output instead of raising a 'mixed output-field types' FieldError.",
+        "subject": "django.db.models.expressions CombinedExpression._resolve_output_field",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 pins down the concrete exemplary case (MUL combining an IntegerField Value(3) with an AutoField column auto-resolving instead of raising the mixed-types FieldError), establishing that AutoField is IntegerField-compatible. However, SI-1 generalizes further — to any IntegerField-subclass pair incl. SmallAutoField and BigAutoField and across ADD/SUB/DIV — which the visible evidence does not explicitly demonstrate, so the full breadth is not decisively pinned."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_value_int_plus_value_autofield_resolves_int",
+      "test_source": "def test_value_int_plus_value_autofield_resolves_int():\n    from django.db.models import AutoField, IntegerField, Value\n    from django.db.models.expressions import CombinedExpression\n    lhs = Value(3)\n    rhs = Value(5, output_field=AutoField())\n    expr = CombinedExpression(lhs, '+', rhs)\n    out = expr.output_field\n    assert type(out) is IntegerField\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: django.core.exceptions.FieldError: Expression contains mixed types: IntegerField, AutoField. You must set output_field.",
+      "explanation": "The requirement [SI-1] states that a CombinedExpression (here ADD) whose two source sub-expressions have distinct integer-kind output fields resolves to an IntegerField. In gold, _connector_combinators gained the leading (IntegerField, IntegerField, IntegerField) entry, so combining an IntegerField expr (Value(3) resolves to IntegerField) with an AutoField expr (Value(5, output_field=AutoField())) falls back via _resolve_combined_type and yields exactly an IntegerField. In the buggy version that entry is absent, so no combinator matches issubclass relationships and the original 'mixed types' FieldError is re-raised when .output_field is accessed.\n\nThe witness constructs the expression in-memory, calls .output_field (which triggers CombinedExpression._resolve_output_field), and asserts the resolved type is exactly IntegerField.\n\nWhy it is not subsumed by visible tests: the visible expressions test corpus (tests/expressions/tests.py, test_queryset_values.py, etc.) only exercises arithmetic on same-class integer pairs, Float/BigInteger cross-combos already handled, F('pk') refs, or AutoField wrapped inside a Subquery-with-IntegerField-output_field. No visible test pins the specific Value(IntegerField)+AutoField arithmetic case that exercises this patch's fall-back; run_test confirms it passes on gold and fails on buggy, i.e. a genuine discriminating witness.\n\nMethodology note: the candidate must be a single module-level def test_* function and all django imports must occur inside the function body, because imports at module scope are executed before the Django test environment finishes configuration (they caused pytest to collect no tests). This version was verified via run_test against both gold (PASSED) and buggy (FAILED with the FieldError above)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in the expression output-field resolution machinery of django/db/models/expressions.py: BaseExpression._resolve_output_field raises FieldError when source output fields are not the same class; CombinedExpression._resolve_output_field catches that and delegates to the module-level _connector_combinators/_resolve_combined_type, which only knows Integer/Decimal/Float cross combinations and knows nothing about AutoField, so a Value(3)(IntegerField) * AutoField column combination falls through and re-raises the original error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/db/models/fields/__init__.py, AutoField subclasses IntegerField (BigAutoField→BigIntegerField, SmallAutoField→SmallIntegerField via AutoFieldMixin), so AutoField output fields are semantically integer types yet fail the exact-class equality used in _resolve_output_field."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The model under annotation (e.g. tests/expressions Company) has the default AutoField 'id' which is what F('id') resolves to in the buggy query."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests exercising AutoField output-field handling are present (e.g. test_nested_subquery_outer_ref_with_autofield uses IntegerField output_field around a Subquery); no visible test encodes the specific reported Value*AutoField CombinedExpression case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds one entry (fields.IntegerField, fields.IntegerField, fields.IntegerField) as the first element of the per-connector combinator list in the module-level _connector_combinators dict, which applies to all four arithmetic connectors ADD/SUB/MUL/DIV (the dict is keyed over exactly those connector strings)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_connector_combinators and _resolve_combined_type exclude POW ('^') and bitwise connectors, which are not in that dict; this patch does not affect those."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fallthrough path only triggers when BaseExpression._resolve_output_field raises 'mixed types', i.e. when the two source output-field classes differ but are semantically related (here AutoField vs IntegerField); exact-same-class integer pairs still resolve via the superclass path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because AutoField et al. are IntegerField subclasses but not equal classes, combined-type resolution relies on the issubclass checks in _resolve_combined_type rather than exact-class equality."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: No qualifying witness exists. The target [SI-1] concerns CombinedExpression._resolve_output_field resolving a combined arithmetic expression whose two sub-expression output-fields are distinct integer-kind classes (e.g. Value(3) => IntegerField combined with an AutoField 'id' column => AutoField) instead of raising a 'mixed output-field types' FieldError. I inspected the relevant expression test corpus: tests/expressions/tests.py, test_queryset_values.py, test_deprecation.py, tests/expressions_window/tests.py, tests/expressions/models.py, tests/model_fields/test_autofield.py, tests/aggregation/test_filter_argument.py, etc. All of this content is labeled [VISIBLE] (except expressions/models.py, which contains only model class definitions, not an assertion). The arithmetic tests present operate on same-class integer pairs, Float/BigInteger cross-combos (already known to _connector_combinators), F('pk') references, or wrap AutoField inside Subquery-with-IntegerField-output_field / subclass-inheritance checks - none constructs the specific Value(IntegerField)+AutoField-column CombinedExpression that the patch's added (IntegerField, IntegerField, IntegerField) combinator entry is meant to rescue. Moreover, no test was recorded as failing against the buggy program (a strict precondition for a Witness: it must fail on buggy and pass on gold). Since no assertion in [HIDDEN] oracle content exercises the reported Value*AutoField combination and the noted extractor likewise found no visible test encoding it, I conclude the oracle does not contain a Witness for SI-1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-1] (django.db.models.expressions CombinedExpression._resolve_output_field): A combined arithmetic expression (CombinedExpression using ADD, SUB, MUL or DIV) whose two source sub-expressions have output fields that are integer-kind fields — i.e. any pair that are each IntegerField or an IntegerField subclass such as AutoField, SmallAutoField or BigAutoField (distinct classes, e.g. a plain IntegerField from Value(3) combined with an AutoField column) — resolves to an IntegerField output instead of raising a 'mixed output-field types' FieldError. — not entailed by S_vis (R1 pins down the concrete exemplary case (MUL combining an IntegerField Value(3) with an AutoField column auto-resolving instead of raising the mixed-types FieldError), establishing that AutoField is IntegerField-compatible. However, SI-1 generalizes further — to any IntegerField-subclass pair incl. SmallAutoField and BigAutoField and across ADD/SUB/DIV — which the visible evidence does not explicitly demonstrate, so the full breadth is not decisively pinned.); confirmed by a synthesized witness: The requirement [SI-1] states that a CombinedExpression (here ADD) whose two source sub-expressions have distinct integer-kind output fields resolves to an IntegerField. In gold, _connector_combinators gained the leading (IntegerField, IntegerField, IntegerField) entry, so combining an IntegerField expr (Value(3) resolves to IntegerField) with an AutoField expr (Value(5, output_field=AutoField())) falls back via _resolve_combined_type and yields exactly an IntegerField. In the buggy version that entry is absent, so no combinator matches issubclass relationships and the original 'mixed types' FieldError is re-raised when .output_field is accessed.\n\nThe witness constructs the expression in-memory, calls .output_field (which triggers CombinedExpression._resolve_output_field), and asserts the resolved type is exactly IntegerField.\n\nWhy it is not subsumed by visible tests: the visible expressions test corpus (tests/expressions/tests.py, test_queryset_values.py, etc.) only exercises arithmetic on same-class integer pairs, Float/BigInteger cross-combos already handled, F('pk') refs, or AutoField wrapped inside a Subquery-with-IntegerField-output_field. No visible test pins the specific Value(IntegerField)+AutoField arithmetic case that exercises this patch's fall-back; run_test confirms it passes on gold and fails on buggy, i.e. a genuine discriminating witness.\n\nMethodology note: the candidate must be a single module-level def test_* function and all django imports must occur inside the function body, because imports at module scope are executed before the Django test environment finishes configuration (they caused pytest to collect no tests). This version was verified via run_test against both gold (PASSED) and buggy (FAILED with the FieldError above).",
+    "confidence": "Medium"
+  }
+}

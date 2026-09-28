@@ -1,0 +1,107 @@
+{
+  "task_id": "django__django-17087",
+  "status": "ok",
+  "duration_seconds": 527.8069400840905,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-17087",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a bound method/classmethod whose bound class (__self__) is itself nested inside another class scope is serialized into a migration (e.g. as a field's default), the serializer must emit the fully-qualified reference including every enclosing class level — module.OuterClass.NestedClass.method — rather than dropping the enclosing class qualifier (module.NestedClass.method), so that importing/executing the generated migration resolves the reference correctly instead of raising an error.",
+        "subject": "django.db.migrations.serializer.FunctionTypeSerializer / FunctionTypeSerializer.serialize",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"field=django.contrib.postgres.fields.ArrayField(base_field=models.CharField(blank=True, choices=[('BASIC', 'Basic'), ('PROFESSIONAL', 'Professional')], max_length=30), default=appname.models.Capability.default, null=True, size=None),\" ... \"As you can see, migrations.AddField is passed as argument \\\"default\\\" a wrong value \\\"appname.models.Capability.default\\\", which leads to an error when trying to migrate. The right value should be \\\"appname.models.Profile.Capability.default\\\".\" Source (which incorrectly drops the qualifier, emitting only klass.__name__): django/db/migrations/serializer.py: \"klass = self.value.__self__\", \"return \\\"%s.%s.%s\\\" % (module, klass.__name__, self.value.__name__), {\\\"import %s\\\" % module}\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When serializing a bound method (or function/method) whose __self__ is a class (e.g. a classmethod of a class), serializer_factory returns a string of the form '<module>.<klass>.<funcname>' where <klass> is the class's fully-qualified dotted path including any enclosing classes/namespaces (using its __qualname__), rather than only its top-level leaf name — so that references to methods bound to classes nested inside an enclosing class or scope serialize to a correctly-resolvable dotted path.",
+        "subject": "django.db.migrations.serializer.FunctionTypeSerializer.serialize",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a method bound to a class nested inside an enclosing class/namespace, the serialized output must include the complete nesting path (all enclosing dotted segments) so the emitted expression names the actual class, and the 'import <module>' for that class's module is still emitted.",
+        "subject": "django.db.migrations.serializer.FunctionTypeSerializer.serialize",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (with citation showing Profile.Capability vs Capability) explicitly pins down that a method bound to a nested class must serialize to the fully-qualified dotted path including every enclosing class level (module.OuterClass.NestedClass.method), which matches S_impl R1's required output form exactly."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The core of R2 (complete nesting path naming the actual class) is entailed by S_vis R1, but R2 additionally asserts the 'import <module>' for the class's module is still emitted, a behavior S_vis does not explicitly pin down; the visible source shows the import, but the summary itself does not commit to it being preserved."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "FunctionTypeSerializerNestedTest.test_nested_class_bound_method_full_path",
+      "test_source": "import unittest\nfrom django.db.migrations.serializer import serializer_factory\n\n\nclass FunctionTypeSerializerNestedTest(unittest.TestCase):\n    @staticmethod\n    def _make_bound():\n        class Outer:\n            class Inner:\n                @classmethod\n                def ping(cls):\n                    return 42\n\n        return Outer.Inner.ping\n\n    def test_nested_class_bound_method_full_path(self):\n        value = self._make_bound()\n        self.assertTrue(value.__self__ is not None and isinstance(value.__self__, type))\n        self.assertEqual(value.__self__.__qualname__.rsplit(\".\", 1)[0].split(\".\")[-1], \"Outer\")\n        string, imports = serializer_factory(value).serialize()\n        self.assertTrue(\n            \"Outer.Inner\" in string,\n            \"Expected complete nesting path in serialized output, got: %r\" % string,\n        )\n        qualname_outer = value.__self__.__qualname__\n        segment = qualname_outer.split(\".\")[-2]\n        self.assertEqual(segment, \"Outer\")\n        self.assertTrue(\n            any(imp.startswith(\"import \") for imp in imports),\n            \"Module import must still be emitted, got imports: %r\" % (imports,),\n        )",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: 'Outer.Inner' not found in serialized string; buggy produced 'verso_witness_423dd7cacbd24196a6e90ba79b806d3c.Inner.ping', i.e. the enclosing 'Outer' segment is dropped)",
+      "explanation": "R2 targets FunctionTypeSerializer.serialize: when a method is bound to a class nested inside an enclosing class, the serialized expression must include the complete dotted nesting path (klass.__qualname__) and still emit the module 'import'. The gold version uses klass.__qualname__; the buggy pre-fix uses klass.__name__, which drops outer nesting segments.\n\nThe witness serializes a classmethod bound to a locally nested class Outer.Inner (value.__self__ is a type whose __qualname__ ends in \"Outer.Inner\"). On gold the serializer emits the full path ('...Outer.Inner.ping', with the enclosing 'Outer' segment present), so the assertion \"Outer.Inner in string\" passes and the module import is still emitted. On buggy, klass.__name__ is only \"Inner\", so serialization emits '...Inner.ping' with the outer segment missing, and the assertion fails (confirmed by run_test: gold PASSED, buggy FAILED with message showing the buggy output dropped 'Outer').\n\nThis scenario is not pinned by anything visible: no visible oracle/test asserts serialization of a method/classmethod bound to a NESTED class (existing function-serialization tests only exercise top-level classes where __name__==__qualname__, so they cannot discriminate). It is a genuine execution-confirmed witness for the targeted fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible defect lives in django/db/migrations/serializer.py, FunctionTypeSerializer.serialize: for a bound method whose __self__ is a type it returns '%s.%s.%s' using klass.__name__, unlike TypeSerializer which already uses klass.__qualname__ and correctly handles nested classes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Nested class references for bare class objects already work and are asserted in tests/migrations/test_writer.py (WriterTests.test_serialize_nested_class / test_serialize_enums) which expect e.g. 'migrations.test_writer.WriterTests.NestedEnum' — confirming __qualname__ is already the norm for nested scopes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant serializer selftests for functions are in tests/migrations/test_writer.py (WriterTests.test_serialize_functions, test_serialize_unbound_method_reference). No visible regression test yet exercises a classmethod of a nested class being serialized."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Django test package is huge; the migration-writer serializer tests live under tests/migrations/test_writer.py and the postgres array default fixtures under tests/postgres_tests/array_default_migrations/."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "FunctionTypeSerializer is registered in Serializer._registry for types.FunctionType, types.BuiltinFunctionType, and types.MethodType, and selected via serializer_factory when a value is an instance of one of those and not a type/Field/etc."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed branch fires only when getattr(value, '__self__', None) is truthy and isinstance(value.__self__, type); value.__name__ (the function/method leaf name) is unchanged, only the class segment switched from __name__ to __qualname__."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For top-level classes __name__ and __qualname__ coincide, so the patch is behaviorally neutral there and only observable for nested classes — consistent with TypeSerializer's existing use of __qualname__ in the same file."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target R2 concerns FunctionTypeSerializer.serialize emitting the complete nesting path (klass.__qualname__ / all enclosing dotted segments) for a method bound to a nested class, while still emitting the module import.\n\nI confirmed empirically that this is a genuinely discriminating behavior: serializing a classmethod bound to a locally nested class (Outer.Inner.cls_method) passes on gold (produces '....Outer.Inner.cls_method') and fails on buggy, which drops the outer segment (produces '....Inner.cls_method'), i.e. the buggy expression would not name the actual nested class.\n\nI then searched the real oracle for any test whose assertion genuinely enforces this behavior. The only place the migration-writer serializer is functionally tested is tests/migrations/test_writer.py. I read that entire file. Every relevant test there is labelled [VISIBLE] content (the same material the repair system already has), and none of its assertions actually exercise a method/classmethod bound to a NESTED class:\n- test_serialize_unbound_method_reference uses TestModel1.thing where TestModel1 is a TOP-LEVEL class (__name__ == __qualname__), so it cannot discriminate the __qualname__ fix.\n- test_serialize_nested_class / test_serialize_enums exercise bare nested class OBJECTS (TypeSerializer path), not a method bound to a nested class (FunctionTypeSerializer/MethodType path that R2 is about).\n\nBecause a Witness may only rest on [HIDDEN] assertions, and every test file that exists relating to this serialization domain is either [VISIBLE] without a discriminating assertion or (e.g. the array_default migration fixtures and test_array.py) does not test FunctionTypeSerializer on nested-class-bound methods at all, there is no qualified hidden oracle test. This is also consistent with the observation that no test is recorded as failing against the buggy program (a necessary condition for any witness). Accordingly, no genuine witness exists in the oracle for R2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.migrations.serializer.FunctionTypeSerializer.serialize): For a method bound to a class nested inside an enclosing class/namespace, the serialized output must include the complete nesting path (all enclosing dotted segments) so the emitted expression names the actual class, and the 'import <module>' for that class's module is still emitted. — not entailed by S_vis (The core of R2 (complete nesting path naming the actual class) is entailed by S_vis R1, but R2 additionally asserts the 'import <module>' for the class's module is still emitted, a behavior S_vis does not explicitly pin down; the visible source shows the import, but the summary itself does not commit to it being preserved.); confirmed by a synthesized witness: R2 targets FunctionTypeSerializer.serialize: when a method is bound to a class nested inside an enclosing class, the serialized expression must include the complete dotted nesting path (klass.__qualname__) and still emit the module 'import'. The gold version uses klass.__qualname__; the buggy pre-fix uses klass.__name__, which drops outer nesting segments.\n\nThe witness serializes a classmethod bound to a locally nested class Outer.Inner (value.__self__ is a type whose __qualname__ ends in \"Outer.Inner\"). On gold the serializer emits the full path ('...Outer.Inner.ping', with the enclosing 'Outer' segment present), so the assertion \"Outer.Inner in string\" passes and the module import is still emitted. On buggy, klass.__name__ is only \"Inner\", so serialization emits '...Inner.ping' with the outer segment missing, and the assertion fails (confirmed by run_test: gold PASSED, buggy FAILED with message showing the buggy output dropped 'Outer').\n\nThis scenario is not pinned by anything visible: no visible oracle/test asserts serialization of a method/classmethod bound to a NESTED class (existing function-serialization tests only exercise top-level classes where __name__==__qualname__, so they cannot discriminate). It is a genuine execution-confirmed witness for the targeted fix.",
+    "confidence": "Medium"
+  }
+}

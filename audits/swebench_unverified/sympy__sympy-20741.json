@@ -1,0 +1,115 @@
+{
+  "task_id": "sympy__sympy-20741",
+  "status": "ok",
+  "duration_seconds": 585.2425859579816,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-20741",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Given MatrixSymbol A(m,n), B(m,n) and Z = ZeroMatrix(m,n), both `-(-A + B) - A + B` and `-(-A + B) - A + B - Z` must reduce to the additive identity of shape (m,n) (a zero matrix), i.e. all equal-and-opposite signed A and B terms must cancel regardless of the negated inner MatAdd and regardless of the trailing zero matrix; construction itself, `.simplify()`, and `.expand()` must each collapse the expression rather than leaving terms like `-(-A + B) -A + B` or `-B + A -A + B` uncollected.",
+        "subject": "MatAdd / matrix-expression simplification (MatAdd.flatten+glom, MatMul distribution of -1 over MatAdd, MatAdd.__new__/doit/simplify/expand)",
+        "hunk_ids": [],
+        "cited_from": "\nMatrix expressions aren't simplified properly\n```python\n>>> A = MatrixSymbol('A', m, n)\n>>> B = MatrixSymbol('B', m, n)\n>>> Z = ZeroMatrix(m, n)\n>>> -(-A + B) - A + B\n-(-A + B) -A + B\n>>> (-(-A + B) - A + B).simplify()\n-(-A + B) -A + B\n>>> (-(-A + B) - A + B).expand()\n-B + A -A + B\n>>> (-(-A + B) - A + B - Z).simplify()\n-(-A + B) -A + B\n>>> (-(-A + B) - A + B - Z).expand()\n-B + A -A + B\n```"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When a MatMul consists of two factors, one being a MatAdd matrix expression and the other a Rational scalar, canonicalization (MatMul.doit/canonicalize) now distributes the scalar over the MatAdd rather than leaving the scalar-times-sum as an unevaluated product. That is, the product of the Rational `r` with the MatAdd of terms, written in either factor order (scalar before the sum or after the sum), evaluates to a MatAdd of the scalar applied to each term individually; e.g. `r*(A+B)` (and the reversed-order form) evaluates to `r*A + r*B`, each `r*term` result itself being passed through doit.",
+        "subject": "MatMul canonicalization (matmul.py distribute_monom)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ2",
+        "statement": "A matrix expression consisting of an outer negated MatAdd combined with planar terms that only cancel after the scalar is distributed into the MatAdd, e.g. `-(-A + B) - A + B` over equal-shaped matrix symbols A and B, now canonicalizes to the zero matrix of matching shape (so such an expression tests equal to a zero matrix) instead of remaining an unsimplified nested difference.",
+        "subject": "MatrixExpr difference/negation simplification to ZeroMatrix (matmul + matadd cancellation)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (R1) concerns only additive cancellation of unit-coefficient signed A/B terms; it contains no Rational scalar multiplied by a MatAdd, so nothing describes or pins down distributing r over A+B to r*A+r*B."
+      },
+      {
+        "requirement_id": "REQ2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 explicitly requires exactly the expression -(-A+B)-A+B (over equal-shaped A,B) to reduce to the additive identity/zero matrix of matching shape under construction, simplify, and expand, which is precisely REQ2's canonicalize-to-zero-matrix behavior."
+      }
+    ],
+    "target_requirement_id": "REQ1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_t",
+      "test_source": "from sympy import Rational, MatrixSymbol\nfrom sympy.matrices.expressions.matadd import MatAdd\n\ndef test_t():\n    A = MatrixSymbol('A', 2, 2)\n    B = MatrixSymbol('B', 2, 2)\n    r = Rational(1, 3)\n    # scalar before the sum\n    lhs = r * (A + B)\n    rhs = r * A + r * B\n    assert isinstance(lhs, MatAdd), type(lhs)\n    assert lhs == rhs, str(lhs)\n    # scalar after the sum\n    lhs2 = (A + B) * r\n    assert isinstance(lhs2, MatAdd), type(lhs2)\n    assert lhs2 == rhs, str(lhs2)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError: isinstance(Rational(1,3)*(A+B), MatAdd) is False because the expression stays a MatMul (unevaluated scalar*(A+B) product) on the buggy revision, which lacks distribute_monom.",
+      "explanation": "REQ1 (H1, distribute_monom inserted as first rule into MatMul's canonicalize) makes a MatMul with exactly two factors — one a MatAdd and the other a Rational — distribute the Rational over each term of the MatAdd, yielding a MatAdd (each r*term going through doit). The witness asserts both factor orders r*(A+B) and (A+B)*r evaluate to a MatAdd equal to r*A + r*B, using the explicit non-integer Rational scalar Rational(1,3). This directly exercises the newly-added distribute_monom canonicalization at H1's location in sympy/matrices/expressions/matmul.py. Execution confirms: against gold (which has distribute_monom) the test PASSES for both orders; against buggy (pre-fix rules lack distribute_monom) it FAILS because r*(A+B) remains a MatMul and is not a MatAdd (the very defect the requirement fixes). I reviewed the visible matrix-expression test files (test_matadd.py, test_matmul.py, test_matexpr.py, test_interactions.py) and none pins a Rational scalar distributing over a MatAdd of MatrixSymbols — visible assertions only cover integer scalars on single matrices / constant MatrixBase combos (e.g. 2*A - A - A, Add(M,M)==2*M), not the scalar-over-sum canonicalization captured here, so this genuinely tests hidden oracle content rather than echoing an already-visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug is in sympy/matrices/expressions (MatrixExpr handling): MatAdd subclasses core Add and canonicalizes args via rules in matadd.py (rm_id, unpack, flatten, glom(matrix_of, factor_of, combine), merge_explicit, sort); MatMul subclasses core Mul."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MatrixExpr __neg__/__add__/__sub__ build MatAdd/MatMul expressions with doit(); get_postprocessor in matexpr.py routes core Add/Mul construction through MatAdd/MatMul.doit()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible tests in test_matadd.py and test_matexpr.py already require planar cancellations to work (e.g. `2*A - A - A == ZeroMatrix(*A.shape)`, `A + ZeroMatrix(n,m) - A == ZeroMatrix(n,m)`, `A - A + 2*B` is a MatMul) — the reported defect is specifically the nested-negated/scattered form `-(-A+B) - A + B`; no test file disclosed this expectation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Comparison of two MatrixExprs relies on `(lhs - rhs).is_ZeroMatrix` (matexpr._eval_is_eq), so the natural witness for this bug is the expression equalling a zero matrix of shape (m,n)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug references sympy issue/PR history ('First reported in https://github.com/sympy/sympy/issues/13508'), which is the same underlying problem but no further detail is available in the visible material."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a no-op whitespace change (a blank line added before the doit comment), carrying no behavioral effect."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 adds the distribute_monom function and inserts it as the first element of the rules tuple used by canonicalize; distribute_monom only fires when the MatMul has exactly two args, one a MatAdd and the other a Rational (Integer qualifies via is_Rational), and otherwise returns the MatMul unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "distribute_monom returns a MatAdd (of scalar-per-term produits), so its result is subject to MatAdd's own canonicalization rules in a following pass."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "canonicalize runs rules via exhaust(typed({MatMul: do_one(*rules)})), applied in MatMul.doit()."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ1]: I investigated whether the real oracle contains a [HIDDEN] test that already acts as a Witness for REQ1 (MatMul canonicalization distributing a Rational scalar over a MatAdd via distribute_monom so that r*(A+B) becomes a MatAdd r*A+r*B).\n\nFirst I confirmed the claimed gold/buggy behavioral gap actually exists and is observable: constructing `Rational(1,3)*(A + B)` over 2x2 MatrixSymbols yields, in gold, a MatAdd with .args = ((1/3)*A, (1/3)*B), whereas in buggy it remains a MatMul with .args = (1/3, A+B). A witness assertion like `assert Rational(1,3)*(A+B) == Rational(1,3)*A + Rational(1,3)*B` passes against gold and fails against buggy (both confirmed by run_test). So the requirement is genuine and witnessable in principle.\n\nHowever, a Witness must rest on [HIDDEN] oracle content — an assertion visible material does not already establish. I read the entire set of matrix-expression test files where such a distribute_monom regression must live (sympy/matrices/expressions/tests/test_matmul.py, test_matadd.py, test_matexpr.py, plus test_matpow.py, test_hadamard.py, test_trace.py, test_transpose.py, test_adjoint.py, test_blockmatrix.py, test_inverse.py, test_kronecker.py, test_indexing.py, test_applyfunc.py, test_special.py, etc.) and the other candidate homes (sympy/matrices/tests/test_matrices.py, test_densearith.py, test_interactions.py, test_immutable.py, sympy/core/tests/test_arit.py). In every single case the file content is labeled [VISIBLE], and none of them contains an assertion that exercises the scalar-distributes-over-MatAdd canonicalization for REQ1. The report that no tests currently fail against the buggy program is consistent with this: there is no oracle test (visible or hidden in these locations) whose assertion genuinely tests REQ1.\n\nSince I could not locate any [HIDDEN] oracle assertion that tests exactly this behavior (and per the rules a [VISIBLE] assertion can never serve as a witness, so the visible test suite's coverage of adjacent MatAdd/MatMul canonicalize behavior is irrelevant), there is no obtainable witness. found=false is the correct submission."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ1] (MatMul canonicalization (matmul.py distribute_monom)): When a MatMul consists of two factors, one being a MatAdd matrix expression and the other a Rational scalar, canonicalization (MatMul.doit/canonicalize) now distributes the scalar over the MatAdd rather than leaving the scalar-times-sum as an unevaluated product. That is, the product of the Rational `r` with the MatAdd of terms, written in either factor order (scalar before the sum or after the sum), evaluates to a MatAdd of the scalar applied to each term individually; e.g. `r*(A+B)` (and the reversed-order form) evaluates to `r*A + r*B`, each `r*term` result itself being passed through doit. — not entailed by S_vis (S_vis (R1) concerns only additive cancellation of unit-coefficient signed A/B terms; it contains no Rational scalar multiplied by a MatAdd, so nothing describes or pins down distributing r over A+B to r*A+r*B.); confirmed by a synthesized witness: REQ1 (H1, distribute_monom inserted as first rule into MatMul's canonicalize) makes a MatMul with exactly two factors — one a MatAdd and the other a Rational — distribute the Rational over each term of the MatAdd, yielding a MatAdd (each r*term going through doit). The witness asserts both factor orders r*(A+B) and (A+B)*r evaluate to a MatAdd equal to r*A + r*B, using the explicit non-integer Rational scalar Rational(1,3). This directly exercises the newly-added distribute_monom canonicalization at H1's location in sympy/matrices/expressions/matmul.py. Execution confirms: against gold (which has distribute_monom) the test PASSES for both orders; against buggy (pre-fix rules lack distribute_monom) it FAILS because r*(A+B) remains a MatMul and is not a MatAdd (the very defect the requirement fixes). I reviewed the visible matrix-expression test files (test_matadd.py, test_matmul.py, test_matexpr.py, test_interactions.py) and none pins a Rational scalar distributing over a MatAdd of MatrixSymbols — visible assertions only cover integer scalars on single matrices / constant MatrixBase combos (e.g. 2*A - A - A, Add(M,M)==2*M), not the scalar-over-sum canonicalization captured here, so this genuinely tests hidden oracle content rather than echoing an already-visible assertion.",
+    "confidence": "Medium"
+  }
+}

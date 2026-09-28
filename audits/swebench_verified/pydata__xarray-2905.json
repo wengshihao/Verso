@@ -1,0 +1,116 @@
+{
+  "task_id": "pydata__xarray-2905",
+  "status": "ok",
+  "duration_seconds": 164.135891583981,
+  "llm_calls": 8,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-2905",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Assigning an RHS value object that carries a `values` attribute (but is not an xarray/pandas/self-described array) into a location of a DataArray/Variable whose backing array has dtype `object` must store the value object itself, not unwrap/coerce its `.values`. Concretely, after `bad_indexed = xr.DataArray([None])`, `class HasValues: values = 5`, and `bad_indexed.loc[{'dim_0': 0}] = HasValues()`, `bad_indexed.values` must be an object array whose element is the HasValues instance, not `array([array(5)])`  as the buggy version produces.",
+        "subject": "Variable.__setitem__ / as_compatible_data coercion of objects with a .values attribute",
+        "hunk_ids": [],
+        "cited_from": "Issue example: \"bad_indexed.loc[{'dim_0': 0}] = HasValues() ... # incorrect # bad_indexed.values => array([array(5)], dtype=object)\" and \"Expected Output Ideally: ... # bad_indexed.values => array([< __main__.HasValues instance>], dtype=object)\". Issue text: \"The current behavior prevents storing objects inside arrays of `dtype==object` even when only performing non-broadcasted assignments if the RHS has a `values` property.\". Code path: in `Variable.__setitem__`, \"value = as_compatible_data(value)\", which in `as_compatible_data` does \"data = getattr(data, \\\"values\\\", data)\"."
+      },
+      {
+        "id": "R2",
+        "statement": "The fix must not break unwrapping of `.values` for objects that xarray treats as genuinely self-described array-like (e.g. the documented pandas/xarray objects for which xarray uses their contained values); the coercion removed for arbitrary user objects must be targeted so the array-conversion behaviour for recognized array-like values (notably including still being routed through `getattr(data, \"values\", data)` only when appropriate) is preserved.",
+        "subject": "as_compatible_data value unwrapping for genuine self-described arrays",
+        "hunk_ids": [],
+        "cited_from": "From as_compatible_data: \"# we don't want nested self-described arrays\\n    data = getattr(data, \\\"values\\\", data)\" and the comment in its docstring \"If data is already a pandas or xarray object (other than an Index), just use the values.\". Issue text: \"Many libraries produce objects with a `.values` property that gets coerced as a result.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In as_compatible_data, a value whose type is pd.Series, pd.Index, or pd.DataFrame is replaced by its underlying nucleotide contents via data.values before further processing (i.e. nested self-described array unwrapping still occurs for exactly these pandas container types).",
+        "subject": "xarray.core.variable.as_compatible_data",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In as_compatible_data, a value that is not one of pd.Series, pd.Index, or pd.DataFrame is no longer transparently replaced by the output of its .values attribute: such an object (e.g. passing/assigning a user object that merely carries a values attribute) is passed through and stored/handled as that object itself rather than as the content of data.values.",
+        "subject": "xarray.core.variable.as_compatible_data",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 explicitly requires that coercion removal be targeted so recognized self-described/pandas array-like values still unwrap through data.values (docstring: pandas objects 'just use the values'; code: routed through getattr(data,'values',data)). This pins that pd.Series/pd.Index/pd.DataFrame contents are still taken via .values before further processing."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 concretely pins the passthrough behavior: an arbitrary user object carrying a .values attribute (HasValues instance assigned into an object-array location) must be stored as the object itself and not coerced to data.values content, matching S_impl R2's 'passed through and stored as the object, not data.values' for non-pandas-container values."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The coercion bug lives in the module-level function `as_compatible_data(data)` in xarray/core/variable.py, which is called by both the Variable constructor and `Variable.__setitem__` (\"value = as_compatible_data(value)\")."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`as_compatible_data` unwraps `.values` unconditionally on any data having a values attribute (\"; we don't want nested self-described arrays\"), which is what turns an arbitrary user object with a `values` attribute into its attribute value."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for assignment live in xarray/tests/test_dataarray.py (test_setitem includes basic indexing; a .loc-based assignment path) and xarray/tests/test_variable.py; no test in the visible tree covers the reported object-with-values case, so the observable example plus issue prose are the sole evidence."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The example uses `.loc[{...}]` on a DataArray backed by a length-1 object array (`DataArray([None])`) — the assignment path funnels into Variable.__setitem__."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "xarray/core/utils.py exposes `is_scalar`, and `NON_NUMPY_SUPPORTED_ARRAY_TYPES` (containing pd.Index, ExplicitlyIndexed, dask/cupy arrays) are handled earlier in as_compatible_data before the `.values` unwrap."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "as_compatible_data (xarray/core/variable.py) is the module-level coercion used by Variable.__init__ and Variable.__setitem__, and indirectly by DataArray/Dataset assignment and .data/.values setter paths."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before the patch the unwrap was `data = getattr(data, \"values\", data)` for any object with a values attribute; after the patch only pd.Series/pd.Index/pd.DataFrame get unwrapped to .values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pd.Index branch of the new isinstance guard is largely unreachable for the pd.Index case: pd.Index is a member of NON_NUMPY_SUPPORTED_ARRAY_TYPES and is returned earlier by _maybe_wrap_data; the guard practically governs pd.Series and pd.DataFrame, which are not in NON_NUMPY_SUPPORTED_ARRAY_TYPES."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After the guard, non-unwrapped non-pandas objects flow into the np.ma.MaskedArray branch and finally np.asarray(data), so they are stored as the object wrapped/converted by numpy rather than dereferenced by .values."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

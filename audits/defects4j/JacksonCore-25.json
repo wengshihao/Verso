@@ -1,0 +1,98 @@
+{
+  "task_id": "JacksonCore-25",
+  "status": "ok",
+  "duration_seconds": 170.64835491000122,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-25",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When parsing an unquoted field name (Feature.ALLOW_UNQUOTED_FIELD_NAMES enabled) from a Reader and the name is followed by / contains a character whose code-point value equals the size of the JS-name character-code table (e.g. char value 256, 'Ā', right after the first name char 'a', at the very end of the input buffer), ReaderBasedJsonParser.nextToken() must report the invalid input with a JsonParseException (i.e., fail cleanly as a parse error) instead of throwing ArrayIndexOutOfBoundsException or any other unchecked exception.",
+        "subject": "com.fasterxml.jackson.core.json.ReaderBasedJsonParser unquoted-field-name parsing (_handleOddName2)",
+        "hunk_ids": [],
+        "cited_from": "testUnquotedIssue510: \"// [core#510]: ArrayIndexOutOfBounds ... fullChars[4000] = 256;\"; \"JsonParser p = UNQUOTED_FIELDS_F.createParser(new java.io.StringReader(new String(fullChars))); assertToken(JsonToken.START_OBJECT, p.nextToken()); try { p.nextToken(); fail(\"Should not pass\"); } catch (JsonParseException e) { ; // should fail here }\" — where UNQUOTED_FIELDS_F is configured with \"JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true\" and fullChars has 3998 spaces then '{','a',256."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When parsing an unquoted field name (Feature.ALLOW_UNQUOTED_FIELD_NAMES enabled) in ReaderBasedJsonParser on the secondary/buffer-continuation path (_handleOddName2), a character whose code-unit value equals the size of the JS-name lookup table `codes` (`codes.length`, 256) is no longer used to index that table; instead it is accepted into the field name if Character.isJavaIdentifierPart(char) is true for it, so that parsing such a name completes normally (no ArrayIndexOutOfBoundsException) and yields a FIELD_NAME token containing that character.",
+        "subject": "ReaderBasedJsonParser._handleOddName2 unquoted field-name continuation parsing (ALLOW_UNQUOTED_FIELD_NAMES)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (and its citation, the core#510 test) describes the SAME scenario (char value 256 after 'a' at buffer end, unquoted field names) but pins down the OPPOSITE behavior: it requires that input to be rejected with a JsonParseException ('should fail here'), whereas S_impl requires that same character to be accepted into the field name via isJavaIdentifierPart so parsing completes and yields a FIELD_NAME token. Since S_vis commits to the opposite outcome, it does not entail S_impl's behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t_unquotedNameChar256Continuation",
+      "test_source": "@Test\npublic void t_unquotedNameChar256Continuation() throws Exception {\n    com.fasterxml.jackson.core.JsonFactory f = new com.fasterxml.jackson.core.JsonFactory();\n    f.configure(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true);\n    // pad with spaces so the unquoted field name crosses the internal input-buffer\n    // boundary right at char U+0100 (value 256), forcing the _handleOddName2 continuation path\n    char[] chars = new char[4001];\n    for (int i = 0; i < 3998; ++i) {\n        chars[i] = ' ';\n    }\n    chars[3998] = '{';\n    chars[3999] = 'a';\n    chars[4000] = 256; // 'Ā', valid Java identifier part\n    String json = new String(chars) + \":1\";\n    com.fasterxml.jackson.core.JsonParser p =\n        f.createParser(new java.io.StringReader(json));\n    org.junit.Assert.assertEquals(com.fasterxml.jackson.core.JsonToken.START_OBJECT, p.nextToken());\n    org.junit.Assert.assertEquals(com.fasterxml.jackson.core.JsonToken.FIELD_NAME, p.nextToken());\n    org.junit.Assert.assertEquals(\"a\\u0100\", p.getCurrentName());\n    p.close();\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED with java.lang.ArrayIndexOutOfBoundsException: Index 256 out of bounds for length 256 at ReaderBasedJsonParser._handleOddName2 (ReaderBasedJsonParser.java:1964)",
+      "explanation": "R1 is about _handleOddName2's boundary guard: a buffer-continuation character whose code-unit value equals codes.length (256) — such as 'Ā' (U+0100), which Character.isJavaIdentifierPart accepts — must not be used to index the 256-entry codes table, but be accepted into the unquoted FIELD_NAME so parsing completes normally. The visible NonStandardUnquotedNamesTest only exercises issue-510 with truncated input ({a<U+0100> + EOF) and asserts a JsonParseException — i.e. merely that the AIOOBE was turned into a clean error. It does NOT pin down the literal R1 claim that a successful FIELD_NAME token containing the char is yielded, which is the distinct behavior the fix enables.\n\nMy witness supplies a complete, well-formed document: a Reader (StringReader) input in ALLOW_UNQUOTED_FIELD_NAMES mode with 3998 spaces of padding so that after the parser consumes 'a' the input-buffer boundary falls exactly at char U+0100, forcing _handleOddName2 to process it as the first continuation character, followed by ':1' so the parse runs to completion. I confirmed by execution: against the buggy build it throws ArrayIndexOutOfBoundsException at _handleOddName2 (codes[256], the exact bug), and against the gold build it passes, returning a FIELD_NAME whose getCurrentName() equals \"a\\u0100\" (i.e. the char-256 character is legitimately accepted into the name). It therefore discriminates buggy (fail) vs gold (pass) and captures R1 as a concrete, executable assertion rather than re-asserting the co-located, already-visible 510 error-handling test."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: src/main/java/com/fasterxml/jackson/core/json/ReaderBasedJsonParser.java and src/test/java/com/fasterxml/jackson/core/read/NonStandardUnquotedNamesTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only the Reader-based path (MODE via direct new StringReader, i.e. ReaderBasedJsonParser) is exercised by the 510 regression test; there is no JSON/UTF-8-streaming variant for issue 510 in this file."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Likely defect spot: in ReaderBasedJsonParser._handleOddName the array-access guard is `if (i < maxCode)` (safe), but in _handleOddName2 it is `if (i <= maxCode) { if (codes[i] != 0) break; }` — off-by-one such that a char whose value equals codes.length (256) indexes codes[256] out of bounds."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "NonStandardUnquotedNamesTest extends com.fasterxml.jackson.core.BaseTest and also stores other ALLOW_UNQUOTED_FIELD_NAMES tests (_testSimpleUnquoted, _testLargeUnquoted) that exercise variable/letter/number/underscore/dollar/space unquoted naming across all modes; these run modes include MODE_INPUT_STREAM/_THROTTLED/DATA_INPUT and MODE_READER."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No issue-report prose was recoverable (only PR link 510), so the sole concrete behavior source is the regression test itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "char value 256 (0x100) is 'Ā', a Latin-1-style letter that Character.isJavaIdentifierPart reports as a valid identifier character, so it is legitimately consumed into the unquoted name before the reader runs out of input at this buffer end."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a one-character change in ReaderBasedJsonParser._handleOddName2: boundary guard `if (i <= maxCode)` becomes `if (i < maxCode)` where `maxCode = codes.length` and `codes = CharTypes.getInputCodeLatin1JsNames()` (an int table of length 256 indexed by code-unit value). The fix only changes behavior for the exact case where a code-unit value equals maxCode (256): with `<=` the code indexes codes[256] (out of bounds); with `<` it falls to the `else if (!Character.isJavaIdentifierPart(c)) break;` branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The analogous fast-path guard in _handleOddName already used `if (ch < maxCode)`, so this fix only aligns the continuation path (_handleOddName2), which is reached when the unquoted name crosses an input-buffer boundary."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Character U+0100 'Ā' (code-unit 256) is reported by Character.isJavaIdentifierPart as a valid identifier character, so it is legitimately part of an unquoted name and does not terminate the name."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated the requirement R1, which is exclusively about ReaderBasedJsonParser._handleOddName2 (the buffer-continuation/secondary path for unquoted field names) when a code-unit with value == codes.length (256) is encountered and Character.isJavaIdentifierPart accepts it. Only Reader mode (via StringReader) can reach _handleOddName2.\n\nFiles checked (oracle content): NonStandardUnquotedNamesTest (the file in the failing-test list), NonStandardParserFeaturesTest, ParserSymbolHandlingTest, JsonParserTest, UTF8NamesParseTest, DataInputTest, CommentParsingTest, ParserErrorHandlingTest, and the remaining read/ corpus. The single test exercising the exact R1 scenario is `testUnquotedIssue510` ([core#510]) in src/test/java/com/fasterxml/jackson/core/read/NonStandardUnquotedNamesTest.java — that file is labeled [VISIBLE] by read_test_file (it is one of the two files the S_vis extractor reported as already visible). Per the Verso rule, a Witness may only rest on [HIDDEN] test assertions, so this visible regression test cannot serve as a witness for R1, no matter how well it matches.\n\nAdditionally, even in content terms this visible test is not an exact witness for the literal R1 claim: R1 states parsing \"completes normally ... and yields a FIELD_NAME token containing that character\", whereas testUnquotedIssue510 deliberately provides input `{a<U+0100>` followed by EOF (no colon/value), and its assertion is that nextToken() throws a JsonParseException (clean parse failure instead of the buggy AIOOBE). No oracle test asserts an actual successful FIELD_NAME token containing the char-256 character, and no [HIDDEN] test anywhere in the oracle exercises the Reader-continuation char-256 unquoted-name path. All other tests I examined use short field names / chars below 256 or stream/DataInput modes that never reach _handleOddName2.\n\nConclusion: no genuine (HIDDEN-backed) oracle witness exists for R1; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ReaderBasedJsonParser._handleOddName2 unquoted field-name continuation parsing (ALLOW_UNQUOTED_FIELD_NAMES)): When parsing an unquoted field name (Feature.ALLOW_UNQUOTED_FIELD_NAMES enabled) in ReaderBasedJsonParser on the secondary/buffer-continuation path (_handleOddName2), a character whose code-unit value equals the size of the JS-name lookup table `codes` (`codes.length`, 256) is no longer used to index that table; instead it is accepted into the field name if Character.isJavaIdentifierPart(char) is true for it, so that parsing such a name completes normally (no ArrayIndexOutOfBoundsException) and yields a FIELD_NAME token containing that character. — not entailed by S_vis (S_vis R1 (and its citation, the core#510 test) describes the SAME scenario (char value 256 after 'a' at buffer end, unquoted field names) but pins down the OPPOSITE behavior: it requires that input to be rejected with a JsonParseException ('should fail here'), whereas S_impl requires that same character to be accepted into the field name via isJavaIdentifierPart so parsing completes and yields a FIELD_NAME token. Since S_vis commits to the opposite outcome, it does not entail S_impl's behavior.); confirmed by a synthesized witness: R1 is about _handleOddName2's boundary guard: a buffer-continuation character whose code-unit value equals codes.length (256) — such as 'Ā' (U+0100), which Character.isJavaIdentifierPart accepts — must not be used to index the 256-entry codes table, but be accepted into the unquoted FIELD_NAME so parsing completes normally. The visible NonStandardUnquotedNamesTest only exercises issue-510 with truncated input ({a<U+0100> + EOF) and asserts a JsonParseException — i.e. merely that the AIOOBE was turned into a clean error. It does NOT pin down the literal R1 claim that a successful FIELD_NAME token containing the char is yielded, which is the distinct behavior the fix enables.\n\nMy witness supplies a complete, well-formed document: a Reader (StringReader) input in ALLOW_UNQUOTED_FIELD_NAMES mode with 3998 spaces of padding so that after the parser consumes 'a' the input-buffer boundary falls exactly at char U+0100, forcing _handleOddName2 to process it as the first continuation character, followed by ':1' so the parse runs to completion. I confirmed by execution: against the buggy build it throws ArrayIndexOutOfBoundsException at _handleOddName2 (codes[256], the exact bug), and against the gold build it passes, returning a FIELD_NAME whose getCurrentName() equals \"a\\u0100\" (i.e. the char-256 character is legitimately accepted into the name). It therefore discriminates buggy (fail) vs gold (pass) and captures R1 as a concrete, executable assertion rather than re-asserting the co-located, already-visible 510 error-handling test.",
+    "confidence": "Medium"
+  }
+}

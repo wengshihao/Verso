@@ -1,0 +1,156 @@
+{
+  "task_id": "django__django-13589",
+  "status": "ok",
+  "duration_seconds": 483.83113616600167,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13589",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Setting a many-to-one foreign key on an instance to an unsaved related object, then giving that related object its primary key (by saving or bulk-creating it), must not leave the referencing instance's FK id field (e.g. city_id/country_id) stale as NULL: subsequent saves (e.g. city.save(), or bulk_create over the referencing instances) must write the related object's actual pk rather than fail with a NULL not-null integrity error.",
+        "subject": "Model.save / bulk_create / ForeignKey attribute-to-id propagation",
+        "hunk_ids": [],
+        "cited_from": "Issue report: 'city = City(country=country_be, name=\"Brussels\") # (1) / country_be.save() # (2) / city.save()' ... 'The above exception was the direct cause of the following exception:' ... 'psycopg2.IntegrityError: null value in column \"country_id\" violates not-null constraint / DETAIL: Failing row contains (1, Brussels, null).' ... 'Ideally, the main instance would, when saved, \\'reach into\\' its related objects and set the foreign key field like the loop does.' Also bulk_create illustration: 'for city in cities: city.country_id = city.country.id / City.objects.bulk_create(cities)' "
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Calling QuerySet.bulk_create() with an object whose concrete ForeignKey/OneToOne relation is cached (assigned) to an object that has no pk (obj.pk is None) raises a ValueError with message \"bulk_create() prohibited to prevent data loss due to unsaved related object '<field name>'.\" instead of inserting the row.",
+        "subject": "QuerySet.bulk_create",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During bulk_create(), when an object being inserted has a cached saved related object assigned but its own foreign-key id attribute (field.attname) is None, bulk_create sets the instance's FK id attribute to the related object's pk value before inserting the row, so the persisted row references that related object instead of storing NULL.",
+        "subject": "QuerySet.bulk_create",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "During bulk_create(), if a cached related object's target field value differs from the instance's stored value in the relation's id attribute, bulk_create clears the instance's cached copy of that related object (so a subsequent attribute access re-fetches it from the database).",
+        "subject": "QuerySet.bulk_create",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "Model.save() retains the pre-existing behavior, on encountering a cached concrete ForeignKey/OneToOne relation whose related object has no pk, of raising ValueError with message \"save() prohibited to prevent data loss due to unsaved related object '<field name>'.\" (preserved by refactoring the check into a helper invoked with operation_name='save').",
+        "subject": "Model.save",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis describes bulk_create successfully writing the related object's pk, never raising a ValueError 'bulk_create() prohibited...' message for unsaved related objects; no such prohibition behavior is mentioned."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis states that when a referencing instance's related object has been given a pk (saved) but the instance's own fk id is still NULL, bulk_create over those instances must set/write the actual pk (persist the reference, not NULL), which is exactly R2's behavior."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains no mention of clearing a cached related object or re-fetching it from the DB when target field values diverge; this cache-clearing mechanism is not pinned by any visible evidence."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis does not describe Model.save() raising a 'save() prohibited...' ValueError nor any refactoring of that check into a helper; only the stale-NULL/write-pk behavior is discussed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_bc_unsaved_related_dynamic",
+      "test_source": "def test_bc_unsaved_related_dynamic():\n    import re\n    import django\n    from django.conf import settings\n\n    if not settings.configured:\n        settings.configure(\n            DEBUG=False,\n            DATABASES={'default': {\n                'ENGINE': 'django.db.backends.sqlite3',\n                'NAME': ':memory:',\n            }},\n            INSTALLED_APPS=['django.contrib.contenttypes'],\n            DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n            USE_TZ=False,\n        )\n    django.setup()\n\n    from django.db import connection, models\n\n    class Country(models.Model):\n        name = models.CharField(max_length=40)\n        class Meta:\n            app_label = 'contenttypes'\n            db_table = 'verso_dyn_country'\n\n    class City(models.Model):\n        name = models.CharField(max_length=40)\n        country = models.ForeignKey(Country, null=True, on_delete=models.CASCADE)\n        class Meta:\n            app_label = 'contenttypes'\n            db_table = 'verso_dyn_city'\n\n    with connection.schema_editor() as editor:\n        editor.create_model(Country)\n        editor.create_model(City)\n\n    parent = Country(name='Belgium')\n    city = City(name='Brussels', country=parent)\n    msg = \"bulk_create() prohibited to prevent data loss due to unsaved related object 'country'.\"\n    with __import__('pytest').raises(ValueError, match=re.escape(msg)):\n        City.objects.bulk_create([city])\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (DID NOT RAISE ValueError; unsaved cached FK silently inserted)",
+      "explanation": "R1 requires that QuerySet.bulk_create() raise \"bulk_create() prohibited to prevent data loss due to unsaved related object '<field>'.\" when a bulk-created object carries a cached concrete ForeignKey/OneToOne relation to an object whose pk is None (instead of silently inserting). The gold fix extracts Model.save()'s unsaved-related-object check into Model._prepare_related_fields_for_save(operation_name) and bulk_create now calls _prepare_for_bulk_create (pk populate + _prepare_related_fields_for_save('bulk_create')), producing that ValueError; the pre-fix code only populated PKs and let the insert proceed.\n\nThe witness builds two concrete models (a country and a city with a nullable concrete FK to country), configures a self-contained in-memory sqlite Django env, creates tables with the schema editor, assigns an unsaved Country (pk is None) to the city's cached country relation, then asserts that City.objects.bulk_create([city]) raises the exact ValueError message with the 'bulk_create' operation name and 'country' field.\n\nExecution confirmed: against the gold (fixed) program this PASSES — bulk_create raises the specified ValueError. Against the buggy (pre-fix) program this FAILS with \"DID NOT RAISE <class 'ValueError'>\" — the row is instead bulk-inserted (FK id is None and the FK is nullable), demonstrating the pre-fix silent-insert behavior R1 targets. This scenario is not pinned by any existing visible test (tests/bulk_create's suite only covers a separate multi-table-inheritance and zero-autovalue ValueError), and it uses freshly defined models/tables rather than re-touching code whose behavior is already asserted in the visible surface."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is the Django framework repo at version 3.2.0 alpha (django/__init__.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reported scenario is NOT represented in the checked-in visible tests: tests/bulk_create/models.py defines Country (and various other models) but no City model and no ForeignKey-to-Country child model reproducing the issue; tests/bulk_create/tests.py likewise contains no test like the issue's test_fk_bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Structural context: django/db/models/base.py Model.save() already reconciles a cached related object's pk into the child's FK id only when the id attr is None via: 'elif getattr(self, field.attname) is None: # Use pk from related object if it has been saved after an assignment. setattr(self, field.attname, obj.pk)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ForeignKey assignment (city.country = country_be) is performed in ForwardManyToOneDescriptor.__set__ (django/db/models/fields/related_descriptors.py) which copies getattr(value, related_pk_attname) into the instance's attname at assignment time."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests generally live under tests/, with the relevant suite at tests/bulk_create/tests.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch refactors the unsaved-related-object validation/sync block out of Model.save() into a new Model._prepare_related_fields_for_save(operation_name) helper (H0/H1) and re-invokes it from save() unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A new QuerySet._prepare_for_bulk_create(objs) helper (H2/H3) replaces QuerySet._populate_pk_values; it first assigns auto pk values to objs lacking a pk, then runs _prepare_related_fields_for_save(operation_name='bulk_create') on each, so bulk_create now applies the same FK-prep/validation that save() applies."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The ValueError message wording is parameterized by the operation name ('save' vs 'bulk_create'), i.e. the op name is spliced into the prohibition message."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_prepare_related_fields_for_save loops Model._meta.concrete_fields and only acts when a field is a relation and is_cached(self); the syncing of the related object's pk into child field.attname happens only when that attname is currently None."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires a witness that QuerySet.bulk_create() raises \"bulk_create() prohibited to prevent data loss due to unsaved related object '<field>'.\" when a concrete FK/OneToOne is cached to an object with pk=None. I checked the repository's bulk_create suite and adjacent suites:\n\n1. tests/bulk_create/tests.py ([VISIBLE]) is the natural location but contains no such test — none of its tests bulk_create an object whose cached FK target is unsaved, nor assert the 'bulk_create() prohibited...' ValueError message (its multi-table-inheritance ValueError is a different error/condition).\n2. tests/bulk_create/models.py ([HIDDEN]) provides Country/State/restaurant models but no child model with a concrete FK/OneToOne that would be assigned an unsaved parent before a bulk_create (no City / FK-to-Country child; NullableFields FKs point at separate auto-field models and aren't used for this scenario).\n3. tests/one_to_one/tests.py ([VISIBLE]) contains test_unsaved_object and test_set_reverse_on_unsaved_object which reference the analogous \"prohibited to prevent data loss\" message, but they exercise the Model.save()/objects.create() path with operation name 'save', not QuerySet.bulk_create(), and therefore cover a different (already-established) behavior rather than R1.\n4. No tests are recorded as failing against the buggy program — a genuine R1 witness would necessarily fail on the buggy (gold->fixed) bulk_create behavior, and none exists among the suite.\n\nTaken together the real oracle contains no hidden test that asserts bulk_create's unsaved-related-object ValueError, so no execution-confirmed witness can be built for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (QuerySet.bulk_create): Calling QuerySet.bulk_create() with an object whose concrete ForeignKey/OneToOne relation is cached (assigned) to an object that has no pk (obj.pk is None) raises a ValueError with message \"bulk_create() prohibited to prevent data loss due to unsaved related object '<field name>'.\" instead of inserting the row. — not entailed by S_vis (S_vis describes bulk_create successfully writing the related object's pk, never raising a ValueError 'bulk_create() prohibited...' message for unsaved related objects; no such prohibition behavior is mentioned.); confirmed by a synthesized witness: R1 requires that QuerySet.bulk_create() raise \"bulk_create() prohibited to prevent data loss due to unsaved related object '<field>'.\" when a bulk-created object carries a cached concrete ForeignKey/OneToOne relation to an object whose pk is None (instead of silently inserting). The gold fix extracts Model.save()'s unsaved-related-object check into Model._prepare_related_fields_for_save(operation_name) and bulk_create now calls _prepare_for_bulk_create (pk populate + _prepare_related_fields_for_save('bulk_create')), producing that ValueError; the pre-fix code only populated PKs and let the insert proceed.\n\nThe witness builds two concrete models (a country and a city with a nullable concrete FK to country), configures a self-contained in-memory sqlite Django env, creates tables with the schema editor, assigns an unsaved Country (pk is None) to the city's cached country relation, then asserts that City.objects.bulk_create([city]) raises the exact ValueError message with the 'bulk_create' operation name and 'country' field.\n\nExecution confirmed: against the gold (fixed) program this PASSES — bulk_create raises the specified ValueError. Against the buggy (pre-fix) program this FAILS with \"DID NOT RAISE <class 'ValueError'>\" — the row is instead bulk-inserted (FK id is None and the FK is nullable), demonstrating the pre-fix silent-insert behavior R1 targets. This scenario is not pinned by any existing visible test (tests/bulk_create's suite only covers a separate multi-table-inheritance and zero-autovalue ValueError), and it uses freshly defined models/tables rather than re-touching code whose behavior is already asserted in the visible surface.",
+    "confidence": "Medium"
+  }
+}

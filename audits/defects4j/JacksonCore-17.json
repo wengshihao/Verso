@@ -1,0 +1,151 @@
+{
+  "task_id": "JacksonCore-17",
+  "status": "ok",
+  "duration_seconds": 285.3432030040003,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-17",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Writing a raw (unencoded) JSON value whose content includes Unicode supplementary-plane characters — encoded in UTF-16 as a surrogate pair such as the emoji 😆 (U+1F606) and 👍 (U+1F44D) found in the reproduced text — must not throw a JsonGenerationException with message \"Split surrogate on writeRaw() input (last character)\", regardless of how the input is aligned against the generator's internal chunk/output-buffer boundaries (i.e., regardless of where non-ASCII filler characters before the surrogate pair place the split point).",
+        "subject": "UTF8JsonGenerator.writeRaw / UTF8JsonGenerator._writeSegmentedRaw / GeneratorBase.writeRawValue",
+        "hunk_ids": [],
+        "cited_from": "Exception text in issue: \"com.fasterxml.jackson.core.JsonGenerationException: Split surrogate on writeRaw() input (last character)\"; source code check: \"if (inputOffset >= inputEnd || cbuf == null) { // nope... have to note down\n    _reportError(\"Split surrogate on writeRaw() input (last character)\");\"; test in RawValueWithSurrogatesTest: \"// This one fails:\" ... content contains \"testRawWithSurrogatesString\" text with emoji '😆👍', and the comment \"This one works:\" precedes a near-identical (shorter) string. The boundary-shifting harness is: \"final int OFFSET = 3; final int COUNT = 100; for (int i = OFFSET; i < COUNT; ++i) { StringBuilder sb = new StringBuilder(1000); for (int j = 0; j < i; ++j) { sb.append(' '); } sb.append(SURROGATES_307); ... }\" with no exception expected."
+      },
+      {
+        "id": "S2",
+        "statement": "writeRaw(String, offset, len) over a String longer than the internal copy buffer must divide the input into segments without splitting a UTF-16 surrogate pair at any segment boundary, so that the full multi-byte character set is preserved in output rather than a high/low surrogate being truncated/examined in isolation.",
+        "subject": "UTF8JsonGenerator.writeRaw(String,int,int)",
+        "hunk_ids": [],
+        "cited_from": "Code in writeRaw(String,int,int): \"while (len > 0) { int len2 = Math.min(buf.length, len); text.getChars(offset, offset+len2, buf, 0); writeRaw(buf, 0, len2); // If this is NOT the last segment and if the last character looks like // split surrogate second half, drop it offset += len2; len -= len2; }\""
+      },
+      {
+        "id": "S3",
+        "statement": "writeRaw(char[], offset, len) (and the _writeSegmentedRaw helper it calls when the byte-space check fails) must handle raw character input containing a supplementary-plane character whose surrogate pair straddles a chunk boundary, producing correctly encoded UTF-8 output without reporting a split surrogate.",
+        "subject": "UTF8JsonGenerator.writeRaw(char[],int,int) / _writeSegmentedRaw",
+        "hunk_ids": [],
+        "cited_from": "Test method: \"public void testRawWithSurrogatesCharArray() throws Exception { _testRawWithSurrogatesString(true); }\" with path \"if (useCharArray) { char[] ch = text.toCharArray(); g.writeRawValue(ch, OFFSET, ch.length - OFFSET); }\"; and helper message: \"Helper method that is called for segmented write of raw content ... Caller has to take care of ensuring there's no split surrogate pair at the end (that is, last char can not be first part of a surrogate char pair).\""
+      },
+      {
+        "id": "S4",
+        "statement": "The full reproduced JSON document (the SURROGATES_307 text that embeds the emoji 😆 and 👍) must be written out in its entirety through writeRawValue with every tested amount of leading space (OFFSET..COUNT-1), i.e. the generated output must not be truncated/corrupted at buffer boundaries and the operation must complete without failure.",
+        "subject": "UTF8JsonGenerator output correctness for supplementary-plane chars written as raw JSON value",
+        "hunk_ids": [],
+        "cited_from": "Test: \"sb.append(SURROGATES_307); final String text = sb.toString(); ... g.writeRawValue(text, OFFSET, text.length() - OFFSET); ... g.close(); byte[] b = out.toByteArray(); assertNotNull(b);\" and issue statement \"processing text that includes valid multi-byte Unicode characters\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When raw text written via the String-based overload UTF8JsonGenerator.writeRaw(String,int,int) (reached by GeneratorBase.writeRawValue(String,...) and other String raw writes) is longer than the internal character copy buffer so it must be produced in multiple internal segments, and a multi-byte supplementary-plane character (a surrogate pair) straddles a segment boundary (its first, high D800-DBFF element being the last character of a segment with a following low surrogate), the high element is deferred into the next segment so the pair is combined and emitted together; the write therefore completes without throwing the 'Split surrogate on writeRaw() input...' JsonGenerationException and emits the intended supplementary code point as a single 4-byte UTF-8 sequence.",
+        "subject": "UTF8JsonGenerator.writeRaw(String,int,int) / writeRawValue(String,...)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a raw-write input does genuinely contain a lone first-pair (high) surrogate with no second-pair element available at end of input, so that _outputRawMultiByteChar reports the 'Split surrogate' failure, the resulting error message now takes the form \"Split surrogate on writeRaw() input (last character): first character 0x<hex>\" and therefore exposes the UTF-16 code unit of the offending first surrogate (rather than the previous message with no code-unit detail); this is observable in the message of the thrown JsonGenerationException.",
+        "subject": "UTF8JsonGenerator._outputRawMultiByteChar split-surrogate error message",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3",
+          "S4"
+        ],
+        "rationale": "S2 explicitly covers the String-based writeRaw(String,int,int) segmented-write path and states it must avoid splitting a surrogate pair at internal segment boundaries while preserving the multi-byte character, which is precisely R1's committed behavior (no 'Split surrogate' exception, pair emitted correctly). S1/S4's offset-sweeping tests reinforce that wrapped supplementary characters must be emitted fully/correctly without failure on this path."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3",
+          "S4"
+        ],
+        "rationale": "No S_vis entry describes an enhanced split-surrogate error message exposing the offending code unit ('first character 0x<hex>'). S1's citation actually quotes the old bare message 'Split surrogate on writeRaw() input (last character)' (both in the issue text and the source-code check), so the visible info does not pin down R2's message-format change."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "splitSurrogateMessageIncludesHex",
+      "test_source": "@Test\npublic void splitSurrogateMessageIncludesHex() throws Exception {\n    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();\n    com.fasterxml.jackson.core.JsonFactory f = new com.fasterxml.jackson.core.JsonFactory();\n    com.fasterxml.jackson.core.JsonGenerator g = f.createGenerator(out);\n    boolean thrown = false;\n    String msg = null;\n    try {\n        g.writeRaw(\"\\uD83D\"); // lone high surrogate at end of raw input\n        g.flush();\n    } catch (com.fasterxml.jackson.core.JsonGenerationException e) {\n        thrown = true;\n        msg = e.getMessage();\n    } finally {\n        g.close();\n    }\n    org.junit.Assert.assertTrue(\"Expected JsonGenerationException\", thrown);\n    org.junit.Assert.assertNotNull(msg);\n    // R2: message must expose the UTF-16 code unit of the offending first surrogate\n    org.junit.Assert.assertTrue(\"missing Split surrogate: \" + msg, msg.contains(\"Split surrogate\"));\n    org.junit.Assert.assertTrue(\"missing hex detail: \" + msg, msg.contains(\"0xd83d\"));\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AssertionError \"missing hex detail: Split surrogate on writeRaw() input (last character)\" - buggy message has no 0xd83d code-unit info",
+      "explanation": "R2 is the H2 change in UTF8JsonGenerator._outputRawMultiByteChar: when raw-write input genuinely ends in a lone first-pair (high) surrogate so the 'Split surrogate' failure fires, the thrown JsonGenerationException message must now include the offending UTF-16 code unit as 'first character 0x<hex>'. The witness writes raw input consisting of a single lone high surrogate 0xD83D ('\\uD83D'). Since the content length fits in the char buffer, writeRaw(String) routes to _writeRawSegment and _outputRawMultiByteChar is reached at the buffer end (inputOffset >= inputEnd), which triggers the genuine Split-surrogate error path (this is exactly where H2 fires — the error is still raised, only the message text differs). On gold the assertion msg.contains(\"0xd83d\") passes; on buggy the message is just 'Split surrogate on writeRaw() input (last character)' with no code-unit detail, so the witness fails. The candidate was confirmed by real execution: PASSED against gold, FAILED against buggy. This input (a genuine unpaired high surrogate ending the raw input) is not pinned down by the visible RawValueWithSurrogatesTest, whose content is well-formed emoji pairs and which never reaches the split-surrogate path."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files live under src/main/java/com/fasterxml/jackson/core/{json,base} and one test file src/test/java/com/fasterxml/jackson/core/json/RawValueWithSurrogatesTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The single disclosed test (RawValueWithSurrogatesTest) drives the scenario: it builds a large redacted JSON document (SURROGATES_307) that includes the supplementary-plane emoji 😆 and 👍, then writes it as a raw value for each number of leading ASCII spaces in OFFSET(3)..COUNT(100) via both the String overload (writeRawValue(String,int,int)) and the char[] overload (writeRawValue(char[],int,int))."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The String path is layered: GeneratorBase.writeRawValue(String,int,int) -> UTF8JsonGenerator.writeRaw(String,int,int), which copies into _charBuffer and calls writeRaw(char[],0,len2). Both paths ultimately converge on writeRaw(char[],int,int) / _writeSegmentedRaw / _outputRawMultiByteChar, where the current code throws the \"Split surrogate...\" error when it encounters a lone high surrogate (buf exhausted/end of input)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "code comment noting a doc-comment block ('@since 2.8.2') above _writeSegmentedRaw that describes avoiding split surrogate pairs has an empty body - implementation detail, not a behavioral claim."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "writeRaw(String,...) contains a comment 'If this is NOT the last segment and if the last character looks like split surrogate second half, drop it' but no code implements dropping - so chunk boundaries can currently split surrogate pairs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The observed requirement is that such writes must succeed without the split-surrogate exception; the four requirements below are kept separate where a plausible fix could touch one API surface independently, but all trace to the same root crash in _outputRawMultiByteChar."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch touches only UTF8JsonGenerator: hunks H0 and H1 rework writeRaw(String,int,int) (adding a fast path for content that fits in the char buffer and, for longer content, an output-size-based chunking that defers trailing high surrogates across segment boundaries) and introduce the private helper _writeRawSegment(char[],int,int) which, like writeRaw(char[].), encodes raw UTF-8 but performs no output-boundary flush (callers guarantee room)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SURR1_FIRST..SURR1_LAST (0xD800..0xDBFF) is the high/first surrogate half; the code decrements a segment length when its final char is in that range so the char is reprocessed with the following low surrogate."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the new segmented path the internal chunk is ((_outputEnd>>2)+(_outputEnd>>4)) chars (5/16 of the output buffer); before writing each chunk the code flushes if (_outputTail + 3*chunk) would exceed _outputEnd, to reserve room for _writeRawSegment which performs no flush mid-write."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The char[] raw path used by writeRawValue(char[],...) (writeRaw(char[],...)/_writeSegmentedRaw) is not modified by this patch; only the String copy-overload segmentation is changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 only enriches the existing 'Split surrogate' diagnostic, appending the failing first surrogate's hex code unit; it does not change when the error is raised."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Target requirement R2 is the H2 change: when a genuine lone first-pair (high) surrogate is present at the end of raw-write input so that _outputRawMultiByteChar still reports the 'Split surrogate' failure, the thrown JsonGenerationException message now includes the UTF-16 code unit of the offending char (message \"...first character 0x<hex>\").\n\nI investigated every test file in the oracle (list_test_files + read the generator/writing-oriented files in full, plus parser/util/io/etc.). A witness must be a test that (a) fails against buggy, (b) passes against gold, and (c) genuinely asserts the message content R2 describes.\n\nThe only currently-failing test, com.fasterxml.jackson.core.json.RawValueWithSurrogatesTest::testRawWithSurrogatesString (+ its sibling testRawWithSurrogatesCharArray in the same file), belongs to a [VISIBLE] file, so under the rules it can never serve as a witness, and in any case its only assertion is assertNotNull(b) on the output bytes of REDACTED JSON that contains well-formed supplementary-plane emoji pairs. Because the content does not contain a genuinely unpaired high surrogate, the gold build handles it without ever raising the Split-surrogate exception — i.e., that test does not even reach/observe R2's enriched-message path (it merely verifies that valid pairs are not broken by segmentation, which is the H0/H1 success behavior, a different requirement). So it cannot demonstrate R2 even ignoring visibility.\n\nNo other oracle test feeds raw-write input that genuinely ends in a lone high surrogate and asserts on the resulting exception message. The other generation tests touching raw UTF8 / surrogates (TestRawStringWriting, TestUtf8Generator.testSurrogatesWithRaw, StringGenerationTest, GeneratorBasicTest, GeneratorFailTest, TestGeneratorMisc, filter tests, etc.) all exercise only success cases or unrelated error messages; none references the 'Split surrogate'/'first character 0x…' wording. Since H2 changes only the text of an exception (not when the error fires), no oracle test distinguishes buggy from gold on R2's specific claim.\n\nTherefore no genuine witness for R2 exists in the oracle; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (UTF8JsonGenerator._outputRawMultiByteChar split-surrogate error message): When a raw-write input does genuinely contain a lone first-pair (high) surrogate with no second-pair element available at end of input, so that _outputRawMultiByteChar reports the 'Split surrogate' failure, the resulting error message now takes the form \"Split surrogate on writeRaw() input (last character): first character 0x<hex>\" and therefore exposes the UTF-16 code unit of the offending first surrogate (rather than the previous message with no code-unit detail); this is observable in the message of the thrown JsonGenerationException. — not entailed by S_vis (No S_vis entry describes an enhanced split-surrogate error message exposing the offending code unit ('first character 0x<hex>'). S1's citation actually quotes the old bare message 'Split surrogate on writeRaw() input (last character)' (both in the issue text and the source-code check), so the visible info does not pin down R2's message-format change.); confirmed by a synthesized witness: R2 is the H2 change in UTF8JsonGenerator._outputRawMultiByteChar: when raw-write input genuinely ends in a lone first-pair (high) surrogate so the 'Split surrogate' failure fires, the thrown JsonGenerationException message must now include the offending UTF-16 code unit as 'first character 0x<hex>'. The witness writes raw input consisting of a single lone high surrogate 0xD83D ('\\uD83D'). Since the content length fits in the char buffer, writeRaw(String) routes to _writeRawSegment and _outputRawMultiByteChar is reached at the buffer end (inputOffset >= inputEnd), which triggers the genuine Split-surrogate error path (this is exactly where H2 fires — the error is still raised, only the message text differs). On gold the assertion msg.contains(\"0xd83d\") passes; on buggy the message is just 'Split surrogate on writeRaw() input (last character)' with no code-unit detail, so the witness fails. The candidate was confirmed by real execution: PASSED against gold, FAILED against buggy. This input (a genuine unpaired high surrogate ending the raw input) is not pinned down by the visible RawValueWithSurrogatesTest, whose content is well-formed emoji pairs and which never reaches the split-surrogate path.",
+    "confidence": "Medium"
+  }
+}

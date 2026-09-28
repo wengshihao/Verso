@@ -1,0 +1,123 @@
+{
+  "task_id": "django__django-13297",
+  "status": "ok",
+  "duration_seconds": 493.8406930830097,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13297",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When a TemplateView subclass overrides get_context_data(self, **kwargs) and passes a URL-captured kwarg obtained from kwargs (e.g. kwargs.get(\"offer_slug\")) directly as a lookup value (e.g. get_object_or_404(Account, slug=offer_slug)), the value must behave/resolve like the raw captured value (the slug string) so the ORM query executes without raising an \"unsupported type\" binding error — as it did in Django 3.0, without requiring the view author to call str() on the value.",
+        "subject": "TemplateView.get_context_data URL-kwargs values",
+        "hunk_ids": [],
+        "cited_from": "class OfferView(TemplateView):\n\ttemplate_name = \"offers/offer.html\"\n\tdef get_context_data(self, **kwargs):\n\t\toffer_slug = kwargs.get(\"offer_slug\", \"\")\n\t\toffer = get_object_or_404(Account, slug=offer_slug)\n\t\treturn {\"offer\": offer, \"offer_slug\": offer_slug}  ... 'In order to make this work in 3.1, you have to explicitly convert the result of kwargs.get() to a string to get the SimpleLazyObject to resolve: ... slug=str(offer_slug)) ... The error generated if you don't is: Error binding parameter 0 - probably unsupported type' ... 'offer_slug (coming in from kwargs.get) was of type SimpleLazyObject in Django 3.1, and when I explicitly converted it to a string, get_object_or_404 behaved as expected.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For every URL kwarg captured by a TemplateView, the value that _wrap_url_kwargs_with_deprecation_warning places into its returned mapping retains the deprecation contract: evaluating it as its underlying value triggers a RemovedInDjango40Warning whose message says TemplateView passing URL kwargs to the context is deprecated and instructs referencing the key through view.kwargs in the template, and yields the originally captured value.",
+        "subject": "django.views.generic.base._wrap_url_kwargs_with_deprecation_warning",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Each lazily wrapped URL-kwarg value returned by _wrap_url_kwargs_with_deprecation_warning behaves as a genuine instance of the captured value's runtime type (rather than a wrapper exposing only a fixed set of delegated accessor/magic operations), so it can be used directly wherever a value of that type is expected — e.g. passed as a parameter that the DB layer binds — without raising an error at the point of use; the deprecation warning is emitted when the underlying value is forced.",
+        "subject": "django.views.generic.base._wrap_url_kwargs_with_deprecation_warning / TemplateView URL-kwarg context values",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] only documents the Django 3.1 ORM-binding regression and the desire that the value resolve correctly for ORM use; it says nothing about a RemovedInDjango40Warning, its message text instructing view.kwargs template access, or a deprecation-on-force mechanism."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis[1] pins down precisely that the URL-captured kwarg must behave/resolve like the underlying slug value so it can be passed directly (as a DB/ORM binding parameter in get_object_or_404) without raising an 'unsupported type' error and without the author calling str(), matching R2's core use and the 'behave like the raw value' nature of R2's genuine-instance behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_two_eval",
+      "test_source": "from django.views.generic.base import _wrap_url_kwargs_with_deprecation_warning\nimport warnings\nfrom django.utils.deprecation import RemovedInDjango40Warning\n\ndef test_two_eval():\n    ctx = _wrap_url_kwargs_with_deprecation_warning({'offer': 'my-slug'})\n    val = ctx['offer']\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        str(val)\n        str(val)\n    r40 = [x for x in w if issubclass(x.category, RemovedInDjango40Warning)]\n    assert len(r40) == 2, repr(len(r40))\n    assert r40[0].message.args[0] == \"TemplateView passing URL kwargs to the context is deprecated. Reference offer in your template through view.kwargs instead.\"\n    assert str(val) == 'my-slug'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: 1; only 1 warning caught because SimpleLazyObject memoizes the first evaluation, so the second str() coercion produces no further warning; lazy proxy re-evaluates per access → 2 warnings expected)",
+      "explanation": "R1 specifies the deprecation contract the wrapper retains when a URL kwarg is evaluated as its underlying value: it fires a RemovedInDjango40Warning whose message points the author to view.kwargs and yields the originally captured value. H0/H1/H2 show the fix replaces a `@SimpleLazyObject`-decorated closure (buggy) with a `lazy(access_value, type(value))()` proxy (gold). The concrete, testable difference between these two realizations — observable only when the value is evaluated more than once — is memoization: SimpleLazyObject evaluates its setup function exactly once and caches `_wrapped`, whereas lazy() explicitly 'Results are not memoized; the function is evaluated on every access' (confirmed in django/utils/functional.py). Therefore accessing (str()-coercing) the same wrapped kwarg twice emits ONE warning on the buggy code but TWO warnings on the gold code, while both yield the captured 'my-slug' and identical messages. The visible tests (DeprecationTests.test_template_params_warning etc.) only ever evaluate each kwarg once, so this repeated-evaluation facet of the deprecation-warning contract is not pinned down there; it is independently reinventing nothing visible. Execution confirms gold PASSED (2 warnings) and buggy FAILED (1 warning, assertion len(r40)==1==2 fails)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The regression is introduced by django/views/generic/base.py: _wrap_url_kwargs_with_deprecation_warning(), which in TemplateView.get() re-wraps each URL kwarg in a SimpleLazyObject before calling self.get_context_data(**context_kwargs) (RemovedInDjango40Warning, later 'use view.kwargs in template instead')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ContextMixin.get_context_data(self, **kwargs) simply passes kwargs through as template context, so wrapped URL kwargs flow unmodified into user subclass overrides."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Crash manifests in the DB binding layer: django/db/backends/sqlite3/operations.py _quote_params_for_last_executed_query (QUOTE(?) params) when the SimpleLazyObject is used directly as a query parameter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The URL pattern in the report uses django.urls.path with <slug:offer_slug> (RoutePattern / SlugConverter), so the underlying captured value is a plain str."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests in tests/generic_views/test_base.py (DeprecationTests.test_template_params/test_extra_template_params/test_template_params_warning) encode the current deprecation behavior: response.context URL kwargs equal the captured values and, when coerced via str(), raise RemovedInDjango40Warning telling the author to use view.kwargs instead."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reported environment: Python 3.7.8, SQLite, behavior 'works in 3.0, but not in 3.1'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to the internal helper _wrap_url_kwargs_with_deprecation_warning in django/views/generic/base.py; TemplateView.get itself is unchanged in the gold revision."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The helper mechanically substitutes django.utils.functional.lazy(access_value, type(value))() for a SimpleLazyObject-decorated closure; the closure access_value (warning + return of the captured value) is unchanged apart from dropping the @SimpleLazyObject decorator and the import swap (SimpleLazyObject import removed, lazy import added)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A subtle behavioral side effect of switching from SimpleLazyObject to lazy() is that lazy() results are not memoized (the warning-emitting access_value re-evaluates on each operation), whereas SimpleLazyObject evaluates its setup function only once."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because lazy() resultclass is type(value) (e.g. str for a slug path capture), the resulting __proxy__ delegates dunder methods and str/bytes casting of that type rather than only attribute getattr delegation."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: gave up after exhausting its exploration budget without concluding (24 tool calls made)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.views.generic.base._wrap_url_kwargs_with_deprecation_warning): For every URL kwarg captured by a TemplateView, the value that _wrap_url_kwargs_with_deprecation_warning places into its returned mapping retains the deprecation contract: evaluating it as its underlying value triggers a RemovedInDjango40Warning whose message says TemplateView passing URL kwargs to the context is deprecated and instructs referencing the key through view.kwargs in the template, and yields the originally captured value. — not entailed by S_vis (S_vis[1] only documents the Django 3.1 ORM-binding regression and the desire that the value resolve correctly for ORM use; it says nothing about a RemovedInDjango40Warning, its message text instructing view.kwargs template access, or a deprecation-on-force mechanism.); confirmed by a synthesized witness: R1 specifies the deprecation contract the wrapper retains when a URL kwarg is evaluated as its underlying value: it fires a RemovedInDjango40Warning whose message points the author to view.kwargs and yields the originally captured value. H0/H1/H2 show the fix replaces a `@SimpleLazyObject`-decorated closure (buggy) with a `lazy(access_value, type(value))()` proxy (gold). The concrete, testable difference between these two realizations — observable only when the value is evaluated more than once — is memoization: SimpleLazyObject evaluates its setup function exactly once and caches `_wrapped`, whereas lazy() explicitly 'Results are not memoized; the function is evaluated on every access' (confirmed in django/utils/functional.py). Therefore accessing (str()-coercing) the same wrapped kwarg twice emits ONE warning on the buggy code but TWO warnings on the gold code, while both yield the captured 'my-slug' and identical messages. The visible tests (DeprecationTests.test_template_params_warning etc.) only ever evaluate each kwarg once, so this repeated-evaluation facet of the deprecation-warning contract is not pinned down there; it is independently reinventing nothing visible. Execution confirms gold PASSED (2 warnings) and buggy FAILED (1 warning, assertion len(r40)==1==2 fails).",
+    "confidence": "Medium"
+  }
+}

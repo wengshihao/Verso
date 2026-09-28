@@ -1,0 +1,128 @@
+{
+  "task_id": "django__django-15554",
+  "status": "ok",
+  "duration_seconds": 538.8916396669811,
+  "llm_calls": 41,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15554",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Declaring two FilteredRelation annotations whose relation_name resolves to the same underlying relation (e.g. both \"myrelation__nested\"/\"book\") but which carry different condition Q objects, in a single alias()/annotate() call, must keep them as two distinct SQL JOINs: each alias (e.g. relation_zone and relation_all) must get its own JOIN whose ON clause carries that alias's own condition, instead of the second being silently discarded by reusing a join that is only equal modulo the ignored filtered_relation. Consequently print(str(qs.query)) must show a join for each of the two aliases, and each alias must remain independently referenceable in later expressions (F()/filter) on the same QuerySet.",
+        "subject": "FilteredRelation query construction (django/db/models/sql/datastructures.py::Join.equals / django/db/models/sql/query.py::Query.join reuse path)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I noticed that when using multiple FilteredRelation with the same relation (myrelation__nested) it actually just generates a single SQL JOIN (if inspecting the raw SQL) and ignores the other. So in this case if I do print(str(qs.query)) I would only see a join for relation_zone. Not for relation_all.\" and the failing usage: \"relation_zone=FilteredRelation(\"myrelation__nested\", condition=Q(myrelation__nested__zone=F(\"zone\"))), relation_all=FilteredRelation(\"myrelation__nested\", condition=Q(myrelation__nested__is_all=True)), ... price_zone=F(\"relation_zone__price\") ... When(price_zone__isnull=True, then=F(\"relation_all__price\"),) ...\" Code (django/db/models/sql/datastructures.py): \"def equals(self, other):\\n        # Ignore filtered_relation in equality check.\\n        return self.identity[:-1] == other.identity[:-1]\" together with Query.join(): \"reuse_aliases = [a for a, j in self.alias_map.items() if (reuse is None or a in reuse) and j.equals(join)]\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Query.join / Query.setup_joins select an existing table alias to reuse during ordinary query building (i.e. not while compiling a FilteredRelation's own ON condition), a prior join is treated as reusable only if, in addition to matching table/parent/field, it carries the exact same filtered-relation restriction (or both carry none). A join that must be made without a filter, or with a different filter, over a relation for which a differently-restricted join already exists is therefore created on its own alias rather than merged into that existing join, so each traversal is constrained only by its own filter.",
+        "subject": "Query.join / Query.setup_joins (also via Query.build_filter / SQLCompiler), django/db/models/sql/query.py",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H8"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the SQL ON condition of a FilteredRelation is compiled (Query.build_filtered_relation_q / Query.join during that compilation), a join to a relation referenced in the condition is reused only from among the joins already present on that same FilteredRelation's path (reuse restricted to that relation's own recorded joins); it also does not reuse a prior join created under a different filtered condition. Consequently two (or more) FilteredRelation objects referencing the same underlying relation with different conditions — including nested references — resolve each reference to its own distinct filtered join and yield correct rows rather than one shared/incorrectly-filtered join.",
+        "subject": "FilteredRelation.as_sql / Query.build_filtered_relation_q / Query.build_filter / Query.join over a FilteredRelation condition, django/db/models/sql/query.py",
+        "hunk_ids": [
+          "H1",
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6",
+          "H7",
+          "H8"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis directly identifies the root cause that Join.equals ignores filtered_relation and states the required behavior that each differently-filtered join must be kept on its own alias rather than merged/discarded, which entails the general reuse rule in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis shows the symptom of distinct joins being needed for multiple/nested FilteredRelations, but it does not specify the compilation-context rule that during a FilteredRelation's ON-condition build reuse is limited to that relation's own recorded joins and cannot reuse a join made under a different filter; this fix mechanic is not pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The join-reuse mechanism lives in django/db/models/sql/datastructures.py (Join.equals, Join.filtered_relation, Join.as_sql appends the filtered ON condition) and django/db/models/sql/query.py (Query.join, Query.table_alias(create=..., filtered_relation=...), Query.setup_joins, Query.add_filtered_relation, Query.build_filtered_relation_q)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FilteredRelation class itself is in django/db/models/query_utils.py (its as_sql delegates to query.build_filtered_relation_q; __init__ records relation_name/condition; error messages about relation_name containing lookups, conditions outside the relation, nested conditions deeper than the relation)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/filtered_relation/ (tests.py + models.py). Existing FilteredRelationTests cover single filtered relations, select_related via a filtered alias, m2m, deep nested chains, aggregation with multiple distinct filtered relations, and multiple error-documented restrictions. No existing test covers two FilteredRelations sharing the same relation with different conditions; model classes such as Author, Book, Editor, Borrower/Reservation/RentalSession, Seller/Currency/ExchangeRate/BookDailySales could serve as fixtures."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/ref/models/querysets.txt, 'FilteredRelation() objects') state FilteredRelation supports only()/prefetch_related being unsupported and a GenericForeignKey-inherited-from-parent restriction; nothing documents reusing the same relation twice with different conditions."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reported example is written to be model-agnostic ('myrelation__nested', fields 'zone', 'is_all', 'price'), so the reporter supplies no runnable schema/data — extractable checkable requirements are about generated query JOIN structure and alias independence rather than exact result rows."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Root cause of the bug being fixed: buggy Query.join always matched reusable aliases using Join.equals() (identity minus filtered_relation), so joins to the same table/parent/field differing only in their filtered-relation ON restriction were treated as interchangeable and merged, conflating two FilteredRelations over one relation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Join identity semantics: Join.identity = (class, table_name, parent_alias, join_field, filtered_relation); Join.__eq__ is full identity (used by `==` in the gold join), whereas Join.equals ignores the trailing filtered_relation component."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new reuse_with_filtered_relation flag changes join-reuse only while compiling a FilteredRelation's ON condition (build_filtered_relation_q passes True); ordinary filter/querying code paths default to False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Threading: reuse_with_filtered_relation is propagated Query.build_filter -> Query.setup_joins -> Query.join via H2/H3/H4/H6/H7/H8; retained setup_joins callers (compiler._setup_joins, resolve_ref, add_fields, join_parent_model) call without the flag, i.e. ordinary behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This applies to the filter building machinery; no changes were made to FilteredRelation itself (django/db/models/query_utils.py) nor the datastructures.Join class in this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 is about a very specific scenario: two (or more) FilteredRelation objects over the SAME underlying relation with DIFFERENT conditions, including nested references, existing in ONE query, such that join-reuse restriction (reuse_with_filtered_relation) matters and incorrect merged filtering is avoided. I checked the entire oracle test set for filtered-relation behavior. The relevant oracle lives in tests/filtered_relation/ (tests.py + models.py); there is no separate hidden test file there or elsewhere covering this.\n\ntests/filtered_relation/tests.py is entirely [VISIBLE] content, so none of its assertions could serve as a witness. More importantly, none of those tests even build the R2 arrangement: test_union/intersection/difference each use ONE FilteredRelation per separate queryset over 'book' with different conditions but never co-located in a single query (no interplaying joins). FilteredRelationAggregationTests.test_aggregate uses two FilteredRelations but on DIFFERENT relations (reservation vs rental_session). FilteredRelationAnalyticalAggregationTests.test_aggregate uses two FilteredRelations (daily_sales, and rates_from reached via nested recent_sales) that also reference DIFFERENT underlying relations, not the same relation under two conditions. No test asserts two co-existing same-relation/different-condition FilteredRelations resolving to distinct, correctly-filtered joins.\n\ntests/filtered_relation/models.py is [HIDDEN] but is only an ORM schema (Author/Book/Editor/Reservation/etc.) with no assertion logic — a fixture cannot witness a behavioral requirement by itself. The task note also records that no test currently fails against the buggy program, further confirming no hidden witness for R2 exists. Since a witness must both rest on [HIDDEN] assertion content and fail on the buggy program, and the oracle provides neither, found=false is correct."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: gave up after exhausting its exploration budget without concluding (24 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (FilteredRelation.as_sql / Query.build_filtered_relation_q / Query.build_filter / Query.join over a FilteredRelation condition, django/db/models/sql/query.py) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

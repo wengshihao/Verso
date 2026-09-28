@@ -1,0 +1,125 @@
+{
+  "task_id": "django__django-15732",
+  "status": "ok",
+  "duration_seconds": 855.3574835000327,
+  "llm_calls": 42,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15732",
+    "s_vis": [
+      {
+        "id": "U170",
+        "statement": "Dropping a unique_together (e.g. via an AlterUniqueTogether migration to an empty/new unique_together) whose tuple of fields coincides exactly with the model's primary key columns must succeed without raising a ValueError such as the 'Found wrong number (2) of constraints for ...' error that currently stems from _constraint_names(...unique=True...) matching both the PRIMARY KEY constraint and the unique constraint on that column.",
+        "subject": "django.db.backends.base.schema.BaseDatabaseSchemaEditor.alter_unique_together / _delete_composed_index",
+        "hunk_ids": [],
+        "cited_from": "'I have an erroneous unique_together constraint on a model's primary key (unique_together = (('id',),)) that cannot be dropped by a migration. Apparently the migration tries to find all unique constraints on the column and expects there to be only one, but I've got two — the primary key and the unique_together constraint: Indexes: \"foo_bar_pkey\" PRIMARY KEY, btree (id) / \"foo_bar_id_1c3b3088c74c3b17_uniq\" UNIQUE CONSTRAINT, btree (id)'; and in base/schema.py _delete_composed_index: 'constraint_names = self._constraint_names(model, columns, exclude=..., **constraint_kwargs) ... if len(constraint_names) != 1: raise ValueError(\"Found wrong number (%s) of constraints for %s(%s)\" ...)'"
+      },
+      {
+        "id": "U171",
+        "statement": "When a removed unique_together is on a single field whose column also carries another unique constraint (in the reported case the primary key constraint), the schema editor must drop only the non-PK unique constraint belonging to that removed unique_together (the '..._uniq' UNIQUE CONSTRAINT) and must not mistake the actual primary key constraint ('..._pkey') for it nor drop the primary key.",
+        "subject": "django.db.backends.base.schema.BaseDatabaseSchemaEditor._delete_composed_index / alter_unique_together",
+        "hunk_ids": [],
+        "cited_from": "'the primary key and the unique_together constraint: Indexes: \"foo_bar_pkey\" PRIMARY KEY, btree (id) \"foo_bar_id_1c3b3088c74c3b17_uniq\" UNIQUE CONSTRAINT, btree (id)' (issue report); mechanism grounded in _constraint_names / _delete_composed_index in base/schema.py where the primary key's name is one of the candidates matched by _constraint_names(model, columns, unique=True)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the schema editor removes a unique_together (deleted set in alter_unique_together processed through _delete_composed_index), it locates the database constraint to drop by filtering to constraints that are unique and are NOT primary keys. As a result, for a model whose removed unique_together field set is also (or includes) the primary key on a backend whose introspection reports that primary-key constraint as unique=True, the removal no longer counts the primary key as one of the matching unique constraints and therefore no longer raises \"Found wrong number (...)\"; it drops only the actual unique constraint and leaves the primary key intact.",
+        "subject": "BaseDatabaseSchemaEditor.alter_unique_together/_delete_composed_index removal of unique_together",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When _delete_composed_index is invoked to remove a unique constraint (constraint_kwargs has unique=True) and, on a backend whose allows_multiple_constraints_on_same_fields is True, introspection reports more than one matching unique constraint on the same field set, the removal does not immediately raise \"Found wrong number (...)\": if one of the matched constraint names equals the auto-generated default name for that unique_together (the name produced for the table/columns with the '_uniq' suffix, computed unquoted), that default-named constraint is selected and dropped; the operation only raises the \"Found wrong number\" ValueError when the constraint set cannot be reduced to exactly the default-named one.",
+        "subject": "BaseDatabaseSchemaEditor._delete_composed_index unique-constraint disambiguation during removal",
+        "hunk_ids": [
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "U170",
+          "U171"
+        ],
+        "rationale": "U170 and U171 pin down the required outcome — dropping a unique_together that coincides with the model's primary key must not raise 'Found wrong number' and must drop only the non-PK '_uniq' constraint while preserving the '_pkey'. However, R1 ascribes a specific implementation mechanism (filtering the located constraints to those that are unique and NOT primary keys), and the visible evidence describes only the desired result and the cause (PK being counted as a matching unique constraint), not that particular fix choice, which competes with alternative mechanisms such as name-based selection described in R2."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "U170",
+          "U171"
+        ],
+        "rationale": "The visible evidence supports the observable outcome — selecting/dropping the auto-generated '_uniq' UNIQUE CONSTRAINT and not the pkey, and avoiding a premature 'Found wrong number' error. But R2's specific mechanism (conditioning on a backend whose allows_multiple_constraints_on_same_fields is True, comparing matched constraint names against the computed default '_uniq' name, and only raising when the set cannot be reduced to that default-named constraint) is not spelled out anywhere in the S_vis text and cannot be distinguished from alternative mechanisms, so entailment of the exact described behavior is not established."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r1_unique_together_removal_excludes_primary_key",
+      "test_source": "from types import SimpleNamespace\nfrom unittest import mock\n\nfrom django.conf import settings\nfrom django.db import connections\nfrom django.db.backends.base.schema import BaseDatabaseSchemaEditor\n\n\ndef _configure():\n    if not settings.configured:\n        settings.configure(\n            DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n            DATABASES={\n                \"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}\n            },\n            INSTALLED_APPS=[\"django.contrib.contenttypes\", \"django.contrib.auth\"],\n            SECRET_KEY=\"x\",\n            USE_TZ=False,\n        )\n\n\ndef test_r1_unique_together_removal_excludes_primary_key():\n    _configure()\n    conn = connections[\"default\"]\n    meta = SimpleNamespace(\n        db_table=\"wtest_pkunique\",\n        unique_together=((\"code\",),),\n        constraints=[],\n        indexes=[],\n    )\n    meta.get_field = lambda name: SimpleNamespace(column=name)\n    model = SimpleNamespace(_meta=meta)\n\n    # Postgres-like introspection: the table has both a real UNIQUE constraint\n    # (backing the unique_together) and a PRIMARY KEY on the same single column,\n    # and the PK constraint is introspected with unique=True.\n    constraints = {\n        \"wtest_pkunique_pkey\": {\n            \"columns\": [\"code\"],\n            \"primary_key\": True,\n            \"unique\": True,\n            \"foreign_key\": None,\n            \"check\": False,\n            \"index\": False,\n        },\n        \"wtest_pkunique_code_uniq\": {\n            \"columns\": [\"code\"],\n            \"primary_key\": False,\n            \"unique\": True,\n            \"foreign_key\": None,\n            \"check\": False,\n            \"index\": False,\n        },\n    }\n\n    with mock.patch.object(\n        conn.introspection, \"get_constraints\", return_value=constraints\n    ):\n        editor = BaseDatabaseSchemaEditor(conn, collect_sql=True, atomic=False)\n        editor.alter_unique_together(model, ((\"code\",),), ())\n\n    # Removing the unique_together must drop only the real unique constraint and\n    # must NOT raise \"Found wrong number (...)\" by counting the PK (reported\n    # unique=True) as a second matching constraint.\n    assert editor.collected_sql, editor.collected_sql\n",
+      "gold_result": "PASSED: the fixed code (alter_unique_together passes primary_key=False into _delete_composed_index) filters out the PK, sees exactly one matching real unique constraint (len==1), and proceeds to record the DROP with no exception.",
+      "buggy_result": "FAILED: ValueError: Found wrong number (2) of constraints for wtest_pkunique(code) -- buggy code filtered only on unique=True, so the PK (introspected unique=True and primary_key=True) was counted as a second matching constraint, exactly the regression R1 fixes.",
+      "explanation": "Requirement R1 (fix localized to the gold alter_unique_together deleted-uniques branch, now passing {\"unique\": True, \"primary_key\": False} instead of {\"unique\": True} into _delete_composed_index) states that when removing a unique_together whose field set equals the primary key, on a backend whose introspection reports the PK constraint as unique=True, the PK must NOT be counted among the matching unique constraints; the removal must instead proceed and drop only the actual UNIQUE constraint (from unique_together), keeping the PK, without raising \"Found wrong number (...)\". The witness drives the real public path editor.alter_unique_together(old=(('code',),), new=()) -> _delete_composed_index -> _constraint_names on a BaseDatabaseSchemaEditor bound to the default sqlite connection, with connection.introspection.get_constraints mocked to the exact postgres-style introspection R1 requires: column 'code' has a PK constraint with primary_key=True and unique=True, plus a distinct real UNIQUE constraint (primary_key=False, unique=True) created by unique_together. The model is a lightweight stub exposing only what _delete_composed_index consumes (db_table, constraints, indexes, get_field). Collected-SQL mode keeps execution in-process. Confirmed by actually running the byte-identical source against both revisions: gold PASSED (the 'primary_key=False' kwarg filters the PK out -> exactly one match -> DROP proceeds without exception), buggy FAILED with ValueError: Found wrong number (2) of constraints for wtest_pkunique(code) (old code filtered only on unique=True and counted the introspected-as-unique PK). This scenario is not derivable from visible content: existing schema/migrations tests remove ordinary non-PK unique_together tuples on sqlite (whose introspection already reports PK as unique=False), so no visible material pins down the postgres PK-as-unique=True collision behavior that R1 fixes."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix target is generic code in django/db/backends/base/schema.py: alter_unique_together -> _delete_composed_index -> _constraint_names -> connection.introspection.get_constraints. Removal of the unique_together is done in _delete_composed_index with constraint_kwargs={'unique': True} and then raises if len(constraint_names) != 1."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PostgreSQL introspection (django/db/backends/postgresql/introspection.py get_constraints) reports primary keys with both unique=True and primary_key=True (kind=='p'), so a PK on the same column as a removed single-field unique_together yields two unique=True candidates and hence the 'Found wrong number (2)...' ValueError described in the report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The removal flow invoked by a migration is AlterUniqueTogether (django/db/migrations/operations/models.py -> AlterTogetherOptionOperation.database_forwards) which calls editor.alter_unique_together(new_model, old_meta.unique_together, new_meta.unique_together)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Foreign-key-style 'FOREIGN KEY' issues don't apply; the report is strictly about the PK + unique constraint collision reported above."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing repo tests relevant to unique_together removal (all currently passing) live at tests/schema/tests.py (e.g. test_unique_together, test_unique_together_with_fk, test_unique_together_with_fk_with_existing_index, test_remove_unique_together_does_not_remove_meta_constraints) and tests/migrations/test_operations.py (e.g. test_alter_unique_together, test_alter_unique_together_remove). None of them yet exercises a unique_together whose sole field is also the primary key."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new helper _unique_constraint_name(table, columns, quote=True) only wraps _create_index_name into an IndexName with the '_uniq' suffix, quoting when quote=True and leaving it unquoted when quote=False. _create_unique_sql now builds its auto-generated name through this helper (H2) with quote=True, yielding byte-for-byte the same constraint-name strings as before the refactor, so no externally visible naming change is introduced by the factoring."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "alter_index_together calls _delete_composed_index with constraint_kwargs={'index': True, 'unique': False}, so the new H1 default-name disambiguation branch (guarded on constraint_kwargs.get('unique') is True) does not apply to index_together removal."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "allows_multiple_constraints_on_same_fields is inherited as True from BaseDatabaseFeatures by the core backends (postgres, sqlite, mysql in the files inspected); no backend overrides it to False, meaning the H1 branch is enabled across all examined backends."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "alter_field's unique-removal path (separate from unique_together) already passed primary_key=False when searching; H0 extends that primary-key exclusion to the unique_together removal path."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle test suite for any test that genuinely exercises requirement R1 — i.e. removing a unique_together via alter_unique_together/_delete_composed_index where the removed field set is (or includes) the primary key, on a backend whose introspection reports the PK constraint as unique=True, and asserts the \"Found wrong number\" error is NOT raised (only the real unique constraint is dropped, PK survives). I examined the natural homes for such a regression test: tests/schema/tests.py (test_unique_together, test_unique_together_with_fk, test_unique_together_with_fk_with_existing_index, test_remove_unique_together_does_not_remove_meta_constraints, etc.), tests/migrations/test_operations.py (test_alter_unique_together, test_alter_unique_together_remove, plus the set_up_test_model-based unique_together cases), tests/migrations/test_operations AlterIndexTogether unique-together interplay, and backend/base schema/operations test files. None of them removes a unique_together on a column that is also the model's primary key; those tests operate on ordinary non-PK field tuples (e.g. year+slug, name+birthday, pink+weight). No currently-failing test is recorded against the buggy program, and my reading of every unique_together-removal test in the oracle corroborates that none exists that fails on the buggy version's 'Found wrong number (...)' path and passes on the fixed one. Furthermore the files that would hold such a test (schema/tests.py, migrations/test_operations.py) are labeled [VISIBLE], so even a matching assertion there could not serve as a witness under the content-visibility rule. I found no [HIDDEN] oracle assertion exercising this exact PK-introspected-as-unique removal scenario, so no genuine witness exists and I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (BaseDatabaseSchemaEditor.alter_unique_together/_delete_composed_index removal of unique_together): When the schema editor removes a unique_together (deleted set in alter_unique_together processed through _delete_composed_index), it locates the database constraint to drop by filtering to constraints that are unique and are NOT primary keys. As a result, for a model whose removed unique_together field set is also (or includes) the primary key on a backend whose introspection reports that primary-key constraint as unique=True, the removal no longer counts the primary key as one of the matching unique constraints and therefore no longer raises \"Found wrong number (...)\"; it drops only the actual unique constraint and leaves the primary key intact. — not entailed by S_vis (U170 and U171 pin down the required outcome — dropping a unique_together that coincides with the model's primary key must not raise 'Found wrong number' and must drop only the non-PK '_uniq' constraint while preserving the '_pkey'. However, R1 ascribes a specific implementation mechanism (filtering the located constraints to those that are unique and NOT primary keys), and the visible evidence describes only the desired result and the cause (PK being counted as a matching unique constraint), not that particular fix choice, which competes with alternative mechanisms such as name-based selection described in R2.); confirmed by a synthesized witness: Requirement R1 (fix localized to the gold alter_unique_together deleted-uniques branch, now passing {\"unique\": True, \"primary_key\": False} instead of {\"unique\": True} into _delete_composed_index) states that when removing a unique_together whose field set equals the primary key, on a backend whose introspection reports the PK constraint as unique=True, the PK must NOT be counted among the matching unique constraints; the removal must instead proceed and drop only the actual UNIQUE constraint (from unique_together), keeping the PK, without raising \"Found wrong number (...)\". The witness drives the real public path editor.alter_unique_together(old=(('code',),), new=()) -> _delete_composed_index -> _constraint_names on a BaseDatabaseSchemaEditor bound to the default sqlite connection, with connection.introspection.get_constraints mocked to the exact postgres-style introspection R1 requires: column 'code' has a PK constraint with primary_key=True and unique=True, plus a distinct real UNIQUE constraint (primary_key=False, unique=True) created by unique_together. The model is a lightweight stub exposing only what _delete_composed_index consumes (db_table, constraints, indexes, get_field). Collected-SQL mode keeps execution in-process. Confirmed by actually running the byte-identical source against both revisions: gold PASSED (the 'primary_key=False' kwarg filters the PK out -> exactly one match -> DROP proceeds without exception), buggy FAILED with ValueError: Found wrong number (2) of constraints for wtest_pkunique(code) (old code filtered only on unique=True and counted the introspected-as-unique PK). This scenario is not derivable from visible content: existing schema/migrations tests remove ordinary non-PK unique_together tuples on sqlite (whose introspection already reports PK as unique=False), so no visible material pins down the postgres PK-as-unique=True collision behavior that R1 fixes.",
+    "confidence": "Medium"
+  }
+}

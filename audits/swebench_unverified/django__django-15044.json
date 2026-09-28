@@ -1,0 +1,126 @@
+{
+  "task_id": "django__django-15044",
+  "status": "ok",
+  "duration_seconds": 184.21514045808,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15044",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "UpdateCacheMiddleware, FetchFromCacheMiddleware, and CacheMiddleware (both the two-part per-site middleware forms and the per-view cache_page decorator form) must operate thread-safely: when requests for a cached view are served concurrently on separate threads, request-phase (process_request) and response-phase (process_response) cache operations must not raise backend connection errors caused by the middleware routing cache access for the executing thread through a single cache-backend instance captured earlier on a different (e.g. constructing) thread.",
+        "subject": "CacheMiddleware / FetchFromCacheMiddleware (django.middleware.cache)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"CacheMiddleware and FetchFromCacheMiddleware are not thread safe. ... CacheMiddleware persist self.cache = caches[cache_alias] on startup and it is not thread safe.\"; repro traceback ends: \"pylibmc.ConnectionError: error 3 from memcached_get(:1:views.decorators.cache.cache_): (0x7f290400bd60) FAILURE, poll() returned a value that was not dealt with, host: localhost:11211\"; source django/middleware/cache.py __init__ bodies: \"self.cache_alias = settings.CACHE_MIDDLEWARE_ALIAS\" / \"self.cache = caches[self.cache_alias]\" in both UpdateCacheMiddleware and FetchFromCacheMiddleware, and in CacheMiddleware \"self.cache_alias = cache_alias\" / \"self.cache = caches[self.cache_alias]\"; docs/topics/cache.txt: \"To provide thread-safety, a different instance of the cache backend will be returned for each thread.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Resolving the same cache alias from different threads must yield distinct backend instances (the caches handler is thread-local), while the same alias from the same thread yields the same instance; consequently any cache access done by the page-cache middleware must be resolved with caches[self.cache_alias] on the thread that performs the request-phase/response-phase work.",
+        "subject": "django.core.cache.CacheHandler (caches[alias])",
+        "hunk_ids": [],
+        "cited_from": "tests/cache/tests.py CacheHandlerTest.test_per_thread: \"Requesting the same alias from separate threads should yield separate instances.\" / \"self.assertIsNot(c[0], c[1])\"; CacheHandlerTest.test_same_instance: \"Attempting to retrieve the same alias should yield the same instance.\" / \"self.assertIs(cache1, cache2)\"; docs/topics/cache.txt: \"Repeated requests for the same alias in the same thread will return the same object. ... To provide thread-safety, a different instance of the cache backend will be returned for each thread.\""
+      },
+      {
+        "id": "R3",
+        "statement": "When a CacheMiddleware instance is constructed (as per-site middleware or via cache_page(cache_alias=..., key_prefix=..., timeout=...)), its cache_timeout, key_prefix, cache_alias, and cache attributes must reflect the given/setting values, with cache equal to caches[cache_alias] for the constructing context; and a subsequently executed cached view must still write and read page entries so that a second request for the same page hits the cache (returns the first response's content) rather than rebuilding, and requests under a different key_prefix/cache_alias get separate entries.",
+        "subject": "CacheMiddleware constructor / cache_page decorator semantics",
+        "hunk_ids": [],
+        "cited_from": "tests/cache/tests.py CacheMiddlewareTest.test_constructor: \"self.assertEqual(middleware.cache, self.other_cache)\", \"self.assertEqual(as_view_decorator_with_custom.cache_alias, 'other')\", \"self.assertEqual(as_view_decorator_with_custom.cache, self.other_cache)\"; test_middleware: \"result = middleware.process_request(request) ... self.assertIsNotNone(result); self.assertEqual(result.content, b'Hello World 1')\"; test_view_decorator: \"# Request the view once ... response = default_view(request, '1') ... # Request again -- hit the cache ... response.content == b'Hello World 1'\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_R1",
+        "statement": "Accessing 'cache' on an UpdateCacheMiddleware instance (or on a CacheMiddleware instance, which inherits this behavior once CacheMiddleware.__init__ stops overwriting the attribute) resolves the backend from the cache handler using the instance's current cache_alias at the time of each access, rather than capturing a single backend handle at construction time. Observable consequences: reassigning instance.cache_alias after construction changes what instance.cache subsequently returns (to the backend registered under that alias), and, because the Django CacheHandler is thread-local, a cache operation performed on a different thread than the one that constructed the middleware resolves to that thread's own cache backend rather than a handle bound to the constructing thread.",
+        "subject": "UpdateCacheMiddleware.cache / CacheMiddleware.cache",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_R2",
+        "statement": "Accessing 'cache' on a FetchFromCacheMiddleware instance resolves the backend from the cache handler using the instance's current cache_alias at the time of each access, rather than capturing a single backend handle at construction time. Observable consequences: reassigning instance.cache_alias after construction changes what instance.cache subsequently returns (to the backend registered under that alias), and, because the Django CacheHandler is thread-local, a cache operation performed on a different thread than the one that constructed the middleware resolves to that thread's own cache backend rather than a handle bound to the constructing thread.",
+        "subject": "FetchFromCacheMiddleware.cache",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R1's cited issue states the bug is that `self.cache = caches[cache_alias]` is persisted at construction in UpdateCacheMiddleware/CacheMiddleware (thread-unsafe), and R2 requires any page-cache middleware cache access to be resolved via `caches[self.cache_alias]` on the thread doing the request/response work. That pins down resolution at each access on the executing thread using the current cache_alias, which is exactly the dynamic backend access and its observable consequences S_IMPL_R1 asserts."
+      },
+      {
+        "requirement_id": "S_IMPL_R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R1's citation likewise names FetchFromCacheMiddleware persisting `self.cache = caches[self.cache_alias]` in __init__ as thread-unsafe, and R2 requires cache accesses to be resolved with `caches[self.cache_alias]` on the performing thread. This entails per-access resolution on the current thread/alias (no construction-time captured handle), matching S_IMPL_R2's described behavior and observable consequences."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The per-view cache is implemented by django/views/decorators/cache.py cache_page(...) -> decorator_from_middleware_with_args(CacheMiddleware) -> make_middleware_decorator, which constructs ONE CacheMiddleware instance per decorated view (at decoration time) and then reuses that instance's process_request/process_response for every request (django/utils/decorators.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/core/cache/__init__.py CacheHandler extends django/utils/connection.py BaseConnectionHandler, whose self._connections is an asgiref Local, so caches[alias] is thread-local; hence each thread gets its own backend instance (CacheHandlerTest.test_per_thread asserts assertIsNot across threads)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "UpdateCacheMiddleware.__init__ and FetchFromCacheMiddleware.__init__ both do self.cache = caches[self.cache_alias] at construction; CacheMiddleware.__init__ (which subclasses both) may additionally reassign self.cache / self.cache_alias from kwargs. MRO: CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware), so super().__init__ is UpdateCacheMiddleware's, then cache_alias kwargs are applied."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "get_cache_key/learn_cache_key in django/utils/cache.py default to caches[settings.CACHE_MIDDLEWARE_ALIAS] only when no cache arg is passed; the cache middleware passes cache=self.cache explicitly everywhere, which is the cross-thread-shared handle that the fix must address."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for this subsystem live in tests/cache/tests.py (CacheHandlerTest, CacheMiddlewareTest, CacheUtils, PrefixedCacheUtils, CacheI18nTest, TestWithTemplateResponse); cache backends used are normally locmem in the middleware tests, so a threaded runtime backend (e.g. pylibmc) is needed to observe the race."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No dedicated failing regression test for the concurrency bug is present in tests/cache/tests.py; the thread-safety requirement comes from the issue description and from the documented/IPython-observable thread-local CacheHandler contract (R2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The three cache middleware classes are related by inheritance: CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware); it inherits UpdateCacheMiddleware's 'cache' property via MRO, and only H2's removal of the 'self.cache = ...' reassignment (which previously shadowed the property with a captured handle) matters for it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "CacheHandler stores per-alias backends in a thread-local connection registry, so evaluating caches[alias] at access time (rather than construction) is what gives thread-confined backend resolution."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "All three 'cache' accesses elsewhere in the module (e.g. in UpdateCacheMiddleware.process_response and FetchFromCacheMiddleware.process_request, and in get_cache_key/learn_cache_key calls passing cache=self.cache) operate through the property and are unchanged."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

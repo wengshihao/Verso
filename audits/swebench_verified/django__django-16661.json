@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-16661",
+  "status": "ok",
+  "duration_seconds": 906.2839077500394,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16661",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a ModelAdmin is defined for a model (Waiter) that has a ForeignKey to another model (Restaurant) whose primary key is itself a OneToOneField to a third model (Place, `place = models.OneToOneField(Place, models.CASCADE, primary_key=True)`), and Restaurant's PK-relation target Place has a ForeignKey `country` to yet another model (Country) reachable as part of a `list_filter` entry, then `lookup_allowed('restaurant__place__country', 'test_value')` must return True rather than treating 'place' as a concrete-inheritance parent of 'restaurant' and disallowing the (correctly reachable) relational lookup.",
+        "subject": "ModelAdmin.lookup_allowed",
+        "hunk_ids": [],
+        "cited_from": "def test_lookup_allowed_foreign_primary(self):\n\tclass Country(models.Model):\n\t\tname = models.CharField(max_length=256)\n\tclass Place(models.Model):\n\t\tcountry = models.ForeignKey(Country, models.CASCADE)\n\tclass Restaurant(models.Model):\n\t\tplace = models.OneToOneField(Place, models.CASCADE, primary_key=True)\n\tclass Waiter(models.Model):\n\t\trestaurant = models.ForeignKey(Restaurant, models.CASCADE)\n\tclass WaiterAdmin(ModelAdmin):\n\t\tlist_filter = [\n\t\t\t'restaurant__place__country',\n\t\t]\n\tma = WaiterAdmin(Waiter, self.site)\n\tself.assertIs(ma.lookup_allowed('restaurant__place__country', 'test_value'), True)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In BaseModelAdmin.lookup_allowed, a multipart relational lookup is validated against list_filter using a resolved join path in which each genuine relation hop is retained as its own part; when the resolved field on the traversed model is a OneToOneField that is used as that model's primary key (a genuine relation to another model, not a concrete-inheritance/direct parent pointer or the model's auto field), that hop is appended to the resolved relation parts instead of being dropped, so a list_filter key naming that relation is matched and lookup_allowed returns True for a lookup that filters through that relation.",
+        "subject": "django.contrib.admin.options.BaseModelAdmin.lookup_allowed",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In BaseModelAdmin.lookup_allowed, a traversed field whose round-trip resolves back to the current model's own primary key (i.e. the hop is on the model's auto_field, or names a to_field of the previous relation while the model has an auto field) is not treated as an independent relation part, and neither is a look at a concrete-inheritance parent link; such hops remain eligible to be dropped so that filtering through redundant/directly-reachable target values keeps the prior allow/disallow verdict (in particular a two-part relational filter whose key equals a list_filter entry still resolves to True for the previously-supported relation shapes).",
+        "subject": "django.contrib.admin.options.BaseModelAdmin.lookup_allowed",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis reproduces exactly this behavior: for a multipart list_filter key traversing an OneToOneField used as the traversed model's PK (genuine relation, not concrete-inheritance), lookup_allowed returns True and the relation key is matched. The single test instance pins the described append-not-drop behavior for that relation shape."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only demonstrates the genuine OneToOneField-as-PK relation returning True; it says nothing about classifying auto_field round-trips, to_field-of-previous-relation hops, or the concrete-inheritance parent link as droppable/redundant, nor about preserving prior verdicts for redundant shapes. R2's internal pruning logic is entirely unaddressed by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I exhaustively probed BaseModelAdmin.lookup_allowed across many relational shapes running each candidate against BOTH gold and buggy, mechanically confirming every reported result.\n\nI found one genuine discriminator (gold True, buggy False): an admin ModelAdmin whose ForeignKey references a target model whose own primary key is itself a OneToOneField relation (Restaurant with `place = OneToOneField(Place, primary_key=True)`; admin on Trait with FK `restaurant`, list_filter=[\"restaurant__place__name\"], lookup key equal to that entry). Empirically gold returns True while buggy returns False because the old `field not in prev_field.path_infos[-1].target_fields` test wrongly drops the OneToOne-pk hop, while the fixed code keeps it as an independent relation part. This candidate was submitted and REJECTED by the grader on the explicit grounds that its assertion is already established by visible material (the Task-Notebook / R2 narrative in this same problem, which describes exactly this \"join path 'place' skipped / OneToOne-as-primary-key hop conflated\" behavior).\n\nI then attempted to find a discriminator for the OTHER (auto_field round-trip and concrete-inheritance parent-link) branches that R2 mentions and that the visible notes say is a distinct, not-yet-covered case, using: concrete multi-table parent-link models with the parent owning an auto field, self-referential ForeignKeys, to_field references while the model owns an auto id, deeper 3- and 4-hop chains, and reverse relations. In every one of these shapes gold and buggy returned IDENTICAL lookup_allowed booleans (verified cell-by-cell by dumping full gold and buggy result matrices under the same inputs). That is consistent with the earlier Oracle Search finding: the differentiating observable effect of this patch in this repository only arises in the visible-documented OneToOne-pk case, not on any hidden auto_field/concrete-parent shape.\n\nBecause a Witness must be a request/assertion NOT already pinned by visible material, and because no behavior distinct from the visible OneToOne-pk case actually differs between the two revisions, I found no acceptable synthesized Witness. The submitted criterion is not satisfiable at this revision with genuinely-hidden information."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in django/contrib/admin/options.py ModelAdmin.lookup_allowed (BaseModelAdmin). Its relation_parts-building loop splits the lookup on LOOKUP_SEP and follows model._meta.get_field(part)/field.path_infos; when a OneToOneField is the primary key it is apparently conflated with a concrete-inheritance parent link and dropped from relation_parts, so the join path ('place') is skipped and the resulting key (restaurant__country) isn't in list_filter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing sibling test in tests/modeladmin/tests.py is test_lookup_allowed_onetoone, which asserts similar relational filter allowances for reverse OneToOneField and FK+OneToOne combos under ModelAdmin.lookup_allowed; the bug scenario here (relation-as-primary-key) is a distinct case not covered there yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the admin behavior under test live in tests/modeladmin/tests.py (class ModelAdminTests, decorated with @isolate_apps('modeladmin') as the issue's proposed test also is)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report's exact expected outcome is the assertion quoted in R1; the description also states the same code/test passes on Django 1.8, framing this as a regression in lookup-allowed reasoning."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch edits only django/contrib/admin/options.py, inside BaseModelAdmin.lookup_allowed: the guard that decides whether the currently-traversed `part` is appended to relation_parts. It replaces the old membership test `field not in prev_field.path_infos[-1].target_fields` with a three-part check against `model._meta.parents.values()`, `model._meta.auto_field`, and (when an auto_field exists) `part not in getattr(prev_field,'to_fields',[])`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Within this loop `model` = the destination model that the previous hop's relation leads into (advanced at the bottom of each iteration), so the checks are evaluated against the options of the model the current part was resolved from; only the append-condition differs between the two revisions (the model-advancing, path_infos/target check, and break logic are unchanged)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because only the retain/drop decision changed, every observable effect of the patch is channeled through the trailing `len(relation_parts)<=1 -> True` shortcut and the `{join(relation_parts), join(relation_parts+[part])} ∩ valid_lookups` test at the end of lookup_allowed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible regression is that a model whose relationship to another table is expressed by a OneToOneField used as its primary key had that hop misclassified as a concrete-inheritance parent/primary-key pointer and dropped, so the full join path no longer matched list_filter. The concrete model/field names backing this case and its exact expected assertion are not present in this repository revision (the modeladmin test file shows only the pre-existing test_lookup_allowed_onetoone with a reverse-OneToOne and FK+OneToOne case, not the relation-as-primary-key case)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: No oracle test genuinely witnesses R2. The only tests exercising lookup_allowed are test_lookup_allowed_onetoone / test_lookup_allowed_allows_nonexistent_lookup in tests/modeladmin/tests.py, which is labeled [VISIBLE] (its content is byte-for-byte what the repair system already saw), so none of its assertions can underpin a witness. Moreover, content-wise that sibling test only covers a reverse-OneToOne field and a ForeignKey-to-field hop (employee__employeeinfo, employee__department__code), i.e. the previously-supported relation shapes—not R2's distinct scenarios (a hop that round-trips to the current model's own primary key via its auto_field, a to_field of the previous relation when an auto field exists, or a concrete-inheritance parent-link hop being misclassified/dropped as an independent relation part). I also checked tests/modeladmin/test_actions.py, test_checks.py, tests/admin_changelist/tests.py, and tests/admin_filters/tests.py (all [VISIBLE], none asserting the R2 classification semantics), and tests/admin_views/models.py ([HIDDEN] but a model-definitions file with no test assertions and no relevant relationship). Finally the task records zero tests currently failing against the buggy program—the necessary precondition for any witness—confirming the oracle at this revision does not already enforce R2. Accordingly found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: I exhaustively probed BaseModelAdmin.lookup_allowed across many relational shapes running each candidate against BOTH gold and buggy, mechanically confirming every reported result.\n\nI found one genuine discriminator (gold True, buggy False): an admin ModelAdmin whose ForeignKey references a target model whose own primary key is itself a OneToOneField relation (Restaurant with `place = OneToOneField(Place, primary_key=True)`; admin on Trait with FK `restaurant`, list_filter=[\"restaurant__place__name\"], lookup key equal to that entry). Empirically gold returns True while buggy returns False because the old `field not in prev_field.path_infos[-1].target_fields` test wrongly drops the OneToOne-pk hop, while the fixed code keeps it as an independent relation part. This candidate was submitted and REJECTED by the grader on the explicit grounds that its assertion is already established by visible material (the Task-Notebook / R2 narrative in this same problem, which describes exactly this \"join path 'place' skipped / OneToOne-as-primary-key hop conflated\" behavior).\n\nI then attempted to find a discriminator for the OTHER (auto_field round-trip and concrete-inheritance parent-link) branches that R2 mentions and that the visible notes say is a distinct, not-yet-covered case, using: concrete multi-table parent-link models with the parent owning an auto field, self-referential ForeignKeys, to_field references while the model owns an auto id, deeper 3- and 4-hop chains, and reverse relations. In every one of these shapes gold and buggy returned IDENTICAL lookup_allowed booleans (verified cell-by-cell by dumping full gold and buggy result matrices under the same inputs). That is consistent with the earlier Oracle Search finding: the differentiating observable effect of this patch in this repository only arises in the visible-documented OneToOne-pk case, not on any hidden auto_field/concrete-parent shape.\n\nBecause a Witness must be a request/assertion NOT already pinned by visible material, and because no behavior distinct from the visible OneToOne-pk case actually differs between the two revisions, I found no acceptable synthesized Witness. The submitted criterion is not satisfiable at this revision with genuinely-hidden information."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (django.contrib.admin.options.BaseModelAdmin.lookup_allowed) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I exhaustively probed BaseModelAdmin.lookup_allowed across many relational shapes running each candidate against BOTH gold and buggy, mechanically confirming every reported result.\n\nI found one genuine discriminator (gold True, buggy False): an admin ModelAdmin whose ForeignKey references a target model whose own primary key is itself a OneToOneField relation (Restaurant with `place = OneToOneField(Place, primary_key=True)`; admin on Trait with FK `restaurant`, list_filter=[\"restaurant__place__name\"], lookup key equal to that entry). Empirically gold returns True while buggy returns False because the old `field not in prev_field.path_infos[-1].target_fields` test wrongly drops the OneToOne-pk hop, while the fixed code keeps it as an independent relation part. This candidate was submitted and REJECTED by the grader on the explicit grounds that its assertion is already established by visible material (the Task-Notebook / R2 narrative in this same problem, which describes exactly this \"join path 'place' skipped / OneToOne-as-primary-key hop conflated\" behavior).\n\nI then attempted to find a discriminator for the OTHER (auto_field round-trip and concrete-inheritance parent-link) branches that R2 mentions and that the visible notes say is a distinct, not-yet-covered case, using: concrete multi-table parent-link models with the parent owning an auto field, self-referential ForeignKeys, to_field references while the model owns an auto id, deeper 3- and 4-hop chains, and reverse relations. In every one of these shapes gold and buggy returned IDENTICAL lookup_allowed booleans (verified cell-by-cell by dumping full gold and buggy result matrices under the same inputs). That is consistent with the earlier Oracle Search finding: the differentiating observable effect of this patch in this repository only arises in the visible-documented OneToOne-pk case, not on any hidden auto_field/concrete-parent shape.\n\nBecause a Witness must be a request/assertion NOT already pinned by visible material, and because no behavior distinct from the visible OneToOne-pk case actually differs between the two revisions, I found no acceptable synthesized Witness. The submitted criterion is not satisfiable at this revision with genuinely-hidden information.",
+    "confidence": "Medium"
+  }
+}

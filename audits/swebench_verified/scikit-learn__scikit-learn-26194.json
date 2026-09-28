@@ -1,0 +1,113 @@
+{
+  "task_id": "scikit-learn__scikit-learn-26194",
+  "status": "ok",
+  "duration_seconds": 219.81816087500192,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-26194",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When roc_curve is called with y_score values that are probability estimates (i.e. all scores lie within [0, 1]), the returned thresholds array must not contain any value greater than 1.",
+        "subject": "sklearn.metrics._ranking.roc_curve (thresholds return value)",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"something was odd with `roc_curve` that returns a threshold greater than 1... I am not sure what would be the best fix here. A potential workaround would be to check `thresholds.max() <= 1` in which case we should clip `thresholds` to not be above 1.\" and proposed non-regression test: \"def test_roc_curve_with_probablity_estimates():\n    rng = np.random.RandomState(42)\n    y_true = rng.randint(0, 2, size=10)\n    y_score = rng.rand(10)\n    _, _, thresholds = roc_curve(y_true, y_score)\n    assert np.logical_or(thresholds <= 1, thresholds >= 0).all()\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "roc_curve returns a `thresholds` array whose first element (the extra point added so the curve starts at fpr=0, tpr=0) is exactly `np.inf`, regardless of the values or magnitude of `y_score` (e.g. even when all scores are probabilities within [0,1], thresholds[0] is inf rather than max(y_score)+1, which was previously > 1 for fraction-scale scores).",
+        "subject": "sklearn.metrics.roc_curve (returned thresholds array)",
+        "hunk_ids": [
+          "H0",
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "For the roc_curve example with y=[1,1,2,2], scores=[0.1,0.4,0.35,0.8], pos_label=2, the returned thresholds equal [inf, 0.8, 0.4, 0.35, 0.1] (first element inf instead of 1.8), keeping fpr/tpr unchanged at [0,0,0.5,0.5,1] and [0,0.5,0.5,1,1].",
+        "subject": "sklearn.metrics.roc_curve (docstring/doctest example output)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 only pins that probability-valued thresholds must not exceed 1, and its cited evidence describes the fix as clipping thresholds when max<=1. It never commits to an np.inf extra first point nor to behavior 'regardless of y_score magnitude', so it does not entail S1's inf-mechanism claim."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's visible evidence (issue proposing threshold clipping and a [0,1] non-regression assertion) says nothing about an inf-valued first element in the doctest thresholds [inf,0.8,0.4,0.35,0.1]. The specific doctest output with inf is not pinned down by S_vis."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_roc_curve_first_threshold_is_inf",
+      "test_source": "import numpy as np\nfrom sklearn.metrics import roc_curve\n\ndef test_roc_curve_first_threshold_is_inf():\n    y_true = [1, 1, 0, 0, 1]\n    y_score = [0.35, 0.9, 0.55, 0.1, 0.7]\n    fpr, tpr, thresholds = roc_curve(y_true, y_score)\n    assert thresholds[0] == np.inf",
+      "gold_result": "PASSED — gold roc_curve prepends np.inf and returns thresholds[0] == inf.",
+      "buggy_result": "FAILED — buggy roc_curve does np.r_[thresholds[0]+1, thresholds] giving thresholds[0] == 1.9 (= max(0.9)+1); assertion `assert 1.9 == inf` raised.",
+      "explanation": "Target requirement S1 states that roc_curve's returned `thresholds` array has first element exactly np.inf (the extra point added so the curve starts at fpr=0/tpr=0), even for probability-fraction scores in [0,1]. The gold code implements this via `thresholds = np.r_[np.inf, thresholds]` (hunk H3), whereas the buggy pre-fix code uses `thresholds = np.r_[thresholds[0] + 1, thresholds]` producing max(y_score)+1.\n\nI read the relevant visible surface first. The visible sklearn/metrics/tests/test_ranking.py exercises roc_curve only for AUC, shapes, fpr/tpr monotonicity, and its `test_roc_curve_drop_intermediate` pins the OLD/BUGGY threshold arrays (e.g. [2.0, 1.0, 0.7, 0.0]) for that test's own input; no visible assertion anywhere checks `thresholds[0] == np.inf`, and the visible (buggy) sklearn/metrics/_ranking.py still documents the max+1 behavior (docstring shows 1.8 and code does thresholds[0]+1). So the np.inf-gold behavior for a fraction-scaled input is not derivable from the visible material — I chose a genuinely fresh input scenario not used by any visible test ([0.35, 0.9, 0.55, 0.1, 0.7] over y_true [1,1,0,0,1]).\n\nExecuted the exact source above via run_test: PASSED against gold (thresholds[0]==inf) and FAILED against buggy (thresholds[0]==1.9 = max+1, assertion `assert 1.9 == inf` fails), so the test cleanly discriminates the actual fix and captures requirement S1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug source is in `roc_curve` (sklearn/metrics/_ranking.py): `thresholds = np.r_[thresholds[0] + 1, thresholds]` prepends the synthetic start-of-curve threshold as `max(y_score) + 1`, which exceeds 1 when y_score is a fraction in [0,1]."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "roc_curve's own docstring (Returns section) still documents the old arbitrary behavior: '`thresholds[0]` represents no instances being predicted and is arbitrarily set to `max(y_score) + 1`', and its docstring example shows thresholds starting at 1.8 for scores [0.1,0.4,0.35,0.8]; existing test `test_roc_curve_drop_intermediate` expects thresholds e.g. [2.0, 1.0, ...] for scores in [0,1]. These reflect the pre-fix (buggy) behavior the issue asks to change and a fix would necessarily update/extend them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The proposed assertion in the issue is technically vacuous for any real x (x<=1 OR x>=0 always holds); the real, load-bearing intent expressed in the surrounding issue text is that probability-range thresholds must not exceed 1."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The proposed non-regression test is not yet present in sklearn/metrics/tests/test_ranking.py; that file currently contains other roc_curve tests (e.g. test_roc_curve_toydata, test_roc_curve_drop_intermediate) that exercise thresholds but do not assert the [0,1] bound."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`_binary_clf_curve` (used by roc_curve) computes fps/tps/thresholds over distinct y_score values; only the extra prepended point in roc_curve drives the threshold-over-1 issue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "roc_curve obtains fps/tps/thresholds from _binary_clf_curve; only the extra prepended point (thresholds[0]) was changed by this fix, and it is the sole driver of the threshold value that may exceed the score range."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because np.inf is not representable in an integer dtype, prepending it forces the returned thresholds array to a float dtype even when y_score is integer-valued; previously, threshold[0] = max(y_score)+1 preserved an integer threshold dtype."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H0/H1 only rewrite docstring prose (describing thresholds[0] as `np.inf` / the added arbitrary threshold); the runtime behavioral change is in H3, echoed in the doctest output of H2."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: I investigated whether the real oracle already enforces requirement S1 (roc_curve returns thresholds whose first element is exactly np.inf even for [0,1]-scaled probability scores).\n\nThe only oracle test file that exercises roc_curve's returned `thresholds` array is sklearn/metrics/tests/test_ranking.py. That file is labeled [VISIBLE] in its entirety, so by the rules no assertion drawn from it can serve as a Witness regardless of content. Reading it confirmed this is also substantively true: its roc_curve tests (test_roc_curve, test_roc_curve_end_points, test_roc_curve_toydata, test_roc_curve_fpr_tpr_increasing, etc.) only check AUC, shapes, or tpr/fpr values, and test_roc_curve_drop_intermediate explicitly asserts the OLD/buggy synthetic start-of-curve threshold ([2.0, 1.0, 0.7, 0.0] for scores in [0,1]), i.e. it encodes the pre-fix behavior rather than the np.inf requirement — and would fail against the repaired program, not pass). No test anywhere asserts `thresholds[0] == np.inf`.\n\nI also checked sklearn/metrics/_plot/tests/test_roc_curve_display.py ([VISIBLE]), the other file that touches roc_curve; it only checks plotting/auc consistency and contains no np.inf-threshold assertion.\n\nI verified mechanically that the behavior itself differs (a synthetic test asserting thresholds[0]==np.inf times out to PASSED against gold and FAILED against buggy, which reports 1.8 = max+1), so the fix genuinely implements S1. However, confirming this only used a test source I authored — it is not backed by any [HIDDEN] content the oracle actually contains. The task notes themselves stated the proposed non-regression test is \"not yet present\" in the oracle's roc_curve test file, matching \"no failing tests recorded\". Since every relevant oracle file is [VISIBLE] and none of their assertions encode the np.inf requirement, there is no eligible Witness; found=false is the correct outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (sklearn.metrics.roc_curve (returned thresholds array)): roc_curve returns a `thresholds` array whose first element (the extra point added so the curve starts at fpr=0, tpr=0) is exactly `np.inf`, regardless of the values or magnitude of `y_score` (e.g. even when all scores are probabilities within [0,1], thresholds[0] is inf rather than max(y_score)+1, which was previously > 1 for fraction-scale scores). — not entailed by S_vis (R1 only pins that probability-valued thresholds must not exceed 1, and its cited evidence describes the fix as clipping thresholds when max<=1. It never commits to an np.inf extra first point nor to behavior 'regardless of y_score magnitude', so it does not entail S1's inf-mechanism claim.); confirmed by a synthesized witness: Target requirement S1 states that roc_curve's returned `thresholds` array has first element exactly np.inf (the extra point added so the curve starts at fpr=0/tpr=0), even for probability-fraction scores in [0,1]. The gold code implements this via `thresholds = np.r_[np.inf, thresholds]` (hunk H3), whereas the buggy pre-fix code uses `thresholds = np.r_[thresholds[0] + 1, thresholds]` producing max(y_score)+1.\n\nI read the relevant visible surface first. The visible sklearn/metrics/tests/test_ranking.py exercises roc_curve only for AUC, shapes, fpr/tpr monotonicity, and its `test_roc_curve_drop_intermediate` pins the OLD/BUGGY threshold arrays (e.g. [2.0, 1.0, 0.7, 0.0]) for that test's own input; no visible assertion anywhere checks `thresholds[0] == np.inf`, and the visible (buggy) sklearn/metrics/_ranking.py still documents the max+1 behavior (docstring shows 1.8 and code does thresholds[0]+1). So the np.inf-gold behavior for a fraction-scaled input is not derivable from the visible material — I chose a genuinely fresh input scenario not used by any visible test ([0.35, 0.9, 0.55, 0.1, 0.7] over y_true [1,1,0,0,1]).\n\nExecuted the exact source above via run_test: PASSED against gold (thresholds[0]==inf) and FAILED against buggy (thresholds[0]==1.9 = max+1, assertion `assert 1.9 == inf` fails), so the test cleanly discriminates the actual fix and captures requirement S1.",
+    "confidence": "Medium"
+  }
+}

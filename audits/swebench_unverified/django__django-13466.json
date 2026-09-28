@@ -1,0 +1,91 @@
+{
+  "task_id": "django__django-13466",
+  "status": "ok",
+  "duration_seconds": 238.99478895799257,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13466",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a management command whose add_arguments() registers an argparse mutually exclusive group with required=True that contains a store_true boolean flag (e.g. `group.add_argument('--flag', action='store_true')`) alongside another option, calling `call_command(command_name, flag=True)` must parse successfully and treat the flag as present exactly as passing `--flag` on the command line does, instead of raising the error `CommandError: Error: argument --flag: ignored explicit argument 'True'`.",
+        "subject": "django.core.management.call_command",
+        "hunk_ids": [],
+        "cited_from": "command definition at issue start: \"group = parser.add_mutually_exclusive_group(required=True)\ngroup.add_argument('--value', type=str)\ngroup.add_argument('--flag', action='store_true')\"; usage shown \"call_command('test', flag=True)\"; failure traceback line \"argparse.ArgumentError: argument --flag: ignored explicit argument 'True'\" and \"django.core.management.base.CommandError: Error: argument --flag: ignored explicit argument 'True'\"; contrast that \"Running ./manage.py test --flag or ./manage.py --value foo, the command works as expected.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "call_command, when a required option or a member of a required mutually exclusive group is supplied via **options and that option's argparse action is one that stores a constant without taking an argument (store_true/store_false/store_const via _StoreConstAction, count via _CountAction, or append_const via _AppendConstAction), must pass it into the simulated parser as the bare option flag (e.g. '--flag') rather than '--flag=<value>', so the command executes instead of failing with an argparse parsing error/CommandError over an invalid '--flag=<value>' token.",
+        "subject": "django.core.management.call_command",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down the exact bare-flag-vs-`--flag=<value>` handling only for a store_true flag inside a required mutually exclusive group (the cited evidence shows that scenario failing and the intended fix). S_impl broadens the same mechanism to store_false/store_const, count, and append_const actions and to standalone required options outside a group, none of which the visible evidence demonstrates; the demonstrated store_true/mutex-group case is consistent with S_impl but does not alone pin down that broader scope."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_required_store_true_via_options",
+      "test_source": "import django\nfrom io import StringIO\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DATABASES={},\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n        INSTALLED_APPS=[],\n    )\n    django.setup()\n\nfrom django.core import management\nfrom django.core.management.base import BaseCommand\nfrom django.test import SimpleTestCase\n\n\nclass FlagCommand(BaseCommand):\n    def add_arguments(self, parser):\n        parser.add_argument('--myflag', action='store_true', required=True)\n    def handle(self, *args, **options):\n        self.stdout.write(str(options['myflag']))\n\n\nclass WitnessTest(SimpleTestCase):\n    def test_required_store_true_via_options(self):\n        out = StringIO()\n        management.call_command(FlagCommand(), myflag=True, stdout=out)\n        self.assertIn('True', out.getvalue())\n",
+      "gold_result": "PASSED — call_command(FlagCommand(), myflag=True, stdout=out) completed and wrote 'True' to out.",
+      "buggy_result": "FAILED — django.core.management.base.CommandError: Error: argument --myflag: ignored explicit argument 'True' (serialized as '--myflag=True' instead of the bare flag).",
+      "explanation": "R1 (django.core.management.call_command) is exercised exactly by this test: a store_true flag (a _StoreConstAction subclass, matching the new isinstance check in H1) which is a *required* option is supplied via the **options kwargs to call_command. Gold's code detects the const-storing action and serializes it as the bare flag token '--myflag' before feeding parser.parse_args(), so the command runs and handle() outputs 'True'. Buggy's pre-fix code always serializes as '--flag=value' ('--myflag=True'); since a store_true action does not accept an explicit value, argparse rejects the token with \"ignored explicit argument 'True'\" which CommandParser translates into a CommandError — the exact failure R1 is meant to fix.\n\nI verified by running the generated test against gold (PASSED) and against buggy (FAILED).\n\nWhy this is not pinned down by visible material: the visible oracle in tests/user_commands/tests.py exercises required/mutually-exclusive-required options only through value-taking (nargs) arguments (required_option's need_me/needme2; mutually_exclusive_required's foo_id/foo_name) and exercises store_true only on optional non-required options (dance opt_3). No command in the visible material defines a const-storing flag that is required or a member of a required mutually-exclusive group, so no existing visible assertion reaches the fixed H1 branch. The custom FlagCommand used here does not exist in the visible tree, so this is a genuinely new discriminating input for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant logic lives in django/core/management/__init__.py: call_command() simulates argparse parsing and, for options in required mutually exclusive groups provided via **options kwargs, builds literal CLI tokens '{}={}'.format(min(opt.option_strings), ...) that are fed to parser.parse_args(); a store_true flag so serialized becomes '--flag=True', which argparse rejects — the observed failure."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/core/management/base.py defines CommandParser whose parse_args()/error() translate argparse errors into CommandError when not called from the command line."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing regression tests live in tests/user_commands/tests.py under CommandTests; test_mutually_exclusive_group_required_options already exercises passing members of a required mutually exclusive group via call_command kwargs (foo_id=1, foo_name='foo') but the group members there use nargs='?' typed arguments, not store_true flags."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/user_commands/management/commands/mutually_exclusive_required.py defines the group with two nargs='?' options --foo-id/--foo-name and handle() writes ','.join(options); no boolean store_true member exists in the repo's test command."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_StoreTrueAction and _StoreFalseAction are subclasses of _StoreConstAction, so store_true/store_false required options are covered by the isinstance check in H1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only alters serialization for required / mutually-exclusive-required options that are const-storing flag actions; options that take argument values (the else branch) keep the '--flag=value' serialization unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The final defaults after parse_args are still merged with arg_options (arg_options wins), so a caller-supplied False for a store_true flag is honored by the overwrite even though the bare '--flag' token would set True internally."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real oracle's test suite contains a [HIDDEN] test whose assertion genuinely exercises R1: call_command serializing a const-storing flag (store_true/store_false/store_const/count/append_const) supplied via **options, for a *required* option or a member of a *required* mutually-exclusive group, as the bare flag token rather than '--flag=<value>'.\n\nFindings:\n1. All call_command option-parsing regression assertions live in tests/user_commands/tests.py, which read_test_file labels entirely [VISIBLE] — so no assertion in it can serve as a Witness regardless of content.\n2. Even setting visibility aside, no existing oracle assertion exercises R1's distinct code path. The relevant tests are:\n   - test_call_command_option_parsing / test_call_command_option_parsing_non_string_arg: exercise --opt-3 (store_true) but that option is *optional* in dance.py, not required nor in a required mutually-exclusive group → does not enter call_command's required/mutually-exclusive-required serialization branch.\n   - test_mutually_exclusive_group_required_options: exercises mutually_exclusive_required with foo_id=1 / foo_name='foo'. In that command the group members are nargs='?' typed arguments (take values), so they fall into the unchanged '--flag=value' serialization branch (argparse handles these fine), NOT the const-flag branch that R1 fixes.\n   - test_call_command_with_required_parameters_in_options / _in_mixed_options: use required_option's -n/--need-me and -t/--need-me-too, both value-taking string args → again the unchanged branch.\n   No command in the entire user_commands app defines a store_true/store_false/store_const/count/append_const option that is required or a member of a required mutually-exclusive group, so no oracle test is even structurally able to reach the fixed code path.\n3. Consistent with all of the above, no test is recorded as currently failing against the buggy program — i.e. buggy and gold produce identical results on the full oracle, which confirms no oracle assertion enforces R1.\n\nI therefore submit found=false: the pre-existing oracle contains no genuine witness for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.core.management.call_command): call_command, when a required option or a member of a required mutually exclusive group is supplied via **options and that option's argparse action is one that stores a constant without taking an argument (store_true/store_false/store_const via _StoreConstAction, count via _CountAction, or append_const via _AppendConstAction), must pass it into the simulated parser as the bare option flag (e.g. '--flag') rather than '--flag=<value>', so the command executes instead of failing with an argparse parsing error/CommandError over an invalid '--flag=<value>' token. — not entailed by S_vis (S_vis pins down the exact bare-flag-vs-`--flag=<value>` handling only for a store_true flag inside a required mutually exclusive group (the cited evidence shows that scenario failing and the intended fix). S_impl broadens the same mechanism to store_false/store_const, count, and append_const actions and to standalone required options outside a group, none of which the visible evidence demonstrates; the demonstrated store_true/mutex-group case is consistent with S_impl but does not alone pin down that broader scope.); confirmed by a synthesized witness: R1 (django.core.management.call_command) is exercised exactly by this test: a store_true flag (a _StoreConstAction subclass, matching the new isinstance check in H1) which is a *required* option is supplied via the **options kwargs to call_command. Gold's code detects the const-storing action and serializes it as the bare flag token '--myflag' before feeding parser.parse_args(), so the command runs and handle() outputs 'True'. Buggy's pre-fix code always serializes as '--flag=value' ('--myflag=True'); since a store_true action does not accept an explicit value, argparse rejects the token with \"ignored explicit argument 'True'\" which CommandParser translates into a CommandError — the exact failure R1 is meant to fix.\n\nI verified by running the generated test against gold (PASSED) and against buggy (FAILED).\n\nWhy this is not pinned down by visible material: the visible oracle in tests/user_commands/tests.py exercises required/mutually-exclusive-required options only through value-taking (nargs) arguments (required_option's need_me/needme2; mutually_exclusive_required's foo_id/foo_name) and exercises store_true only on optional non-required options (dance opt_3). No command in the visible material defines a const-storing flag that is required or a member of a required mutually-exclusive group, so no existing visible assertion reaches the fixed H1 branch. The custom FlagCommand used here does not exist in the visible tree, so this is a genuinely new discriminating input for R1.",
+    "confidence": "Medium"
+  }
+}

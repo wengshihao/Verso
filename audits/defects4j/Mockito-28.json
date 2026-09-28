@@ -1,0 +1,124 @@
+{
+  "task_id": "Mockito-28",
+  "status": "ok",
+  "duration_seconds": 369.13247833400237,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "Mockito-28",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When injecting mocks into an @InjectMocks instance, candidate fields of that instance's type must be resolved in an order such that a mock is injected into the field whose type is the more derived/exact match over a field of an ancestor (assignable-from) type — specifically a mock of type Bean must be placed into the Bean-typed field rather than an Object-typed ancestor field.",
+        "subject": "DefaultInjectionEngine field ordering for @InjectMocks mock resolution (TypeBasedCandidateFilter / DefaultInjectionEngine.injectMocksOnFields)",
+        "hunk_ids": [],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "After mocks are injected into the @InjectMocks Service instance, the field mockShouldGoInHere (java type Bean) holds the mockedBean mock, while the field mockShouldNotGoInHere (java type Object, the ancestor) is left uninjected and still references the sentinel REFERENCE object.",
+        "subject": "Injection result contents on an @InjectMocks Service having fields of type Object and its ancestor type Bean",
+        "hunk_ids": [],
+        "cited_from": ""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "While mocks are being injected into a single @InjectMocks-annotated object (the per-@InjectMocks-instance candidate pool shared across that object's entire class-hierarchy walk), once a mock is successfully injected into one field of that object it is removed from the candidate pool, so the same mock instance is never injected into any other field of that same object — a single mock ends up in at most one of that object's fields.",
+        "subject": "org.mockito.internal.configuration.DefaultInjectionEngine.injectMockCandidate / injectMocksOnFields (@InjectMocks injection)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When a given mock bean is injected into the best-matching (exact-type, then per the field ordering) field of an @InjectMocks object while another field of that object also matches that same mock only by an ancestor/supertype (e.g. Object), the supertype-matched field that is processed after the exact-type field is not assigned that already-consumed mock and therefore retains its existing declared value rather than being overwritten by the used mock.",
+        "subject": "org.mockito.internal.configuration.DefaultInjectionEngine.injectMocksOnFields (@InjectMocks field values after injection)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes a specific two-field scenario (Bean exact-type vs Object supertype) where the previously-used mock isn't re-injected into the other field, demonstrating non-reuse in that one case. But the general invariant that a mock is removed from the pool and never placed into any other field of the same object is not stated or established beyond this single observed scenario, so the mechanism is only imperfectly evidenced."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 directly describes the exact outcome R2 specifies: the Bean/object-type field holds the mock while the ancestor-typed field processed afterwards is left uninjected and still references its sentinel value, because the already-consumed mock is not assigned to it. This pins down R2's behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "singleMockInjectedAtMostOnceAcrossAllFieldsOfOneInjectMocksObject",
+      "test_source": "class Bean {}\nclass S {\n    public Bean locationA;\n    public Bean locationB;\n}\n@Test\npublic void singleMockInjectedAtMostOnceAcrossAllFieldsOfOneInjectMocksObject() throws Exception {\n    java.lang.reflect.Field f;\n    Object fixture = new Object() {\n        @org.mockito.Mock Bean beanMock;\n        @org.mockito.InjectMocks S target = new S();\n    };\n    org.mockito.MockitoAnnotations.initMocks(fixture);\n\n    f = fixture.getClass().getDeclaredField(\"target\");\n    f.setAccessible(true);\n    S target = (S) f.get(fixture);\n\n    f = fixture.getClass().getDeclaredField(\"beanMock\");\n    f.setAccessible(true);\n    Bean beanMock = (Bean) f.get(fixture);\n\n    org.junit.Assert.assertSame(\"the single mock goes into the first matching field\", beanMock, target.locationA);\n    org.junit.Assert.assertNull(\"a mock removed from the pool after first injection must not leak into a second same-typed field\", target.locationB);\n    org.junit.Assert.assertNotSame(\"one mock instance must end up in at most one field of the object\", target.locationA, target.locationB);\n}\n",
+      "gold_result": "PASSED — locationA references the single Bean mock; locationB stayed null (the mock was removed from the per-@InjectMocks candidate pool after its first field-level injection, so it was never reused in the second same-typed field).",
+      "buggy_result": "FAILED at assertNull — locationB got the very same beanMock instance already injected into locationA (without the gold mocks.remove(injected) line, the buggy loop leaves the mock in the pool and injects it into every compatible field).",
+      "explanation": "Witnesses target requirement R1 (DefaultInjectionEngine.injectMockCandidate pool-removal: across a single @InjectMocks-annotated object's whole class field walk, once a mock is injected into one field it is removed so the same mock instance never lands in a second field of that object). The test drives the real Mockito injection path (MockitoAnnotations.initMocks on a fixture whose @InjectMocks field is a plain object, S, carrying two fields locationA/locationB of the *identical* concrete type Bean, with a single @Mock Bean in the candidate pool).\n\nKey design: by making the two candidate fields the SAME concrete type, there is no exact-vs-supertype type-preference machinery (as in the visible InjectionByType test, which uses an Object-typed supertype field + a Bean-typed exact field and lets exact-type matching explain the outcome). Here both fields are equally eligible by type and only differ by declaration/name order, so the ONLY mechanism preventing the same mock from being placed into BOTH fields is the pool-removal step added in gold. Empirical evidence: gold -> locationA=beanMock, locationB=null (passes); buggy -> locationA=locationB=beanMock (assertNull fails at the removal assertion). The buggy case is reached through the failure regardless of field order, and gold deterministically leaves locationB null. This scenario's output is not derivable from the visible files (only DefaultInjectionEngine.java and the exact-type InjectionByType test are in the visible surface, neither of which contains two same-concrete-type candidate fields), so it is not an already-pinned, redundant assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two visible files exist under the repo: src/org/mockito/internal/configuration/DefaultInjectionEngine.java and test/org/mockitousage/bugs/InjectionByTypeShouldFirstLookForExactTypeThenAncestorTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DefaultInjectionEngine uses a comparator chain type->name->final mock candidate filters; it sorts each class's declared instance fields via a `supertypesLast` comparator before injecting."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The engine walks the @InjectMocks instance's class chain (getClass() up to Object) calling injectMockCandidate per class, in contrast to the test fields which are all declared on one class (Service). The Service here is a direct class; note the engine only processes fields declared on Service up to (and excluding?) Object (loop while fieldClass != Object.class, so Service.class only)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test field declaration order in Service is: index0 `mockShouldNotGoInHere` (Object type) then index1 `mockShouldGoInHere` (Bean/Object-declared Bean type); the buggy ordering must still pick the Bean field for the Bean mock, not the first-declared Object field."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The mock declaredBean = `@Mock private Bean mockedBean;` and `@InjectMocks private Service illegalInjectionExample = new Service();` with REFERENCE = new Object() sentinel assigned via constructor at field declaration."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The javadoc of injectMocksOnFields already documented the step 'remove mock from mocks copy (mocks are just injected once)'; this patch implements that previously-missing step at field-injection granularity in injectMockCandidate."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "thenInject() (FinalMockCandidateFilter) returns the matching mock when exactly one candidate exists (injection performed) and null otherwise; so mocks.remove(injected) is a no-op when no injection happened, i.e. a mock with no unique field candidate is not consumed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "mocksToBeInjected is a fresh copy created per @InjectMocks field in injectMocksOnFields, so the removal performed here does not carry across distinct @InjectMocks fields."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The field ordering (supertypesLast comparator, type-then-name-then-final candidate filter chain) predates this hunk and is unchanged by the patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: After reading every test file in the oracle, no [HIDDEN] test genuinely witnesses R1 (single mock injected into at most one field of a given @InjectMocks object, i.e. removal from the candidate pool after a field-level injection).\n\nThe only test that even shapes R1 — mock_should_be_injected_once_and_in_the_best_matching_type in InjectionByTypeShouldFirstLookForExactTypeThenAncestorTest — sets up one Bean mock against two compatibly-typed fields (an Object-typed field and a Bean-typed exact-match field) and asserts the mock lands only in the exact-type field. But that file is labeled [VISIBLE] (content the repair system already saw), and a Witness may only rest on [HIDDEN] content regardless of how well it matches r.\n\nAll remaining [HIDDEN] files (MockInjectionTest, SpyInjectionTest, DeprecatedAnnotationEngineApiTest, DeprecatedMockAnnotationTest, InjectMocksShouldTryPropertySettersFirstBeforeFieldAccessTest, ParentTestMockInjectionTest, JUnit44RunnerTest, JUnit45RunnerTest) were reviewed. Every one injects distinct mocks into distinct fields (different types per mock, same-type mocks resolved by distinct field names, setter-vs-field precedence, or super-class hierarchy walk). None presents a single mock that is a viable candidate for two different fields of the same @InjectMocks object, which is the necessary precondition to observe R1's pool-removal behavior; consequently none asserts that an already-injected mock is kept out of a second field. Therefore the hidden oracle does not contain (and I could not build, from hidden assertions) an execution-confirmed witness for R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (org.mockito.internal.configuration.DefaultInjectionEngine.injectMockCandidate / injectMocksOnFields (@InjectMocks injection)): While mocks are being injected into a single @InjectMocks-annotated object (the per-@InjectMocks-instance candidate pool shared across that object's entire class-hierarchy walk), once a mock is successfully injected into one field of that object it is removed from the candidate pool, so the same mock instance is never injected into any other field of that same object — a single mock ends up in at most one of that object's fields. — not entailed by S_vis (S_vis describes a specific two-field scenario (Bean exact-type vs Object supertype) where the previously-used mock isn't re-injected into the other field, demonstrating non-reuse in that one case. But the general invariant that a mock is removed from the pool and never placed into any other field of the same object is not stated or established beyond this single observed scenario, so the mechanism is only imperfectly evidenced.); confirmed by a synthesized witness: Witnesses target requirement R1 (DefaultInjectionEngine.injectMockCandidate pool-removal: across a single @InjectMocks-annotated object's whole class field walk, once a mock is injected into one field it is removed so the same mock instance never lands in a second field of that object). The test drives the real Mockito injection path (MockitoAnnotations.initMocks on a fixture whose @InjectMocks field is a plain object, S, carrying two fields locationA/locationB of the *identical* concrete type Bean, with a single @Mock Bean in the candidate pool).\n\nKey design: by making the two candidate fields the SAME concrete type, there is no exact-vs-supertype type-preference machinery (as in the visible InjectionByType test, which uses an Object-typed supertype field + a Bean-typed exact field and lets exact-type matching explain the outcome). Here both fields are equally eligible by type and only differ by declaration/name order, so the ONLY mechanism preventing the same mock from being placed into BOTH fields is the pool-removal step added in gold. Empirical evidence: gold -> locationA=beanMock, locationB=null (passes); buggy -> locationA=locationB=beanMock (assertNull fails at the removal assertion). The buggy case is reached through the failure regardless of field order, and gold deterministically leaves locationB null. This scenario's output is not derivable from the visible files (only DefaultInjectionEngine.java and the exact-type InjectionByType test are in the visible surface, neither of which contains two same-concrete-type candidate fields), so it is not an already-pinned, redundant assertion.",
+    "confidence": "Medium"
+  }
+}

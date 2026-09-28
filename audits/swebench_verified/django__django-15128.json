@@ -1,0 +1,152 @@
+{
+  "task_id": "django__django-15128",
+  "status": "ok",
+  "duration_seconds": 745.3355799999554,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15128",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Evaluating the OR combination `qs1 | qs2` where qs1 = qux.foos.all() and qs2 = Foo.objects.filter(Q(bars__baz__in=qux.bazes.all()) | Q(other_bars__baz__in=qux.bazes.all())) must not raise an AssertionError. (Currently this exact order raises AssertionError in Query.change_aliases with change_map = {'T4': 'T5', 'T5': 'T6'}, while the operand-swapped `qs2 | qs1` succeeds.)",
+        "subject": "QuerySet.__or__ / Query.combine / Query.change_aliases",
+        "hunk_ids": [],
+        "cited_from": "# Failing tests\nfrom django.db.models import Q\nfrom bug.app.models import Foo, Qux\nqux = Qux.objects.create()\nqs1 = qux.foos.all()\nqs2 = Foo.objects.filter(\n\tQ(bars__baz__in=qux.bazes.all()) | Q(other_bars__baz__in=qux.bazes.all())\n)\n# Works fine.\nqs2 | qs1\n# AssertionError\n# \"/django/db/models/sql/query.py\", line 854, in Query.change_aliases\n# change_map = {'T4': 'T5', 'T5': 'T6'}\nqs1 | qs2"
+      },
+      {
+        "id": "R2",
+        "statement": "OR-combining the two querysets in the issue (qs1 = reverse-FK-related .all(), qs2 = the two-branch deeper m2m `__baz__in` OR filter) must be commutative in the sense that whichever operand order is used (qs1 | qs2 or qs2 | qs1) the combined queryset must evaluate to the same result-rows (the union of the two operand querysets), since exactly one operand order currently crashes while the other succeeds.",
+        "subject": "QuerySet.__or__ / Query.combine",
+        "hunk_ids": [],
+        "cited_from": "# Works fine.\nqs2 | qs1\n# AssertionError\n# \"/django/db/models/sql/query.py\", line 854, in Query.change_aliases\n# change_map = {'T4': 'T5', 'T5': 'T6'}\nqs1 | qs2\n...\nIt seems like QuerySet's OR operation is not commutative (they can create different queries, even though the results are the same)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Query.combine (used for merging/combining querysets, e.g. with QuerySet OR/AND operations over a shared base model) no longer produces an aliasing failure when the two queries being combined share the same alias prefix and both contribute joins whose alias numbers would otherwise collide in the relabeling (the former change_map collision such as {'T4':'T5','T5':'T6'}); such combinations now complete and yield correct results instead of raising or producing corrupted relabeling. The rhs aliases are first reassigned to a fresh non-conflicting alias prefix before the two queries' joins are merged.",
+        "subject": "django.db.models.sql.query.Query.combine (QuerySet | / merge semantics)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H3",
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Query.bump_prefix accepts an optional `exclude` iterable of aliases; when supplied, those aliases are left unchanged (not relabeled to the newly chosen prefix), while all other aliases are renumbered to fresh aliases under the new prefix. When `exclude` is None (the historical calling convention), every alias is relabeled as before.",
+        "subject": "django.db.models.sql.query.Query.bump_prefix",
+        "hunk_ids": [
+          "H3",
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When combining two Query objects (Query.combine), the base-table alias (the alias that must be present in both queries) is preserved across the combination: it is not re-prefixed/renumbered on the rhs, so the shared base table stays bound under the same alias on both sides of the merged query.",
+        "subject": "django.db.models.sql.query.Query.combine",
+        "hunk_ids": [
+          "H0",
+          "H5"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 pin down that the crash (change_map {'T4':'T5','T5':'T6'}) must not raise and the combination must yield the commutative union, which matches the outcome portion of this requirement. However, the specific fix mechanism committed to here — reassigning rhs aliases to a fresh non-conflicting prefix before merging joins — is an implementation detail not revealed by the visible failing-test/issue evidence, so the requirement's full content is not decisively pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions Query.bump_prefix, its optional exclude parameter, or any alias-exclusion relabeling semantics. The visible material is purely a failing-test/commutativity description, which says nothing that would lead a solver to add an exclude iterable to bump_prefix."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions base-table alias preservation across Query.combine or which alias stays un-relabeled. This is an internal implementation constraint of the fix that cannot be inferred from the visible issue evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_bump_prefix_exclude_keeps_alias",
+      "test_source": "def test_bump_prefix_exclude_keeps_alias():\n    import django\n    from django.conf import settings\n    settings.configure(\n        SECRET_KEY='x',\n        INSTALLED_APPS=[\n            'django.contrib.contenttypes',\n            'django.contrib.auth',\n        ],\n        DATABASES={'default': {\n            'ENGINE': 'django.db.backends.sqlite3',\n            'NAME': ':memory:',\n        }},\n        USE_TZ=True,\n    )\n    django.setup()\n    from django.contrib.auth.models import User\n    outer = User.objects.none().query.clone()\n    rhs = User.objects.filter(groups__name='x').query.clone()\n    aliases = list(rhs.alias_map)\n    assert 'auth_user' in aliases, aliases\n    excluded = 'auth_user'\n    old_prefix = rhs.alias_prefix\n    assert old_prefix == 'T'\n    other_old = [a for a in aliases if a != excluded]\n    assert len(other_old) >= 2, other_old\n    rhs.bump_prefix(outer, exclude={excluded})\n    # Excluded alias left unchanged.\n    assert excluded in rhs.alias_map\n    assert list(rhs.alias_map)[0] == excluded\n    # Non-excluded aliases renumbered under the new prefix.\n    for a in other_old:\n        assert a not in rhs.alias_map, (a, list(rhs.alias_map))\n    assert rhs.alias_prefix != 'T'\n    assert len(rhs.alias_map) == len(aliases)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: TypeError: bump_prefix() got an unexpected keyword argument 'exclude'",
+      "explanation": "Requirement R2 is precisely Query.bump_prefix's new optional `exclude` iterable: supplied excluded alias names are left unchanged while all remaining aliases are renumbered to fresh names under a newly-chosen single-letter prefix. The gold (fixed) signature is `bump_prefix(self, other_query, exclude=None)` and skips `alias not in exclude` inside change_aliases; the buggy signature is `bump_prefix(self, outer_query)` with no exclude handling (so it even rejects the kwarg).\n\nThe witness drives this new path end-to-end on real Django models (auth.User filtered over its groups m2m join yields alias_map `['auth_user', 'auth_user_groups', 'auth_group']`), calls `rhs.bump_prefix(outer, exclude={'auth_user'})`, and asserts the requirement's semantics on gold: the excluded base alias `auth_user` survives unchanged as the first alias_map entry, every non-excluded alias (auth_user_groups, auth_group) is renumbered out from under its old name, `alias_prefix` advances from 'T' to a fresh letter, and the alias count is preserved.\n\nOn the buggy program the test FAILS with `TypeError: bump_prefix() got an unexpected keyword argument 'exclude'`, because the pre-fix version has no exclude parameter — the legacy/None path the callers use is unchanged there, and only the new non-None `exclude` branch distinguishes the two. This is the exact behavior hidden by R2 and confirmed by the Oracle search (no existing oracle/test drives the new exclude code path), so it is a genuine execution-confirmed witness rather than a reinvention of any visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug reproducer's models.py/tests are NOT files in this repo — they exist only as code embedded in the issue report description (an external 'bug.app'). The repo is the Django source itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "QuerySet.__or__ (django/db/models/query.py) routes through Query.combine(query, sql.OR); Query.combine (django/db/models/sql/query.py) reuses existing self.alias_map joins for OR (reuse = set(self.alias_map)) and calls self.join(join, reuse=reuse)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Query.join -> Query.table_alias picks a fresh alias via '%s%d' % (self.alias_prefix, len(self.alias_map) + 1)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Query.change_aliases opens with `assert set(change_map).isdisjoint(change_map.values())` which is the raise site reported in the issue (change_map = {'T4': 'T5', 'T5': 'T6'})."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reporter's proposed mechanism is to keep incrementing the new alias number until it is not present in rhs.alias_map so the change_map keys can never intersect its values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 only relocates an existing self.get_initial_alias() call from later in combine to earlier (making the base table bound before bump_prefix needs the initial alias); it does not independently change behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 is a documentation-only edit to Query.change_aliases explaining why the disjoint-keys/values assert must hold; no behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "bump_prefix's parameter was renamed from outer_query to other_query across H3/H4; all existing callers (resolve_expression: bump_prefix(query); split_exclude: bump_prefix(self)) pass a single positional arg, so exclude defaults to None and behavior there is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The actual developer fix uses a different strategy than the S_vis note's proposed renumber-until-unused mechanism: it re-prefixes the whole rhs to a new single-letter prefix rather than growing alias numbers."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.combine is internal; its externally observable surface is QuerySet combination (| , & on querysets) — no user-facing API change was introduced by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the oracle's queryset-combination / alias-handling tests for a witness of R2 (the new optional `exclude` param on Query.bump_prefix, which keeps excluded aliases unchanged while renumbering the rest, versus the legacy exclude=None path).\n\nWhat I examined: the full tests/queries/tests.py (Queries1-6, Queries4Tests including test_join_reuse_order #26522, QuerySetBitwiseOperationTests.test_or_with_*_slice, Ticket20101Tests, test_subquery_condition, alias/relabel tests), test_query.py, test_qs_combinators.py, test_contains.py, test_iterator.py, test_sqlcompiler.py, test_bulk_update.py, and queries/models.py.\n\nConclusion — no genuine witness exists, for three independent reasons:\n1) No oracle test is recorded as failing against the buggy program, yet a Witness must fail on buggy and pass on gold; none of the alias-collision/OR-combination tests (which essentially predate this patch) distinguishes the two.\n2) Every queryset-combination/alias test file I read is labeled [VISIBLE]; content from [VISIBLE] files can never serve as a Witness for a hidden requirement no matter how well it matches.\n3) Semantic mismatch: per the notebook, bump_prefix is internal with no user-facing surface; every caller (resolve_expression, split_exclude) passes a single positional argument so exclude defaults to None and behavior is unchanged there. No oracle assertion anywhere drives the newly-distinguished code path (non-None exclude / excluded aliases preserved while others are renumbered under the new prefix). Existing OR/& tests exercise only results/join counts through the unchanged historical path, which the buggy program already satisfies, so they do not test the behavior R2 commits to.\n\nTherefore nothing in the oracle qualifies as an execution-confirmed witness for R2; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.db.models.sql.query.Query.bump_prefix): Query.bump_prefix accepts an optional `exclude` iterable of aliases; when supplied, those aliases are left unchanged (not relabeled to the newly chosen prefix), while all other aliases are renumbered to fresh aliases under the new prefix. When `exclude` is None (the historical calling convention), every alias is relabeled as before. — not entailed by S_vis (No S_vis entry mentions Query.bump_prefix, its optional exclude parameter, or any alias-exclusion relabeling semantics. The visible material is purely a failing-test/commutativity description, which says nothing that would lead a solver to add an exclude iterable to bump_prefix.); confirmed by a synthesized witness: Requirement R2 is precisely Query.bump_prefix's new optional `exclude` iterable: supplied excluded alias names are left unchanged while all remaining aliases are renumbered to fresh names under a newly-chosen single-letter prefix. The gold (fixed) signature is `bump_prefix(self, other_query, exclude=None)` and skips `alias not in exclude` inside change_aliases; the buggy signature is `bump_prefix(self, outer_query)` with no exclude handling (so it even rejects the kwarg).\n\nThe witness drives this new path end-to-end on real Django models (auth.User filtered over its groups m2m join yields alias_map `['auth_user', 'auth_user_groups', 'auth_group']`), calls `rhs.bump_prefix(outer, exclude={'auth_user'})`, and asserts the requirement's semantics on gold: the excluded base alias `auth_user` survives unchanged as the first alias_map entry, every non-excluded alias (auth_user_groups, auth_group) is renumbered out from under its old name, `alias_prefix` advances from 'T' to a fresh letter, and the alias count is preserved.\n\nOn the buggy program the test FAILS with `TypeError: bump_prefix() got an unexpected keyword argument 'exclude'`, because the pre-fix version has no exclude parameter — the legacy/None path the callers use is unchanged there, and only the new non-None `exclude` branch distinguishes the two. This is the exact behavior hidden by R2 and confirmed by the Oracle search (no existing oracle/test drives the new exclude code path), so it is a genuine execution-confirmed witness rather than a reinvention of any visible assertion.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "task_id": "django__django-15560",
+  "status": "ok",
+  "duration_seconds": 366.8450474590063,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15560",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "In the createsuperuser management command (Command._validate_username in django/contrib/auth/management/commands/createsuperuser.py), when the active user model's USERNAME_FIELD does not carry unique=True but its uniqueness is instead enforced by a unique model constraint (UniqueConstraint) referencing that field, the command must detect a username that already exists and reject it during validation — it must not proceed to build the user such that create_superuser hits the database UniqueConstraint and raises an IntegrityError.",
+        "subject": "django.contrib.auth.management.commands.createsuperuser.Command._validate_username",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"createsuperuser does not validate usernames that use a UniqueConstraint... With a custom User model that uses a UniqueConstraint instead of unique=True, the manage.py createsuperuser command does not validate usernames at all.\" and \"Running manage.py createsuperuser to create a user with a username that already exists then results in an IntegrityError: IntegrityError: duplicate key value violates unique constraint \\\"unique_usernames\\\" DETAIL: Key (custom_username)=(foo) already exists.\" Code context (the gate that skips the check when the field is not unique=True): createsuperuser.py `def _validate_username(...): ... if self.username_field.unique: try: ... get_by_natural_key(username) ... else: return \"Error: That %s is already taken.\" % verbose_field_name`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "r1",
+        "statement": "Command.username_is_unique (a cached_property) returns True when the username field has unique=True OR some entry in UserModel._meta.total_unique_constraints has exactly one field equal to the username field's name (i.e., a single-field UniqueConstraint declaring the username field); otherwise it returns False. (A multi-field constraint that includes the username field does not make it return True.)",
+        "subject": "django.contrib.auth.management.commands.createsuperuser.Command.username_is_unique",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "r2",
+        "statement": "Command._validate_username now performs the database duplicate-existence check (via UserModel._default_manager.get_by_natural_key) for any username whenever Command.username_is_unique is True, including when the username field's uniqueness is enforced only by a single-field UniqueConstraint rather than by unique=True; consequently, passing an already-taken username for such a model makes _validate_username return the 'Error: That %s is already taken.' message (reported via stderr in interactive mode and raised as CommandError in non-interactive mode) instead of that duplicate check being skipped.",
+        "subject": "django.contrib.auth.management.commands.createsuperuser.Command._validate_username",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "r1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (R1) only describes the outcome that duplicates are detected/rejected in the UniqueConstraint-enforced case; it never mentions a username_is_unique cached_property method, nor its exact semantics (True for unique=True or single-field constraint, False for multi-field). Those are un-evidenced implementation details the visible info does not pin down."
+      },
+      {
+        "requirement_id": "r2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 does pin down the core new behavior (in the constraint-only case the duplicate check must run and reject instead of hitting IntegrityError), and the visible code context does show the existing 'Error: That %s is already taken.' wording. However r2 couches this as 'whenever Command.username_is_unique is True' (referencing the unevidenced r1 property) and asserts explicit reporting-mode details, so the exact behavior described is only partly covered by the visible information."
+      }
+    ],
+    "target_requirement_id": "r1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_username_unique_via_single_field_unique_constraint",
+      "test_source": "from types import SimpleNamespace\n\nfrom django.db import models\nfrom django.contrib.auth.management.commands import createsuperuser\n\n\ndef test_username_unique_via_single_field_unique_constraint():\n    # Username field is NOT unique=True but IS declared unique through a\n    # single-field Meta UniqueConstraint naming the username field.\n    username_field = models.CharField(max_length=30)\n    username_field.name = \"username\"\n\n    constraint = models.UniqueConstraint(fields=[\"username\"], name=\"uniq_username\")\n\n    UserModel = SimpleNamespace(\n        _meta=SimpleNamespace(total_unique_constraints=[constraint])\n    )\n\n    cmd = createsuperuser.Command.__new__(createsuperuser.Command)\n    cmd.UserModel = UserModel\n    cmd.username_field = username_field\n\n    assert cmd.username_is_unique is True\n",
+      "gold_result": "PASSED - cmd.username_is_unique is True for a username field backed solely by a single-field Meta UniqueConstraint (not field-level unique=True).",
+      "buggy_result": "FAILED - AttributeError: 'Command' object has no attribute 'username_is_unique' (pre-fix code never defines the cached_property and instead gates duplicate detection directly on self.username_field.unique).",
+      "explanation": "Target requirement r1 states Command.username_is_unique returns True when the USERNAME_FIELD is declared unique only through a single-field UniqueConstraint in Meta.constraints (while not being unique=True on the field itself), and that a multi-field constraint does not qualify. The gold fix adds this cached_property and it inspects _meta.total_unique_constraints for a constraint with exactly one field matching the username field. None of the visible tests (test_management.py — entire file visible) exercise any user whose USERNAME_FIELD backs uniqueness via a Meta UniqueConstraint signature: they either use the stock User (username unique=True, the other branch) or CustomUserNonUniqueUsername (not unique at all); so the UniqueConstraint branch of r1 is not pinned down by any visible material. My witness constructs a Command without invoking __init__ (to bypass get_user_model), giving it a username field with unique=False whose name is 'username', and a UserModel whose _meta.total_unique_constraints contains exactly the matching single-field UniqueConstraint. Gold's username_is_unique executes its real loop and returns True (confirmed PASSED on gold). The pre-fix program has no username_is_unique member at all (it gated duplicate detection on self.username_field.unique directly, which is False here), so accessing it raises AttributeError (confirmed FAILED on buggy). Thus gold passes and buggy fails exactly on the UniqueConstraint-backed-username scenario targeted by r1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy logic lives in django/contrib/auth/management/commands/createsuperuser.py, in Command._validate_username: the duplicate-check (which uses UserModel._default_manager.get_by_natural_key and returns 'Error: That <field> is already taken.') is gated on `if self.username_field.unique:` and is therefore skipped when uniqueness is expressed via a model UniqueConstraint on the USERNAME_FIELD rather than the field's own unique=True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "createsuperuser.Command executes create_superuser(**user_data) after validation; when validation is skipped the DB UniqueConstraint raises the IntegrityError reported in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible tests (tests/auth_tests/test_management.py) exercise the unique=True duplicate-detection path with the stock User model (e.g. test_existing_username expects 'Error: That username is already taken.\\nSuperuser created successfully.') but no visible test covers a username field backed by a UniqueConstraint."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue's example model: class CustomUser(AbstractBaseUser): custom_username = models.CharField(max_length=255); USERNAME_FIELD = 'custom_username'; Meta.constraints=[models.UniqueConstraint(fields=['custom_username'], name='unique_usernames')]."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_validate_username is shared by both interactive prompting (writes the returned error to stderr and re-prompts) and non-interactive mode (raises the returned error via CommandError)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch gate in _validate_username was changed from `if self.username_field.unique:` to `if self.username_is_unique:`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds the `from django.utils.functional import cached_property` import, enabling the new cached_property definition."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "username_is_unique consults only Meta.unique=True on the field and Meta.total_unique_constraints; it does not special-case conditional/deferrable/expression UniqueConstraints or legacy unique_together."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [r1]: The target requirement r1 concerns Command.username_is_unique recognizing a username field declared unique only via a single-field UniqueConstraint (i.e. Meta.constraints on USERNAME_FIELD, without field-level unique=True).\n\nI examined the oracle. The only test file exercising createsuperuser duplicate-detection is tests/auth_tests/test_management.py, whose ENTIRE content is labeled [VISIBLE] (so it cannot supply a witness no matter how well it matches). Its createsuperuser tests (test_existing_username, test_existing_username_non_interactive, and test_swappable_user_username_non_unique) all operate on either the stock User (username unique=True, exercising the unique=False/duplicate error path) or CustomUserNonUniqueUsername (username not unique at all, exercising the skip-validation path). None of them backs the USERNAME_FIELD with a Meta-level UniqueConstraint, which is the exact scenario r1 describes.\n\nI also checked the auth_tests custom-user model modules (models/__init__.py, custom_user.py, invalid_models.py, etc.), which are [HIDDEN] but are model definitions, not test assertions; none of the registered user models (CustomUser, CustomUserWithoutIsActiveField, CustomUserNonUniqueUsername, IntegerUsernameUser, CustomEmailField, etc.) declares a UniqueConstraint on its USERNAME_FIELD, so there is no schema fixture in the oracle that even exercises the constraint path via AUTH_USER_MODEL override.\n\nFinally, the recorded list of tests currently failing against the buggy program is empty, consistent with no oracle test actually asserting the UniqueConstraint-based duplicate-detection behavior; and no separate [HIDDEN] test file covering createsuperuser/username uniqueness exists in the oracle.\n\nAccordingly, no oracle test genuinely asserts the same behavior r1 commits to, and no [HIDDEN] assertion is available to build a witness from. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [r1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[r1] (django.contrib.auth.management.commands.createsuperuser.Command.username_is_unique): Command.username_is_unique (a cached_property) returns True when the username field has unique=True OR some entry in UserModel._meta.total_unique_constraints has exactly one field equal to the username field's name (i.e., a single-field UniqueConstraint declaring the username field); otherwise it returns False. (A multi-field constraint that includes the username field does not make it return True.) — not entailed by S_vis (S_vis (R1) only describes the outcome that duplicates are detected/rejected in the UniqueConstraint-enforced case; it never mentions a username_is_unique cached_property method, nor its exact semantics (True for unique=True or single-field constraint, False for multi-field). Those are un-evidenced implementation details the visible info does not pin down.); confirmed by a synthesized witness: Target requirement r1 states Command.username_is_unique returns True when the USERNAME_FIELD is declared unique only through a single-field UniqueConstraint in Meta.constraints (while not being unique=True on the field itself), and that a multi-field constraint does not qualify. The gold fix adds this cached_property and it inspects _meta.total_unique_constraints for a constraint with exactly one field matching the username field. None of the visible tests (test_management.py — entire file visible) exercise any user whose USERNAME_FIELD backs uniqueness via a Meta UniqueConstraint signature: they either use the stock User (username unique=True, the other branch) or CustomUserNonUniqueUsername (not unique at all); so the UniqueConstraint branch of r1 is not pinned down by any visible material. My witness constructs a Command without invoking __init__ (to bypass get_user_model), giving it a username field with unique=False whose name is 'username', and a UserModel whose _meta.total_unique_constraints contains exactly the matching single-field UniqueConstraint. Gold's username_is_unique executes its real loop and returns True (confirmed PASSED on gold). The pre-fix program has no username_is_unique member at all (it gated duplicate detection on self.username_field.unique directly, which is False here), so accessing it raises AttributeError (confirmed FAILED on buggy). Thus gold passes and buggy fails exactly on the UniqueConstraint-backed-username scenario targeted by r1.",
+    "confidence": "Medium"
+  }
+}

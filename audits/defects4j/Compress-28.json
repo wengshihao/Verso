@@ -1,0 +1,138 @@
+{
+  "task_id": "Compress-28",
+  "status": "ok",
+  "duration_seconds": 243.61009211000055,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "Compress-28",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "When a tar archive is truncated (an unexpected end-of-stream occurs in the underlying input before the whole archive or the current entry's declared data has been fully consumed), TarArchiveInputStream must throw an IOException rather than silently treating the archive as having finished cleanly (i.e. it must not set hasHitEOF and return null / return -1 so the caller completes without error).",
+        "subject": "org.apache.commons.compress.archivers.tar.TarArchiveInputStream.getNextTarEntry/read",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"TarArchiveInputStream silently finished when unexpected EOF occured\" — \"I just found the following test case didn't raise an IOException as it used to be for a *tar trimmed on purpose*\"; Test in src/test/java/.../tar/TarArchiveInputStreamTest.java:\n\n    @Test(expected = IOException.class)\n    public void shouldThrowAnExceptionOnTruncatedEntries() throws Exception {\n        File dir = mkdir(\"COMPRESS-279\");\n        TarArchiveInputStream is = getTestStream(\"/COMPRESS-279.tar\");\n        FileOutputStream out = null;\n        try {\n            TarArchiveEntry entry = is.getNextTarEntry();\n            int count = 0;\n            while (entry != null) {\n                out = new FileOutputStream(new File(dir, String.valueOf(count)));\n                IOUtils.copy(is, out);\n                out.close();\n                out = null;\n                count++;\n                entry = is.getNextTarEntry();\n            }\n        } finally {\n            is.close();\n            if (out != null) { out.close(); }\n        }\n    }"
+      },
+      {
+        "id": "VIS-2",
+        "statement": "While reading the data of the current tar entry, if the underlying input stream reaches its end before entryOffset has reached entrySize (i.e. a short/truncated read within an entry), the stream must signal the truncation via an IOException rather than by returning -1 and marking end-of-archive as a normal clean EOF.",
+        "subject": "org.apache.commons.compress.archivers.tar.TarArchiveInputStream.read",
+        "hunk_ids": [],
+        "cited_from": "TarArchiveInputStream.read(byte[],int,int): \"totalRead = is.read(buf, offset, numToRead); count(totalRead); if (totalRead == -1) { hasHitEOF = true; } else { entryOffset += totalRead; } return totalRead;\" combined with the test shouldThrowAnExceptionOnTruncatedEntries above and issue text \"didn't raise an IOException as it used to be for a *tar trimmed on purpose*\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When reading data from the current tar entry, if the underlying input stream signals EOF by returning -1 while the requested read length (numToRead, already capped by the current entry's remaining available bytes) is greater than 0, then read(byte[],int,int) throws an IOException whose message is \"Truncated TAR archive\", rather than silently recording end-of-archive.",
+        "subject": "TarArchiveInputStream.read(byte[], int, int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When reading data from the current tar entry, if the underlying input stream returns -1 while the requested read length (numToRead) is 0, read(byte[],int,int) does not throw; it sets hasHitEOF and returns -1, preserving normal end-of-entry handling for well-formed (non-truncated) archives.",
+        "subject": "TarArchiveInputStream.read(byte[], int, int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "The byte-count accounting (count) and entry-position advance (entryOffset) for a successful read still occur for every positive non-EOF return of the underlying stream (i.e. moving count into the success branch does not drop counting of actually delivered data).",
+        "subject": "TarArchiveInputStream.read(byte[], int, int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-1/VIS-2 clearly pin that an IOException must be thrown when the underlying stream EOFs while entry data is still pending (the truncation case). However, the specific exception message 'Truncated TAR archive' is not present in any visible artifact, so full entailment of the stated message component is not confirmed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-2 quotes existing code where -1 sets hasHitEOF and returns -1 (the non-throwing path), and normal archives must obviously keep completing, but the visible evidence never states the numToRead==0 boundary that keeps this branch from throwing while the truncation branch throws. The scoping that R2 specifies is not pinned by the artifacts."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-2's cited source ('...count(totalRead); if (totalRead == -1) {hasHitEOF = true;} else {entryOffset += totalRead;} return totalRead;') shows counting and entryOffset advancement occurring for every positive non-EOF read, exactly the accounting preservation R3 describes."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "truncatedEntryReadThrows",
+      "test_source": "    @Test\n    public void truncatedEntryReadThrows() throws Exception {\n        org.apache.commons.compress.archivers.tar.TarArchiveOutputStream tos =\n            new org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(new java.io.ByteArrayOutputStream());\n        byte[] content = new byte[600];\n        for (int i = 0; i < content.length; i++) {\n            content[i] = (byte) i;\n        }\n        org.apache.commons.compress.archivers.tar.TarArchiveEntry e =\n            new org.apache.commons.compress.archivers.tar.TarArchiveEntry(\"x\");\n        e.setSize(content.length);\n        java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();\n        tos = new org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(raw);\n        tos.putArchiveEntry(e);\n        tos.write(content);\n        tos.closeArchiveEntry();\n        tos.close();\n        byte[] full = raw.toByteArray();\n        // feed only the header record (512 bytes) then EOF: entry claims 600 bytes but none follow\n        org.apache.commons.compress.archivers.tar.TarArchiveInputStream tin =\n            new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(\n                new java.io.ByteArrayInputStream(full, 0, 512));\n        org.apache.commons.compress.archivers.tar.TarArchiveEntry got = tin.getNextTarEntry();\n        org.junit.Assert.assertNotNull(got);\n        org.junit.Assert.assertTrue(got.getSize() > 0);\n        byte[] buf = new byte[32];\n        try {\n            int r = tin.read(buf, 0, buf.length);\n            org.junit.Assert.fail(\"expected IOException on truncated entry, got read()=\" + r);\n        } catch (java.io.IOException ioe) {\n            org.junit.Assert.assertEquals(\"Truncated TAR archive\", ioe.getMessage());\n        } finally {\n            tin.close();\n        }\n    }",
+      "gold_result": "PASSED — TarArchiveInputStream.read throws IOException with message \"Truncated TAR archive\" upon premature EOF inside a declared entry (>0 bytes claimed remain).",
+      "buggy_result": "FAILED — read() returned -1 (no exception) because buggy code silently set hasHitEOF instead of throwing; assertion `fail(\"expected IOException...\")` fired.",
+      "explanation": "This witness isolates the exact intra-entry premature-EOF path that R1 governs. I generate in memory a well-formed tar containing one entry (size 600) via TarArchiveOutputStream, then trim the underlying bytes to just the 512-byte header record so the raw stream reports EOF immediately after the entry header while available()=entrySize-entryOffset=600>0. Constructing a fresh TarArchiveInputStream over that truncated bytes and calling getNextTarEntry yields the entry; the subsequent read(byte[],int,int) then has numToRead>0 (capped to the still-available 600) yet receives -1 from the underlying stream. Gold hits the new branch and throws IOException(\"Truncated TAR archive\"); the pre-fix code merely flips hasHitEOF and returns -1. I confirmed the candidate executes PASSED against gold and FAILED against buggy via run_test. The message is asserted (assertEquals), which is not pinned by any visible test (the only visible truncation-related test, shouldThrowAnExceptionOnTruncatedEntries, asserts only IOException.class using an external COMPRESS-279.tar and never the message), and the archive is synthesized wholly inside the method body, so the witness is independent of any pre-existing test fixture/data file."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible set is small: TarArchiveInputStream.java, its abstract superclass ArchiveInputStream.java, and one test class TarArchiveInputStreamTest.java. Referenced test data files (COMPRESS-279.tar, archive_with_trailer.tar, etc.) are NOT in the visible listing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant COMPRESS-279 test (shouldThrowAnExceptionOnTruncatedEntries) lives in the same test class that also contains regression tests COMPRESS-197 and COMPRESS-245 — those two assert that certain archives should NOT throw, so the truncation requirement must not break well-formed-archive handling."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "readRecord() relies on IOUtils.readFully; isEOFRecord treats a null record or an all-zero record as end-of-archive, which is the normal completion mechanism, distinct from the premature-EOF case this bug targets."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getNextTarEntry() returns null once hasHitEOF is true; trigger paths include skip/skipRecordPadding and the read() path that flips hasHitEOF on a -1 — the visible complaint is that premature EOF funnels into that clean-finish path instead of raising."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only touches TarArchiveInputStream.read(byte[],int,int); all other methods (getNextTarEntry, readRecord, getRecord, isEOFRecord, skipRecordPadding, consumeRemainderOfLastBlock) are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "numToRead is pre-capped to available() = entrySize - entryOffset, and read() bails out early returning -1 when entryOffset >= entrySize, so an underlying -1 reached inside the try can only denote the entry header having promised more bytes than the stream provides."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The exception message string \"Truncated TAR archive\" is asserted only via the thrown IOException's class; message equality coverage depends on the test."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "count(totalRead) was previously invoked before the EOF check (thus once with -1 on truncation); the gold code invokes count only in the success branch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined the full oracle test inventory and located every test exercising the truncation behavior of TarArchiveInputStream.read(byte[],int,int). The only test that drives the intra-entry premature-EOF path is `shouldThrowAnExceptionOnTruncatedEntries` in TarArchiveInputStreamTest.java, which (a) is the test currently failing against the buggy program, and (b) resides in a [VISIBLE] file. That test only asserts (via @Test(expected=IOException.class)) that an IOException surfaces while reading the truncated COMPRESS-279.tar; it does not assert the specific \"Truncated TAR archive\" message, and more importantly its assertion content is drawn from [VISIBLE] test code, which per the rules can never serve as a Witness.\n\nI additionally surveyed the remaining [HIDDEN] tar-reading tests (TarTestCase incl. testCOMPRESS178, ChainingTestCase, LongPathTest, IOMethodsTest testReadTar, ArchiveStreamFactoryTest, DetectArchiverTestCase, SparseFilesTest, TarArchiveEntryTest) plus non-tar archive/compressor tests (ExceptionMessageTest tests only ArchiveStreamFactory error messages \"Archivername/InputStream/OutputStream must not be null\", SevenZ/Zip/Cpio/Ar/Dump/Arj cases). None of these contain any hidden assertion that feeds a deliberately-truncated TarArchiveInputStream entry and verifies that read() throws an IOException (let alone one with message \"Truncated TAR archive\") instead of silently ending the archive. The COMPRESS-279 regression coverage exists solely in the [VISIBLE] synchronous test class. Consequently no [HIDDEN] oracle assertion witnesses R1, so I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (TarArchiveInputStream.read(byte[], int, int)): When reading data from the current tar entry, if the underlying input stream signals EOF by returning -1 while the requested read length (numToRead, already capped by the current entry's remaining available bytes) is greater than 0, then read(byte[],int,int) throws an IOException whose message is \"Truncated TAR archive\", rather than silently recording end-of-archive. — not entailed by S_vis (VIS-1/VIS-2 clearly pin that an IOException must be thrown when the underlying stream EOFs while entry data is still pending (the truncation case). However, the specific exception message 'Truncated TAR archive' is not present in any visible artifact, so full entailment of the stated message component is not confirmed.); confirmed by a synthesized witness: This witness isolates the exact intra-entry premature-EOF path that R1 governs. I generate in memory a well-formed tar containing one entry (size 600) via TarArchiveOutputStream, then trim the underlying bytes to just the 512-byte header record so the raw stream reports EOF immediately after the entry header while available()=entrySize-entryOffset=600>0. Constructing a fresh TarArchiveInputStream over that truncated bytes and calling getNextTarEntry yields the entry; the subsequent read(byte[],int,int) then has numToRead>0 (capped to the still-available 600) yet receives -1 from the underlying stream. Gold hits the new branch and throws IOException(\"Truncated TAR archive\"); the pre-fix code merely flips hasHitEOF and returns -1. I confirmed the candidate executes PASSED against gold and FAILED against buggy via run_test. The message is asserted (assertEquals), which is not pinned by any visible test (the only visible truncation-related test, shouldThrowAnExceptionOnTruncatedEntries, asserts only IOException.class using an external COMPRESS-279.tar and never the message), and the archive is synthesized wholly inside the method body, so the witness is independent of any pre-existing test fixture/data file.",
+    "confidence": "Medium"
+  }
+}

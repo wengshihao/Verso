@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-13343",
+  "status": "ok",
+  "duration_seconds": 316.0278930000495,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13343",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a FileField (and hence ImageField, which inherits its deconstruct path) is constructed with a callable as its storage argument, calling deconstruct() on it must emit the original callable as the value of the 'storage' kwarg, i.e. a reference to the callable, rather than the evaluated Storage instance produced by calling that callable.",
+        "subject": "django.db.models.fields.files.FileField.deconstruct",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"However, by evaluating the callable during deconstruction, the assumption that the Storage may vary at runtime is broken... when the FileField is deconstructed (which happens during makemigrations), the actual evaluated Storage is inlined into the deconstructed FileField. The correct behavior should be to return a reference to the original callable during deconstruction.\" Source (deconstruct): \"if self.storage is not default_storage:\\n    kwargs['storage'] = self.storage\""
+      },
+      {
+        "id": "R2",
+        "statement": "A FileField/ImageField whose storage argument is a callable continues to resolve, for actual runtime use, to a concrete django.core.files.storage.Storage instance (the field's storage attribute a FieldFile operates against must remain a real Storage, not the raw callable).",
+        "subject": "django.db.models.fields.files.FileField.__init__ / .storage",
+        "hunk_ids": [],
+        "cited_from": "docs/topics/files.txt: \"You can use a callable as the storage parameter for django.db.models.FileField or django.db.models.ImageField. This allows you to modify the used storage at runtime... Your callable will be evaluated when your models classes are loaded, and must return an instance of django.core.files.storage.Storage.\" Source (__init__): \"if callable(self.storage):\\n    self.storage = self.storage()\\n    if not isinstance(self.storage, Storage):\\n        raise TypeError(...)\"; FieldFile uses `self.storage = field.storage`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "Deconstructing a FileField that was initialized with a callable storage (via the storage or storage-or-default path that evaluates the callable into a Storage instance) yields a kwargs['storage'] value that is that same original callable rather than the field's resolved Storage instance, so the callable survives a deconstruct/reconstruct round-trip.",
+        "subject": "FileField.deconstruct",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "Deconstructing a FileField still emits in kwargs['storage'] the non-default Storage instance (as opposed to the default_storage) when the field's storage was configured as an actual Storage instance rather than as a callable, preserving the pre-existing behavior for the non-callable path.",
+        "subject": "FileField.deconstruct",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 states directly that deconstructing a FileField constructed with a callable storage must emit the original callable (a reference) as the storage kwarg rather than the evaluated Storage instance, exactly matching the deconstruct/reconstruct round-trip survival SI-1 requires."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible evidence frames the behavior in terms of the callable case and quotes the current deconstruct guard ('if self.storage is not default_storage: kwargs[\"storage\"] = self.storage'), but nothing in S_vis explicitly confirms that the non-callable path with an actual non-default Storage instance must continue emitting that instance after the fix; that preservation is implied rather than pinned down."
+      }
+    ],
+    "target_requirement_id": "SI-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement [SI-2] asserts that deconstructing a FileField whose storage was configured as a non-default, non-callable Storage *instance* still emits that same non-default instance in kwargs['storage'].\n\nAnalyzing the code: in __init__, neither the buggy nor the gold version sets `_storage_callable` when the given storage is a non-callable Storage instance — both simply assign `self.storage = storage`. In deconstruct, the buggy line is `kwargs['storage'] = self.storage`, while gold is `kwargs['storage'] = getattr(self, '_storage_callable', self.storage)`. Since `_storage_callable` is never set on the non-callable path (it is only assigned in __init__ when `callable(self.storage)`), the `getattr` fallback yields exactly `self.storage` — identical to the buggy behavior.\n\nI wrote a candidate test that constructs `FileField(upload_to='uploads', storage=<FileSystemStorage instance>)`, calls `deconstruct()`, and asserts `kwargs['storage'] is storage`. I executed it against BOTH gold and buggy: it PASSED against gold and PASSED against buggy. So there is no observable behavior separating the two for the non-callable Storage-instance path that SI-2 targets. The patch only affects the callable branch (capturing/emitting the raw callable), which is outside SI-2's scope as worded (SI-2 explicitly concerns the non-callable/instance path, and states it must \"preserving the pre-existing behavior\", i.e. both are identical). Because every input on the non-callable path produces the same result pre- and post-fix, no pass-on-gold/fail-on-buggy witness exists; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy code lives in django/db/models/fields/files.py: FileField.__init__ overwrites self.storage with storage() when the given storage is callable, permanently discarding the original callable, so FileField.deconstruct (same file) can only serialize the evaluated Storage instance."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ImageField subclasses FileField and does not override __init__/storage handling; its deconstruct calls super().deconstruct() (FileField.deconstruct), so it shares both the runtime-resolution and deconstruct paths."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "upload_to already behaves as the issue's analogy says: __init__ stores the raw upload_to (no evaluation) and deconstruct sets kwargs['upload_to'] = self.upload_to, preserving callables."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "documentation of the callable-storage feature: docs/ref/models/fields.txt (FileField.storage attribute, with '.. versionchanged:: 3.1' note) and docs/topics/files.txt section 'Using a callable'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests exercise these paths in tests/field_deconstruction/tests.py (test_file_field / test_image_field currently only cover upload_to with no storage kwarg) and tests/model_fields/test_filefield.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix covers both FileField and ImageField because ImageField inherits __init__ and delegates deconstruct to FileField.deconstruct via super()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_storage_callable is an attribute set on the field in __init__ only when the given storage is callable; deconstruct uses getattr(self, '_storage_callable', self.storage) so fields without it (non-callable storage, or fields built before this patch via a fresh deconstruct) fall back to self.storage."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The observable behavior change is limited to the callable-storage branch; the non-callable/instance branch is unchanged from the buggy version but retained in H1's fallback expression."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-2]: Requirement [SI-2] claims that deconstructing a FileField whose storage was configured as an actual Storage instance (non-callable) still emits that non-default storage in kwargs['storage'].\n\nI probed this exact claim mechanically: a test that constructs FileField(upload_to=..., storage=<FileSystemStorage instance>) and asserts deconstruct() puts the non-default instance in kwargs['storage'] PASSES against BOTH the gold and the buggy program. This matches the stage notes: the patch only changes the callable-storage branch (capturing _storage_callable during __init__ and using it in deconstruct's fallback); the non-callable/instance branch is byte-for-byte unchanged from the buggy version. Consequently there is no observable behavior that separates buggy from gold for the non-callable path, so no pass-on-gold/fail-on-buggy witness can exist for SI-2.\n\nI also checked the natural oracle locations: tests/field_deconstruction/tests.py (test_file_field/test_image_field), tests/model_fields/test_filefield.py, and tests/model_fields/test_imagefield.py are all [VISIBLE] and contain no storage-kwarg deconstruct assertion (they only cover upload_to/max_length per the stage notes). No tests are recorded as failing against the buggy program, and I found no [HIDDEN] oracle assertion that tests this storage-instance deconstruct claim (the one [HIDDEN] item I located, field_deconstruction/__init__.py, is an empty package marker with no assertions). Since the behavior is identical pre/post fix and no oracle test covers it, found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-2]: Requirement [SI-2] asserts that deconstructing a FileField whose storage was configured as a non-default, non-callable Storage *instance* still emits that same non-default instance in kwargs['storage'].\n\nAnalyzing the code: in __init__, neither the buggy nor the gold version sets `_storage_callable` when the given storage is a non-callable Storage instance — both simply assign `self.storage = storage`. In deconstruct, the buggy line is `kwargs['storage'] = self.storage`, while gold is `kwargs['storage'] = getattr(self, '_storage_callable', self.storage)`. Since `_storage_callable` is never set on the non-callable path (it is only assigned in __init__ when `callable(self.storage)`), the `getattr` fallback yields exactly `self.storage` — identical to the buggy behavior.\n\nI wrote a candidate test that constructs `FileField(upload_to='uploads', storage=<FileSystemStorage instance>)`, calls `deconstruct()`, and asserts `kwargs['storage'] is storage`. I executed it against BOTH gold and buggy: it PASSED against gold and PASSED against buggy. So there is no observable behavior separating the two for the non-callable Storage-instance path that SI-2 targets. The patch only affects the callable branch (capturing/emitting the raw callable), which is outside SI-2's scope as worded (SI-2 explicitly concerns the non-callable/instance path, and states it must \"preserving the pre-existing behavior\", i.e. both are identical). Because every input on the non-callable path produces the same result pre- and post-fix, no pass-on-gold/fail-on-buggy witness exists; found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SI-2] (FileField.deconstruct) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement [SI-2] asserts that deconstructing a FileField whose storage was configured as a non-default, non-callable Storage *instance* still emits that same non-default instance in kwargs['storage'].\n\nAnalyzing the code: in __init__, neither the buggy nor the gold version sets `_storage_callable` when the given storage is a non-callable Storage instance — both simply assign `self.storage = storage`. In deconstruct, the buggy line is `kwargs['storage'] = self.storage`, while gold is `kwargs['storage'] = getattr(self, '_storage_callable', self.storage)`. Since `_storage_callable` is never set on the non-callable path (it is only assigned in __init__ when `callable(self.storage)`), the `getattr` fallback yields exactly `self.storage` — identical to the buggy behavior.\n\nI wrote a candidate test that constructs `FileField(upload_to='uploads', storage=<FileSystemStorage instance>)`, calls `deconstruct()`, and asserts `kwargs['storage'] is storage`. I executed it against BOTH gold and buggy: it PASSED against gold and PASSED against buggy. So there is no observable behavior separating the two for the non-callable Storage-instance path that SI-2 targets. The patch only affects the callable branch (capturing/emitting the raw callable), which is outside SI-2's scope as worded (SI-2 explicitly concerns the non-callable/instance path, and states it must \"preserving the pre-existing behavior\", i.e. both are identical). Because every input on the non-callable path produces the same result pre- and post-fix, no pass-on-gold/fail-on-buggy witness exists; found=false.",
+    "confidence": "Medium"
+  }
+}

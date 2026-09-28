@@ -1,0 +1,94 @@
+{
+  "task_id": "Compress-23",
+  "status": "ok",
+  "duration_seconds": 291.36218525599907,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Compress-23",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Constructing a SevenZFile over a 7-zip archive whose coder declares a large (multi-MB, e.g. 16 MB) dictionary with a compressed header, and iterating its entries via getNextEntry(), must succeed without throwing an exception, and must yield 446 entries before getNextEntry() returns null.",
+        "subject": "SevenZFile (construction + getNextEntry over a 7-zip archive with an LZMA2/LZMA coder using a non-default/large dictionary and a compressed header)",
+        "hunk_ids": [],
+        "cited_from": "test method \"testCompressedHeaderWithNonDefaultDictionarySize\" — \"SevenZFile sevenZFile = new SevenZFile(getFile(\"COMPRESS-256.7z\")); try { int count = 0; while (sevenZFile.getNextEntry() != null) { count++; } assertEquals(446, count); } finally { sevenZFile.close(); }\", with javadoc \"@see \"https://issues.apache.org/jira/browse/COMPRESS-256\"\"."
+      },
+      {
+        "id": "R2",
+        "statement": "Opening (new SevenZFile) an archive created with 7zip 9.20 using compression settings \"Compression method: lzma2\", \"Dictionary size: 16 MB\" must not throw org.tukaani.xz.UnsupportedOptionsException (\"LZMA dictionary is too big for this implementation\") merely because of that declared dictionary size.",
+        "subject": "SevenZFile construction / LZMA decoder path (Coders.LZMADecoder and the LZMA2 decoding path)",
+        "hunk_ids": [],
+        "cited_from": "issue report: \"I created an archiv with 7zip 9.20 ... Compression level: normal Compression method: lzma2 Dictionary size: 16 MB ... I get an exception if I try to open the file with the simple line of code: SevenZFile input = new SevenZFile(new File(arcName)); ... The exception thrown: org.tukaani.xz.UnsupportedOptionsException: LZMA dictionary is too big for this implementation\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When decoding an LZMA-compressed stream, the dictionary size is assembled from the property bytes treating the three high-order bytes (properties[2..4]) as unsigned 0-255 values, so that an archive whose encoded dictionary size requires a high-order property byte with its sign bit set, but whose correctly-interpreted (unsigned) total dictSize does not exceed LZMAInputStream.DICT_SIZE_MAX (4GiB), decrements normally: a LZMAInputStream is built with that accurate dictSize rather than the chunk being spuriously rejected with the IOException \"Dictionary larger than 4GiB maximum size\" (which the sign-extended interpretation would trigger).",
+        "subject": "Coders.LZMADecoder.decode (org.apache.commons.compress.archivers.sevenz)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Visible evidence is black-box only: it establishes that archives with non-default (16MB) dictionary sizes must open and yield entries without throwing. That outcome is consistent with, and likely motivated by, the S_impl fix, but S_vis never states the specific mechanism the S_impl requirement describes (unsigned interpretation of properties[2..4], the DICT_SIZE_MAX/4GiB threshold, or avoiding the exact 'Dictionary larger than 4GiB maximum size' IOException), and the visible quoted exception is a different UnsupportedOptionsException message. Since S_vis pins down the behavior but not the precise implementation contract, the entailment is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R1 claims that an LZMA stream whose unsigned dictSize stays under LZMAInputStream.DICT_SIZE_MAX may be spuriously rejected (\"Dictionary larger than 4GiB maximum size\") by the pre-fix sign-extending decoder (buggy) but is correctly accepted by the post-fix masked decoder (gold). I tried to build an executable witness for this behavior but established it is not constructible in this actual code/environment, for two independent reasons.\n\n(1) API visibility: Coders, LZMADecoder, Coder, and addDecoder are all package-private, and the standalone witness is compiled into an unqualified default package (VersoWitnessCandidate), so I could not reference any decoder directly. The only remaining pathway is via a genuine .7z file, i.e., the exact COMPRESS-256.7z binary fixture used by the [VISIBLE] SevenZFileTest.testCompressedHeaderWithNonDefaultDictionarySize test; that binary is not present/readable as text, and no discriminator can be synthesized through it without reusing that already-visible assertion (which would be worthless). No alternative public API can place an arbitrary oversized dict in the LZMA coder.properties.\n\n(2) Semantically impossible here: I probed the actual runtime classpath and found org.tukaani.xz.LZMAInputStream.DICT_SIZE_MAX == 0x7ffffff0 (2147483632, ~2 GiB), NOT 4 GiB. I analyzed the arithmetic: the pre-fix and post-fix coders differ only in whether they mask the high dictionary�property bytes properties[2..4]. A pre-fix sign-extension �pollution� can only arise from byte properties[4] (shifted by 24, reaching bit 31). Holding property[1] clean, an unsigned total whose byte-4 high bit is set is >= 2^31, which already exceeds DICT_SIZE_MAX (0x7ffffff0), so the post-fix decoder also rejects it with the identical �Dictionary larger than 4GiB maximum size� IOException. When instead byte 4 is clean the two decoders compute identical dictSize and reach the same accept/reject decision. I confirmed this empirically by reflectively allocating a Coder (via Unsafe), setting decompressionMethodId to SevenZMethod.LZMA.id and properties = {0x5d, 0x00,0x00,0x00,0x80} (unsigned dictSize 0x80000000), and invoking Coders.addDecoder: gold threw IOException �Dictionary larger than 4GiB maximum size�, while buggy (whose value became a negative long after OR sign-extension, failing its >max check) reached the xz layer and threw UnsupportedOptionsException �LZMA dictionary is too big...�. That divergence is the reverse of R1 (gold is the one that rejects, buggy only fails later for a different reason), and cannot serve as a gold-pass/buggy-fail witness. No dictSize exists for which buggy throws the spurious \"Dictionary larger\" message while gold accepts, in this environment.\n\nSince every assertion genuinely matching R1 lives in the [VISIBLE] COMPRESS-256 fixture test (which cannot, by the rules, be an oracle witness) and R1�s behavior is not observable through any other reachable code path here, no genuine execution-confirmed witness exists. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three source files are visible in this benchmark: Coders.java (org.apache.commons.compress.archivers.sevenz), SevenZFileTest.java, and AbstractTestCase.java. No SevenZFile.java, SevenZMethod.java, or LZMA2Decoder source is exposed; Coders.java references an LZMA2Decoder not defined in the visible files."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible decoder code: Coders.java coderTable maps SevenZMethod.LZMA2 to an LZMA2Decoder instance and SevenZMethod.LZMA to LZMADecoder, whose decode() builds an org.tukaani.xz.LZMAInputStream and explicitly throws IOException('Dictionary larger than 4GiB maximum size') when the property-derived dictSize exceeds LZMAInputStream.DICT_SIZE_MAX."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The regression test testCompressedHeaderWithNonDefaultDictionarySize uses a binary resource fixture COMPRESS-256.7z (not visible as text) and is annotated @see COMPRESS-256, tying it directly to this bug report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other visible tests (hello-world archives, bla.7z, encrypted, header-compression-off) exercise LZMA2/COPY/DEFLATE/copy reads but are not asserted against this bug and add no LZMA2-large-dictionary expectation beyond R1/R2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch is a one-line, low-level arithmetic fix in LZMADecoder.decode: it masks each of the three higher-order dictionary-property bytes (properties[2..4]) with (byte & 0xffl) before shifting them into the long dictSize accumulator, correcting Java byte sign-extension so high-bit-set property bytes (whose encoded size is legitimate and under 4GiB) no longer corrupt the size and don't cause a false 'Dictionary larger than 4GiB maximum size' IOException."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The decode-time dictSize>DICT_SIZE_MAX check and the LZMAInputStream construction already existed with unchanged semantics; only the way dictSize is assembled, and hence which values pass the 4GiB comparison, changed."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the target requirement R1: Coders.LZMADecoder.decode must interpret the three high-order dictionary-property bytes (properties[2..4]) as unsigned 0-255 values, so an LZMA-compressed stream whose correctly-decoded dictSize is under LZMAInputStream.DICT_SIZE_MAX (4GiB) is built successfully instead of spuriously throwing \"Dictionary larger than 4GiB maximum size\".\n\nThe oracle contains three test files: SevenZFileTest.java ([VISIBLE]), SevenZTestCase.java ([HIDDEN]), and SevenZOutputFileTest.java ([HIDDEN]). The only test that is reported to fail against the buggy program (and is directly tied to the non-default-dictionary-size regression bug, via its COMPRESS-256 fixture) is SevenZFileTest.testCompressedHeaderWithNonDefaultDictionarySize. However, that entire file is labeled [VISIBLE], and per the workflow rules an assertion drawn from [VISIBLE] content can never serve as a witness, no matter how well it matches R1 or how it passes/fails across buggy/gold. So it is disqualified a priori.\n\nI then checked both [HIDDEN] files exhaustively. SevenZTestCase only contains create-then-read archive round-trips built at run time with SevenZOutputFile using the COPY, LZMA2, BZIP2 and DEFLATE methods — there is no SevenZMethod.LZMA round-trip, and none of these tests constructs or constrains a non-default/large dictionary size whose high-order property byte would have its sign bit set; they write only tiny default-dictionary records that cannot exercise the sign-extension arithmetic or the DICT_SIZE_MAX comparison in LZMADecoder.decode. SevenZOutputFileTest (empty files, directories, COMPRESS-252 iteration) likewise uses only default compression/small dictionaries and never places a high-bit dictionary property into an LZMA header. No [HIDDEN] test asserts the specific behavior R1 describes (unsigned assembly of a sub-4GiB dictSize from a high-sign-bit property byte).\n\nSince every assertion that genuinely corresponds to R1 lives in the [VISIBLE] SevenZFileTest and none of the [HIDDEN] tests exercises R1's behavior, no witness can be built. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: R1 claims that an LZMA stream whose unsigned dictSize stays under LZMAInputStream.DICT_SIZE_MAX may be spuriously rejected (\"Dictionary larger than 4GiB maximum size\") by the pre-fix sign-extending decoder (buggy) but is correctly accepted by the post-fix masked decoder (gold). I tried to build an executable witness for this behavior but established it is not constructible in this actual code/environment, for two independent reasons.\n\n(1) API visibility: Coders, LZMADecoder, Coder, and addDecoder are all package-private, and the standalone witness is compiled into an unqualified default package (VersoWitnessCandidate), so I could not reference any decoder directly. The only remaining pathway is via a genuine .7z file, i.e., the exact COMPRESS-256.7z binary fixture used by the [VISIBLE] SevenZFileTest.testCompressedHeaderWithNonDefaultDictionarySize test; that binary is not present/readable as text, and no discriminator can be synthesized through it without reusing that already-visible assertion (which would be worthless). No alternative public API can place an arbitrary oversized dict in the LZMA coder.properties.\n\n(2) Semantically impossible here: I probed the actual runtime classpath and found org.tukaani.xz.LZMAInputStream.DICT_SIZE_MAX == 0x7ffffff0 (2147483632, ~2 GiB), NOT 4 GiB. I analyzed the arithmetic: the pre-fix and post-fix coders differ only in whether they mask the high dictionary�property bytes properties[2..4]. A pre-fix sign-extension �pollution� can only arise from byte properties[4] (shifted by 24, reaching bit 31). Holding property[1] clean, an unsigned total whose byte-4 high bit is set is >= 2^31, which already exceeds DICT_SIZE_MAX (0x7ffffff0), so the post-fix decoder also rejects it with the identical �Dictionary larger than 4GiB maximum size� IOException. When instead byte 4 is clean the two decoders compute identical dictSize and reach the same accept/reject decision. I confirmed this empirically by reflectively allocating a Coder (via Unsafe), setting decompressionMethodId to SevenZMethod.LZMA.id and properties = {0x5d, 0x00,0x00,0x00,0x80} (unsigned dictSize 0x80000000), and invoking Coders.addDecoder: gold threw IOException �Dictionary larger than 4GiB maximum size�, while buggy (whose value became a negative long after OR sign-extension, failing its >max check) reached the xz layer and threw UnsupportedOptionsException �LZMA dictionary is too big...�. That divergence is the reverse of R1 (gold is the one that rejects, buggy only fails later for a different reason), and cannot serve as a gold-pass/buggy-fail witness. No dictSize exists for which buggy throws the spurious \"Dictionary larger\" message while gold accepts, in this environment.\n\nSince every assertion genuinely matching R1 lives in the [VISIBLE] COMPRESS-256 fixture test (which cannot, by the rules, be an oracle witness) and R1�s behavior is not observable through any other reachable code path here, no genuine execution-confirmed witness exists. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (Coders.LZMADecoder.decode (org.apache.commons.compress.archivers.sevenz)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R1 claims that an LZMA stream whose unsigned dictSize stays under LZMAInputStream.DICT_SIZE_MAX may be spuriously rejected (\"Dictionary larger than 4GiB maximum size\") by the pre-fix sign-extending decoder (buggy) but is correctly accepted by the post-fix masked decoder (gold). I tried to build an executable witness for this behavior but established it is not constructible in this actual code/environment, for two independent reasons.\n\n(1) API visibility: Coders, LZMADecoder, Coder, and addDecoder are all package-private, and the standalone witness is compiled into an unqualified default package (VersoWitnessCandidate), so I could not reference any decoder directly. The only remaining pathway is via a genuine .7z file, i.e., the exact COMPRESS-256.7z binary fixture used by the [VISIBLE] SevenZFileTest.testCompressedHeaderWithNonDefaultDictionarySize test; that binary is not present/readable as text, and no discriminator can be synthesized through it without reusing that already-visible assertion (which would be worthless). No alternative public API can place an arbitrary oversized dict in the LZMA coder.properties.\n\n(2) Semantically impossible here: I probed the actual runtime classpath and found org.tukaani.xz.LZMAInputStream.DICT_SIZE_MAX == 0x7ffffff0 (2147483632, ~2 GiB), NOT 4 GiB. I analyzed the arithmetic: the pre-fix and post-fix coders differ only in whether they mask the high dictionary�property bytes properties[2..4]. A pre-fix sign-extension �pollution� can only arise from byte properties[4] (shifted by 24, reaching bit 31). Holding property[1] clean, an unsigned total whose byte-4 high bit is set is >= 2^31, which already exceeds DICT_SIZE_MAX (0x7ffffff0), so the post-fix decoder also rejects it with the identical �Dictionary larger than 4GiB maximum size� IOException. When instead byte 4 is clean the two decoders compute identical dictSize and reach the same accept/reject decision. I confirmed this empirically by reflectively allocating a Coder (via Unsafe), setting decompressionMethodId to SevenZMethod.LZMA.id and properties = {0x5d, 0x00,0x00,0x00,0x80} (unsigned dictSize 0x80000000), and invoking Coders.addDecoder: gold threw IOException �Dictionary larger than 4GiB maximum size�, while buggy (whose value became a negative long after OR sign-extension, failing its >max check) reached the xz layer and threw UnsupportedOptionsException �LZMA dictionary is too big...�. That divergence is the reverse of R1 (gold is the one that rejects, buggy only fails later for a different reason), and cannot serve as a gold-pass/buggy-fail witness. No dictSize exists for which buggy throws the spurious \"Dictionary larger\" message while gold accepts, in this environment.\n\nSince every assertion genuinely matching R1 lives in the [VISIBLE] COMPRESS-256 fixture test (which cannot, by the rules, be an oracle witness) and R1�s behavior is not observable through any other reachable code path here, no genuine execution-confirmed witness exists. found=false.",
+    "confidence": "Medium"
+  }
+}

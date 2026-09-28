@@ -1,0 +1,122 @@
+{
+  "task_id": "Jsoup-20",
+  "status": "ok",
+  "duration_seconds": 189.62387583700183,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-20",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "getCharsetFromContentType extracts the charset from an unquoted content-type header (e.g. 'text/html;charset=utf-8 ', 'text/html; charset=UTF-8', 'text/html; charset=ISO-8859-1'), trimming surrounding whitespace and returning it uppercased.",
+        "subject": "org.jsoup.helper.DataUtil.getCharsetFromContentType(String)",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(\"UTF-8\", DataUtil.getCharsetFromContentType(\"text/html;charset=utf-8 \"));\nassertEquals(\"UTF-8\", DataUtil.getCharsetFromContentType(\"text/html; charset=UTF-8\"));\nassertEquals(\"ISO-8859-1\", DataUtil.getCharsetFromContentType(\"text/html; charset=ISO-8859-1\"));"
+      },
+      {
+        "id": "R2",
+        "statement": "getCharsetFromContentType also recognizes a charset declared inside double quotes in the content-type (e.g. 'text/html; charset=\"utf-8\"', 'text/html;charset=\"ISO-8859-1\"'), returning it uppercased and unquoted.",
+        "subject": "org.jsoup.helper.DataUtil.getCharsetFromContentType(String)",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(\"UTF-8\", DataUtil.getCharsetFromContentType(\"text/html; charset=\\\"utf-8\\\"\"));\nassertEquals(\"UTF-8\", DataUtil.getCharsetFromContentType(\"text/html;charset=\\\"utf-8\\\"\"));\nassertEquals(\"ISO-8859-1\", DataUtil.getCharsetFromContentType(\"text/html; charset=\\\"ISO-8859-1\\\"\"));"
+      },
+      {
+        "id": "R3",
+        "statement": "getCharsetFromContentType returns null when the content-type contains no charset declaration ('text/html') and when the argument is null.",
+        "subject": "org.jsoup.helper.DataUtil.getCharsetFromContentType(String)",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(null, DataUtil.getCharsetFromContentType(\"text/html\"));\nassertEquals(null, DataUtil.getCharsetFromContentType(null));"
+      },
+      {
+        "id": "R4",
+        "statement": "parseByteData given bytes that decode under the provided (UTF-8) charset to a document text beginning with the spurious byte-order-mark character U+FEFF followed by '<html>...' returns a Document that parses normally, so that doc.head().text() equals the title element's text ('One').",
+        "subject": "org.jsoup.helper.DataUtil.parseByteData(ByteBuffer, String, String, Parser)",
+        "hunk_ids": [],
+        "cited_from": "String html = \"\\uFEFF<html><head><title>One</title></head><body>Two</body></html>\";\nByteBuffer buffer = Charset.forName(\"UTF-8\").encode(html);\nDocument doc = DataUtil.parseByteData(buffer, \"UTF-8\", \"http://foo.com/\", Parser.htmlParser());\nassertEquals(\"One\", doc.head().text());"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When DataUtil.parseByteData is about to parse the final document text (the code path where doc==null after decoding, i.e. the explicitly-specified charset path and the meta-detected-different-charset re-decode path), if the decoded text begins with a byte-order-mark character (U+FEFF/65279), that leading BOM character is removed from the text before it is parsed, so the resulting parsed Document does not begin with a stray BOM character and its real content is not pushed straight into head mode by the spurious BOM.",
+        "subject": "DataUtil.parseByteData",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_vis R4 (with its cited test) demonstrates that parseByteData on the explicitly-specified UTF-8 charset path yields a correctly parsed Document when the decoded text begins with U+FEFF, which is behaviorally consistent with BOM removal. However, the S_impl requirement asserts a specific mechanism (removing the leading BOM before parsing) on BOTH the explicitly-specified charset path AND the meta-detected re-decode path; S_vis gives no evidence about the re-decode path nor explicitly pins the removal mechanism, so it does not fully pin down this exact two-path requirement."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R1 is: DataUtil.parseByteData strips a leading U+FEFF before the final parse on the doc==null branch (reached by the explicitly-specified-charset path and by the meta-detected-different-charset re-decode path), so the parsed Document does not begin with a stray BOM and its content is not pushed into head mode.\n\nInvestigation: The repo exposes only DataUtil.java and DataUtilTest.java. The gold vs buggy diff is exactly the addition of `if (docData.charAt(0) == 65279) docData = docData.substring(1);` inside the `if (doc == null)` final-parse block. In DataUtilTest.java (whose full content is [VISIBLE], and indeed it is the sole source of all S_vis requirements R1..R4), the test `discardsSpuriousByteOrderMark` encodes \"\\uFEFF<html>...\" in UTF-8 and calls parseByteData(buffer, \"UTF-8\", ..., htmlParser), asserting doc.head().text() == \"One\". That assertion is entirely visible to any repair context, so a witness that reinvents it (e.g., my mechanically-working UTF-16BE variant below) would merely restate a fact already pinned by visible material — policy forbids resting a Witness on it.\n\nI analyzed the second claimed path (meta-detected different-charset re-decode). To make gold and buggy actually differ there, the re-decoded docData must itself begin with U+FEFF AND the first UTF-8 decode must have yielded an ASCII-parseable <meta charset=... > tag (differing from UTF-8) so the re-decode fires. Any single-byte shared-ascii charset (UTF-8 pass reads the same bytes for the ASCII meta) cannot map any leading byte to U+FEFF. Only multi-byte charsets (UTF-16/32) can produce U+FEFF, but for those same charsets the first UTF-8 decode of those bytes cannot read an ASCII meta tag, so the re-decode is never triggered. Thus the BOM-strip on the re-decode path is unreachable-with-effect under valid inputs — gold and buggy coincide there.\n\nMechanical confirmation of the (non-qualifying, visible-equivalent) discriminator via the public DataUtil.load(InputStream, charset, uri) entry on the specified-charset path: encoding \"\\uFEFF<html>...<title>alpha</title>...\" in UTF-16BE and asserting doc.head().text()==\"alpha\" PASSED on gold and FAILED on buggy (got \"\"). This confirms the tooling/mechanism, but because that exact branch+consequence is already asserted verbatim by the [VISIBLE] discardsSpuriousByteOrderMark UTF-8 test, trading the charset/entry point for different words does not create a hidden-fact Witness. Since no [HIDDEN] oracle assertion uniquely enforces R1 and the only observable R1 behavior is visible material, I conclude found=false (matching the prior Oracle Search Agent)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo visible here is minimal: only src/main/java/org/jsoup/helper/DataUtil.java and src/test/java/org/jsoup/helper/DataUtilTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DataUtil is an internal static utility (final class, private ctor) with public load(...) methods, and package-private static parseByteData, readToByteBuffer, getCharsetFromContentType, and a static defaultCharset='UTF-8'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getCharsetFromContentType parses via a regex charsetPattern = \"(?i)\\\\bcharset=\\\\s*\\\"?([^\\\\s;\\\"]*)\", trimming and uppercasing group(1)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "parseByteData handles two paths: an explicit charsetName given (decode directly) versus charsetName==null (safe UTF-8 decode, then scan for a <meta http-equiv=content-type> or <meta charset> element and re-decode if a different charset is found)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "parseByteData's comment notes that a leading byte-order-mark should be stripped after decoding 'otherwise will cause the parser to go straight into head mode' - this is the area the BOM regression test (R4) probes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The original issue text (tracker link #134) was unavailable, so all extractable requirements derive from the test file and (as context) the DataUtil code; there is no separately-specified expected behavior in the issue text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "getCharsetFromContentType is only used internally by parseByteData (for http-equiv meta content attribute); the test file also exercises it directly."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch H0 adds a leading-U+FEFF strip in the outer 'if (doc == null)' final parse block of parseByteData; that block is only reached on the specified-charset path and the meta-detected-different-charset re-decode path, not the default meta-less UTF-8 path (where doc is already set by the first parse)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new code reads docData.charAt(0) unconditionally after doc==null; in the differing-charset re-decode path the text was already successfully parsed once, ensuring non-empty."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 is about DataUtil.parseByteData stripping a leading U+FEFF BOM on the final-parse (doc==null) path reached by an explicitly-specified charset (and the meta-detected different-charset re-decode path). I examined all three oracle test files.\n\n1) DataUtilTest.java — labeled [VISIBLE]. It contains the sole test that enforces R1's behavior: `discardsSpuriousByteOrderMark`, which encodes \"\\uFEFF<html><head>...\" in UTF-8, calls DataUtil.parseByteData(buffer, \"UTF-8\", ..., Parser.htmlParser()), and asserts doc.head().text() equals \"One\" (proving the BOM was removed and content wasn't pushed into head mode). This is literally the currently-failing test listed in the brief. Because its entire content is [VISIBLE], its assertion was already in plain sight to any repair context and therefore cannot serve as a Witness for a hidden requirement — the system prompt explicitly forbids resting a witness on [VISIBLE] assertions.\n\n2) ParseTest.java — [HIDDEN]. These are integration parses from real-world files. The charset-related tests (testBaidu, testBaiduVariant, testHtml5Charset, testSupplyParserToDataStream) exercise the meta charset-detection/re-decode path, but none of their inputs begin with a BOM and their assertions concern charset detection / document text, not the removal of a leading BOM from parseByteData text. No assertion here enforces R1's BOM-stripping behavior (they would pass whether or not R1's code was present, since there is no BOM to strip).\n\n3) XmlTreeBuilderTest.java — [HIDDEN]. Pure XML-parser unit tests (parse strings/documents via XmlTreeBuilder / xmlParser), completely unrelated to DataUtil.parseByteData and its BOM handling.\n\nSo although the exact behavior in R1 is indeed tested by an oracle test (discardsSpuriousByteOrderMark, which fails on buggy and passes on gold), that test lives in [VISIBLE] content and is therefore ineligible as a Witness. There is no [HIDDEN] oracle assertion that genuinely enforces R1. Conclusion: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: R1 is: DataUtil.parseByteData strips a leading U+FEFF before the final parse on the doc==null branch (reached by the explicitly-specified-charset path and by the meta-detected-different-charset re-decode path), so the parsed Document does not begin with a stray BOM and its content is not pushed into head mode.\n\nInvestigation: The repo exposes only DataUtil.java and DataUtilTest.java. The gold vs buggy diff is exactly the addition of `if (docData.charAt(0) == 65279) docData = docData.substring(1);` inside the `if (doc == null)` final-parse block. In DataUtilTest.java (whose full content is [VISIBLE], and indeed it is the sole source of all S_vis requirements R1..R4), the test `discardsSpuriousByteOrderMark` encodes \"\\uFEFF<html>...\" in UTF-8 and calls parseByteData(buffer, \"UTF-8\", ..., htmlParser), asserting doc.head().text() == \"One\". That assertion is entirely visible to any repair context, so a witness that reinvents it (e.g., my mechanically-working UTF-16BE variant below) would merely restate a fact already pinned by visible material — policy forbids resting a Witness on it.\n\nI analyzed the second claimed path (meta-detected different-charset re-decode). To make gold and buggy actually differ there, the re-decoded docData must itself begin with U+FEFF AND the first UTF-8 decode must have yielded an ASCII-parseable <meta charset=... > tag (differing from UTF-8) so the re-decode fires. Any single-byte shared-ascii charset (UTF-8 pass reads the same bytes for the ASCII meta) cannot map any leading byte to U+FEFF. Only multi-byte charsets (UTF-16/32) can produce U+FEFF, but for those same charsets the first UTF-8 decode of those bytes cannot read an ASCII meta tag, so the re-decode is never triggered. Thus the BOM-strip on the re-decode path is unreachable-with-effect under valid inputs — gold and buggy coincide there.\n\nMechanical confirmation of the (non-qualifying, visible-equivalent) discriminator via the public DataUtil.load(InputStream, charset, uri) entry on the specified-charset path: encoding \"\\uFEFF<html>...<title>alpha</title>...\" in UTF-16BE and asserting doc.head().text()==\"alpha\" PASSED on gold and FAILED on buggy (got \"\"). This confirms the tooling/mechanism, but because that exact branch+consequence is already asserted verbatim by the [VISIBLE] discardsSpuriousByteOrderMark UTF-8 test, trading the charset/entry point for different words does not create a hidden-fact Witness. Since no [HIDDEN] oracle assertion uniquely enforces R1 and the only observable R1 behavior is visible material, I conclude found=false (matching the prior Oracle Search Agent)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (DataUtil.parseByteData) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R1 is: DataUtil.parseByteData strips a leading U+FEFF before the final parse on the doc==null branch (reached by the explicitly-specified-charset path and by the meta-detected-different-charset re-decode path), so the parsed Document does not begin with a stray BOM and its content is not pushed into head mode.\n\nInvestigation: The repo exposes only DataUtil.java and DataUtilTest.java. The gold vs buggy diff is exactly the addition of `if (docData.charAt(0) == 65279) docData = docData.substring(1);` inside the `if (doc == null)` final-parse block. In DataUtilTest.java (whose full content is [VISIBLE], and indeed it is the sole source of all S_vis requirements R1..R4), the test `discardsSpuriousByteOrderMark` encodes \"\\uFEFF<html>...\" in UTF-8 and calls parseByteData(buffer, \"UTF-8\", ..., htmlParser), asserting doc.head().text() == \"One\". That assertion is entirely visible to any repair context, so a witness that reinvents it (e.g., my mechanically-working UTF-16BE variant below) would merely restate a fact already pinned by visible material — policy forbids resting a Witness on it.\n\nI analyzed the second claimed path (meta-detected different-charset re-decode). To make gold and buggy actually differ there, the re-decoded docData must itself begin with U+FEFF AND the first UTF-8 decode must have yielded an ASCII-parseable <meta charset=... > tag (differing from UTF-8) so the re-decode fires. Any single-byte shared-ascii charset (UTF-8 pass reads the same bytes for the ASCII meta) cannot map any leading byte to U+FEFF. Only multi-byte charsets (UTF-16/32) can produce U+FEFF, but for those same charsets the first UTF-8 decode of those bytes cannot read an ASCII meta tag, so the re-decode is never triggered. Thus the BOM-strip on the re-decode path is unreachable-with-effect under valid inputs — gold and buggy coincide there.\n\nMechanical confirmation of the (non-qualifying, visible-equivalent) discriminator via the public DataUtil.load(InputStream, charset, uri) entry on the specified-charset path: encoding \"\\uFEFF<html>...<title>alpha</title>...\" in UTF-16BE and asserting doc.head().text()==\"alpha\" PASSED on gold and FAILED on buggy (got \"\"). This confirms the tooling/mechanism, but because that exact branch+consequence is already asserted verbatim by the [VISIBLE] discardsSpuriousByteOrderMark UTF-8 test, trading the charset/entry point for different words does not create a hidden-fact Witness. Since no [HIDDEN] oracle assertion uniquely enforces R1 and the only observable R1 behavior is visible material, I conclude found=false (matching the prior Oracle Search Agent).",
+    "confidence": "Medium"
+  }
+}

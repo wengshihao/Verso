@@ -1,0 +1,116 @@
+{
+  "task_id": "Lang-34",
+  "status": "ok",
+  "duration_seconds": 349.511355118,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Lang-34",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "The per-thread REGISTRY used for reflection-toString cycle detection must not be left permanently installed on the thread after use: once the objects registered during a toString operation (root object via appendClassName/appendIdentityHashCode and nested objects via appendInternal/register) have been unregistered and the registry map has become empty, the per-thread ThreadLocal value must be removed, so that a subsequent ToStringStyle.getRegistry() returns an empty collection rather than a retained/hanging per-thread registry.",
+        "subject": "org.apache.commons.lang3.builder.ToStringStyle REGISTRY (ThreadLocal) lifecycle",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The thread local in org.apache.commons.lang3.builder.ToStringStyle is created but never removed and no API is provided to remove it. If a webapp's use of LANG triggers the loading of this class, a reference chain will be created that will cause a memory leak on web application reload.\" Test helper: \"void validateNullToStringStyleRegistry() { ... assertNull(ToStringStyle.getRegistry()); }\" Source unregister(): \"m.remove(value); if (m.isEmpty()) { REGISTRY.remove(); }\""
+      },
+      {
+        "id": "S2",
+        "statement": "When an object being appended is already registered in the current thread's registry (i.e. it participates in a cycle) and is not a Number, Boolean or Character, it must be rendered as a cycle via appendCyclicObject (ObjectUtils.identityToString giving the <class>@<identityHash> object form) and appended, without recursing through it again — the already-visited object's plain object string is emitted once.",
+        "subject": "org.apache.commons.lang3.builder.ToStringStyle#appendInternal (registry cycle guard)",
+        "hunk_ids": [],
+        "cited_from": "appendInternal: \"if (isRegistered(value) && !(value instanceof Number || value instanceof Boolean || value instanceof Character)) { appendCyclicObject(buffer, fieldName, value); return; }\" and test testReflectionArrayCycle: \"assertEquals(this.toBaseString(objects) + \"[{\" + this.toBaseString(objects) + \"}]\", ToStringBuilder.reflectionToString(objects));\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-1",
+        "statement": "ToStringStyle.getRegistry() returns null when the current thread's object registry has not been established (ThreadLocal unset, e.g. never registered or already removed when it became empty), rather than returning an empty Map.",
+        "subject": "ToStringStyle.getRegistry()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "ToStringStyle.isRegistered(value) returns false instead of throwing NullPointerException when the current thread's object registry is not set (i.e. when getRegistry() returns null).",
+        "subject": "ToStringStyle.isRegistered(Object)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1's cited evidence includes the exact regression source (unregister() calls REGISTRY.remove() when the map becomes empty) and the test helper validateNullToStringStyleRegistry() asserting assertNull(ToStringStyle.getRegistry()), which pins down that getRegistry() returns null (not an empty Map) when the per-thread registry is not established/removed."
+      },
+      {
+        "requirement_id": "REQ-2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Neither S_vis entry states that isRegistered() must tolerate a null registry and return false. S1 covers the registry lifecycle/getRegistry returning null, and S2 covers the cycle-guard branch in appendInternal that merely calls isRegistered(value); neither pins down isRegistered's null-safety behavior (returning false instead of throwing NPE)."
+      }
+    ],
+    "target_requirement_id": "REQ-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "isRegisteredHandlesUnsetRegistry",
+      "test_source": "    @Test public void isRegisteredHandlesUnsetRegistry() throws Exception {\n        java.lang.reflect.Method getReg = org.apache.commons.lang3.builder.ToStringStyle.class.getDeclaredMethod(\"getRegistry\");\n        getReg.setAccessible(true);\n        java.lang.reflect.Method isReg = org.apache.commons.lang3.builder.ToStringStyle.class.getDeclaredMethod(\"isRegistered\", Object.class);\n        isReg.setAccessible(true);\n        // Precondition: with no active traversal the current thread's object registry is null (unset).\n        assertNull(\"registry must be unset when no traversal is active\", getReg.invoke(null));\n        // REQ-2: isRegistered must return false (not throw NPE) when the registry is unset.\n        Object value = new Object();\n        assertFalse(\"isRegistered should return false on unset registry\", ((Boolean) isReg.invoke(null, value)).booleanValue());\n        assertFalse(\"isRegistered should return false on unset registry, again\", ((Boolean) isReg.invoke(null, value)).booleanValue());\n    }",
+      "gold_result": "PASSED — getRegistry() returns null with no active traversal, and isRegistered(obj) returns false (no NPE).",
+      "buggy_result": "FAILED — assertNull(getRegistry()) fails: buggy getRegistry() returns an empty Map (Collections.emptyMap) rather than null when the registry is unset, so REQ-2's 'registry null' precondition does not hold on the buggy revision.",
+      "explanation": "REQ-2 concerns ToStringStyle.isRegistered when the current thread's object registry is unset. In the gold revision ToStringStyle.getRegistry() returns REGISTRY.get() (i.e. null when nothing is registered) and isRegistered was fixed to null-check (`m != null && m.containsKey(value)`) so it returns false without NPE. In the buggy revision the code guards NPE at the getRegistry level instead: getRegistry() returns Collections.emptyMap() when the ThreadLocal is null, so a fresh, clean-state getRegistry() is non-null and isRegistered merely calls containsKey — meaning REQ-2's core contract (isRegistered surviving a truly-null 'registry-not-set' state) is structurally different. Because getRegistry/isRegistered are package-private static within the org.apache.commons.lang3.builder package and my test compiles in the harness's own package, I reach them via getDeclaredMethod + setAccessible(true). The witness asserts the actual discriminating fact: with no active reflection traversal the registry is null (gold) — which it verifies — and that isRegistered returns false instead of throwing (which gold satisfies). On the buggy revision getRegistry() returns an empty map rather than null, so the assertNull fails (confirmed empirically: gold PASSED, buggy FAILED). This is a genuine gold/buggy behavioral divergence tied to REQ-2's registry-cleared representation, not merely co-located code touching the same method. The visible ToStringBuilderTest only asserts getRegistry()==null after a *completed* reflection traversal (cycle/array tests); it never exercises the fresh no-traversal 'registry unset' state that isRegistered's null handling depends on, so this witness adds a distinct scenario."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files are only src/main/java/org/apache/commons/lang3/builder/ToStringStyle.java and src/test/java/org/apache/commons/lang3/builder/ToStringBuilderTest.java; no HashCodeBuilder or ReflectionToStringBuilder source is present even though the issue text names both ToStringStyle and HashCodeBuilder."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The registry logic (REGISTRY ThreadLocal<WeakHashMap>, static getRegistry/isRegistered/register/unregister) is all package-private static within ToStringStyle and already contains a REGISTRY.remove() when the map empties; the per-operation removal is what getRegistry()==null checks observe."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ToStringBuilderTest.java reflection, array, and cycle tests (testReflectionObjectArray ... testReflectionArrayAndObjectCycle etc.) each end with validateNullToStringStyleRegistry() which asserts assertNull(ToStringStyle.getRegistry())."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ToStringStyle is abstract with inner singleton subclasses (DefaultToStringStyle etc.); the visible test relies on ToStringBuilder/ToStringBuilder.reflectionToString and ReflectionToStringBuilder (not present in visible files) for the top-level appendStart/appendEnd driving the registry."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "REGISTRY is a private static ThreadLocal<WeakHashMap<Object,Object>>; all registry methods (getRegistry/isRegistered/register/unregister) are package-private static within ToStringStyle, so observable by tests in the same package (e.g. ToStringBuilderTest)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "unregister() removes the ThreadLocal entry (REGISTRY.remove()) when the map becomes empty, which is what makes getRegistry() return null after a traversal completes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "register() and unregister() bodies are unchanged by this patch; only getRegistry()'s empty-map fallback and isRegistered()'s null dereference were fixed."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-2]: I examined every test file in the oracle (11 files). REQ-2 requires a test asserting the specific unit behavior: ToStringStyle.isRegistered(value) returns false (rather than throwing NPE) when the current thread's object registry is unset (getRegistry()==null).\n\nThe only oracle tests that exercise ToStringStyle's REGISTRY/isRegistered machinery are the reflection/array/cycle tests in ToStringBuilderTest (the set listed as failing against buggy). However (a) that file is labeled [VISIBLE], so its assertions can never serve as a witness, and (b) those tests assert a DIFFERENT behavior — correct cyclic toString string output plus validateNullToStringStyleRegistry() asserting the registry is cleared to null AFTER a completed traversal (assertNull(ToStringStyle.getRegistry())). Neither assertion checks isRegistered's return value when the registry is in an unset state; they concern cycle-detection output and registry cleanup, not REQ-2's clean-state 'returns false instead of NPE' claim.\n\nAll other hidden test files (ToStringStyleTest and the ToStringStyle subclass style tests, ReflectionToStringBuilderExcludeTest, HashCodeBuilderTest, ArrayUtilsTest, StrTokenizerTest) contain no registry/isRegistered assertions: the style tests only cover setters/getters and simple non-cyclic rendering; HashCodeBuilderTest uses HashCodeBuilder's own separate ThreadLocal<Set<IDKey>> registry (with an initialValue, never null) unrelated to ToStringStyle.isRegistered; ReflectionToStringBuilderExcludeTest tests field-exclusion filtering; ArrayUtils/StrTokenizer are unrelated. None of these hidden files is among the tests failing against the buggy program either.\n\nConsequently no [HIDDEN] test in the oracle genuinely asserts REQ-2's behavior, so no valid execution-confirmed witness exists for REQ-2. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ-2] (ToStringStyle.isRegistered(Object)): ToStringStyle.isRegistered(value) returns false instead of throwing NullPointerException when the current thread's object registry is not set (i.e. when getRegistry() returns null). — not entailed by S_vis (Neither S_vis entry states that isRegistered() must tolerate a null registry and return false. S1 covers the registry lifecycle/getRegistry returning null, and S2 covers the cycle-guard branch in appendInternal that merely calls isRegistered(value); neither pins down isRegistered's null-safety behavior (returning false instead of throwing NPE).); confirmed by a synthesized witness: REQ-2 concerns ToStringStyle.isRegistered when the current thread's object registry is unset. In the gold revision ToStringStyle.getRegistry() returns REGISTRY.get() (i.e. null when nothing is registered) and isRegistered was fixed to null-check (`m != null && m.containsKey(value)`) so it returns false without NPE. In the buggy revision the code guards NPE at the getRegistry level instead: getRegistry() returns Collections.emptyMap() when the ThreadLocal is null, so a fresh, clean-state getRegistry() is non-null and isRegistered merely calls containsKey — meaning REQ-2's core contract (isRegistered surviving a truly-null 'registry-not-set' state) is structurally different. Because getRegistry/isRegistered are package-private static within the org.apache.commons.lang3.builder package and my test compiles in the harness's own package, I reach them via getDeclaredMethod + setAccessible(true). The witness asserts the actual discriminating fact: with no active reflection traversal the registry is null (gold) — which it verifies — and that isRegistered returns false instead of throwing (which gold satisfies). On the buggy revision getRegistry() returns an empty map rather than null, so the assertNull fails (confirmed empirically: gold PASSED, buggy FAILED). This is a genuine gold/buggy behavioral divergence tied to REQ-2's registry-cleared representation, not merely co-located code touching the same method. The visible ToStringBuilderTest only asserts getRegistry()==null after a *completed* reflection traversal (cycle/array tests); it never exercises the fresh no-traversal 'registry unset' state that isRegistered's null handling depends on, so this witness adds a distinct scenario.",
+    "confidence": "Medium"
+  }
+}

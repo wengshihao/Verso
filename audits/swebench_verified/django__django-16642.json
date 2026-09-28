@@ -1,0 +1,107 @@
+{
+  "task_id": "django__django-16642",
+  "status": "ok",
+  "duration_seconds": 156.15268850000575,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16642",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A FileResponse serving a file whose name ends in a brotli-compression extension (`.br`) or a Unix-compress extension (`.Z`), such as `test.html.br` or `test.html.Z`, must not set the Content-Type header to the mime type Python's mimetypes derives by decompressing the base name (e.g. `text/html` for a `.html.br` / `.html.Z` name). These compressed-format files must be served a content type appropriate to the compressed file (in the same way the existing encoding handling serves `.gz`/`.bz2`/`.xz` files with non-decompressed content types such as `application/gzip`, and must not advertise an uncompressed text type via Content-Type or a Content-Encoding header).",
+        "subject": "FileResponse.set_headers (content-type guessing from mimetypes.encoding)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Below FileResponse will set the content type as text/html, even if the last file extension is \"Z' or \"br\". FileResponse(open('test.html.Z', 'rb')) FileResponse(open('test.html.br', 'rb'))\" and response.py: \"content_type, encoding = mimetypes.guess_type(filename)\n# Encoding isn't set to prevent browsers from automatically\n# uncompressing files.\ncontent_type = {\\\"bzip2\\\": \\\"application/x-bzip\\\", \\\"gzip\\\": \\\"application/gzip\\\", \\\"xz\\\": \\\"application/x-xz\\\",}.get(encoding, content_type)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When FileResponse serves a compressed file whose basename ends in '.br' and no explicit content_type is provided, the response's Content-Type header is set to 'application/x-brotli' (rather than the guessed type such as text/*).",
+        "subject": "FileResponse.set_headers Content-Type for .br files",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When FileResponse serves a compressed file whose basename ends in '.Z' and no explicit content_type is provided, the response's Content-Type header is set to 'application/x-compress' (rather than the guessed type such as text/*).",
+        "subject": "FileResponse.set_headers Content-Type for .Z files",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis confirms that .br files must not be served with the decompressed guess (text/html) and must instead get a compressed-appropriate Content-Type, which aligns with the direction of S_impl R1. However, the visible evidence (issue report and the response.py mapping dict, which only lists bzip2/gzip/xz) never specifies the exact MIME string 'application/x-brotli', so the precise behavior is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis confirms that .Z files must not be served with the decompressed guess (text/html) but should get a compressed-appropriate type; the issue report even names the .Z case explicitly. Yet the visible evidence never states the exact content-type string 'application/x-compress' and .Z is not in the shown mapping dictionary, so the exact value required by S_impl R2 is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "BrContentTypeWitness",
+      "test_source": "from django.conf import settings\nif not settings.configured:\n    settings.configure()\nfrom django.test import SimpleTestCase\n\nimport django\ndjango.setup()\n\nfrom django.http import FileResponse\nimport tempfile\n\nclass BrContentTypeWitness(SimpleTestCase):\n    def test_br_content_type(self):\n        with tempfile.NamedTemporaryFile(suffix=\".tar.br\") as tmp:\n            response = FileResponse(tmp)\n        self.assertEqual(response.headers[\"Content-Type\"], \"application/x-brotli\")\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: 'application/x-tar' != 'application/x-brotli'; on buggy the .br encoding is not remapped, so the guessed type leaks)",
+      "explanation": "Target R1 states that when FileResponse serves a compressed file whose basename ends in '.br' with no explicit content_type, Content-Type must be 'application/x-brotli'. The gold patch added 'br' to the encoding->Content-Type remap dict in FileResponse.set_headers; the buggy program lacks that key. The witness serves a file whose name ends in '.tar.br' via FileResponse with no explicit content_type and asserts the resulting Content-Type equals 'application/x-brotli'. On gold it passes (PASSED via run_test), and on buggy it fails because mimetypes reports the encoding 'br' and, without the remap key, the underlying guessed type 'application/x-tar' leaks through instead of 'application/x-brotli' (FAILED via run_test). This behavior is not pinned down anywhere in the visible oracle (test_compressed_response only covers .tar.gz/.tar.bz2/.tar.xz and never probes '.br'), so it qualifies as a genuine hidden-fact witness rather than a re-rendering of visible assertions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Buggy logic lives in django/http/response.py, class FileResponse.set_headers(self, filelike), which calls mimetypes.guess_type(filename) on os.path.basename(self.filename or filename)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Python mimetypes registers encoding extensions including '.br' → 'br' and '.Z' → 'compress', neither of which is present in the dict {'bzip2','gzip','xz'} used to remap the guessed content type, so the guessed text/* type leaks through for these files."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing test tests/responses/test_fileresponse.py::test_compressed_response already asserts the analogous intended behavior for ('.tar.gz','application/gzip'), ('.tar.bz2','application/x-bzip'), ('.tar.xz','application/x-xz'), and that no Content-Encoding header is set."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue does not state the exact desired content type for .br/.Z files (e.g. a specific brotli/compress MIME), only that serving text/html for them is incorrect; the exact replacement value is prescribed by convention/implementation, not by the visible report."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only adds 'br' and 'compress' keys to the existing encoding-to-Content-Type remap dict in FileResponse.set_headers (django/http/response.py); the pre-existing bzip2/gzip/xz mappings are untouched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Serving these compressed files still does not set a Content-Encoding header (encoding is deliberately not used to prevent browsers auto-uncompressing), consistent with existing behavior for gzip/bzip2/xz."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch does not change behavior when an explicit content_type is passed (that path is guarded by _no_explicit_content_type)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The target requirement R1 concerns FileResponse.set_headers setting Content-Type to 'application/x-brotli' for a file whose basename ends in '.br'. I examined the entire relevant oracle test file, tests/responses/test_fileresponse.py, and the sibling response test files (tests/responses/tests.py, tests/responses/test_cookie.py).\n\nThe only test touching this behavior is test_compressed_response, which iterates over ('.tar.gz','application/gzip'), ('.tar.bz2','application/x-bzip'), ('.tar.xz','application/x-xz'). It does NOT include any '.br'/'application/x-brotli' case nor a '.Z' case — i.e. the exact behavior described in R1 is not asserted anywhere in the oracle. Moreover, this entire file is labeled [VISIBLE], so even its existing assertions could not serve as a Witness (a Witness must rest solely on [HIDDEN] content).\n\nThe earlier-stage notes also recorded \"tests currently failing against the buggy program: (none recorded)\", consistent with there being no hidden oracle assertion exercising the .br case. I found no [HIDDEN] assertion anywhere in the oracle that tests the '.br' → 'application/x-brotli' Content-Type behavior (the patch simply adds 'br'/'compress' keys to a mapping that the oracle never probes). Therefore no genuine witness exists in the oracle, and I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (FileResponse.set_headers Content-Type for .br files): When FileResponse serves a compressed file whose basename ends in '.br' and no explicit content_type is provided, the response's Content-Type header is set to 'application/x-brotli' (rather than the guessed type such as text/*). — not entailed by S_vis (S_vis confirms that .br files must not be served with the decompressed guess (text/html) and must instead get a compressed-appropriate Content-Type, which aligns with the direction of S_impl R1. However, the visible evidence (issue report and the response.py mapping dict, which only lists bzip2/gzip/xz) never specifies the exact MIME string 'application/x-brotli', so the precise behavior is not pinned down.); confirmed by a synthesized witness: Target R1 states that when FileResponse serves a compressed file whose basename ends in '.br' with no explicit content_type, Content-Type must be 'application/x-brotli'. The gold patch added 'br' to the encoding->Content-Type remap dict in FileResponse.set_headers; the buggy program lacks that key. The witness serves a file whose name ends in '.tar.br' via FileResponse with no explicit content_type and asserts the resulting Content-Type equals 'application/x-brotli'. On gold it passes (PASSED via run_test), and on buggy it fails because mimetypes reports the encoding 'br' and, without the remap key, the underlying guessed type 'application/x-tar' leaks through instead of 'application/x-brotli' (FAILED via run_test). This behavior is not pinned down anywhere in the visible oracle (test_compressed_response only covers .tar.gz/.tar.bz2/.tar.xz and never probes '.br'), so it qualifies as a genuine hidden-fact witness rather than a re-rendering of visible assertions.",
+    "confidence": "Medium"
+  }
+}

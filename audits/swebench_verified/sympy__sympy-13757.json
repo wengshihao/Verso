@@ -1,0 +1,90 @@
+{
+  "task_id": "sympy__sympy-13757",
+  "status": "ok",
+  "duration_seconds": 457.35534962499514,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-13757",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a SymPy expression is the left operand of `*` with a Poly on the right, the product must be evaluated into a Poly rather than returned as an unevaluated Mul. Concretely: `x*Poly(x)` must evaluate to `Poly(x**2, x, domain='ZZ')`, and `S(-2)*Poly(x)` must evaluate to `Poly(-2*x, x, domain='ZZ')`.",
+        "subject": "Poly multiplication with an Expr on the left (LeftExpr * Poly evaluation)",
+        "hunk_ids": [],
+        "cited_from": "Issue report, title: 'Multiplying an expression by a Poly does not evaluate when the expression is on the left side of the multiplication'; examples:\n```\n>>> Poly(x)*x\nPoly(x**2, x, domain='ZZ')\n\n>>> x*Poly(x)\nx*Poly(x, x, domain='ZZ')\n\n>>> -2*Poly(x)\nPoly(-2*x, x, domain='ZZ')\n\n>>> S(-2)*Poly(x)\n-2*Poly(x, x, domain='ZZ')\n\n>>> Poly(x)*S(-2)\nPoly(-2*x, x, domain='ZZ')\n```\nThe `x*Poly(x)` and `S(-2)*Poly(x)` outputs are the buggy unevaluated forms; the requirement is that these evaluate like their already-correct counterparts `Poly(x)*x` and `-2*Poly(x)` / `Poly(x)*S(-2)` shown on the adjacent lines."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Binary arithmetic that combines a Poly instance with a non-Poly SymPy Expr operand (e.g. a generator Symbol such as x, or a SymPy number such as S(-2)) is dispatched through the Poly's operator methods and yields a Poly-typed result rather than remaining an unevaluated commutative core Mul/Add. In particular x*Poly(x) evaluates to Poly(x**2, x, domain='ZZ') and S(-2)*Poly(x) evaluates to Poly(-2*x, x, domain='ZZ').",
+        "subject": "sympy.polys.polytools.Poly — arithmetic (mul/add) between a Poly and a non-Poly SymPy Expr operand",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down exactly the left-Expr * Poly multiplication examples (x*Poly(x)→Poly(x**2,...) and S(-2)*Poly(x)→Poly(-2*x,...)) that form S_impl's concrete commitments. However, S_impl's requirement is stated more broadly — it also claims add behavior yielding a Poly and general dispatch through Poly's operator methods — neither of which the S_vis issue-report evidence about left-side multiplication covers. So the entire S_impl requirement is not fully pinned down, making entailment genuine ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_left_sympy_expr_dispatch_to_poly",
+      "test_source": "from sympy import Poly, S\nfrom sympy.abc import x\n\ndef test_left_sympy_expr_dispatch_to_poly():\n    a = x*Poly(x)\n    assert isinstance(a, Poly)\n    assert a == Poly(x**2, x, domain='ZZ')\n    assert a.as_expr() == x**2\n    b = S(-2)*Poly(x)\n    assert isinstance(b, Poly)\n    assert b == Poly(-2*x, x, domain='ZZ')\n    assert b.as_expr() == -2*x\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (first assertion fails: isinstance(x*Poly(x, x, domain='ZZ'), Poly) is False; the multiplication stays an unevaluated core Mul in the buggy build)",
+      "explanation": "R1 states that combining a Poly with a non-Poly SymPy *Expr* operand — specifically with the Expr on the LEFT (e.g. generator Symbol x, or the SymPy number S(-2)) — dispatches into Poly.__rmul__ and yields a Poly, not an unevaluated Mul. R1's two concrete reference lines are x*Poly(x) == Poly(x**2, x, domain='ZZ') and S(-2)*Poly(x) == Poly(-2*x, x, domain='ZZ').\n\nI checked the visible material (test_polytools.py arithmetic tests) and confirmed that no [VISIBLE] test pins down this exact scenario: the visible mul/add tests only assert right-SymPy-Expr operands (Poly(1,x)*x == Poly(x,x)) and bare-Python-int left operands (2*Poly(x,x), 1+Poly(x,x)) — both of which work pre-fix via existing right-dispatch/__r*__-on-bare-Python paths. None uses a SymPy Expr Symbol or S(-2) on the left, which is exactly the newly fixed _op_priority=10.001 routing path (R1), and the task header already marks R1 as having insufficient visible coverage.\n\nMy candidate executes this exact R1-input via run_test: it PASSED against gold (x*Poly(x) is a Poly equal to Poly(x**2,x,domain='ZZ'), S(-2)*Poly(x) is a Poly equal to Poly(-2*x,x,domain='ZZ')) and FAILED against buggy (isinstance(x*Poly(x),Poly) is False, i.e. the unevaluated core-Mul bug remains), so it is a genuine, execution-confirmed buggy/gold discriminating witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Poly (and PurePoly) are defined in sympy/polys/polytools.py and subclass Expr; they set is_commutative=True, is_Poly=True, args=(as_expr(),), and define __mul__/__rmul__ (and __add__/__radd__, etc.) which sympify a non-poly partner, coerce it to a Poly over the same gens, then call the rep-level mul."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible bug is in the core path: poly tools such as Poly root themselves out of the multiplication because 'core Mul.flatten' (sympy/core/mul.py) treats a commutative non-Number Poly like any other factor, so `x*Poly(x)` and `S(-2)*Poly(x)` produce an unevaluated Mul. Python-2 fallback to Poly.__rmul__ only occurs for bare Python objects (e.g. int -2 in `-2*Poly(x)`), not for SymPy Expressions whose own __mul__ succeeds with the unevaluated result."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Poly.__rmul__ (polytools.py) exists and converts a non-poly arg via f.__class__(g, *f.gens) then multiplies, so symbol and SymPy-number left operands would be handled if that path were actually reached."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No dedicated regression test for exactly these two failing REPL lines is present in the disclosed sources (the specs above come from the issue report's example session; the already-working lines in the same snippet serve as the reference/expected outputs)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only declares the class attribute _op_priority = 10.001 on Poly; the operator implementations (__mul__/__rmul__/__add__/__radd__ and the mul/add/mul_ground helper logic) were already present pre-fix. The patch thus changes operand-routing precedence, not the arithmetic code paths themselves."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PurePoly subclasses Poly, so it inherits this _op_priority attribute as well."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_op_priority is an internal dispatch knob; its exact numeric value is a mechanism, not itself an independently observable behavior."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated thoroughly for a [HIDDEN] oracle test enforcing R1 (Poly ∘ non-Poly SymPy Expr arithmetic on the LEFT dispatch, e.g. x*Poly(x) → Poly(x**2,x,domain='ZZ') and S(-2)*Poly(x) → Poly(-2*x,x,domain='ZZ')).\n\nWhat I checked (all [VISIBLE], hence ineligible as witness content regardless of correspondence):\n- sympy/polys/tests/test_polytools.py (fully [VISIBLE]): its arithmetic tests (test_Poly_mul, test_Poly_add, test_Poly_divmod, test_Poly_sub) only assert the RIGHT-operand cases Poly*x / Poly+x / Poly(x)//... that already worked pre-fix, plus bare-Python-int-on-LEFT cases (e.g. `2*Poly(x,x)`, `1+Poly(x,x)`) that already worked through the bare-Python-object __r*__ fallback. There is no assertion anywhere for a SymPy Expr Symbol/number on the LEFT (i.e. no `x*Poly(...)`, `x+Poly(...)`, or `S(-2)*Poly(...)`), which is precisely the newly-fixed R1 dispatch path.\n- sympy/core/tests/test_priority.py (fully [VISIBLE]): tests the generic call_highest_priority/_op_priority priority mechanism with ad-hoc Higher/Lower classes and generic Symbols; it never involves Poly and does not test the Poly core-flattening behavior described in R1.\n- sympy/core/tests/test_arit.py, test_operations.py, test_expr.py, test_basic.py (all [VISIBLE]): no content asserting Poly-with-left-Expr evaluation.\n\nI even mechanically confirmed that R1's behavior is a genuine buggy/gold delta: I ran `x*Poly(x)`-style candidate (isinstance Poly and equality to Poly(x**2,...)) and it FAILED against buggy (returned unevaluated Mul) and PASSED against gold. However, that candidate is my own reconstruction from the issue-report's example session (per the task notes, no dedicated regression test for these REPL lines is present in the disclosed sources). A Witness must come from [HIDDEN] oracle assertion content, and every test file/line in the oracle that touches this area is [VISIBLE] (and, in fact, none of those visible tests even asserts the R1-specific left-Expr dispatch). No [HIDDEN] test enforcing R1 was found, so there is no eligible witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (sympy.polys.polytools.Poly — arithmetic (mul/add) between a Poly and a non-Poly SymPy Expr operand): Binary arithmetic that combines a Poly instance with a non-Poly SymPy Expr operand (e.g. a generator Symbol such as x, or a SymPy number such as S(-2)) is dispatched through the Poly's operator methods and yields a Poly-typed result rather than remaining an unevaluated commutative core Mul/Add. In particular x*Poly(x) evaluates to Poly(x**2, x, domain='ZZ') and S(-2)*Poly(x) evaluates to Poly(-2*x, x, domain='ZZ'). — not entailed by S_vis (S_vis pins down exactly the left-Expr * Poly multiplication examples (x*Poly(x)→Poly(x**2,...) and S(-2)*Poly(x)→Poly(-2*x,...)) that form S_impl's concrete commitments. However, S_impl's requirement is stated more broadly — it also claims add behavior yielding a Poly and general dispatch through Poly's operator methods — neither of which the S_vis issue-report evidence about left-side multiplication covers. So the entire S_impl requirement is not fully pinned down, making entailment genuine ambiguous.); confirmed by a synthesized witness: R1 states that combining a Poly with a non-Poly SymPy *Expr* operand — specifically with the Expr on the LEFT (e.g. generator Symbol x, or the SymPy number S(-2)) — dispatches into Poly.__rmul__ and yields a Poly, not an unevaluated Mul. R1's two concrete reference lines are x*Poly(x) == Poly(x**2, x, domain='ZZ') and S(-2)*Poly(x) == Poly(-2*x, x, domain='ZZ').\n\nI checked the visible material (test_polytools.py arithmetic tests) and confirmed that no [VISIBLE] test pins down this exact scenario: the visible mul/add tests only assert right-SymPy-Expr operands (Poly(1,x)*x == Poly(x,x)) and bare-Python-int left operands (2*Poly(x,x), 1+Poly(x,x)) — both of which work pre-fix via existing right-dispatch/__r*__-on-bare-Python paths. None uses a SymPy Expr Symbol or S(-2) on the left, which is exactly the newly fixed _op_priority=10.001 routing path (R1), and the task header already marks R1 as having insufficient visible coverage.\n\nMy candidate executes this exact R1-input via run_test: it PASSED against gold (x*Poly(x) is a Poly equal to Poly(x**2,x,domain='ZZ'), S(-2)*Poly(x) is a Poly equal to Poly(-2*x,x,domain='ZZ')) and FAILED against buggy (isinstance(x*Poly(x),Poly) is False, i.e. the unevaluated core-Mul bug remains), so it is a genuine, execution-confirmed buggy/gold discriminating witness for R1.",
+    "confidence": "Medium"
+  }
+}

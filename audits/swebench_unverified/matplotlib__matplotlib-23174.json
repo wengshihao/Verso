@@ -1,0 +1,124 @@
+{
+  "task_id": "matplotlib__matplotlib-23174",
+  "status": "ok",
+  "duration_seconds": 524.3589547500014,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-23174",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling contour label placement (e.g. `ax.clabel(CS, inline=True, fontsize=10)`) on a contour whose Axes belongs to a SubFigure created via `plt.figure().subfigures(nrows=1, ncols=2)` (and `f.subplots()` inside each) must complete successfully without raising an AttributeError, so that the two subfigures are produced each showing the labeled Contour Demo. In particular the inline-labeling width computation must obtain a usable renderer regardless of the fact that the Axes' `.figure` is the SubFigure rather than the top-level Figure.",
+        "subject": "ContourLabeler.clabel / _get_nth_label_width on an Axes inside a SubFigure",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: \"fig = plt.figure()\\nfigs = fig.subfigures(nrows=1, ncols=2)\\n\\nfor f in figs:\\n    ax = f.subplots()\\n    CS = ax.contour(X, Y, Z)\\n    ax.clabel(CS, inline=True, fontsize=10)\\n    ax.set_title(\\\"Simplest default with labels\\\")\\n\"; Actual outcome traceback: \"  File \\\".../matplotlib/contour.py\\\", line 285, in _get_nth_label_width\\n    .get_window_extent(mpl.tight_layout.get_renderer(fig)).width)\\n...AttributeError: 'SubFigure' object has no attribute '_cachedRenderer'\"; Expected outcome: \"The two subfigures appearing side by side, each showing the Contour Demo example\". Relevant source contour.py `_get_nth_label_width`: \"fig = self.axes.figure ... .get_window_extent(mpl._tight_layout.get_renderer(fig)).width\""
+      },
+      {
+        "id": "R2",
+        "statement": "Given a SubFigure instance as its `fig` argument, `get_renderer` must return a usable renderer (or otherwise not crash), rather than raising `AttributeError` when the SubFigure has no `_cachedRenderer` attribute — a SubFigure must be a valid figure-like target for this helper just as the top-level Figure is.",
+        "subject": "matplotlib._tight_layout.get_renderer / tight_layout.get_renderer",
+        "hunk_ids": [],
+        "cited_from": "traceback quote: \"  File \\\".../matplotlib/tight_layout.py\\\", line 206, in get_renderer\\n    if fig._cachedRenderer:\\nAttributeError: 'SubFigure' object has no attribute '_cachedRenderer'\"; source _tight_layout.py get_renderer: \"def get_renderer(fig):\\n    if fig._cachedRenderer:\\n        return fig._cachedRenderer\\n    else:\\n        canvas = fig.canvas\\n        if canvas and hasattr(canvas, \\\"get_renderer\\\"):\\n            return canvas.get_renderer()\\n        else:\\n            from . import backend_bases\\n            return backend_bases._get_renderer(fig)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Reading `_cachedRenderer` on a `SubFigure` does not raise AttributeError (even when the SubFigure has not yet been drawn, in which case previously the attribute was undefined on the instance) and returns the `_cachedRenderer` value of the SubFigure's parent figure (`SubFigure._parent`).",
+        "subject": "matplotlib.figure.SubFigure._cachedRenderer (property getter)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Assigning to a `SubFigure`'s `_cachedRenderer` attribute (as `SubFigure.draw` does when it caches the active renderer) sets the parent figure's (`SubFigure._parent`'s) `_cachedRenderer`, so the parent figure's cached renderer reflects the last renderer drawn into the SubFigure.",
+        "subject": "matplotlib.figure.SubFigure._cachedRenderer (property setter) / SubFigure.draw",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 document the symptom that SubFigure has no usable _cachedRenderer (clabel's width computation and get_renderer both crash), and require these operations to yield a usable renderer not crash. However, they do not specify the mechanism the fix uses — that SubFigure exposes a _cachedRenderer property whose getter delegates to and returns the parent figure's cached renderer. A repair could equally guard get_renderer instead, so the delegation behavior is genuinely ambiguous."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only records that SubFigure lacks _cachedRenderer and that the parent-level get_renderer logic reads fig._cachedRenderer; it never states that setting a SubFigure's _cachedRenderer writes through to SubFigure._parent, nor that SubFigure.draw caches the active renderer into the parent. This specific delegation design for the setter is not pinned down by the visible evidence, though consistent with the workflow, so it is uncertain."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_undrawn_subfigure_cached_renderer",
+      "test_source": "import matplotlib.pyplot as plt\n\n\ndef test_undrawn_subfigure_cached_renderer():\n    fig = plt.figure()\n    subfig = fig.subfigures(1, 1)\n    # SubFigure not drawn yet -> previously AttributeError.\n    assert subfig._cachedRenderer == fig._cachedRenderer\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: AttributeError: 'SubFigure' object has no attribute '_cachedRenderer'",
+      "explanation": "R1 states that reading `_cachedRenderer` on a SubFigure (undrawn) must not raise AttributeError and must return the parent figure's `_cachedRenderer`. In the buggy code, `SubFigure` (a FigureBase subclass whose __init__ never defines `_cachedRenderer`) only gets the attribute set when `SubFigure.draw()` runs, so reading it before any draw raises AttributeError. The gold fix adds a `_cachedRenderer` property getter on SubFigure that proxies to `self._parent._cachedRenderer`. My test creates a fresh Figure+SubFigure without drawing, then reads `subfig._cachedRenderer` and asserts equality with `fig._cachedRenderer`. On gold this is a property access that returns the parent's (None) value -> PASSED. On buggy, reading the undefined instance attribute raises AttributeError -> FAILED. This directly discriminates the buggy vs gold implementation of R1. It is not an already-visible assertion: the oracle search found no existing test that probes `_cachedRenderer` on an undrawn SubFigure, and buggy has an empty failing-test set (so no current test would catch this). Confirmed empirically via run_test against both versions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Reproduction uses Matplotlib 3.5.2, but the checked-out source has already evolved (e.g. `contour.py` calls `mpl._tight_layout.get_renderer`, and the `matplotlib.tight_layout` module is deprecated in favor of `matplotlib._tight_layout`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In figure.py, top-level `Figure.__init__` initializes `self._cachedRenderer = None`, but `SubFigure.__init__` (a `FigureBase` subclass) does not define `_cachedRenderer` at all; it is only set when `SubFigure.draw()` runs. So before the figure is drawn, a SubFigure lacks the attribute that `tight_layout.get_renderer` reads."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Contour labels measure text width via `_tight_layout.get_renderer(fig)` where `fig = self.axes.figure`; for an Axes created inside a SubFigure this is the SubFigure (see contour.py `_get_nth_label_width`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The SubFigure's `canvas` is inherited from its parent Figure (`self.canvas = parent.canvas` in SubFigure.__init__), so a renderer is reachable if the `fig._cachedRenderer` access is avoided/handled."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test in the repo currently reproduces clabel-on-a-subfigure; relevant neighbor tests are `test_contour.py::test_label_nonagg` (clabel must not crash when the canvas lacks a get_renderer) and `test_contour.py::test_contour_autolabel_beyond_powerlimits`, plus subfigure tests in test_figure.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SubFigure (a FigureBase subclass) never initializes a `_cachedRenderer` instance attribute in SubFigure.__init__; only Figure.__init__ sets `self._cachedRenderer = None`, and both Figure.draw and SubFigure.draw set `self._cachedRenderer = renderer` on draw."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tight_layout.get_renderer(fig) reads `fig._cachedRenderer` and falls back to canvas.get_renderer() when it is falsy; for an Axes hosted in a SubFigure (as in contour-label text width measurement), `fig` is the SubFigure."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SubFigure.__init__ sets `self.canvas = parent.canvas`, so the canvas fallback path in get_renderer is reachable; the missing-attribute failure came specifically from reading Fig._cachedRenderer on an undrawn SubFigure."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The proximate user-facing trigger of the patch is calling clabel on an Axes that lives in a SubFigure before that SubFigure has cached a renderer; the fix removes the AttributeError by proxying the cached-renderer access to the always-defined parent Figure attribute."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 describes the new SubFigure._cachedRenderer property getter behavior: reading `_cachedRenderer` on an undrawn SubFigure must not raise AttributeError and must return the parent Figure's cached renderer. A valid Witness would therefore be a hidden-oracle test that either (a) reads SubFigure._cachedRenderer before the subfigure has been drawn and asserts it equals/relates to the parent's, or (b) exercises the clabel/tight-collator text-width path with an Axes hosted in a SubFigure before that SubFigure has cached a renderer (the proximity trigger in the notebook).\n\nI systematically reviewed the oracle test files most plausibly to contain such a regression test: lib/matplotlib/tests/test_figure.py (subfigure constructor/lifecycle tests, incl. test_subfigure*, test_subfigure_ticks, test_subfigure_spanning which call draw_without_rendering but never probe _cachedRenderer on an undrawn subfigure), test_contour.py (clabel tests: test_label_nonagg, test_contour_autolabel_beyond_powerlimits, test_clabel_zorder — none place the Axes in a SubFigure or read _cachedRenderer), test_tightlayout.py, test_constrainedlayout.py, test_bbox_tight.py, test_axes.py, test_artist.py, test_pyplot.py, test_legend.py, test_pickle.py. Every one of these files was content-labeled [VISIBLE] (so none can serve as a witness regardless), and none of their assertions actually tests the undrawn-SubFigure `_cachedRenderer` proxying behavior described by R1.\n\nAdditionally, the recorded list of tests currently failing against the buggy program is empty — a necessary (though not sufficient) precondition for any witness. I found no [HIDDEN] oracle content that reproduces reading SubFigure._cachedRenderer before drawing, nor any clabel-on-subfigure behavior. Consequently no oracle test both (1) passes on gold / fails on buggy and (2) genuinely asserts the R1 behavior while resting on hidden content. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (matplotlib.figure.SubFigure._cachedRenderer (property getter)): Reading `_cachedRenderer` on a `SubFigure` does not raise AttributeError (even when the SubFigure has not yet been drawn, in which case previously the attribute was undefined on the instance) and returns the `_cachedRenderer` value of the SubFigure's parent figure (`SubFigure._parent`). — not entailed by S_vis (S_vis R1/R2 document the symptom that SubFigure has no usable _cachedRenderer (clabel's width computation and get_renderer both crash), and require these operations to yield a usable renderer not crash. However, they do not specify the mechanism the fix uses — that SubFigure exposes a _cachedRenderer property whose getter delegates to and returns the parent figure's cached renderer. A repair could equally guard get_renderer instead, so the delegation behavior is genuinely ambiguous.); confirmed by a synthesized witness: R1 states that reading `_cachedRenderer` on a SubFigure (undrawn) must not raise AttributeError and must return the parent figure's `_cachedRenderer`. In the buggy code, `SubFigure` (a FigureBase subclass whose __init__ never defines `_cachedRenderer`) only gets the attribute set when `SubFigure.draw()` runs, so reading it before any draw raises AttributeError. The gold fix adds a `_cachedRenderer` property getter on SubFigure that proxies to `self._parent._cachedRenderer`. My test creates a fresh Figure+SubFigure without drawing, then reads `subfig._cachedRenderer` and asserts equality with `fig._cachedRenderer`. On gold this is a property access that returns the parent's (None) value -> PASSED. On buggy, reading the undefined instance attribute raises AttributeError -> FAILED. This directly discriminates the buggy vs gold implementation of R1. It is not an already-visible assertion: the oracle search found no existing test that probes `_cachedRenderer` on an undrawn SubFigure, and buggy has an empty failing-test set (so no current test would catch this). Confirmed empirically via run_test against both versions.",
+    "confidence": "Medium"
+  }
+}

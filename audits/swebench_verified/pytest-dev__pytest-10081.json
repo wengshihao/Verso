@@ -1,0 +1,98 @@
+{
+  "task_id": "pytest-dev__pytest-10081",
+  "status": "ok",
+  "duration_seconds": 293.2258331250632,
+  "llm_calls": 36,
+  "error": null,
+  "record": {
+    "task_id": "pytest-dev__pytest-10081",
+    "s_vis": [
+      {
+        "id": "REQ-CLASS-SKIP-PDB-NO-TEARDOWN",
+        "statement": "When pytest is run with --pdb, a test belonging to an unittest.TestCase subclass decorated at the class level with @unittest.skip(...) must be skipped cleanly without executing the class's tearDown (its setUp likewise not executed) — the run must report the test only as skipped ('s', '1 skipped') and must not surface a tearDown/setUp error nor enter PDB post-mortem on it.",
+        "subject": "_pytest.unittest.TestCaseFunction.runtest (--pdb unittest tearDown deferral / class-level @unittest.skip)",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"unittest.TestCase.tearDown executed for classes marked with `unittest.skip` when running --pdb\". Body: \"Running `pytest --pdb` will run the `tearDown()` of `unittest.TestCase` classes that are decorated with `unittest.skip` on the class level.\" Minimal test ends with \"def tearDown(self):\\n        xxx\" (NameError if executed). Expected vs actual output: \"test_repro_skip_class.py s                                                               [100%] ... 1 skipped\" (plain run) but \"test_repro_skip_class.py sE\" followed by the tearDown traceback \"-> xxx \\nE       NameError: name 'xxx' is not defined\" under `pytest --pdb`."
+      },
+      {
+        "id": "REQ-CLASS-SKIP-BASELINE",
+        "statement": "Without --pdb, a class decorated at the class level with @unittest.skip(...) that subclasses unittest.TestCase (and defines setUp and/or tearDown) must be reported as skipped ('s' / '1 skipped') and must not execute setUp or tearDown.",
+        "subject": "_pytest.unittest unittest.TestCase class-level @unittest.skip handling",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Test is properly skipped normally:\" followed by the run `$ pytest test_repro_skip_class.py` output: \"collected 1 item ...\\ntest_repro_skip_class.py s                                                               [100%]\\n\\n====================================== 1 skipped in 0.01s ======================================\" for the shown class whose setUp/tearDown bodies contain the undefined name `xxx`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Under `--pdb`, TestCaseFunction.runtest() suppresses the deferred-tearDown mechanism (which postpones the unittest tearDown until pytest teardown and replaces the testcase's tearDown with a no-op) only when the currently running test is not skipped — now treating a class-level `@unittest.skip` (i.e. __unittest_skip__ set on the enclosing test class) as skipped, so that for a skipped whole class the testcase's real tearDown is left intact and runs normally rather than being deferred/replaced.",
+        "subject": "TestCaseFunction.runtest()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ-CLASS-SKIP-PDB-NO-TEARDOWN",
+          "REQ-CLASS-SKIP-BASELINE"
+        ],
+        "rationale": "The visible evidence matches the same bug scenario (spurious tearDown execution under --pdb for class-level @unittest.skip) and the intended observable outcome (clean skip, no tearDown error). However, R1 pins down a specific internal mechanism — runtest() suppressing the deferred-tearDown/no-op-replacement machinery based on __unittest_skip__ on the enclosing class — which neither the issue text nor the summaries describe; the visible info only gives black-box behavior that multiple implementations could satisfy, so S_vis does not decisively pin this exact mechanism."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_class_level_skip_under_pdb_teardown_not_deferred",
+      "test_source": "import os\nimport subprocess\nimport sys\nimport textwrap\n\n\ndef test_class_level_skip_under_pdb_teardown_not_deferred(tmp_path):\n    \"\"\"A whole-class @unittest.skip under --pdb must not let pytest's\n    deferred-tearDown mechanism invoke the real tearDown.\n\n    Gold: class-level skip is recognized, so tearDown stays intact and a\n    skipped test never runs tearDown. Buggy: class-level skip is only\n    recognized at the method level, so the deferral mechanism stores the\n    real tearDown and later runs it on a test that was supposed to be\n    skipped entirely.\n    \"\"\"\n    tracked = tmp_path / \"tracked\"\n    testfile = tmp_path / \"test_skip_class.py\"\n    testfile.write_text(\n        textwrap.dedent(\n            \"\"\"\\\n            import unittest\n\n            tracked_file = %r\n\n            @unittest.skip(\"skip the whole skipped class under --pdb\")\n            class MyTestCase(unittest.TestCase):\n                def tearDown(self):\n                    with open(tracked_file, \"w\") as f:\n                        f.write(\"tearDown:\")\n\n                def test_1(self):\n                    pass\n            \"\"\"\n        )\n        % (str(tracked),)\n    )\n    env = dict(os.environ)\n    for p in list(sys.path):\n        if os.path.exists(os.path.join(p or \".\", \"pytest\")):\n            env[\"PYTHONPATH\"] = p + os.pathsep + env.get(\"PYTHONPATH\", \"\")\n            break\n    cmd = [\n        sys.executable,\n        \"-m\",\n        \"pytest\",\n        \"--pdb\",\n        \"-p\",\n        \"no:cacheprovider\",\n        str(testfile),\n    ]\n    res = subprocess.run(\n        cmd, cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120\n    )\n    assert res.returncode == 0, \"inner pytest run should exit cleanly: \" + res.stdout\n    assert not tracked.exists(), (\n        \"real tearDown() must not run for a class-skipped unittest test under --pdb; \"\n        \"it was deferred and invoked incorrectly. stdout:\\n\" + res.stdout\n    )\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — the inner run reports \"1 skipped\" but the tracked file was written (\"tearDown:\"), showing the real tearDown was incorrectly deferred and then invoked for a class-level @unittest.skip under --pdb; assert on tracked.exists() failed.",
+      "explanation": "R1 makes TestCaseFunction.runtest() treat a class-level @unittest.skip (__unittest_skip__ set on the enclosing UnitTestCase class) as \"skipped\" so that, under --pdb, the deferred-tearDown mechanism (storing the testcase's real tearDown and replacing it with a no-op) is suppressed. In the buggy code the gate was only `not _is_skipped(self.obj)` where self.obj is the unbound method, so a whole-class skip still triggered the deferral: the real tearDown gets deferred into `_explicit_tearDown` and is later run during pytest teardown even though the test should be skipped (and should therefore never invoke its real tearDown at all).\n\nThe witness runs the exact affected code path: a unittest test method inside a `@unittest.skip`-decorated class (the class carries __unittest_skip__, not the method) invoked with a real pytest `--pdb` subprocess, where the testcase's real `tearDown` writes to a sentinel file. Empirically: against the buggy program the sentinel file is created (returncode 0, \"1 skipped\", tracked file present => deferral ran the real tearDown), so the `assert not tracked.exists()` fails; against the gold program no sentinel file is created (class-level skip is now recognized), so it passes. Both run_test calls were made with this exact byte-for-byte source (gold PASSED, buggy FAILED).\n\nNone of the visible/oracle assertions pin this down: test_pdb_teardown_skipped only covers per-method @unittest.skip/@pytest.mark.skip (which buggy already handled), test_pdb_teardown_called covers only the non-skipped deferral, and test_pdb_unittest_skip uses a class-level skipIf under --pdb but only asserts the skip outcome and never checks whether tearDown was deferred/invoked. No visible content predicts this specific observed behavior for a class-level skip + tearDown tracking."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root-cause location is src/_pytest/unittest.py TestCaseFunction.runtest(): the pdb tearDown deferral is gated only on `not _is_skipped(self.obj)` where self.obj is the unbound test *method*; a class-level @unittest.skip sets __unittest_skip__ on the class, not the method, so deferral wrongly still applies."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing repo test testing/test_unittest.py `test_pdb_teardown_skipped` already asserts setUp/tearDown are not called under --pdb but only covers per-method decorators (@unittest.skip / @pytest.mark.skip on test_1); it does not cover class-level skip."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing example scripts testing/example_scripts/unittest/test_setup_skip.py and test_setup_skip_class.py document the established baseline that a @unittest.skip-decorated subclass must not invoke setUp/setUpClass from a base class (used by test_setup_inheritance_skipping, expecting '1 skipped'/'1 error')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_pdb_teardown_called verifies the intended --pdb deferral purpose: tearDown is delayed (and still invoked later) for non-skipped passing tests under --pdb to avoid memory leaks."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The added assertion `assert isinstance(self.parent, UnitTestCase)` requires self.parent to be a UnitTestCase; self.parent.obj is the collected unittest test class."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_is_skipped(obj) returns bool(getattr(obj, '__unittest_skip__', False)); @unittest.skip applied to a class sets __unittest_skip__ on the class itself, while on a method it is set on the unbound method (TestCaseFunction.obj)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The deferral path (setting self._explicit_tearDown and replacing the testcase tearDown with a no-op) was previously gated only on the method-level skip check; the patch also adds the class-level check."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test that could serve as a Witness for R1 (TestCaseFunction.runtest() under --pdb must suppress the deferred-tearDown mechanism when the *enclosing class* carries @unittest.skip / __unittest_skip__). A Witness must rest on [HIDDEN] content and must fail against the buggy program while passing against gold.\n\nFindings:\n- testing/test_unittest.py (the primary oracle for unittest behavior) — [VISIBLE] in its entirety. Its pdb-related tests do not cover R1 even as visible content: `test_pdb_teardown_skipped` only exercises per-method `@unittest.skip` / `@pytest.mark.skip` decorators on test_1 (which the buggy code already handles via `_is_skipped(self.obj)`), so it does not distinguish buggy from gold; `test_pdb_teardown_called` covers the non-skipped deferral path; `test_pdb_teardown_*` never uses a class-level @unittest.skip to check that tearDown is left intact.\n- testing/test_debugging.py — [VISIBLE]; `test_pdb_unittest_skip` uses a class-level `@unittest.skipIf(True)` under --pdb but only asserts the outcome is skipped, never asserting anything about tearDown deferral/replacement, so it cannot distinguish buggy from gold for R1.\n- testing/test_skipping.py and the testing/example_scripts/unittest/* fixtures (test_setup_skip*.py etc.) are all [VISIBLE] and assert skip outcomes / setUpCall-bypass baselines, not the R1 deferred-tearDown behavior.\n- The only [HIDDEN] test sources found were bench/unit_test.py (a soak/scale generator of 15000 unittest classes with no pdb/skip-teardown assertion) and testing/example_scripts/unittest/test_parametrized_fixture_error_message.py (a fixture script about parametrized-unittest fixture error messages, tested by test_error_message_with_parametrized_fixtures) — neither contains any assertion relevant to R1.\n\nIn addition, no tests are recorded as currently failing against the buggy program, which is a necessary condition for any Witness. Since every oracle assertion touching R1's domain is either [VISIBLE] (and hence cannot be a Witness) or belongs to irrelevant hidden files (soak test / parametrized fixture example), the oracle does not contain a test that genuinely enforces the class-level-skip deferred-tearDown suppression behavior described by R1. Therefore found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (TestCaseFunction.runtest()): Under `--pdb`, TestCaseFunction.runtest() suppresses the deferred-tearDown mechanism (which postpones the unittest tearDown until pytest teardown and replaces the testcase's tearDown with a no-op) only when the currently running test is not skipped — now treating a class-level `@unittest.skip` (i.e. __unittest_skip__ set on the enclosing test class) as skipped, so that for a skipped whole class the testcase's real tearDown is left intact and runs normally rather than being deferred/replaced. — not entailed by S_vis (The visible evidence matches the same bug scenario (spurious tearDown execution under --pdb for class-level @unittest.skip) and the intended observable outcome (clean skip, no tearDown error). However, R1 pins down a specific internal mechanism — runtest() suppressing the deferred-tearDown/no-op-replacement machinery based on __unittest_skip__ on the enclosing class — which neither the issue text nor the summaries describe; the visible info only gives black-box behavior that multiple implementations could satisfy, so S_vis does not decisively pin this exact mechanism.); confirmed by a synthesized witness: R1 makes TestCaseFunction.runtest() treat a class-level @unittest.skip (__unittest_skip__ set on the enclosing UnitTestCase class) as \"skipped\" so that, under --pdb, the deferred-tearDown mechanism (storing the testcase's real tearDown and replacing it with a no-op) is suppressed. In the buggy code the gate was only `not _is_skipped(self.obj)` where self.obj is the unbound method, so a whole-class skip still triggered the deferral: the real tearDown gets deferred into `_explicit_tearDown` and is later run during pytest teardown even though the test should be skipped (and should therefore never invoke its real tearDown at all).\n\nThe witness runs the exact affected code path: a unittest test method inside a `@unittest.skip`-decorated class (the class carries __unittest_skip__, not the method) invoked with a real pytest `--pdb` subprocess, where the testcase's real `tearDown` writes to a sentinel file. Empirically: against the buggy program the sentinel file is created (returncode 0, \"1 skipped\", tracked file present => deferral ran the real tearDown), so the `assert not tracked.exists()` fails; against the gold program no sentinel file is created (class-level skip is now recognized), so it passes. Both run_test calls were made with this exact byte-for-byte source (gold PASSED, buggy FAILED).\n\nNone of the visible/oracle assertions pin this down: test_pdb_teardown_skipped only covers per-method @unittest.skip/@pytest.mark.skip (which buggy already handled), test_pdb_teardown_called covers only the non-skipped deferral, and test_pdb_unittest_skip uses a class-level skipIf under --pdb but only asserts the skip outcome and never checks whether tearDown was deferred/invoked. No visible content predicts this specific observed behavior for a class-level skip + tearDown tracking.",
+    "confidence": "Medium"
+  }
+}

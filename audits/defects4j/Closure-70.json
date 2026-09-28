@@ -1,0 +1,118 @@
+{
+  "task_id": "Closure-70",
+  "status": "ok",
+  "duration_seconds": 294.58040484199955,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Closure-70",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "TypedScopeCreator.createInitialScope(Node) on an empty root block returns a scope in which the native names Array, Boolean, Date, Error, EvalError, Number, Object, RangeError, ReferenceError, RegExp, String, SyntaxError, TypeError, and URIError are each declared with their corresponding native function type.",
+        "subject": "TypedScopeCreator.createInitialScope",
+        "hunk_ids": [],
+        "cited_from": "testInitialTypingScope in TypeCheckTest (and identical in LooseTypeCheckTest): assertEquals(ARRAY_FUNCTION_TYPE, s.getVar(\"Array\").getType()); ... assertEquals(URI_ERROR_FUNCTION_TYPE, s.getVar(\"URIError\").getType());"
+      },
+      {
+        "id": "R2",
+        "statement": "Calling TypedScopeCreator.createScope on a newly parsed standalone file whose global scope creation must not see names registered from an unrelated prior compilation: type-checking 'new Foo' against such a fresh standalone top scope reports the warning \"cannot instantiate non-constructor\" for a Foo only defined in the unrelated prior file. In essence each standalone createScope build starts from a clean global namespace.",
+        "subject": "TypedScopeCreator.createScope",
+        "hunk_ids": [],
+        "cited_from": "testTypeCheckStandaloneAST: Node n = compiler.parseTestCode(\"function Foo() { }\"); typeCheck(n); TypedScopeCreator scopeCreator = new TypedScopeCreator(compiler); Scope topScope = scopeCreator.createScope(n, null); Node second = compiler.parseTestCode(\"new Foo\"); ... new TypeCheck(...topScope,...).process(null, second); assertEquals(\"cannot instantiate non-constructor\", compiler.getWarnings()[0].description);"
+      },
+      {
+        "id": "R3",
+        "statement": "The scope built for a variable whose initializer is a named function expression such as \"var a = function b(){};\" declares the outer name 'a' (typed \"function (): undefined\") but does NOT declare the inner name 'b' in scope, because that binding exists only inside the function body.",
+        "subject": "TypedScopeCreator scope building / defineFunctionLiteral & handleFunctionInputs",
+        "hunk_ids": [],
+        "cited_from": "testScoping10 in TypeCheckTest: TypeCheckResult p = parseAndTypeCheckWithScope(\"var a = function b(){};\"); assertTrue(p.scope.isDeclared(\"a\", false)); assertFalse(p.scope.isDeclared(\"b\", false)); assertEquals(\"function (): undefined\", p.scope.getVar(\"a\").getType().toString());"
+      },
+      {
+        "id": "R4",
+        "statement": "Definitions of the same global variable with a declared @type that conflict are diagnosed by the type checker: a scope that first defines variable b as @type{Number} and then redefines it as @type{!String} is reported with \"variable b redefined with type String, original definition at ... with type (Number|null)\" (non-null forms of the second annotation require a distinct '!' variant).",
+        "subject": "TypedScopeCreator scope building / defineVar + TypeCheck diagnostics",
+        "hunk_ids": [],
+        "cited_from": "testScoping3 in TypeCheckTest: testTypes(\"\\n\\n/** @type{Number}*/var b;\\n/** @type{!String} */var b;\", \"variable b redefined with type String, original definition at [testcode]:3 with type (Number|null)\");"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "While building the local scope of a function (TypedScopeCreator LocalScopeBuilder.declareArguments), every formal AST parameter matched by a still-available JSDoc @param entry (jsDocParameter != null) is bound with the JSType carried by that JSDoc param and is recorded as a DECLARED (non-inferred) entry — i.e. the resulting scope Var reports isTypeInferred()==false for that parameter — rather than as an inferred entry. Formal parameters that run past the last JSDoc @param entry (jsDocParameter == null) are still bound as inferred with no preset type.",
+        "subject": "com.google.javascript.jscomp.TypedScopeCreator.localFunctionParameterBinding.declareArguments",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "S_impl-1 concerns the specific LocalScopeBuilder.declareArguments behavior of binding formal parameters to still-available JSDoc @param JSTypes and recording them as DECLARED (isTypeInferred()==false) entries, with past-the-end formals bound as inferred. None of the S_vis entries address JSDoc @param-to-formal binding or the declared/inferred flag on scope Vars: R1 covers native global names, R2 covers clean global namespace across compilations, R3 covers named function-expression scoping of inner vs outer names, and R4 covers conflicting global var @type redefinition diagnostics. None of these pin down the declareArguments behavior."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "The target requirement (S_impl-1) is that, in TypedScopeCreator.LocalScopeBuilder.declareArguments, a function formal parameter matched by a live @param JSDoc entry is bound as a DECLARED scope Var (isTypeInferred()==false) rather than inferred. The only observable surface of this one-line boolean flip (true→false in gold) is either (a) inspecting the scope Var's isTypeInferred()/getType() after the local scope is built, or (b) downstream type-validation that only triggers once a JSDoc-typed parameter is reassigned to an incompatible value (e.g. testFunctionArguments13 / testDuplicateLocalVarDecl / testScoping12).\n\nI attempted to build such a witness. First I confirmed from the visible source that the delta is solely the `inferred` flag in defineSlot for the JSDoc-matched branch, and that reaching it requires building function local scopes with a fully-typed JSType registry — i.e., driving the internal TypeCheck pipeline (registration of native/param types, reverse abstract interpreters, deferred type resolution), exactly as CompilerTypeTestCase+TypeCheckTest do. The Oracle Search Agent had already established that every real regression test for this behavior lives in the [VISIBLE] TypeCheckTest/LooseTypeCheckTest files, and no [HIDDEN] oracle asserts this precise param-declared behavior.\n\nI then made genuine run_test attempts. Empirically the run_test harness drops my method into a wrapper class `VersoWitnessCandidate` in the DEFAULT (unnamed) package with only public com.google.javascript.jscomp API accessible (confirmed: `CompilerOptions.LanguageMode`, `SemanticReverseAbstractInterpreter`, `TypedScopeCreator`, etc. are package-private/inaccessible, and rhino `Node`/`Token` are on a different package). A full `Compiler.compile(...)` run with default options executes only normalization/optimization passes and does NOT run the type-check pass: even a blatant global `/** @type {number} */ var a = new Array();` mismatch produced zero diagnostics, and the @param-reassignment scenario also produced zero diagnostics. Without the ability to instantiate `TypeCheck`/`SemanticReverseAbstractInterpreter`/drive `TypedScopeCreator` (all package-private), the declared-vs-inferred param delta cannot be surfaced through any public, compile-accessible route.\n\nConclusion: I could not produce (or even plausibly construct) a genuinely execution-confirmed discriminating test in this harness; the finding is consistent with the Oracle Search's result that no hidden witness for r exists."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The actual bug report text was NOT available to this audit: the visible description states the report could not be fetched and cites only that the fix touches com.google.javascript.jscomp.TypedScopeCreator. No repro code, expected diagnostic, or new regression test for the specific bug is disclosed in the visible snapshot. Consequently S_vis can only carry the general TypedScopeCreator behavior that the visible (pre-existing) TypeCheckTest/LooseTypeCheckTest already pin down; the bug-specific behavioural delta cannot be inferred from visible material alone."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: src/com/google/javascript/jscomp/TypedScopeCreator.java, and tests test/com/google/javascript/jscomp/TypeCheckTest.java, LooseTypeCheckTest.java (a fork with options.looseTypes=true), and the shared harness CompilerTypeTestCase.java extending BaseJSTypeTestCase."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypedScopeCreator is an internal scope builder (not public API); it is exercised indirectly through the TypeCheck/type-check tests and directly through the two scope tests (testInitialTypingScope, testTypeCheckStandaloneAST, and scope-introspection helpers like parseAndTypeCheckWithScope)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "createScope(root, parent): when parent==null it builds the global scope (uses createInitialScope then traverses with GlobalScopeBuilder); otherwise a LocalScopeBuilder handles a function's arguments/bleeding functions/catch/var declarations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Single change: inside LocalScopeBuilder.declareArguments, only the JSDoc-typed branch flips its final defined flag true→false (inferred→declared); the else branch (jsDocParameter==null, type null) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In defineSlot(n,parent,type,inferred), inferred=false triggers setDeferredType(n,type) on the NAME node and passes inferred=false into scope.declare(...), so the observable distinguishing surface is the parameter slot's Var.isTypeInferred() (and deferred type resolution on the NAME node)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TypedScopeCreator is an internal scope builder reached via the TypeCheck pass / scope-customization tests; the behavioral delta is directly exercised where tests introspect scope param Vars."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the affected branch the passed type jsDocParameter.getJSType() must be non-null because defineSlot has the precondition inferred || type != null (previously satisfied trivially since inferred was true)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: I searched the oracle for a [HIDDEN] test that genuinely enforces the declareArguments behavior in S_impl-1: that a function formal parameter matched by a still-available JSDoc @param entry is bound as a DECLARED (isTypeInferred()==false) scope Var, and parameters that run past the JSDoc entries remain inferred.\n\nThe tests that actually fail against the buggy program and that exercise exactly this behavior (reassigning a JSDoc-typed parameter to an incompatible value and expecting an assignment error = testFunctionArguments13; redeclaring a JSDoc-typed parameter with a conflicting local var = testDuplicateLocalVarDecl; plus testScoping12) all live in test/com/google/javascript/jscomp/TypeCheckTest.java and its loose fork LooseTypeCheckTest.java. Both files are labeled [VISIBLE], so those assertions — even though they correspond precisely to requirement r — cannot serve as a Witness (they were never hidden).\n\nI then examined all the plausibly relevant [HIDDEN] files for an assertion on this same behavior:\n- TypedScopeCreatorTest.java ([HIDDEN]): the dedicated TypedScopeCreator/scope test. Its isTypeInferred() checks (testInferredVar/testDeclaredVar) are on GLOBAL scope vars declared with @type, not on function formal parameters bound via @param/JSDoc in LocalScopeBuilder.declareArguments. No test there checks the declared/inferred status of a function parameter.\n- TypeInferenceTest.java ([HIDDEN]): data-flow type inference tests on local function bodies using assumptions declared manually via assumedScope.declare; no assertion about whether a JSDoc-matched formal param is recorded declared vs inferred.\n- SyntacticScopeCreatorTest.java ([HIDDEN]): tests SyntacticScopeCreator (a different, purely structural scope builder lacking JSType/inference concepts).\n\nNo other oracle test (in the read files) asserts the DECLARED-vs-inferred binding of a function parameter from a JSDoc @param, which is the precise delta of S_impl-1. The tests that do are all [VISIBLE]. Conclusion: no [HIDDEN] witness for r exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: The target requirement (S_impl-1) is that, in TypedScopeCreator.LocalScopeBuilder.declareArguments, a function formal parameter matched by a live @param JSDoc entry is bound as a DECLARED scope Var (isTypeInferred()==false) rather than inferred. The only observable surface of this one-line boolean flip (true→false in gold) is either (a) inspecting the scope Var's isTypeInferred()/getType() after the local scope is built, or (b) downstream type-validation that only triggers once a JSDoc-typed parameter is reassigned to an incompatible value (e.g. testFunctionArguments13 / testDuplicateLocalVarDecl / testScoping12).\n\nI attempted to build such a witness. First I confirmed from the visible source that the delta is solely the `inferred` flag in defineSlot for the JSDoc-matched branch, and that reaching it requires building function local scopes with a fully-typed JSType registry — i.e., driving the internal TypeCheck pipeline (registration of native/param types, reverse abstract interpreters, deferred type resolution), exactly as CompilerTypeTestCase+TypeCheckTest do. The Oracle Search Agent had already established that every real regression test for this behavior lives in the [VISIBLE] TypeCheckTest/LooseTypeCheckTest files, and no [HIDDEN] oracle asserts this precise param-declared behavior.\n\nI then made genuine run_test attempts. Empirically the run_test harness drops my method into a wrapper class `VersoWitnessCandidate` in the DEFAULT (unnamed) package with only public com.google.javascript.jscomp API accessible (confirmed: `CompilerOptions.LanguageMode`, `SemanticReverseAbstractInterpreter`, `TypedScopeCreator`, etc. are package-private/inaccessible, and rhino `Node`/`Token` are on a different package). A full `Compiler.compile(...)` run with default options executes only normalization/optimization passes and does NOT run the type-check pass: even a blatant global `/** @type {number} */ var a = new Array();` mismatch produced zero diagnostics, and the @param-reassignment scenario also produced zero diagnostics. Without the ability to instantiate `TypeCheck`/`SemanticReverseAbstractInterpreter`/drive `TypedScopeCreator` (all package-private), the declared-vs-inferred param delta cannot be surfaced through any public, compile-accessible route.\n\nConclusion: I could not produce (or even plausibly construct) a genuinely execution-confirmed discriminating test in this harness; the finding is consistent with the Oracle Search's result that no hidden witness for r exists."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_impl-1] (com.google.javascript.jscomp.TypedScopeCreator.localFunctionParameterBinding.declareArguments) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: The target requirement (S_impl-1) is that, in TypedScopeCreator.LocalScopeBuilder.declareArguments, a function formal parameter matched by a live @param JSDoc entry is bound as a DECLARED scope Var (isTypeInferred()==false) rather than inferred. The only observable surface of this one-line boolean flip (true→false in gold) is either (a) inspecting the scope Var's isTypeInferred()/getType() after the local scope is built, or (b) downstream type-validation that only triggers once a JSDoc-typed parameter is reassigned to an incompatible value (e.g. testFunctionArguments13 / testDuplicateLocalVarDecl / testScoping12).\n\nI attempted to build such a witness. First I confirmed from the visible source that the delta is solely the `inferred` flag in defineSlot for the JSDoc-matched branch, and that reaching it requires building function local scopes with a fully-typed JSType registry — i.e., driving the internal TypeCheck pipeline (registration of native/param types, reverse abstract interpreters, deferred type resolution), exactly as CompilerTypeTestCase+TypeCheckTest do. The Oracle Search Agent had already established that every real regression test for this behavior lives in the [VISIBLE] TypeCheckTest/LooseTypeCheckTest files, and no [HIDDEN] oracle asserts this precise param-declared behavior.\n\nI then made genuine run_test attempts. Empirically the run_test harness drops my method into a wrapper class `VersoWitnessCandidate` in the DEFAULT (unnamed) package with only public com.google.javascript.jscomp API accessible (confirmed: `CompilerOptions.LanguageMode`, `SemanticReverseAbstractInterpreter`, `TypedScopeCreator`, etc. are package-private/inaccessible, and rhino `Node`/`Token` are on a different package). A full `Compiler.compile(...)` run with default options executes only normalization/optimization passes and does NOT run the type-check pass: even a blatant global `/** @type {number} */ var a = new Array();` mismatch produced zero diagnostics, and the @param-reassignment scenario also produced zero diagnostics. Without the ability to instantiate `TypeCheck`/`SemanticReverseAbstractInterpreter`/drive `TypedScopeCreator` (all package-private), the declared-vs-inferred param delta cannot be surfaced through any public, compile-accessible route.\n\nConclusion: I could not produce (or even plausibly construct) a genuinely execution-confirmed discriminating test in this harness; the finding is consistent with the Oracle Search's result that no hidden witness for r exists.",
+    "confidence": "Medium"
+  }
+}

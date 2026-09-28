@@ -1,0 +1,122 @@
+{
+  "task_id": "django__django-12364",
+  "status": "ok",
+  "duration_seconds": 480.5554694579914,
+  "llm_calls": 35,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12364",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "When deciding whether an existing ordering already constitutes a total ordering (so that '-pk' must NOT be appended), ChangeList._get_deterministic_ordering() must consider not only the model's Meta.unique_together sets but also unconditional UniqueConstraints declared on the model: an unconditional (non-partial, i.e. condition is None) UniqueConstraint whose field set is entirely covered — by non-nullable fields — in the ordering must be accepted as providing a table-wide total ordering; a UniqueConstraint that carries a condition (partial constraint, uniqueness only among rows matching the condition) or that involves a nullable column must not be accepted as a total ordering and, absent any other total ordering, the call must append '-pk'.",
+        "subject": "ChangeList._get_deterministic_ordering",
+        "hunk_ids": [],
+        "cited_from": "Issue title/description: 'Detection of existing total ordering in admin changelist should take into account UniqueConstraints without conditions.' ... \"I think that _get_deterministic_ordering() should check for the presence of UniqueConstraints as well, which currently aren't considered by the discovery algorithm.\" Also code docstring in django/contrib/admin/views/main.py: 'Ensure a deterministic order across all database backends. Search for a single field or unique together set of fields providing a total ordering. If these are missing, augment the ordering with a descendant primary key.' and currently the else-branch only reads 'for field_names in self.lookup_opts.unique_together:' with 'if any(field.null for field in fields): continue' before 'ordering.append(\"-pk\")'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Options.total_unique_constraints returns the list of objects in Meta.constraints that are UniqueConstraint instances whose condition attribute is None (i.e., unconditional/total unique constraints); UniqueConstraint instances with a non-None condition (partial constraints) and constraint objects that are not UniqueConstraint instances (e.g. CheckConstraint) are excluded from the returned list.",
+        "subject": "django.db.models.options.Options.total_unique_constraints",
+        "hunk_ids": [
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "ChangeList._get_deterministic_ordering() treats the field set of each unconditional UniqueConstraint (constraint.condition is None) present in the model's Meta.constraints as a composite total-ordering candidate on the same footing as a unique_together tuple: when the ordering's accumulated fields are a superset of that constraint's declared fields (and none of those fields is nullable) and no deeper total-ordering field breaks the loop, the '-pk' tiebreaker is not appended to the changelist ordering; partial UniqueConstraints (those with a non-None condition) are not considered candidates, so a model whose only uniqueness stems from a partial constraint still gets '-pk' appended.",
+        "subject": "django.contrib.admin.views.main.ChangeList._get_deterministic_ordering",
+        "hunk_ids": [
+          "H0",
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1 (and its cited issue/docstring) concerns the behavior of _get_deterministic_ordering() in the admin changelist considering unconditional UniqueConstraints; nothing in S_vis mentions a new Options.total_unique_constraints method or pins down its contract of returning the filtered list of condition-None UniqueConstraints. R1 describes new API surface on the Options class that visible information does not establish."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1"
+        ],
+        "rationale": "REQ-1 directly commits to the behavior R2 describes: in _get_deterministic_ordering, an unconditional (condition-is-None) UniqueConstraint whose field set is entirely covered by non-nullable fields in the ordering is accepted as providing a total ordering, while partial constraints and nullable-covered constraints are not and, in their absence, '-pk' is appended. R2 is only a fuller phrasing of the same contract."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_total_unique_constraints_partial_and_check_excluded",
+      "test_source": "def test_total_unique_constraints_partial_and_check_excluded():\n    import sys\n    if '/testbed/tests' not in sys.path:\n        sys.path.insert(0, '/testbed/tests')\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=['constraints'],\n            SECRET_KEY='secret',\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        )\n    import django\n    django.setup()\n    from django.db.models import UniqueConstraint\n    from constraints.models import UniqueConstraintProduct\n    total = UniqueConstraintProduct._meta.total_unique_constraints\n    names = {c.name for c in total}\n    assert 'name_color_uniq' in names\n    assert 'name_without_color_uniq' not in names\n    assert len(total) == 1\n    for c in total:\n        assert isinstance(c, UniqueConstraint)\n        assert c.condition is None\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AttributeError: 'Options' object has no attribute 'total_unique_constraints')",
+      "explanation": "R1 specifies that Options.total_unique_constraints returns exactly the Meta.constraints entries that are UniqueConstraint instances with condition attribute None, excluding partial UniqueConstraints (non-None condition) and non-UniqueConstraint objects (e.g. CheckConstraint). The gold program adds this @cached_property to django/db/models/options.py (H5) plus the UniqueConstraint import (H4); the buggy program has neither, so no such attribute exists on Gold options.\n\nMy witness uses the model UniqueConstraintProduct from the tests/constraints app, which declares TWO constraints in Meta: an unconditional UniqueConstraint (fields=['name','color'], name='name_color_uniq', condition defaults to None) and a partial UniqueConstraint (fields=['name'], name='name_without_color_uniq', condition=Q(color__isnull=True)). This is the natural exercised case for R1.\n\nExecuted against gold: PASSED — total_unique_constraints yielded a single entry 'name_color_uniq', and 'name_without_color_uniq' (conditioned) was excluded, each returned object being a UniqueConstraint with condition None. Executed against buggy: FAILED with AttributeError 'Options' object has no attribute 'total_unique_constraints', exactly because the buggy program lacks R1's property.\n\nNo visible file pins down this assertion: I reviewed tests/constraints/tests.py (only database/integrity/validate_unique checks), tests/admin_changelist, tests/model_meta, tests/model_options, tests/validation, and all docs — none reference Options.total_unique_constraints or rebuild this filtering behavior. The search agent likewise found no hidden oracle test asserting on it. My synthesized assertion is therefore a genuine, novel, discriminating witness for R1 (not a re-express of any visible test)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The method under scrutiny is ChangeList._get_deterministic_ordering() in django/contrib/admin/views/main.py (called from get_ordering())."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the current code the branch that looks for a composite/unique-together total ordering iterates only `self.lookup_opts.unique_together`; unconditional UniqueConstraints (available via `self.lookup_opts.constraints`, instances of django/db/models/constraints.UniqueConstraint with a `fields` tuple and a `condition` attr defaulting to None) are not consulted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Behavioral pattern for this method is exercised by tests in tests/admin_changelist/tests.py (e.g. test_total_ordering_optimization, test_deterministic_order_for_unordered_model): '-pk' is appended only when no single unique field, no unique-together set (and other cases) already provide a total ordering."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/ref/models/constraints.txt) describe `UniqueConstraint(*, fields, name, condition=None)`; a UniqueConstraint with a condition (a 'partial' unique constraint) only enforces uniqueness on the subset matching the condition, so it cannot yield a table-wide total ordering."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Meta.unique_together and Meta.indexes/constraints are set from DEFAULT_NAMES in django/db/models/options.py; Meta.constraints holds the constraint objects."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk H1 is a trivial import change: UniqueConstraint is dropped from django/db/models/base.py because base.py no longer references it after the H3 refactor."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2/H3 refactor Model._get_unique_checks() to build validation checks from _meta.total_unique_constraints (its own and each parent's) instead of scanning raw _meta.constraints with an inline isinstance/condition filter. The uniqueness checks ultimately produced are behaviorally unchanged (both old and new code validate only conditionless UniqueConstraint field sets whose fields are not excluded)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Options.total_unique_constraints is implemented as a @cached_property (line placement between _get_fields/_property_names area); it is the shared source now used both by the admin changelist total-ordering determination and by model uniqueness validation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Options gains a new import of UniqueConstraint (H4) to support the new total_unique_constraints cached property."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ChangeList._get_deterministic_ordering's composite branch names its merged iteration source constraint_field_names, joining lookup_opts.unique_together with the fields tuples of lookup_opts.total_unique_constraints, and reuses the existing nullable-column and issuperset logic."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 describes the behavior of the NEW property Options.total_unique_constraints: returning conditionless (condition=None) UniqueConstraint instances from Meta.constraints, excluding partial UniqueConstraints (non-None condition) and non-UniqueConstraint objects such as CheckConstraint.\n\nTo serve as a witness, an oracle test would need to assert on the value of `total_unique_constraints` (or equivalently on a behavior that can only differ thanks to that property), drawn from [HIDDEN] content, and actually fail against the buggy program (which lacks this property).\n\nI searched the oracle test suite thoroughly across every directory that could plausibly carry such a test:\n- tests/constraints (tests.py [VISIBLE], models.py [HIDDEN]) — UniqueConstraintProduct is the only model in the repo defining both an unconditional UniqueConstraint (name_color_uniq) and a partial one (name_without_color_uniq with condition). But its test file only contains database-level (IntegrityError)/introspection/`validate_unique` tests (test_model_validation/test_model_validation_with_condition), none of which assert on `_meta.total_unique_constraints`. Moreover that test file is [VISIBLE], so it could never serve as a witness under the HIDDEN-content rule even if it were semantically on-point.\n- tests/model_meta (tests.py [VISIBLE]; models.py/results.py [HIDDEN]) — the Options tests exercise fields/parent lists/labels etc., but no model there declares Meta.constraints and no assertion references total_unique_constraints.\n- tests/admin_changelist (tests.py [VISIBLE]; models.py/admin.py [HIDDEN]) — test_total_ordering_optimization and the deterministic-ordering tests described in the notebook only use the inline models defined with Meta.unique_together (no UniqueConstraint/constraints entries), so they in no way exercise the exclusion of partial/non-UniqueConstraint objects. The file is also [VISIBLE].\n- tests/model_options, tests/validation/test_unique.py, tests/indexes — all [VISIBLE] and none reference the property.\n\nNo [HIDDEN] test file asserting on Options.total_unique_constraints (or exercising the changelist-constraint behavior that is the only externally observable effect of the new property) exists in the oracle. Additionally, the task records \"(none recorded)\" tests currently failing against the buggy program, indicating no pre-existing oracle test actually distinguishes gold from buggy for this requirement. Because a genuine witness must fail against buggy and be drawn from [HIDDEN] assertions, and neither condition is met by anything I could find, I conclude found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.models.options.Options.total_unique_constraints): Options.total_unique_constraints returns the list of objects in Meta.constraints that are UniqueConstraint instances whose condition attribute is None (i.e., unconditional/total unique constraints); UniqueConstraint instances with a non-None condition (partial constraints) and constraint objects that are not UniqueConstraint instances (e.g. CheckConstraint) are excluded from the returned list. — not entailed by S_vis (REQ-1 (and its cited issue/docstring) concerns the behavior of _get_deterministic_ordering() in the admin changelist considering unconditional UniqueConstraints; nothing in S_vis mentions a new Options.total_unique_constraints method or pins down its contract of returning the filtered list of condition-None UniqueConstraints. R1 describes new API surface on the Options class that visible information does not establish.); confirmed by a synthesized witness: R1 specifies that Options.total_unique_constraints returns exactly the Meta.constraints entries that are UniqueConstraint instances with condition attribute None, excluding partial UniqueConstraints (non-None condition) and non-UniqueConstraint objects (e.g. CheckConstraint). The gold program adds this @cached_property to django/db/models/options.py (H5) plus the UniqueConstraint import (H4); the buggy program has neither, so no such attribute exists on Gold options.\n\nMy witness uses the model UniqueConstraintProduct from the tests/constraints app, which declares TWO constraints in Meta: an unconditional UniqueConstraint (fields=['name','color'], name='name_color_uniq', condition defaults to None) and a partial UniqueConstraint (fields=['name'], name='name_without_color_uniq', condition=Q(color__isnull=True)). This is the natural exercised case for R1.\n\nExecuted against gold: PASSED — total_unique_constraints yielded a single entry 'name_color_uniq', and 'name_without_color_uniq' (conditioned) was excluded, each returned object being a UniqueConstraint with condition None. Executed against buggy: FAILED with AttributeError 'Options' object has no attribute 'total_unique_constraints', exactly because the buggy program lacks R1's property.\n\nNo visible file pins down this assertion: I reviewed tests/constraints/tests.py (only database/integrity/validate_unique checks), tests/admin_changelist, tests/model_meta, tests/model_options, tests/validation, and all docs — none reference Options.total_unique_constraints or rebuild this filtering behavior. The search agent likewise found no hidden oracle test asserting on it. My synthesized assertion is therefore a genuine, novel, discriminating witness for R1 (not a re-express of any visible test).",
+    "confidence": "Medium"
+  }
+}

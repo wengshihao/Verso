@@ -1,0 +1,102 @@
+{
+  "task_id": "django__django-13569",
+  "status": "ok",
+  "duration_seconds": 113.8060778749641,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13569",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Ordering an annotate()/values() queryset by '?' (random) must not disrupt the aggregation/grouping: with a model 'Thing' (default pk) and a model 'Related' whose FK points at Thing, when a single Thing has two Related rows, `Thing.objects.annotate(rc=Count('related')).order_by('?').values('id', 'rc')` must evaluate to the single aggregated row `[{'id': 1, 'rc': 2}]` — the same grouped result as `Thing.objects.annotate(rc=Count('related')).order_by('rc').values('id', 'rc')` — rather than splitting the group (i.e. it should NOT produce `[{'id': 1, 'rc': 1}, {'id': 1, 'rc': 1}]`). Correspondingly, the generated SQL for such a query should group by the Thing key(s) and not add a RANDOM()/RAND() expression to the GROUP BY.",
+        "subject": "django.db.models.sql.compiler.SQLCompiler.get_group_by / order_by('?') aggregation group-by handling",
+        "hunk_ids": [],
+        "cited_from": "\"order_by('?') unexpectedly breaking queryset aggregation ... >>> Thing.objects.annotate(rc=Count('related')).order_by('?').values('id', 'rc') <QuerySet [{'id': 1, 'rc': 1}, {'id': 1, 'rc': 1}]> The random function call has nothing to do with the aggregation, and I see no reason it should break it. ... Dumping the query seems that indeed the random call breaks the group by call ... >>> print(Thing.objects.annotate(rc=Count('related')).order_by('?').values('id', 'rc').query) SELECT \"thing\".\"id\", COUNT(\"related\".\"id\") AS \"rc\" FROM \"thing\" LEFT OUTER JOIN \"related\" ON (\"thing\".\"id\" = \"related\".\"thing_id\") GROUP BY \"thing\".\"id\", RANDOM() ORDER BY RANDOM() ASC\" — contrasted with the working case: \">>> Thing.objects.annotate(rc=Count('related')).order_by('rc').values('id', 'rc') <QuerySet [{'id': 1, 'rc': 2}]>\""
+      },
+      {
+        "id": "R2",
+        "statement": "In django.db.models.sql.compiler (SQLCompiler.get_group_by), the non-aggregate ordering terms that are cloned/extended into the GROUP BY clause must not include a Random() expression produced from the special '?' ordering marker: such a Random()/RANDOM() ordering-only expression must be excluded when the compiler collapses order_by expressions into group by, so ordering by '?' never forces GROUP BY to be broken down by random values.",
+        "subject": "django.db.models.sql.compiler.SQLCompiler.get_group_by order_by expression expansion into GROUP BY",
+        "hunk_ids": [],
+        "cited_from": "\"I dug into the SQL compiler, and it seems to me the problem is inside django.db.models.sql.compiler.get_group_by, where the compiler combines all non-aggregate, non-ref order_by expressions into group_by. ... for expr, (sql, params, is_ref) in order_by: ... if expr.contains_aggregate: continue ... if is_ref: continue ... expressions.extend([...]) ... and things seem to work correctly.\" (the issue's diagnosis of the fix location, and of the relevant loop shown in the source: 'for expr, (sql, params, is_ref) in order_by: ... if not is_ref: expressions.extend(expr.get_group_by_cols())')"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a query that has a GROUP BY clause (e.g. an aggregation on the base model produced by values()/annotate() of aggregate functions) is ordered with order_by('?') — which resolves to the Random() expression — the underlying random function call (RANDOM() generic, RAND() on MySQL/SQLite, DBMS_RANDOM.VALUE on Oracle) is not added to the GROUP BY list: the Random ordering expression contributes no group-by column, so the grouped/aggregated random-ordered query remains valid (returns rows) rather than being grouped by the random function.",
+        "subject": "django.db.models.functions.math.Random.get_group_by_cols (effect on SQL GROUP BY construction for order_by('?') grouped/aggregated querysets)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly states the generated SQL should group by the Thing key(s) and NOT add a RANDOM()/RAND() expression to the GROUP BY (as evidenced by the GROUP BY ... RANDOM() contrast), and S_vis R2 states Random() ordering expressions must be excluded so GROUP BY is not broken down by random values — together these pin down S_impl R1's exact behavior that the random function call is not added to the GROUP BY list and the grouped query remains valid. The implementation-mechanism nuance (get_group_by_cols vs compiler skip) does not alter the entailed behavioral outcome."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo is the Django source itself (the framework being patched), not a standalone repro app; the Thing/Related models in the issue are illustrative."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The patch-relevant code is in django/db/models/sql/compiler.py, method SQLCompiler.get_group_by — specifically its order-by-to-group-by loop: `for expr, (sql, params, is_ref) in order_by: ... if not is_ref: expressions.extend(expr.get_group_by_cols())` (Random is not an aggregate, so BaseExpression.get_group_by_cols returns [self])."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Random() is django.db.models.functions.math.Random (0-arity Func, function 'RANDOM', overriding to RAND / DBMS_RANDOM.VALUE on mysql/sqlite/oracle); order_by('?') is converted in SQLCompiler.get_order_by to `OrderBy(Random())` via: `if field == '?': # random -> order_by.append((OrderBy(Random()), False))`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Contrast baseline (issue, case 2): ordering an annotated aggregate queryset by the multivalued reverse relation ('related') IS expected to break the grouping down into one row per joined row — `Thing...order_by('related').values('id','rc')` -> `[{'id':1,'rc':1},{'id':1,'rc':1}]`. That behavior is the reported 'works as expected' reference and should not be unintentionally collapsed by the fix."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under tests/ (e.g. tests/aggregation/, tests/aggregation_regress/, tests/ordering/). tests/ordering/tests.py has a `test_random_ordering` asserting `Article.objects.order_by('?')` has 4 elements, confirming random ordering is an established, expected feature that must keep working."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing aggregation-regression tests exercise GROUP BY interaction with order_by (#10113 'Fields mentioned in order_by() must be included in the GROUP BY'), values/annotate value-resolution, and group by pk collapse (test_aggregate_duplicate_columns asserts only one GROUP BY entry for an annotated Author query)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Random subclasses Func with arity 0 (no source expressions) and is not an aggregate; the base BaseExpression.get_group_by_cols returns [self] when the expression has no aggregate, which is why previously Random() (injected as OrderBy(Random()) by the '?' handling in SQLCompiler.get_order_by and chained via OrderBy.get_group_by_cols in SQLCompiler.get_group_by) contaminated the GROUP BY clause."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The special case is reached only for non-Ref order_by entries in SQLCompiler.get_group_by; Ref order_by entries (e.g. references to already-selected annotations) are skipped there, so the override's scope is ordering entries that carry a raw Random() expression."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Random also overrides as_mysql/as_oracle/as_sqlite for the RAND / DBMS_RANDOM.VALUE forms; get_group_by_cols returning [] is vendor-agnostic Single SQLCompiler covers all backends."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Note: no tests were examined; this extraction is based solely on the developer patch and its interaction with the SQL compilation code path."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

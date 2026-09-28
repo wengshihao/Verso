@@ -1,0 +1,161 @@
+{
+  "task_id": "django__django-13808",
+  "status": "ok",
+  "duration_seconds": 361.61882662493736,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13808",
+    "s_vis": [
+      {
+        "id": "SERV1",
+        "statement": "When a PostgreSQL connection is configured with an 'OPTIONS' dict containing a 'service' key (e.g. {'service': 'my_alias'}), the backend must be able to establish the connection using that service without a separately-specified NAME/database name being repeated in the DATABASES entry (in particular it must not be rejected by the guard that raises ImproperlyConfigured demanding a NAME value, merely because NAME is empty/absent).",
+        "subject": "django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params",
+        "hunk_ids": [],
+        "cited_from": "From the issue description: 'DATABASES = {\n\t'default': {\n\t\t'ENGINE': 'django.db.backends.postgresql',\n\t\t'OPTIONS': {'service': 'my_alias'}\n\t}\n}' ... 'Which works, however it involves repeating the database name. I don't think the database name should be repeated twice ... I think ideally you would just specify the service, either like this:' (then the config above with only OPTIONS and no NAME). Contrast with the code in django/db/backends/postgresql/base.py get_connection_params(): \"if settings_dict['NAME'] == '': raise ImproperlyConfigured('settings.DATABASES is improperly configured. Please supply the NAME value.')\" and \"conn_params = {'database': settings_dict['NAME'] or 'postgres', **settings_dict['OPTIONS'],}\"."
+      },
+      {
+        "id": "SERV2",
+        "statement": "A PostgreSQL connection whose OPTIONS contains a 'service' must read the server/host/user/port/database for that alias from the postgres service definition (the equivalent of .pg_service.conf), so that the database name comes from the service and need not be duplicated in the Django DATABASES NAME setting.",
+        "subject": "django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params",
+        "hunk_ids": [],
+        "cited_from": "From the issue description: 'psycopg2 supports it just fine through the service argument/string connect(service='my_alias')' and 'Postgres offers a way to make database connections through the use of services ... Server, database, username, etc information is stored by default in ~/.pg_service.conf'. The reporter's config shows only 'OPTIONS': {'service': 'my_alias'} alongside 'NAME': 'postgres' currently, and the complaint that 'it involves repeating the database name' and 'couples the config and the service file together'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "In get_connection_params, when settings NAME is '' it raises ImproperlyConfigured only if OPTIONS contains no 'service' key; when OPTIONS['service'] is present the call proceeds without raising. The raised error message is 'Please supply the NAME or OPTIONS[\\'service\\'] value.'",
+        "subject": "django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params NAME='' / service guard",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "In get_connection_params, when settings NAME is '' (and OPTIONS['service'] is present so the call proceeds), the returned connection params contain the merged OPTIONS entries (including 'service') but no 'database' key, so the actual database is determined by the named service rather than a Django-supplied database name.",
+        "subject": "django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params conn_params for empty NAME",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-3",
+        "statement": "In get_connection_params, when settings NAME is None, the returned connection params set database to 'postgres' and do not forward any 'service' OPTIONS entry to psycopg2.",
+        "subject": "django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params conn_params for NAME=None",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-4",
+        "statement": "DatabaseClient.settings_to_cmd_args_env adds a PGSERVICE entry equal to str(OPTIONS['service']) to the environment dict passed to psql when the 'service' option is set.",
+        "subject": "django.db.backends.postgresql.client.DatabaseClient.settings_to_cmd_args_env PGSERVICE env",
+        "hunk_ids": [
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "SERV1",
+          "SERV2"
+        ],
+        "rationale": "SERV1 pins the guard behavior (proceed without raising when NAME is empty and OPTIONS['service'] is present, implying the guard fires only when no service), but the exact new error message string is not present in the visible evidence, which only quotes the old message."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "SERV1",
+          "SERV2"
+        ],
+        "rationale": "SERV2/SERV1 establish that the database comes from the service and NAME need not be duplicated, but the specific claim that the returned conn_params contain no 'database' key at all is a mechanism detail not explicitly spelled out in the visible evidence."
+      },
+      {
+        "requirement_id": "impl-3",
+        "entailed": "false",
+        "checked_ids": [
+          "SERV1",
+          "SERV2"
+        ],
+        "rationale": "Both S_vis entries concern only the service-present/empty-NAME scenario and say nothing about a NAME=None case, a 'postgres' default, or whether OPTIONS 'service' is forwarded in that branch, so nothing would lead to this exact behavior."
+      },
+      {
+        "requirement_id": "impl-4",
+        "entailed": "false",
+        "checked_ids": [
+          "SERV1",
+          "SERV2"
+        ],
+        "rationale": "S_vis is entirely about psycopg2 connection via the base wrapper's service support; nothing mentions psql, DatabaseClient.settings_to_cmd_args_env, or a PGSERVICE environment variable."
+      }
+    ],
+    "target_requirement_id": "impl-3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_impl3_name_none_consumes_service",
+      "test_source": "import sys\nimport types\n\n\ndef _install_fake_psycopg2():\n    if 'psycopg2' in sys.modules:\n        return sys.modules['psycopg2']\n\n    def _module(name, **attrs):\n        m = types.ModuleType(name)\n        for k, v in attrs.items():\n            setattr(m, k, v)\n        sys.modules[name] = m\n        return m\n\n    extras = _module(\n        'psycopg2.extras',\n        register_uuid=lambda *a, **k: None,\n        register_default_jsonb=lambda *a, **k: None,\n        Inet=str,\n    )\n    ext_mod = _module(\n        'psycopg2.extensions',\n        UNICODE=object(),\n        QuotedString=str,\n        register_adapter=lambda *a, **k: None,\n        register_type=lambda *a, **k: None,\n        new_array_type=lambda *a: str,\n        adapt=lambda v: None,\n    )\n    err = _module('psycopg2.errorcodes', DUPLICATE_DATABASE='42P04')\n\n    pg = _module(\n        'psycopg2',\n        __version__='2.9.9 (dt dec pq3 ext lo64)',\n        extensions=ext_mod,\n        extras=extras,\n        errorcodes=err,\n    )\n    return pg\n\n\n_install_fake_psycopg2()\n\nfrom django.db.backends.postgresql.base import DatabaseWrapper  # NOQA: E402\n\n\ndef test_impl3_name_none_consumes_service():\n    settings_dict = {\n        'NAME': None,\n        'OPTIONS': {'service': 'my_service', 'connect_timeout': 5},\n        'USER': '',\n        'PASSWORD': '',\n        'HOST': '',\n        'PORT': '',\n        'AUTOCOMMIT': True,\n        'CONN_MAX_AGE': 0,\n        'TIME_ZONE': None,\n        'CONN_HEALTH_CHECKS': False,\n    }\n    params = DatabaseWrapper(settings_dict).get_connection_params()\n    assert params['database'] == 'postgres'\n    assert 'service' not in params\n    assert params['connect_timeout'] == 5\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError: assert 'service' not in {'connect_timeout': 5, 'database': 'postgres', 'service': 'my_service'}; the buggy code still merges the whole OPTIONS dict (including 'service') into conn_params, so the service entry would reach psycopg2.",
+      "explanation": "Requirement [impl-3] states that in DatabaseWrapper.get_connection_params, when the settings NAME is None, the returned conn_params must set database to 'postgres' and NOT forward any 'service' OPTIONS entry to psycopg2. The gold implementation pops 'service' from OPTIONS before building conn_params, so conn_params contains database='postgres' and no 'service' key. The buggy implementation instead builds conn_params as {'database': NAME or 'postgres', **OPTIONS}, which merges the entire OPTIONS dict (including 'service') into the params sent to psycopg2, and with NAME=None it skips its (now-removed) empty-NAME ImproperlyConfigured coupling. My test instantiates DatabaseWrapper with NAME=None and OPTIONS={'service': 'my_service', 'connect_timeout': 5}, calls get_connection_params() (purely in-memory; no live DB is contacted), and asserts database=='postgres' and that 'service' is absent. This PASSES on gold (service popped, database='postgres') and FAILS on buggy (service still present in the returned params). I first confirmed the discriminating behavior is not pinned anywhere visible: I read tests/backends/postgresql/tests.py (test_database_name_too_long, test_nodb_cursor, connect tests all use connection fixtures and none touch a NAME=None+'service' OPTIONS combination), and the Oracle Search Agent already ruled out every postgresql oracle test file for this path. Because the run environment has no real psycopg2 driver, the test injects a minimal stub psycopg2 into sys.modules so that django.db.backends.postgresql.base imports; only module-level registration methods are stubbed — the actual get_connection_params logic under test is the real Django code and requires no DB driver. Each candidate was executed byte-for-byte against both gold and buggy with run_test before submitting."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant code lives in django/db/backends/postgresql/base.py, method DatabaseWrapper.get_connection_params(). It builds conn_params as {'database': settings_dict['NAME'] or 'postgres', **settings_dict['OPTIONS']} and guards against an empty NAME with an ImproperlyConfigured error, which is the coupling the issue complains about."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The postgres OPTIONS dict is merged wholesale into psycopg2's connect kwargs, so a 'service' key already reaches psycopg2; the issue is only that NAME must still be supplied/repeated and that a default 'database' param is also injected."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PostgreSQL psql client args (django/db/backends/postgresql/client.py) and test-db creation (creation.py) also default the dbname as settings_dict['NAME'] or 'postgres', so any full support must consider dbshell/test flows, though the issue text only demonstrates ordinary connection config."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests that exercise this live under tests/backends/postgresql/ (e.g. tests/backends/postgresql/tests.py currently tests NAME-too-long and no-db-cursor behaviour); no visible test for the proposed service usage exists yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter also floated a top-level 'SERVICE': 'my_alias' DATABASES key as an open question ('Or maybe a better way would be?'), but it is only posed as a question and is not resolved by the visible material, so it is not asserted as a requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When NAME is None the gold code mutates settings_dict['OPTIONS'] in place via .pop('service', None); a pre-existing 'postgres' env/password etc. semantics otherwise carry over to psycopg2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Even when service is used, DatabaseClient.settings_to_cmd_args_env still passes the positional dbname arg as 'postgres' (NAME.get or 'postgres') in addition to PGSERVICE; the patch does not remove that positional db argument in the service case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Non-empty non-None NAME keeps behavior unchanged (conn_params database=NAME merged with OPTIONS)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A 'service' key was already forwarded into psycopg2 connect kwargs before this patch (via wholesale OPTIONS merge); this patch only removes the NAME=='' guard coupling and stops injecting a synthetic database name when service must select it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-3]: I investigated the PostgreSQL backend oracle tests for the requirement [impl-3]: when settings NAME is None, get_connection_params() must default the connection database to 'postgres' and NOT forward a 'service' OPTIONS entry to psycopg2 (i.e. the old coupling where empty/None NAME triggered ImproperlyConfigured must be gone).\n\nI listed all oracle test files and read every relevant candidate:\n- tests/backends/postgresql/tests.py — [VISIBLE], contains test_database_name_too_long, test_nodb_cursor, and other connect/integration tests, but nothing about a NAME=None + 'service' OPTIONS combination.\n- tests/backends/postgresql/test_creation.py, test_operations.py, test_introspection.py, test_server_side_cursors.py — all [VISIBLE], none touch get_connection_params' NAME=None/service handling.\n- tests/dbshell/test_postgresql.py — [VISIBLE], tests DatabaseClient.settings_to_cmd_args_env but not the base.py get_connection_params behavior for service.\n- tests/backends/tests.py and tests/backends/base/test_base.py — [VISIBLE], generic backend tests, no postgres service handling.\n\nCritically, the tests currently failing against the buggy program are recorded as \"(none recorded)\", and every postgresql-relevant oracle file I read is labeled [VISIBLE] content with no assertion that exercises the NAME=None/'service' path. A witness must rest on a [HIDDEN] assertion that passes against gold and fails against buggy; no [HIDDEN] test content relevant to this behavior exists in the oracle, and no existing test demonstrably verifies the removed ImproperlyConfigured coupling or the 'postgres' database default together with a consumed 'service' OPTIONS entry. There is therefore no genuine witness for this requirement in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-3] (django.db.backends.postgresql.base.DatabaseWrapper.get_connection_params conn_params for NAME=None): In get_connection_params, when settings NAME is None, the returned connection params set database to 'postgres' and do not forward any 'service' OPTIONS entry to psycopg2. — not entailed by S_vis (Both S_vis entries concern only the service-present/empty-NAME scenario and say nothing about a NAME=None case, a 'postgres' default, or whether OPTIONS 'service' is forwarded in that branch, so nothing would lead to this exact behavior.); confirmed by a synthesized witness: Requirement [impl-3] states that in DatabaseWrapper.get_connection_params, when the settings NAME is None, the returned conn_params must set database to 'postgres' and NOT forward any 'service' OPTIONS entry to psycopg2. The gold implementation pops 'service' from OPTIONS before building conn_params, so conn_params contains database='postgres' and no 'service' key. The buggy implementation instead builds conn_params as {'database': NAME or 'postgres', **OPTIONS}, which merges the entire OPTIONS dict (including 'service') into the params sent to psycopg2, and with NAME=None it skips its (now-removed) empty-NAME ImproperlyConfigured coupling. My test instantiates DatabaseWrapper with NAME=None and OPTIONS={'service': 'my_service', 'connect_timeout': 5}, calls get_connection_params() (purely in-memory; no live DB is contacted), and asserts database=='postgres' and that 'service' is absent. This PASSES on gold (service popped, database='postgres') and FAILS on buggy (service still present in the returned params). I first confirmed the discriminating behavior is not pinned anywhere visible: I read tests/backends/postgresql/tests.py (test_database_name_too_long, test_nodb_cursor, connect tests all use connection fixtures and none touch a NAME=None+'service' OPTIONS combination), and the Oracle Search Agent already ruled out every postgresql oracle test file for this path. Because the run environment has no real psycopg2 driver, the test injects a minimal stub psycopg2 into sys.modules so that django.db.backends.postgresql.base imports; only module-level registration methods are stubbed — the actual get_connection_params logic under test is the real Django code and requires no DB driver. Each candidate was executed byte-for-byte against both gold and buggy with run_test before submitting.",
+    "confidence": "Medium"
+  }
+}

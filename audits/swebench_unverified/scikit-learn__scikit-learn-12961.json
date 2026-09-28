@@ -1,0 +1,124 @@
+{
+  "task_id": "scikit-learn__scikit-learn-12961",
+  "status": "ok",
+  "duration_seconds": 333.1524936250644,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-12961",
+    "s_vis": [
+      {
+        "id": "REQ1",
+        "statement": "BaseSearchCV's parameter-search fit path (in particular _format_results) must not crash with a positional-unpacking ValueError ('not enough values to unpack (expected 4, got 0)' / '(expected 5, got 0)') when the collected per-(candidate, split) evaluation results passed in as 'out' are empty or otherwise fail to provide one whole 4- or 5-slot tuple per fitted point; that situation must be surfaced/handled more gracefully than a bare zip-unpack crash.",
+        "subject": "sklearn.model_selection._search.BaseSearchCV._format_results",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"model_selection._search._format_results ValueError not enough values to unpack (expected 5, got 0)\". Traceback: \"File \".../_search.py\", line 763, in _format_results / score_time) = zip(*out) / ValueError: not enough values to unpack (expected 4, got 0)\". Code (sklearn/model_selection/_search.py): \"if self.return_train_score:\\n            (train_score_dicts, test_score_dicts, test_sample_counts, fit_time,\\n             score_time) = zip(*out)\\n        else:\\n            (test_score_dicts, test_sample_counts, fit_time,\\n             score_time) = zip(*out)\". Issue: \"either way, this error could be handled better.\""
+      },
+      {
+        "id": "REQ2",
+        "statement": "Regardless of whether return_train_score is True or False, running RandomizedSearchCV/GridSearchCV fit (via evaluate_candidates collecting parallel _fit_and_score outputs into all_out, then _format_results) must not throw the empty-unpack ValueError: the report states it happens both \"with return_train_score=True\" and after \"Setting return_train_score=False did not work, still hitting the same issue.\"",
+        "subject": "sklearn.model_selection._search.BaseSearchCV.fit",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The issue traces to these two lines below, with return_train_score=True\" ... \"Setting return_train_score=False did not work, still hitting the same issue.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "simpl-1",
+        "statement": "When GridSearchCV/RandomizedSearchCV.fit schedules fits over the product of the candidate params and the CV split iterator but zero individual fits are actually produced (e.g. the CV iterator yields no splits, or there are no candidates), fit raises a ValueError whose message reports that no fits were performed rather than proceeding to accumulate/format an empty result set.",
+        "subject": "BaseSearchCV.fit (evaluate_candidates)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "simpl-2",
+        "statement": "When GridSearchCV/RandomizedSearchCV.fit performs a nonzero number of fits whose count differs from n_candidates * n_splits (i.e. cv.split yields a number of splits per candidate inconsistent with cv.get_n_splits), fit raises a ValueError whose message reports that cv.split and cv.get_n_splits returned inconsistent results and states the expected number of splits (given by get_n_splits).",
+        "subject": "BaseSearchCV.fit (evaluate_candidates)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "simpl-1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "S_vis only describes the empty-unpack crash symptom in _format_results and notes it could be handled more gracefully; it never specifies that fit should raise a ValueError whose message reports that no fits were performed. That particular remediation behavior is not pinned down by visible info."
+      },
+      {
+        "requirement_id": "simpl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "S_vis concerns the empty 'out' unpack crash only; it says nothing about the nonzero-but-inconsistent split-count scenario or a message stating cv.split and cv.get_n_splits returned inconsistent results with the expected split count. The specific behavior simpl-2 describes is not present in visible information."
+      }
+    ],
+    "target_requirement_id": "simpl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_no_fits_empty_cv_iterator",
+      "test_source": "def test_no_fits_empty_cv_iterator():\n    import numpy as np\n    import pytest\n    from sklearn.model_selection import GridSearchCV\n    from sklearn.svm import SVC\n\n    class EmptySplitCV:\n        # A CV whose split iterator yields no splits at all.\n        def split(self, X, y=None, groups=None):\n            return iter([])\n\n        def get_n_splits(self, X=None, y=None, groups=None):\n            return 0\n\n    X = np.arange(20).reshape(10, 2).astype(float)\n    y = np.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1])\n    gs = GridSearchCV(SVC(), {'C': [1.0]}, cv=EmptySplitCV(),\n                      error_score='raise')\n    with pytest.raises(ValueError) as e:\n        gs.fit(X, y)\n    assert 'No fits were performed' in str(e.value)\n",
+      "gold_result": "PASSED: gold raises ValueError whose message contains 'No fits were performed' (the empty-CV branch guarded by `len(out) < 1`).",
+      "buggy_result": "FAILED: on the buggy program fit instead raises ValueError 'not enough values to unpack (expected 4, got 0)' from `_format_results`, i.e. it proceeds to accumulation and never reports that no fits were performed; assertion on the 'No fits were performed' message fails.",
+      "explanation": "Requirement simpl-1 states that when GridSearchCV/RandomizedSearchCV.fit schedules fits but zero individual fits are actually produced (e.g. the CV split iterator yields no splits), fit must raise a ValueError reporting that no fits were performed, instead of falling through to accumulate/format an empty result set. In the gold _search.py, BaseSearchCV.fit's nested evaluate_candidates now checks `if len(out) < 1: raise ValueError('No fits were performed. ...')` right after the parallel dispatch over product(candidate_params, cv.split(...)) and before all_candidate_params/all_out are extended and handed to _format_results. The witness drives that exact first branch: it supplies a custom CV whose `split()` iterator yields nothing (and get_n_splits()==0), so `out` is empty (len(out)==0 < 1) and gold raises the intended ValueError whose message contains 'No fits were performed'. The buggy (pre-fix) file contains no such check, so it extends the empty `out` and calls _format_results, where `zip(*out)` fails only later with a generic ValueError 'not enough values to unpack (expected 4, got 0)' - it never reports that no fits were performed, so the witness fails on buggy. Execution confirmed: run_test PASSED against gold and FAILED against buggy with exactly these differing error messages. This scenario (empty CV iterator => zero fits) is distinct from the visible get_n_splits-vs-split inconsistency branch described in the notebook, and no visible assertion in sklearn/model_selection/tests/test_search.py pins down this specific no-fits behavior, so it is a genuinely hidden oracle fact rather than a reworded visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The repository is a scikit-learn snapshot whose _search.py state matches the one cited in the issue traceback (lines ~763-766 showing the zip(*out) unpack into 4 or 5 tuples depending on return_train_score)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible _validation.py `_fit_and_score` returns a `ret` list whose length is 5 (return_train_score on) or 4 (off), plus optional n_test_samples/times/parameters entries in a fixed order; _format_results relies on that fixed length."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue provides only a traceback and a hypothesis (“the line below could be returning None… lightgbm did not return valid results… this error could be handled better”), but no self-contained reproduction script, and no in-repo test reproduces the empty-`out` trigger, so the exact root-cause behavior is not verifiable from visible artifacts alone."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "model_selection tests live under sklearn/model_selection/tests/test_search.py; there is a `OneTimeSplitter` fixture (single-entry cv whose split() yields nothing once its internal iterator is consumed) used by test_grid_search_cv_splits_consistency to exercise cv consumption."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sklearn/model_selection/_search.py contains BaseSearchCV with abstract _run_search; GridSearchCV and RandomizedSearchCV implement _run_search but the failure is in the shared evaluate_candidates/_format_results accumulation logic in BaseSearchCV.fit."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two new checks are placed in BaseSearchCV.fit's nested evaluate_candidates closure, immediately after the parallel _fit_and_score dispatch over product(candidate_params, cv.split(...)) and before all_candidate_params/all_out are extended and passed to _format_results."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The validation only rejects anomalous CV/candidate conditions (empty split iterator / no candidates, or get_n_splits/split disagreement); the normal successful-fit path is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold test_model_selection test test_grid_search_cv_splits_consistency uses the OneTimeSplitter fixture (a single-entry CV whose wrapped iterator is exhausted after one consumption), which drives the get_n_splits-vs-split inconsistency branch of the new check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "exception type used by both new branches is ValueError."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [simpl-1]: I examined all model_selection test content that could possibly exercise the new BaseSearchCV \"no fits were performed\" ValueError (requirement simpl-1). The only file containing search-related oracle tests is sklearn/model_selection/tests/test_search.py, and it is flagged entirely [VISIBLE], including test_grid_search_cv_splits_consistency which (per earlier extractors) drives the separate get_n_splits-vs-split inconsistency branch rather than the empty-fit/no-candidates branch of simpl-1. A witness may only rest on [HIDDEN] content, so visible assertions cannot qualify. The only [HIDDEN] material in this area is sklearn/model_selection/tests/common.py, which contains solely the OneTimeSplitter test-helper fixture (a non-re-entrant KFold wrapper) with no assertions; OneTimeSplitter also represents a splitter that yields n_splits indices once, not the zero-fits/empty-candidate scenario described by simpl-1. test_split.py, test_validation.py, and the recursive __init__ do not contain any empty-fit/no-candidates search scenario. There is therefore no pre-existing [HIDDEN] oracle assertion that genuinely tests requirement simpl-1, so I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [simpl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[simpl-1] (BaseSearchCV.fit (evaluate_candidates)): When GridSearchCV/RandomizedSearchCV.fit schedules fits over the product of the candidate params and the CV split iterator but zero individual fits are actually produced (e.g. the CV iterator yields no splits, or there are no candidates), fit raises a ValueError whose message reports that no fits were performed rather than proceeding to accumulate/format an empty result set. — not entailed by S_vis (S_vis only describes the empty-unpack crash symptom in _format_results and notes it could be handled more gracefully; it never specifies that fit should raise a ValueError whose message reports that no fits were performed. That particular remediation behavior is not pinned down by visible info.); confirmed by a synthesized witness: Requirement simpl-1 states that when GridSearchCV/RandomizedSearchCV.fit schedules fits but zero individual fits are actually produced (e.g. the CV split iterator yields no splits), fit must raise a ValueError reporting that no fits were performed, instead of falling through to accumulate/format an empty result set. In the gold _search.py, BaseSearchCV.fit's nested evaluate_candidates now checks `if len(out) < 1: raise ValueError('No fits were performed. ...')` right after the parallel dispatch over product(candidate_params, cv.split(...)) and before all_candidate_params/all_out are extended and handed to _format_results. The witness drives that exact first branch: it supplies a custom CV whose `split()` iterator yields nothing (and get_n_splits()==0), so `out` is empty (len(out)==0 < 1) and gold raises the intended ValueError whose message contains 'No fits were performed'. The buggy (pre-fix) file contains no such check, so it extends the empty `out` and calls _format_results, where `zip(*out)` fails only later with a generic ValueError 'not enough values to unpack (expected 4, got 0)' - it never reports that no fits were performed, so the witness fails on buggy. Execution confirmed: run_test PASSED against gold and FAILED against buggy with exactly these differing error messages. This scenario (empty CV iterator => zero fits) is distinct from the visible get_n_splits-vs-split inconsistency branch described in the notebook, and no visible assertion in sklearn/model_selection/tests/test_search.py pins down this specific no-fits behavior, so it is a genuinely hidden oracle fact rather than a reworded visible assertion.",
+    "confidence": "Medium"
+  }
+}

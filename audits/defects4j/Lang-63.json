@@ -1,0 +1,112 @@
+{
+  "task_id": "Lang-63",
+  "status": "ok",
+  "duration_seconds": 186.33611137700063,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Lang-63",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "DurationFormatUtils.formatPeriod(startMillis, endMillis, \"MM\") must return the string \"09\" when startMillis corresponds to Dec 31, 2005 00:00:00.000 and endMillis to Oct 6, 2006 00:00:00.000 (both built via Calendar.getInstance() in the default time zone), i.e. the span across the Dec-31/new-year month boundary reported as a total count of months must be the correct non-negative value \"09\", not a wrong/negative value.",
+        "subject": "DurationFormatUtils.formatPeriod(long, long, String)",
+        "hunk_ids": [],
+        "cited_from": "DurationFormatUtilsTest.testJiraLang281: String result = DurationFormatUtils.formatPeriod(cal.getTime().getTime(), cal2.getTime().getTime(), \"MM\"); assertEquals(\"09\", result);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In formatPeriod's date adjustment, when the naive day-of-month difference (end DAY_OF_MONTH minus start DAY_OF_MONTH) is negative, the code borrows one whole preceding month at a time and adds to the day count the actual number of calendar days in the month it borrows into (28-31, leap-year-aware via the calendar), decrementing the month count by one per such borrow — rather than always adding a fixed 31 days per borrow.",
+        "subject": "DurationFormatUtils.formatPeriod",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "As a result of the carry being keyed to real month lengths, a period spanning one or more complete calendar months (whose months may have differing/less-than-31 day counts) resolves into whole months plus a residual day count that is a genuine leftover within a real month, and is no longer further perturbed by a post-pass that re-normalized every field estimate by subtracting a reduceAndCorrect correction (those calls and the reduceAndCorrect helper have been removed).",
+        "subject": "DurationFormatUtils.formatPeriod",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The single S_vis datum asserts that formatPeriod returns '09' (total months) for the Dec31-2005→Oct6-2006 span. That correctly pins down the overall month count for this one case, which plausibly implies a month-accounting fix that is non-negative/correct. However, it does not specify the internal borrowing mechanism — that negative day differences borrow one real preceding month (28–31, leap-aware) at a time rather than fixed 31 days — so the exact algorithm S_impl R1 describes is only weakly, not definitively, entailed."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains only a single input/output test assertion about 'MM' returning '09'; nothing in it mentions reduceAndCorrect, its removal, or the re-normalization post-pass. No visible information would lead a repair system to remove reduceAndCorrect or implement that normalization change."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "r2MonthCarryTest",
+      "test_source": "    @org.junit.Test\n    public void r2MonthCarryTest() throws Exception {\n        java.util.TimeZone tz = java.util.TimeZone.getTimeZone(\"GMT\");\n        java.util.Calendar start = java.util.Calendar.getInstance(tz);\n        start.set(2005, java.util.Calendar.JANUARY, 31, 0, 0, 0);\n        start.set(java.util.Calendar.MILLISECOND, 0);\n        java.util.Calendar end = java.util.Calendar.getInstance(tz);\n        end.set(2005, java.util.Calendar.MARCH, 1, 0, 0, 0);\n        end.set(java.util.Calendar.MILLISECOND, 0);\n        String result = org.apache.commons.lang.time.DurationFormatUtils.formatPeriod(\n            start.getTime().getTime(), end.getTime().getTime(), \"M d\", false, tz);\n        org.junit.Assert.assertEquals(\"0 26\", result);\n    }",
+      "gold_result": "PASSED (\"0 26\")",
+      "buggy_result": "FAILED — ComparisonFailure: expected:<[0 26]> but was:<[1 -2]>",
+      "explanation": "Formatting the span 2005-01-31 00:00:00.000 GMT → 2005-03-01 00:00:00.000 GMT with pattern \"M d\" (month then day tokens) requires the formatPeriod day-carry path to walk back across a real month boundary. The start day-of-month (31) exceeds the end day-of-month (1), so < 0 days triggers the carry. In the gold (fixed) implementation the carry borrows from a real month: `end.add(MONTH,-1); days += end.getActualMaximum(DAY_OF_MONTH)`, which here rolls `end` to a 28-day February, giving days = -30 + 28 = -2 (still negative, so it carries one whole month whose day length is 31? no — second iteration rolls again and adds 28 to reach 26) and reduces months accordingly, ultimately resolving to 0 months + 26 residual days. In the buggy code the carry hard-codes `days += 31` and then a post-pass of removeAndCorrect calls (which mutate `end` and re-normalize every field) yields an incorrect \"1 -2\" residual. This genuinely isolates R2: complete-month resolution plus residual day count that is a genuine leftover within a real (sub-31-day) month, free of the reduceAndCorrect perturbation. Verified by execution: gold PASSED with \"0 26\", buggy FAILED with \"1 -2\". None of the visible tests (testFormatPeriod with 1970→1973/1974 first-of-month spans, testFormatPeriodISO, or testJiraLang281 for 2005-12-31→2006-10-06 with format \"MM\") pin down this Jan-31→Mar-1 \"M d\" case, so this is a fresh discriminating scenario rather than a rephrasal of visible assertions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report's own reproduction uses System.currentTimeMillis() as endMillis (nondeterministic), but the included test testJiraLang281 pins a deterministic case (end = calendar 2006-10-06 00:00:00.000) for the same LANG-281 defect LANG-281."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both source files live under non-standard source dirs: src/java/org/apache/commons/lang/time/DurationFormatUtils.java and src/test/org/apache/commons/lang/time/DurationFormatUtilsTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "formatPeriod(start, end, format) short-circuits to formatDuration when millis < 28 days; the bug path is the longer span going through month/date adjustment logic (reduceAndCorrect, and the month-accumulation block that adds 12*years when the year token y is absent but months token M is present)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note in DurationFormatUtils.java near the days<0 adjustment: 'days += 31; ... // TODO: Need tests to show this is bad and the new code is good.' and later '// TODO: this is a bit weak, needs work to know about leap years' — relevant to the date-carry logic under test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testJiraLang281 is deterministic only modulo default time zone; both calendars are derived from Calendar.getInstance() so run under the machine default time zone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "reduceAndCorrect was a package-private static helper removed from this same file (its call sites in formatPeriod are deleted within H0 and its definition is deleted by H1); its removal is dead-code cleanup with no independently observable public surface, so it only supports the H0 behavior change rather than introducing its own requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0's formatPeriod day-carry computes the borrowed month's day count via end.getActualMaximum(Calendar.DAY_OF_MONTH) after rolling `end` back one month with end.add(Calendar.MONTH, -1), so the value is correct for 28/29/30/31-day months including leap-year February; the calendar is then restored with end.add(Calendar.MONTH, +1)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "formatPeriod short-circuits to formatDuration when endMillis-startMillis < 28 days, so the changed carry path is only reached for spans of a month or more; output is timezone-default dependent since both Calendar instances are derived from Calendar.getInstance(timezone)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I read every test file the oracle actually contains (list_test_files returned exactly two files): src/test/org/apache/commons/lang/time/DurationFormatUtilsTest.java and src/test/org/apache/commons/lang/time/StopWatchTest.java.\n\nStopWatchTest.java is [HIDDEN] but is entirely about the StopWatch class (timing/split/suspend state management) and has nothing whatsoever to do with DurationFormatUtils.formatPeriod month-length carry logic, so it cannot witness R2.\n\nThe only test in the whole oracle relevant to R2 is testJiraLang281 in DurationFormatUtilsTest.java, which pins formatPeriod over 2005-12-31 -> 2006-10-06 (spanning complete months with a 31-day month caught in the carry) and asserts the month-token resolves correctly. However, DurationFormatUtilsTest.java is labeled [VISIBLE] (content-based), meaning this exact test material was already seen by the repair system and does not establish anything not already entailed by the visible information. Per the audit rules, a Witness may only rest on [HIDDEN] assertions, and there is no [HIDDEN] test covering the R2 behavior (whole-month carry keyed to real month lengths, residual days no longer perturbed by the removed reduceAndCorrect pass).\n\nSince the only genuinely R2-relevant test resides in [VISIBLE] content and no [HIDDEN] equivalent exists anywhere in the oracle, I submit found=false. I did not need to run any candidate because no [HIDDEN] test touches this behavior."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (DurationFormatUtils.formatPeriod): As a result of the carry being keyed to real month lengths, a period spanning one or more complete calendar months (whose months may have differing/less-than-31 day counts) resolves into whole months plus a residual day count that is a genuine leftover within a real month, and is no longer further perturbed by a post-pass that re-normalized every field estimate by subtracting a reduceAndCorrect correction (those calls and the reduceAndCorrect helper have been removed). — not entailed by S_vis (S_vis contains only a single input/output test assertion about 'MM' returning '09'; nothing in it mentions reduceAndCorrect, its removal, or the re-normalization post-pass. No visible information would lead a repair system to remove reduceAndCorrect or implement that normalization change.); confirmed by a synthesized witness: Formatting the span 2005-01-31 00:00:00.000 GMT → 2005-03-01 00:00:00.000 GMT with pattern \"M d\" (month then day tokens) requires the formatPeriod day-carry path to walk back across a real month boundary. The start day-of-month (31) exceeds the end day-of-month (1), so < 0 days triggers the carry. In the gold (fixed) implementation the carry borrows from a real month: `end.add(MONTH,-1); days += end.getActualMaximum(DAY_OF_MONTH)`, which here rolls `end` to a 28-day February, giving days = -30 + 28 = -2 (still negative, so it carries one whole month whose day length is 31? no — second iteration rolls again and adds 28 to reach 26) and reduces months accordingly, ultimately resolving to 0 months + 26 residual days. In the buggy code the carry hard-codes `days += 31` and then a post-pass of removeAndCorrect calls (which mutate `end` and re-normalize every field) yields an incorrect \"1 -2\" residual. This genuinely isolates R2: complete-month resolution plus residual day count that is a genuine leftover within a real (sub-31-day) month, free of the reduceAndCorrect perturbation. Verified by execution: gold PASSED with \"0 26\", buggy FAILED with \"1 -2\". None of the visible tests (testFormatPeriod with 1970→1973/1974 first-of-month spans, testFormatPeriodISO, or testJiraLang281 for 2005-12-31→2006-10-06 with format \"MM\") pin down this Jan-31→Mar-1 \"M d\" case, so this is a fresh discriminating scenario rather than a rephrasal of visible assertions.",
+    "confidence": "Medium"
+  }
+}

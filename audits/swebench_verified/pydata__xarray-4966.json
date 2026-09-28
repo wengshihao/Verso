@@ -1,0 +1,137 @@
+{
+  "task_id": "pydata__xarray-4966",
+  "status": "ok",
+  "duration_seconds": 313.39636216603685,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-4966",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "UnsignedIntegerCoder.decode treats a variable carrying a _Unsigned attribute whose value is False (i.e. data stored as OPeNDAP unsigned bytes but actually representing signed bytes per the _Unsigned=False hack) as signed: when the variable's data has an unsigned integer dtype (dtype.kind == 'u'), it is reinterpreted/cast to the corresponding signed integer dtype of the same byte width so that recovered values are the signed ones (e.g. raw 128 and 255 decode back to -128 and -1), instead of leaving the unsigned values untouched.",
+        "subject": "xarray.coding.variables.UnsignedIntegerCoder.decode",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"OPeNDAP only knows unsigned bytes, but there's [a hack] ... of adding an attribute `_Unsigned=False` to the variable to be able to store signed bytes non the less. This hack is **not** handled by xarray, but maybe should be handled symmetrically at the same place (i.e. `if .kind == \"u\" and unsigned == False`).\" | Issue quoted netcdf4 output: \"test (test) float32 -128.0 -1.0 0.0 1.0 2.0 nan 127.0\" (\"correctly according to the hack\") vs pydap output \"test (test) float32 128.0 255.0 0.0 1.0 2.0 nan 127.0\"."
+      },
+      {
+        "id": "R2",
+        "statement": "While decoding a variable whose data is of an unsigned integer dtype and which carries a _Unsigned attribute, UnsignedIntegerCoder.decode no longer raises the SerializationWarning \"variable ... has _Unsigned attribute but is not of integer type. Ignoring attribute.\", because such data is integer-typed and the attribute is now honored rather than ignored.",
+        "subject": "xarray.coding.variables.UnsignedIntegerCoder.decode",
+        "hunk_ids": [],
+        "cited_from": "Issue pydap transcript: \"SerializationWarning: variable 'test' has _Unsigned attribute but is not of integer type. Ignoring attribute.\" — cited as the current mis-handling of the signed-byte hack the fix should address."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When decoding a variable that carries a `_Unsigned` attribute whose value is \"false\" and whose data has an unsigned integer dtype (kind 'u'), the data values are re-interpreted as the same-width signed integer dtype (e.g., for an itemsize-1 byte, a stored value of 128 decodes to -128).",
+        "subject": "UnsignedIntegerCoder.decode (xarray/coding/variables.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In the same case (data dtype kind 'u' and `_Unsigned` == \"false\"), if a `_FillValue` is present in the variable's attrs, that fill value is cast as the corresponding same-width signed integer type (e.g., an itemsize-1 fill value of 255 becomes -1).",
+        "subject": "UnsignedIntegerCoder.decode (xarray/coding/variables.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When decoding a variable that carries a `_Unsigned` attribute and whose data dtype kind is 'u', a SerializationWarning is no longer emitted for having \"_Unsigned ... not of integer type\" (that warning is still emitted only for dtype kinds that are not signed or unsigned integer, e.g. float), and no dtype conversion occurs for the kind 'u' + `_Unsigned` == \"true\" case.",
+        "subject": "UnsignedIntegerCoder.decode (xarray/coding/variables.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly says that for _Unsigned==False with unsigned dtype, data is reinterpreted/cast to the same-width signed dtype, giving 128→-128 and 255→-1, exactly matching S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis entries concern the data dtype conversion and the deletion of the SerializationWarning; neither mentions handling or casting of a _FillValue attribute present in the variable's attrs. This specific behavior is not pinned by visible info."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 firmly pins the 'no SerializationWarning for integer-typed _Unsigned data' portion, but the sub-clauses that the warning is retained only for non-integer dtype kinds (e.g. float) and that no conversion occurs for the _Unsigned==true kind-'u' case are not explicitly stated, leaving the composite requirement only partially entailed."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_decode_unsigned_false_fillvalue_cast",
+      "test_source": "import numpy as np\nimport xarray as xr\nfrom xarray.coding.variables import UnsignedIntegerCoder\n\ndef test_decode_unsigned_false_fillvalue_cast():\n    data = xr.Variable(\n        (\"x\",), np.array([0, 255, 128], dtype=\"uint8\"),\n        attrs={\"_Unsigned\": \"false\", \"_FillValue\": np.uint8(255)},\n    )\n    decoded = UnsignedIntegerCoder().decode(data)\n    assert decoded.dtype == np.dtype(\"int8\")\n    assert decoded.attrs[\"_FillValue\"] == -1\n    np.testing.assert_array_equal(decoded.values, np.array([0, -1, -128], dtype=\"int8\"))\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: decoded dtype stays uint8, _FillValue attr stays 255; assert decoded.dtype == int8 fails (dtype('uint8') != int8).",
+      "explanation": "Constructed a decode-witness for R2 from the exact semantics of the buggy/gold delta in the real failing oracle family test_decode_signed_from_unsigned (the [1]-type case = uint8/itemsize-1). The test builds a Variable whose data has dtype kind 'u' (uint8) with attribute _Unsigned == \"false\", and a _FillValue present in the attrs (np.uint8(255)). R2 says that in this exact case the present _FillValue must be cast as the corresponding same-width signed integer type (255 -> -1), alongside the data recasting (which is R1). Verifying by execution: against the gold fix, UnsignedIntegerCoder.decode yields dtype int8, data [0, -1, -128], and attrs[\"_FillValue\"] == -1 -> test PASSES. Against the buggy program, decode leaves the variable untouched as uint8 with _FillValue still 255 and data [0,255,128], so the dtype and _FillValue assertions FAIL. The _FillValue-to-signed-type assertion (decoded.attrs[\"_FillValue\"] == -1, i.e. 255 cast to int8 -1) is exactly the behavioral claim of R2, and it is contradicted only by the pre-fix (buggy) execution, confirming this is a genuine Witness for requirement R2 and not for some unrelated co-located behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The decoder implicated is UnsignedIntegerCoder.decode in xarray/coding/variables.py; the issue's code link points to that coder's decode branch which only handles data.dtype.kind == 'i'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "decode_cf_variable (xarray/conventions.py) applies UnsignedIntegerCoder().decode among its coders, so fixing the coder affects all backends (netcdf4, pydap, etc.) via the CF decoding path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The pydap backend (xarray/backends/pydap_.py) does not itself apply the _Unsigned=False / signed-byte hack; it merely wraps pydap variables, leaving interpretation to xarray's CF decoders."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "current UnsignedIntegerCoder.decode emits a SerializationWarning (\"variable %r has _Unsigned attribute but is not of integer type. Ignoring attribute.\") for the unsigned-byte-with-_Unsigned=False case reported in the issue, since an unsigned dtype has kind 'u', not 'i'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's quoted values are: netcdf4 engine → -128.0 -1.0 0.0 1.0 2.0 nan 127.0 (described as correct per the netCDF-C hack); pydap engine → 128.0 255.0 0.0 1.0 2.0 nan 127.0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only touches UnsignedIntegerCoder.decode, restructuring the dtype-kind dispatch: previously only kind=='i' was special-cased and every other kind (including 'u') went to the warning branch; the patch adds an 'elif data.dtype.kind == \"u\"' branch handled only when unsigned=='false'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Within the new branch the conversion is applied lazily via lazy_elemwise_func(np.asarray to signed dtype of matching itemsize); a _FillValue, when present in attrs, is recast through signed_dtype.type."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For an unsigned-typed variable with _Unsigned=='true', neither the kind=='i' branch nor the new elif applies, so no conversion and no warning (data already unsigned)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The _Unsigned attribute is popped from attrs to encoding early in decode regardless of dtype kind (pre-existing, unchanged by this hunk)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (UnsignedIntegerCoder.decode (xarray/coding/variables.py)): In the same case (data dtype kind 'u' and `_Unsigned` == \"false\"), if a `_FillValue` is present in the variable's attrs, that fill value is cast as the corresponding same-width signed integer type (e.g., an itemsize-1 fill value of 255 becomes -1). — not entailed by S_vis (Both S_vis entries concern the data dtype conversion and the deletion of the SerializationWarning; neither mentions handling or casting of a _FillValue attribute present in the variable's attrs. This specific behavior is not pinned by visible info.); confirmed by a oracle witness: Constructed a decode-witness for R2 from the exact semantics of the buggy/gold delta in the real failing oracle family test_decode_signed_from_unsigned (the [1]-type case = uint8/itemsize-1). The test builds a Variable whose data has dtype kind 'u' (uint8) with attribute _Unsigned == \"false\", and a _FillValue present in the attrs (np.uint8(255)). R2 says that in this exact case the present _FillValue must be cast as the corresponding same-width signed integer type (255 -> -1), alongside the data recasting (which is R1). Verifying by execution: against the gold fix, UnsignedIntegerCoder.decode yields dtype int8, data [0, -1, -128], and attrs[\"_FillValue\"] == -1 -> test PASSES. Against the buggy program, decode leaves the variable untouched as uint8 with _FillValue still 255 and data [0,255,128], so the dtype and _FillValue assertions FAIL. The _FillValue-to-signed-type assertion (decoded.attrs[\"_FillValue\"] == -1, i.e. 255 cast to int8 -1) is exactly the behavioral claim of R2, and it is contradicted only by the pre-fix (buggy) execution, confirming this is a genuine Witness for requirement R2 and not for some unrelated co-located behavior.",
+    "confidence": "High"
+  }
+}

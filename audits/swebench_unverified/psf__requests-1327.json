@@ -1,0 +1,121 @@
+{
+  "task_id": "psf__requests-1327",
+  "status": "ok",
+  "duration_seconds": 168.68776899995282,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-1327",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Session.get_adapter must deterministically select, among all prefixes registered in self.adapters that are prefixes of the given url, the adapter associated with the longest (most specific) matching prefix, so that the result depends only on the set of (prefix, adapter) mountings and not on the unspecified iteration/hash order of the self.adapters dict",
+        "subject": "Session.get_adapter(url)",
+        "hunk_ids": [],
+        "cited_from": "issue: \"...s.mount('http://test.com', requests_testadapter.TestAdapter(b'Mock')) ... Instead, because of Session.get_adapter() the following might or might not work as expected: s.get('http://test.com') ... This is because there is already a default adapter for 'http://' in the form of requests.adapters.HTTPAdapter. Depending on the (seemingly random) order of keys in the s.adapters dictionary, for some combinations of keys it will work, for others it won't.\" and code sessions.py: \"for (prefix, adapter) in self.adapters.items():\n\n            if url.startswith(prefix):\n                return adapter\" and issue: \"It appears that sorting first from the longest key to shortest, and then alphabetically (for keys of the same length), is the way.\""
+      },
+      {
+        "id": "R2",
+        "statement": "After s.mount('http://test.com', adapter_X) registers adapter_X while the default 'http://' adapter is still mounted, a request sent through that session to a URL such as 'http://test.com' must consistently be handled by adapter_X (the more specific 'http://test.com' mount), never by the default 'http://' adapter, regardless of the order of keys in s.adapters",
+        "subject": "Session.mount(prefix, adapter) / Session.send(request)",
+        "hunk_ids": [],
+        "cited_from": "issue: \"We cannot currently reliably do: ... s.mount('http://test.com', requests_testadapter.TestAdapter(b'Mock'))  We should, this is documented: http://docs.python-requests.org/.../transport-adapters ... the following might or might not work as expected: s.get('http://test.com') This is because there is already a default adapter for 'http://' in the form of requests.adapters.HTTPAdapter...\" combined with docs/user/advanced.rst: \"Once mounted, any HTTP request made using that session whose URL starts with the given prefix will use the given Transport Adapter.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Session.get_adapter(url) deterministically returns the transport adapter that was registered under the longest adapter prefix in the session (e.g. a host/origin mount such as 'http://www.github.com') whenever that URL also matches a shorter generic mount such as 'http://', rather than dispatching such a URL to whichever scheme-generic mount happens to be encountered first; consequently requests to a specifically-mounted host are always handled by that host's adapter regardless of the order/adapter dictionary in which the mounts were registered.",
+        "subject": "Session.get_adapter / Session.mount",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Mounting a prefix with Session.mount replaces the previously registered adapter for that exact prefix if one exists, updates that adapter's value in place, and still keeps every mounted adapter (including that remounted prefix) reachable for dispatch, so the registry always contains one entry per distinct prefix with the latest-mounted adapter winning for that prefix.",
+        "subject": "Session.mount",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly requires get_adapter to deterministically select the longest (most specific) matching prefix independent of dict iteration order, and S_vis R2 shows the specific host mount always wins over a shorter generic mount. Together these pin down exactly the longest-prefix dispatch behavior described in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 concerns the behavior of remounting an already-registered exact prefix (replace-in-place, one entry per distinct prefix, latest mount wins for that prefix). Neither S_vis entry addresses remounting the same prefix; both concern only mounting a new more-specific distinct prefix that competes with a shorter generic mount, which sets no evidence for the replace/update-in-place semantics."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mount_remount_dispatch",
+      "test_source": "def test_mount_remount_dispatch():\n    import requests\n    s = requests.Session()\n    s.adapters.clear()\n    a_http = requests.adapters.HTTPAdapter()\n    a_gh = requests.adapters.HTTPAdapter()\n    s.mount('http://', a_http)\n    s.mount('http://github.com/', a_gh)\n    got = s.get_adapter('http://github.com/foo')\n    assert got is a_gh\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert got is a_gh; buggy returned the short 'http://' adapter a_http instead of the long 'http://github.com/' adapter)",
+      "explanation": "Requirement R2 concerns Session.mount: after mounting a prefix that replaces/registers adapters, the registry must keep every mounted prefix reachable for dispatch and the longest (most-specific) matching prefix must win in get_adapter. The gold change re-sorts adapters by key length (descending) so a longer prefix registered later outranks a shorter prefix mounted earlier. My test clears seed adapters, mounts the short default 'http://' first and then the more-specific 'http://github.com/', and asserts get_adapter('http://github.com/foo') returns the longer-prefix adapter instance. On gold it returns a_gh (PASSED); on buggy the plain-dict/insertion-order mount() never re-sorts, so get_adapter matches the earlier short 'http://' and returns a_http instead (FAILED via AssertionError). The same exact source string was executed against both revisions, discriminating gold from buggy. This replacement-ordering/dispatch scenario is not pinned down anywhere in the visible oracle (no dedicated Session.mount/get_adapter unit test exists; the only transport-related tests are httpbin integration tests that do not exercise mount ordering/remounting)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The codebase has no dedicated unit tests for Session.mount/get_adapter; only httpbin-based integration tests exist in test_requests.py, none exercising transport-adapter mounting."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In requests/sessions.py, Session.__init__ seeds self.adapters = {} then calls self.mount('http://', HTTPAdapter()) and self.mount('https://', HTTPAdapter()); mount() simply does self.adapters[prefix] = adapter, and get_adapter() linear-searches self.adapters.items() returning the first url.startswith(prefix) hit, else raising InvalidSchema."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Session.send() picks the adapter via self.get_adapter(url=request.url) and dispatches the request there, so get_adapter's selection fully governs which transport handles a URL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue text itself proposes as the desired sort rule 'first from the longest key to shortest, and then alphabetically (for keys of the same length)'; note that for two equal-length prefixes both to be prefixes of one common URL they would have to be the identical string, so the same-length alphabetical tie is not independently observable through get_adapter's first-match discipline and is folded into requirement R1's determinism claim."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Host/origin mounts such as 'http://test.com' naturally have longer prefixes than the default scheme mounts 'http://'/'https://', which is exactly the collision class the issue reports (documented transport-adapter usage, e.g. docs example s.mount('http://www.github.com', MyAdapter()))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change relies on self.adapters being an OrderedDict (H1) so that mount()'s pop-and-reinsert reordering in H2 persists deterministically; get_adapter() itself is unchanged and still does first-prefix-match linear scan over items()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Default mounts seeded in __init__ are 'https://' then 'http://' (http and https are disjoint prefixes, so swapping their seed order is not independently observable through get_adapter for default sessions)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Two distinct adapter prefixes of equal length cannot both string-prefix a single URL (they would have to be the identical string), so the order among equal-length keys is not observable through get_adapter's first-match discipline and any alphabetical tie there is folded into R1's determinism claim."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: The oracle consists of exactly one test file, test_requests.py, and read_test_file labels its entire content [VISIBLE]. Per the witnessing rules, an assertion drawn from [VISIBLE] content can never serve as a Witness (it was never hidden from a repair system). Indeed, I could find no dedicated Session.mount/get_adapter unit test exercising transport-adapter mounting/replacement at all in the file — the only transport-related material lives in httpbin integration tests, and notably the reportedly-failing test_transport_adapter_ordering is not present in the visible source shown to me. The Session.mount behavior claimed by R2 (replace-when-same-prefix, update-in-place, keep-one-entry-per-distinct-prefix with latest-mounted adapter winning) is not enforced by any test in the oracle. Since there are no [HIDDEN] files or hidden assertions anywhere in this benchmark's oracle, no genuine witness exists regardless of how well a candidate test matched R2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (Session.mount): Mounting a prefix with Session.mount replaces the previously registered adapter for that exact prefix if one exists, updates that adapter's value in place, and still keeps every mounted adapter (including that remounted prefix) reachable for dispatch, so the registry always contains one entry per distinct prefix with the latest-mounted adapter winning for that prefix. — not entailed by S_vis (S_impl R2 concerns the behavior of remounting an already-registered exact prefix (replace-in-place, one entry per distinct prefix, latest mount wins for that prefix). Neither S_vis entry addresses remounting the same prefix; both concern only mounting a new more-specific distinct prefix that competes with a shorter generic mount, which sets no evidence for the replace/update-in-place semantics.); confirmed by a synthesized witness: Requirement R2 concerns Session.mount: after mounting a prefix that replaces/registers adapters, the registry must keep every mounted prefix reachable for dispatch and the longest (most-specific) matching prefix must win in get_adapter. The gold change re-sorts adapters by key length (descending) so a longer prefix registered later outranks a shorter prefix mounted earlier. My test clears seed adapters, mounts the short default 'http://' first and then the more-specific 'http://github.com/', and asserts get_adapter('http://github.com/foo') returns the longer-prefix adapter instance. On gold it returns a_gh (PASSED); on buggy the plain-dict/insertion-order mount() never re-sorts, so get_adapter matches the earlier short 'http://' and returns a_http instead (FAILED via AssertionError). The same exact source string was executed against both revisions, discriminating gold from buggy. This replacement-ordering/dispatch scenario is not pinned down anywhere in the visible oracle (no dedicated Session.mount/get_adapter unit test exists; the only transport-related tests are httpbin integration tests that do not exercise mount ordering/remounting).",
+    "confidence": "Medium"
+  }
+}

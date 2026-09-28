@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-13281",
+  "status": "ok",
+  "duration_seconds": 602.1079680409748,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13281",
+    "s_vis": [
+      {
+        "id": "S_v1",
+        "statement": "After building bar1 = Bar.objects.create(a=foo1, ...) (foo1 a persisted Foo), making bar2 = copy.copy(bar1), setting bar2.pk = None, and assigning bar2.a = foo2 (foo2 a different persisted Foo), the original instance's forward ForeignKey accessor and FK id must still resolve to the originally assigned object — bar1.a must equal foo1 and bar1.a.id must equal bar1.a_id — i.e. shallow-copying a model must not make the copy share the field-value cache (self._state.fields_cache) with the original so that mutating the copy's FK does not alter what the original reports.",
+        "subject": "django.db.models.base.Model copy / ForeignKey forward accessor fields cache",
+        "hunk_ids": [],
+        "cited_from": "\t\tfoo1 = Foo.objects.create(a='foo1', d=1)\n\t\tfoo2 = Foo.objects.create(a='foo2', d=2)\n\t\tbar1 = Bar.objects.create(a=foo1, b='bar1')\n\t\tbar2 = copy.copy(bar1)\n\t\tbar2.pk = None\n\t\tbar2.a = foo2\n\t\t# bar2 points to foo2\n\t\tself.assertEqual(bar2.a, foo2)\n\t\tself.assertEqual(bar2.a.id, bar2.a_id)\n\t\t# bar1 is unchanged and must still point to foo1\n\t\t# These fail on Django >= 2.0\n\t\tself.assertEqual(bar1.a, foo1)\n\t\tself.assertEqual(bar1.a.id, bar1.a_id)"
+      },
+      {
+        "id": "S_v2",
+        "statement": "Under the same sequence (copy.copy of a Bar whose forward FK was set to foo1, copy.pk set to None, then copy.a = foo2), the copy instance's ForeignKey accessor and FK id must reflect the newly reassigned object — bar2.a must equal foo2 and bar2.a.id must equal bar2.a_id — i.e. the fix must not break the copy-side behavior of a forward FK assignment made on the copied instance.",
+        "subject": "django.db.models.base.Model copy / ForeignKey forward accessor on the copy",
+        "hunk_ids": [],
+        "cited_from": "\t\tbar2 = copy.copy(bar1)\n\t\tbar2.pk = None\n\t\tbar2.a = foo2\n\t\t# bar2 points to foo2\n\t\tself.assertEqual(bar2.a, foo2)\n\t\tself.assertEqual(bar2.a.id, bar2.a_id)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "The dict returned by Model.__getstate__ stores its '_state' entry as a distinct ModelState instance (a shallow copy) whose 'fields_cache' attribute is a distinct dict (a copy) rather than the same dict object held by the source instance's '_state'; consequently an instance restored through the pickling/copying path that consumes this state (e.g. copy.copy of a model, or pickle.loads of a pickled model) does not share its fields_cache dict with the source instance, so caching an FK/related value on one (e.g. ModelState.fields_cache via set_cached_value/related-object assignment) does not populate or invalidate the corresponding cache entry on the other.",
+        "subject": "Model.__getstate__ (django/db/models/base.py) / model instance copying and pickling state isolation",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the state for a model instance is produced by Model.__getstate__, FK/related-value entries already present in the source instance's ModelState.fields_cache are carried over as copied entries into the returned state's copied fields_cache (rather than being dropped or shared by reference), so a shallow copy or unpickled copy of an already-populated instance retains its prior cached related values independently of any later mutations to the original's cache.",
+        "subject": "Model.__getstate__ (django/db/models/base.py) / preservation of pre-populated related-value cache on copy",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S_v1",
+          "S_v2"
+        ],
+        "rationale": "S_v1 establishes the observable isolation requirement: a shallow copy must not share self._state.fields_cache with the original, so mutating the copy's FK leaves the original unaffected. However, R1 pins down the specific implementation mechanism and location (that Model.__getstate__ itself returns a state whose '_state' is a distinct ModelState with a distinct copied fields_cache dict); S_vis names the isolated attribute but never locates the fix in __getstate__ or specifies the returned state's internal structure, so the exact mechanism is not fully constrained."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "S_v1",
+          "S_v2"
+        ],
+        "rationale": "R2 requires pre-populated related-value cache entries already in the source's fields_cache to be carried over as copied entries into the copy's state, preserving cached values on the copy. Neither S_v1, S_v2, nor their cited test text checks that a shallow copy retains cached values that existed in the source before the copy; the tests only verify original-unchanged and copy-after-reassignment behavior, so nothing in S_vis leads to this carry-over guarantee."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_getstate_copies_fields_cache_on_model_copy",
+      "test_source": "from django.db.models.base import Model, ModelState\n\n\nclass _Holder:\n    pass\n\n\ndef _make_holder():\n    holder = _Holder()\n    holder._state = ModelState()\n    # Real models lazily init fields_cache via the descriptor when first\n    # populated; emulate an instance whose ModelState already has related\n    # values cached.\n    holder._state.fields_cache = {'a': 'related-foo'}\n    return holder\n\n\ndef test_getstate_copies_fields_cache_on_model_copy():\n    instance = _make_holder()\n    original_cache = instance._state.fields_cache\n\n    state = Model.__getstate__(instance)\n\n    # Returned state must carry over the prior cached entry as an independent\n    # copy of the source fields_cache.\n    assert state['_state'] is not instance._state\n    assert state['_state'].fields_cache is not original_cache\n    assert state['_state'].fields_cache['a'] == 'related-foo'\n    # Later mutation of the source cache must not disturb the carried entry.\n    del instance._state.fields_cache['a']\n    assert state['_state'].fields_cache['a'] == 'related-foo'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assertion `state['_state'] is not instance._state` fails: buggy __getstate__ returns self.__dict__ verbatim, so state['_state'] is still the source's own ModelState and state['_state'].fields_cache is the source's cache object — the pre-populated related entry is shared, not copied, so mutating the source's cache would disturb the produced state).",
+      "explanation": "The target requirement R2 is about Model.__getstate__ (django/db/models/base.py): on an already-populated instance it must produce state whose '_state'/ModelState and its fields_cache are independent *copies*, carrying over prior FK/related entries so a shallow/unpickle copy stays independent of later mutations to the source cache. Buggy returns `self.__dict__` unchanged (ModelState and its fields_cache dict shared by reference); gold shallow-copies ModelState and `.copy()`s fields_cache.\n\nBecause this instance executes standalone under pytest in /tmp with only the `django` package on the path, real DB-backed Foo/Bar model instances cannot be built (no Django settings/INSTALLED_APPS/migrations). Every earlier attempt to import `model_fields.models` failed under collection (ModuleNotFoundError/no installed app). So I exercise the exact target method — `Model.__getstate__` — on a minimal holder that carries the same structure a real populated model would: a `django.db.models.base.ModelState` whose `fields_cache` has been pre-populated with a related-value entry (the same dict the ForeignKey cache writes into on a real instance). Gold's gold/buggy difference lives entirely in this method's dict/ModelState/cache-copying logic.\n\nThe test is discriminating and was execution-confirmed: it PASSED on gold (all four assertions hold) and FAILED on buggy (first assertion `state['_state'] is not instance._state` fails, because buggy __getstate__ returns self.__dict__, so the produced state shares the source's ModelState and its fields_cache — exactly R2's described defect). No existing visible test in the repo pins this __getstate__-copy semantics down (the S_vis set and the surrounding model_fields/model_regress tests cover only descriptor identity, FK defaults, pickle warnings, etc.), so this is a hidden-fact witness, not a reinvention of a visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Fix area is the ORM Model implementation (django/db/models/base.py): class Model defines NO __copy__, so copy.copy() copies __dict__ shallowly, and the resulting instance shares the same ModelState object (self._state) as the original. FK/related value caching goes through FieldCacheMixin.set_cached_value/get_cached_value (django/db/models/fields/mixins.py), which store into instance._state.fields_cache — so a shallow copy shares the FK cache dict with the original. Issue's suggested fix: Model's copy path should deep-copy self._state."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Referenced test models exist in tests/model_fields/models.py: class Foo(models.Model) with a=CharField(max_length=10) and d=DecimalField(max_digits=5, decimal_places=3); class Bar(models.Model) with b=CharField(max_length=10) and a=ForeignKey(Foo, models.CASCADE, default=get_foo, related_name='bars')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No tests/model_fields/test_field_caching_change.py file exists in this repo snapshot; the test embodied in requirements is the one pasted verbatim in the issue report, which states it is placed (and run with: python3.6 tests/runtests.py --parallel 1 model_fields) at tests/model_fields/test_field_caching_change.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch edits only Model.__getstate__ in django/db/models/base.py (hunk H0); Model defines __reduce__/__getstate__/__setstate__ but no __copy__, so copy.copy()/copy.deepcopy() of a model instance route through the reduce protocol and are fed by __getstate__, making this the mechanism by which the shallow-copy cache-sharing bug is fixed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ModelState declares fields_cache via a class-level ModelStateFieldsCacheDescriptor whose __get__ creates a new per-instance {} dict; set_cached_value/get_cached_value on field mixins store into instance._state.fields_cache, which is why sharing the ModelState object between instances shares the cache."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold __getstate__ performs a shallow copy of __dict__, a shallow copy of the '_state' ModelState, and a .copy() of that copied _state's fields_cache dict—only these state objects are duplicated, deeper attribute values are not deep-copied."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No tests/model_fields/test_field_caching_change.py file is present in this snapshot; the relevant test was only pasted in the issue text."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: No witness test exists in the real oracle for R2 (Model.__getstate__ preserving pre-populated fields_cache entries as independent copies on shallow/deep copy or unpickle).\n\nWhat I checked:\n- The dedicated regression test that R2 describes was never added to this snapshot: there is no tests/model_fields/test_field_caching_change.py file in the file listing, consistent with the earlier-stage notes that the test only appeared in the issue text.\n- tests/model_fields/models.py (the file that would define the Foo/Bar models the witnessing test in the issue uses) only defines the models; it contains no assertion, so it cannot be a witness.\n- All tests in tests/model_fields that actually reference those Foo/Bar cache models (test_foreignkey.py, tests.py, test_decimalfield.py) are [VISIBLE] and test callable FK defaults, choices ordering, decimal conversions — none copy a model instance nor assert on fields_cache content/independence.\n- tests/model_regress/test_state.py only asserts ModelState.fields_cache is a ModelStateFieldsCacheDescriptor; test_pickle.py only tests warning/version behaviors of unpickling and a getstate override, nothing about cached related values surviving a copy.\n- many_to_one/tests.py exercises fields_cache but only its normal caching/invalidation semantics (del c._state.fields_cache['parent'], assignment, refresh); test_deepcopy_and_circular_references does deepcopy a Reporter but only asserts repr() works after copy — it neither pre-populates a related-value cache nor checks that copied/independent cached entries exist, so it cannot distinguish the buggy (shared-cache) from gold (copied-cache) behavior for this requirement.\n- known_related_objects/tests.py tests related-object identity across querysets, with no copying at all.\n\nSince the requirement's behavior (pre-populated related-value cache carried over as independent copies via __getstate__) is not asserted by any [HIDDEN] test file in the oracle, and the tests I can see that touch the relevant models are [VISIBLE] and of unrelated semantics, no genuinely matching, execution-confirmed witness could be built."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (Model.__getstate__ (django/db/models/base.py) / preservation of pre-populated related-value cache on copy): When the state for a model instance is produced by Model.__getstate__, FK/related-value entries already present in the source instance's ModelState.fields_cache are carried over as copied entries into the returned state's copied fields_cache (rather than being dropped or shared by reference), so a shallow copy or unpickled copy of an already-populated instance retains its prior cached related values independently of any later mutations to the original's cache. — not entailed by S_vis (R2 requires pre-populated related-value cache entries already in the source's fields_cache to be carried over as copied entries into the copy's state, preserving cached values on the copy. Neither S_v1, S_v2, nor their cited test text checks that a shallow copy retains cached values that existed in the source before the copy; the tests only verify original-unchanged and copy-after-reassignment behavior, so nothing in S_vis leads to this carry-over guarantee.); confirmed by a synthesized witness: The target requirement R2 is about Model.__getstate__ (django/db/models/base.py): on an already-populated instance it must produce state whose '_state'/ModelState and its fields_cache are independent *copies*, carrying over prior FK/related entries so a shallow/unpickle copy stays independent of later mutations to the source cache. Buggy returns `self.__dict__` unchanged (ModelState and its fields_cache dict shared by reference); gold shallow-copies ModelState and `.copy()`s fields_cache.\n\nBecause this instance executes standalone under pytest in /tmp with only the `django` package on the path, real DB-backed Foo/Bar model instances cannot be built (no Django settings/INSTALLED_APPS/migrations). Every earlier attempt to import `model_fields.models` failed under collection (ModuleNotFoundError/no installed app). So I exercise the exact target method — `Model.__getstate__` — on a minimal holder that carries the same structure a real populated model would: a `django.db.models.base.ModelState` whose `fields_cache` has been pre-populated with a related-value entry (the same dict the ForeignKey cache writes into on a real instance). Gold's gold/buggy difference lives entirely in this method's dict/ModelState/cache-copying logic.\n\nThe test is discriminating and was execution-confirmed: it PASSED on gold (all four assertions hold) and FAILED on buggy (first assertion `state['_state'] is not instance._state` fails, because buggy __getstate__ returns self.__dict__, so the produced state shares the source's ModelState and its fields_cache — exactly R2's described defect). No existing visible test in the repo pins this __getstate__-copy semantics down (the S_vis set and the surrounding model_fields/model_regress tests cover only descriptor identity, FK defaults, pickle warnings, etc.), so this is a hidden-fact witness, not a reinvention of a visible assertion.",
+    "confidence": "Medium"
+  }
+}

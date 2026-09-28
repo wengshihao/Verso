@@ -1,0 +1,127 @@
+{
+  "task_id": "pandas__59",
+  "status": "ok",
+  "duration_seconds": 1340.739957959042,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "pandas__59",
+    "s_vis": [
+      {
+        "id": "S_vis-1",
+        "statement": "When a rolling window is specified as a datetimelike offset (a freq-type window such as pd.to_timedelta(\"12H\")), calling `Rolling.corr(other)` (equivalently Series.rolling(offset).corr(other)) must compute and return the rolling correlation values rather than attempting to allocate an array sized by the window's nanosecond count, i.e. it must not raise MemoryError / 'Unable to allocate ... TiB for an array with shape (43200000000000,)' for the reproduce example.",
+        "subject": "Rolling.corr",
+        "hunk_ids": [],
+        "cited_from": "Issue: code `srs1.rolling(pd.to_timedelta(\"12H\")).corr(srs2)` with `srs1 = pd.Series(np.random.rand(11521),pd.date_range('2019-08-15', '2019-08-23',freq='1T'))`; reported error `Unable to allocate 314. TiB for an array with shape (43200000000000,) and data type int64`; \"Confirmed that this used to work on pandas 0.25.3.\"; Expected Output: \"The correct calculations\". In pandas/core/window/rolling.py, Rolling.validate sets `self.win_freq = self.window` then `self.window = freq.nanos`, and `_Rolling_and_Expanding.corr` computes `window = self._get_window(other)` (which returns `self.window`, the nanosecond int) with no freq-type branch, unlike `cov` which has `if self.is_freq_type: window = self.win_freq`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the rolling object is of frequency/offset type (win_type == 'freq', i.e. window specified as an offset/timedelta string), _Rolling_and_Expanding.corr carries the original offset window specification (self.win_freq) into the inner rolling constructions used to compute the correlation, rather than the integer nanosecond window obtained from _get_window(other).",
+        "subject": "_Rolling_and_Expanding._Rolling_and_Expanding.corr",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Rolling.corr(pairwise=...) on a dimension-1 object whose window is an offset (freq-type) rolling window does not select `self._get_window(other)`; the frequency-based window value is used instead.",
+        "subject": "Rolling.corr",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "S_vis-1"
+        ],
+        "rationale": "S_vis-1's citation explicitly identifies the root cause: _Rolling_and_Expanding.corr computes window = self._get_window(other) (the nanosecond int) with no freq-type branch, unlike cov which uses self.win_freq when freq-type. This pins down exactly the behavior R1 describes (carrying win_freq instead of the integer nanosecond window)."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S_vis-1"
+        ],
+        "rationale": "S_vis-1 establishes that offset-window corr must not use the nanosecond window and points at _Rolling_and_Expanding.corr's use of _get_window(other), which strongly implies R2's direction, but it never mentions the `pairwise=` parameter or the dimension-1 dispatch branch, so it does not pin down that specific code-path selection."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "pandas/tests/window/test_pairwise.py::TestPairwise::test_corr_freq_memory_error",
+      "test_source": "import numpy as np\nfrom pandas import Series, date_range\nimport pandas._testing as tm\n\n\ndef test_corr_freq_memory_error():\n    # GH 31789\n    s = Series(range(1, 6), index=date_range(\"2020\", periods=5))\n    result = s.rolling(\"2D\").corr(s)\n    expected = Series([np.nan, 1.0, 1.0, 1.0, 1.0], index=s.index)\n    tm.assert_series_equal(result, expected)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "Target R2: Rolling.corr(pairwise=...) must, when the window is an offset/freq-type window on a dimension-1 object, use self.win_freq (the offset) rather than self._get_window(other) (the integer nanosecond window). This test, test_corr_freq_memory_error (the test named in the failing list), does exactly that: it builds s = Series(...) with a DatetimeIndex and calls s.rolling(\"2D\").corr(s) — a freq-type offset rolling window on a Series (dimension-1, self-corr). With the buggy code, corr feeds the integer nanosecond window into the inner rolling reconstruction (self._get_window(other)), producing wrong output / the 'memory error' path; with gold, corr uses self.win_freq = \"2D\", reconstructing the offset window and yielding [NaN,1,1,1,1]. I confirmed empirically: the exact submitted source PASSES against the gold program and FAILS against the buggy program. This assertion is NOT part of the [VISIBLE] content: I read the oracle's pandas/tests/window/test_pairwise.py (labeled [VISIBLE]) in full and it contains only integer (window=3), ewm (com=3) and expanding parametrizations — it has no freq/offset rolling corr test and does not even contain a method named test_corr_freq_memory_error. I also read every other file in pandas/tests/window/ (test_timeseries_window.py, test_rolling.py, common.py, moments/test_moments_rolling.py, moments/test_moments_ewm.py, moments/test_moments_expanding.py, test_api.py, test_window.py, test_grouper.py, test_dtypes.py, test_expanding.py, test_ewm.py, test_apply.py, test_numba.py, test_base_indexer.py and all conftests) to be sure no visible file already establishes this frequency-based corr behavior. The assertion therefore encodes hidden behavior that visible information does not establish, making it a genuine witness for R2."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible in this repo slice: pandas/core/window/rolling.py and pandas/tests/window/test_pairwise.py. Helper `_flex_binary_moment`, `_shallow_copy`, and `calculate_min_periods` live in pandas/core/window/common.py, which is NOT visible here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "rolling.py defines the class hierarchy: `_Window` (base) -> `Window` (win_type/weighted), `_Rolling`/`_Rolling_and_Expanding` -> `Rolling` -> `RollingGroupby`. `Window` and `Rolling` share `_shared_docs['corr']`/`_shared_docs['cov']` docstrings via Substitution/Appender."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`Rolling.validate` (in the `Rolling` subclass) converts an offset/str/timedelta window into `self.win_freq = self.window` and `self.window = freq.nanos`, and sets `self.min_periods = 1` if None; `is_freq_type` is `self.win_type == 'freq'`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`Rolling.cov` contains the comment `# GH 16058: offset window` and branches on `self.is_freq_type` to use `self.win_freq`; `Rolling.corr` does not contain such a branch and calls `self._get_window(other)` directly."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`Rolling.corr` internally calls `a.cov(b) / (a.std() * b.std())` where `a`/`b` are re-wrapped as `a.rolling(window=window, min_periods=self.min_periods, center=self.center)` and `b.rolling(...)`, so the `window` value it computes is fed straight into new `rolling(...)` constructions."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_pairwise.py exercises only integer (`window=3`), `com=3` (ewm), and `expanding()` windows in its parametrizations; it has no datetimelike/offset (freq-type) rolling corr/cov test, so it does not pin the buggy path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_pairwise.py's `TestPairwise.compare` drops NaNs before comparison (`result.dropna().values`) and compares sorted/multi-index levels with `check_names=False`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is a single-line change in `_Rolling_and_Expanding.corr`: `window = self._get_window(other)` -> `window = self._get_window(other) if not self.is_freq_type else self.win_freq`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`_get_window` (for freq type, i.e. `self.is_freq_type`) returns the integer nanosecond window (`self.window` after `Rolling.validate` rewrites it to `freq.nanos`); `self.win_freq` holds the original offset/str passed by the user."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`Rolling.validate` for offset windows also forces `min_periods = 1` and raises NotImplementedError if `center` is true, so under freq-type windows the inner rolling reconstruction uses min_periods=1 and center=False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`cov` already contains a comparable `if self.is_freq_type: window = self.win_freq else: window = self._get_window(other)` branch with the comment `# GH 16058: offset window`; the patch makes `corr` consistent with `cov` for freq-type windows."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The resulting `window` is passed into `a.rolling(window=window, min_periods=self.min_periods, center=self.center)` and `b.rolling(...)` inside `_get_corr`, and the correlation is computed as `a.cov(b) / (a.std() * b.std())`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible test file test_pairwise.py covers only integer, ewm (com), and expanding windows; it contains no offset/datetimelike rolling corr/cov test."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (Rolling.corr): Rolling.corr(pairwise=...) on a dimension-1 object whose window is an offset (freq-type) rolling window does not select `self._get_window(other)`; the frequency-based window value is used instead. — not entailed by S_vis (S_vis-1 establishes that offset-window corr must not use the nanosecond window and points at _Rolling_and_Expanding.corr's use of _get_window(other), which strongly implies R2's direction, but it never mentions the `pairwise=` parameter or the dimension-1 dispatch branch, so it does not pin down that specific code-path selection.); confirmed by a oracle witness: Target R2: Rolling.corr(pairwise=...) must, when the window is an offset/freq-type window on a dimension-1 object, use self.win_freq (the offset) rather than self._get_window(other) (the integer nanosecond window). This test, test_corr_freq_memory_error (the test named in the failing list), does exactly that: it builds s = Series(...) with a DatetimeIndex and calls s.rolling(\"2D\").corr(s) — a freq-type offset rolling window on a Series (dimension-1, self-corr). With the buggy code, corr feeds the integer nanosecond window into the inner rolling reconstruction (self._get_window(other)), producing wrong output / the 'memory error' path; with gold, corr uses self.win_freq = \"2D\", reconstructing the offset window and yielding [NaN,1,1,1,1]. I confirmed empirically: the exact submitted source PASSES against the gold program and FAILS against the buggy program. This assertion is NOT part of the [VISIBLE] content: I read the oracle's pandas/tests/window/test_pairwise.py (labeled [VISIBLE]) in full and it contains only integer (window=3), ewm (com=3) and expanding parametrizations — it has no freq/offset rolling corr test and does not even contain a method named test_corr_freq_memory_error. I also read every other file in pandas/tests/window/ (test_timeseries_window.py, test_rolling.py, common.py, moments/test_moments_rolling.py, moments/test_moments_ewm.py, moments/test_moments_expanding.py, test_api.py, test_window.py, test_grouper.py, test_dtypes.py, test_expanding.py, test_ewm.py, test_apply.py, test_numba.py, test_base_indexer.py and all conftests) to be sure no visible file already establishes this frequency-based corr behavior. The assertion therefore encodes hidden behavior that visible information does not establish, making it a genuine witness for R2.",
+    "confidence": "High"
+  }
+}

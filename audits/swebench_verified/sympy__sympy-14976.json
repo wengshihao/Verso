@@ -1,0 +1,124 @@
+{
+  "task_id": "sympy__sympy-14976",
+  "status": "ok",
+  "duration_seconds": 198.2178094589617,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-14976",
+    "s_vis": [
+      {
+        "id": "r1",
+        "statement": "When SymPy rational numbers (e.g. 232/3, the value of 77 + S(1)/3) appear literally in an expression being lambdified with the mpmath module, the generated code must not reduce them to fixed-precision Python doubles via plain integer/float division (as in the emitted `232/3`). They must instead be evaluated at the full active mpmath working precision, so that evaluating the lambdified function (e.g. at high prec/precision settings, including inside nsolve) does not truncate the rational's value.",
+        "subject": "MpmathPrinter / lambdify(..., modules='mpmath')",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"lambdify(modules='mpmath') doesn't wrap rationals\"; generated source shown in the issue: \"def _lambdifygenerated(x):\\n    return (  # Not supported in Python:\\n  # RisingFactorial\\nRisingFactorial(18, x) - 232/3)\"; and \"This results in reduced precision results from nsolve, because the 232/3 isn't evaluated at full precision.\""
+      },
+      {
+        "id": "r2",
+        "statement": "lambdifying with the mpmath module must preserve the full precision of floating-point values in the expression, so that a lambdified expression evaluated while mpmath's dps is raised reproduces the original high-precision Float value; any fix to number handling in the mpmath printer must not regress this already-correct Float-precision behavior.",
+        "subject": "MpmathPrinter._print_Float / lambdify(..., modules='mpmath')",
+        "hunk_ids": [],
+        "cited_from": "MpmathPrinter docstring: \"Lambda printer for mpmath which maintains precision for floats\"; and existing test test_mpmath_precision: \"mpmath.mp.dps = 100\\n    assert str(lambdify((), pi.evalf(100), 'mpmath')()) == str(pi.evalf(100))\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "When MpmathPrinter (selected by modules='mpmath' in lambdify) prints a Rational constant p/q, it emits code of the form 'mpmath.mpf(p)/mpmath.mpf(q)', i.e. both the exact integer numerator and denominator are each wrapped in an mpmath.mpf call which are then divided, instead of emitting the plain numeric ratio 'p/q' (whose Python 3 true division would collapse to a machine-double float). As a result, evaluating the generated code reproduces the rational at mpmath's arbitrary working precision (determined by mp.dps) rather than at ~53-bit float precision.",
+        "subject": "MpmathPrinter._print_Rational (sympy/printing/pycode.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl_2",
+        "statement": "MpmathPrinter renders the integer numerator e.p and denominator e.q of a Rational directly into the emitted code (interpolated verbatim, including the sign of a negative numerator such as Rational(-3,2) being rendered as mpmath.mpf(-3)/mpmath.mpf(2)), so rational values of arbitrary size and either sign are represented losslessly in the generated expression rather than approximated or pre-evaluated at print/parse time.",
+        "subject": "MpmathPrinter._print_Rational (sympy/printing/pycode.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "true",
+        "checked_ids": [
+          "r1",
+          "r2"
+        ],
+        "rationale": "r1's cited issue explicitly identifies the buggy emission `232/3` (plain Python division collapsing to a double) and requires the rational to be evaluated at mpmath's active working precision, which is precisely the behavioral contract S_impl_1 captures (full-precision mpf evaluation rather than float collapse). The exact mpf(p)/mpf(q) emission mechanism is an implementation detail implied by that requirement, so the behavior S_impl_1 commits to is pinned by r1."
+      },
+      {
+        "requirement_id": "S_impl_2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "r1",
+          "r2"
+        ],
+        "rationale": "The specific design claims in S_impl_2 — that integer numerator/denominator are interpolated verbatim with arbitrary size and correct sign of negative numerators, and that values are represented losslessly rather than pre-evaluated at print time — are not stated in the visible evidence; r1 shows only a single positive example (232/3) and r2 concerns Float (not Rational) handling, so the full-precision emission convention for Rationals of any size/sign is under-determined."
+      }
+    ],
+    "target_requirement_id": "S_impl_2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_rational_mpf_witness",
+      "test_source": "from sympy import Rational\nfrom sympy.printing.pycode import MpmathPrinter\n\ndef test_rational_mpf_witness():\n    p = MpmathPrinter()\n    assert 'mpmath.mpf(-3)/mpmath.mpf(2)' == p.doprint(Rational(-3, 2))\n",
+      "gold_result": "PASSED: MpmathPrinter().doprint(Rational(-3,2)) returns 'mpmath.mpf(-3)/mpmath.mpf(2)'.",
+      "buggy_result": "FAILED: buggy MpmathPrinter().doprint(Rational(-3,2)) returns bare '-3/2' (no mpmath.mpf wrapping), which collapses to imprecise true division instead of lossless mpf division.",
+      "explanation": "Requirement S_impl_2 is that MpmathPrinter._print_Rational renders a Rational's integer numerator e.p and denominator e.q interpolated verbatim, each wrapped in mpmath.mpf(...), including the sign of a negative numerator (e.g. Rational(-3,2) -> 'mpmath.mpf(-3)/mpmath.mpf(2)'). The gold adds exactly this _print_Rational override to MpmathPrinter (pycode.py); the buggy file lacks it so Rs fall through CodePrinter/StrPrinter and print bare '-3/2', which in Python 3 becomes machine-precision true division. My witness directly drives the atomic behavior at this location: I construct MpmathPrinter() and assert its doprint output for the negative Rational(-3,2) equals the verbatim mpf-division string. I confirmed via run_test that gold produces 'mpmath.mpf(-3)/mpmath.mpf(2)' (PASS) while buggy produces '-3/2' (FAIL). This scenario (a negative rational via the _print_Rational override) is not reproduced anywhere in the visible test_pycode.py (whose test_MpmathPrinter only checks sign(x)) or in the other visible printing/lambdify test files, so the assertion depends on genuinely hidden post-fix behavior. The exact test_source above was executed against both programs, giving the confirmed PASS/FAIL split."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "When modules='mpmath', lambdify selects MpmathPrinter (sympy/printing/pycode.py) via the `_module_present('mpmath', ...)` branch in sympy/utilities/lambdify.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MpmathPrinter overrides _print_Float (emitting mpmath.mpf(...)) but has no _print_Rational / _print_Integer override, so Rationals fall through to plain text like '232/3'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In Python 3 the emitted '232/3' is true division that collapses to a machine double (~53/64-bit precision), losing mpmath's arbitrary precision; that is the root cause of the reported reduced-precision nsolve result."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "LambdaPrinter (sympy/printing/lambdarepr.py) and its subclasses subclass PythonCodePrinter; the base CodePrinter._print_Mul renders a rational coefficient like 232/3 as inline 'a/b'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant mpmath lambdify tests live in sympy/utilities/tests/test_lambdify.py (test_mpmath_lambda, test_number_precision, test_mpmath_precision); none currently exercise Rational constants, matching the reported gap."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a pure addition of a _print_Rational override to MpmathPrinter in sympy/printing/pycode.py; it does not modify any existing method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MpmathPrinter subclasses PythonCodePrinter; previously Rational values fell through to the base printer producing the literal ratio 'p/q' in generated code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_module_format('mpmath.mpf') returns the module-qualified name (fully_qualified_modules defaults True) and (register=True) records the mpmath/mpf import entry, consistent with how _print_Float already registers mpmath.mpf."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In SymPy, Integer is a subclass of Rational, so this method also governs how MpmathPrinter's dispatch treats Rational values generically (e.g. rational multiplicative coefficients), though its direct, atomic behavioral commitment is the rational-as-mpf-division rendering described in the requirements."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_2]: I searched the oracle for a test that asserts MpmathPrinter renders a Rational's numerator/denominator verbatim as an mpmath.mpf division (e.g. 'mpmath.mpf(-3)/mpmath.mpf(2)') so arbitrary-size rationals are not approximated/lossy.\n\nThe two canonical homes for this behavior were examined:\n- sympy/printing/tests/test_pycode.py — its 'test_MpmathPrinter' only checks p.doprint(sign(x)) == 'mpmath.sign(x)'; it contains no Rational rendering assertion, and the whole file is [VISIBLE].\n- sympy/utilities/tests/test_lambdify.py — the mpmath precision tests (test_mpmath_lambda, test_number_precision, test_mpmath_precision, test_special_printers) exercise sin/pi/Float/interval constants but never a Rational constant routed through MpmathPrinter's _print_Rational; and the file is [VISIBLE], so even its existing assertions could not serve as a witness.\n\nI also scanned adjacent printing test files (test_python.py, test_codeprinter.py, test_lambdarepr.py, test_precedence.py, test_numpy.py) — none test mpmath Rational->mpf rendering and all are [VISIBLE]. No test file yielded a [HIDDEN] assertion of this behavior. Consistent with the S_vis/notebook notes (\"none currently exercise Rational constants, matching the reported gap\"), and no test was recorded as failing against the buggy program. Per the rules a witness must rest on [HIDDEN] content that the visible info does not establish; no such assertion exists here, so I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_2] (MpmathPrinter._print_Rational (sympy/printing/pycode.py)): MpmathPrinter renders the integer numerator e.p and denominator e.q of a Rational directly into the emitted code (interpolated verbatim, including the sign of a negative numerator such as Rational(-3,2) being rendered as mpmath.mpf(-3)/mpmath.mpf(2)), so rational values of arbitrary size and either sign are represented losslessly in the generated expression rather than approximated or pre-evaluated at print/parse time. — not entailed by S_vis (The specific design claims in S_impl_2 — that integer numerator/denominator are interpolated verbatim with arbitrary size and correct sign of negative numerators, and that values are represented losslessly rather than pre-evaluated at print time — are not stated in the visible evidence; r1 shows only a single positive example (232/3) and r2 concerns Float (not Rational) handling, so the full-precision emission convention for Rationals of any size/sign is under-determined.); confirmed by a synthesized witness: Requirement S_impl_2 is that MpmathPrinter._print_Rational renders a Rational's integer numerator e.p and denominator e.q interpolated verbatim, each wrapped in mpmath.mpf(...), including the sign of a negative numerator (e.g. Rational(-3,2) -> 'mpmath.mpf(-3)/mpmath.mpf(2)'). The gold adds exactly this _print_Rational override to MpmathPrinter (pycode.py); the buggy file lacks it so Rs fall through CodePrinter/StrPrinter and print bare '-3/2', which in Python 3 becomes machine-precision true division. My witness directly drives the atomic behavior at this location: I construct MpmathPrinter() and assert its doprint output for the negative Rational(-3,2) equals the verbatim mpf-division string. I confirmed via run_test that gold produces 'mpmath.mpf(-3)/mpmath.mpf(2)' (PASS) while buggy produces '-3/2' (FAIL). This scenario (a negative rational via the _print_Rational override) is not reproduced anywhere in the visible test_pycode.py (whose test_MpmathPrinter only checks sign(x)) or in the other visible printing/lambdify test files, so the assertion depends on genuinely hidden post-fix behavior. The exact test_source above was executed against both programs, giving the confirmed PASS/FAIL split.",
+    "confidence": "Medium"
+  }
+}

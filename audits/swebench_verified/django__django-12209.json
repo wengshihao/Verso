@@ -1,0 +1,86 @@
+{
+  "task_id": "django__django-12209",
+  "status": "ok",
+  "duration_seconds": 131.33630904194433,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12209",
+    "s_vis": [
+      {
+        "id": "REQ1",
+        "statement": "Saving a new (unsaved/'adding') model instance that was created with an explicit pk value, where that pk field has a default, must not unconditionally force an SQL INSERT merely because the pk field has a default: when a row with that explicit pk already exists in the table, the save must result in an UPDATE of the existing row (Django <= 2.2 behavior) rather than issuing a second INSERT that fails.",
+        "subject": "Model.save_base / _save_table (insert-vs-update decision in django/db/models/base.py)",
+        "hunk_ids": [],
+        "cited_from": "In Django 2.2 and earlier, the following commands would result in an INSERT followed by an UPDATE:\n\ns0 = Sample.objects.create()\ns1 = Sample(pk=s0.pk, name='Test 1')\ns1.save()\n\nHowever, in Django 3.0, this results in two INSERTs (naturally the second one fails). ... The change in behaviour also has the side effect of changing the behaviour of the loaddata management command when the fixture contains explicit pk values and the objects already exist (e.g. when loading the fixture multiple times)."
+      },
+      {
+        "id": "REQ2",
+        "statement": "The insert-vs-update regression described in the issue is attributable to the primary key field having a default; the presence of a default on the pk field must not change the save outcome for an instance that already carries an explicit pk value (i.e. preserving behavior identical to the case where the pk has no default).",
+        "subject": "Model.save_base / _save_table pk-default force-insert condition in django/db/models/base.py",
+        "hunk_ids": [],
+        "cited_from": "The behaviour also changes if default=uuid4 is removed from the id field. ... Perhaps the intention was to only change the behaviour if an explicit pk value was not set on the model instance being saved? (At least, that would be more backwards-compatible behaviour...)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "When _save_table is invoked with raw=True on a model instance in the 'adding' state whose primary-key field has a default value, Django no longer forces the save to be an INSERT based solely on the pk having a default; instead the pk (if set) is used to attempt an UPDATE first, so an existing database row with that pk is updated rather than a duplicate INSERT being attempted.",
+        "subject": "django.db.models.Model._save_table raw-save insert-vs-update decision",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ1",
+          "REQ2"
+        ],
+        "rationale": "REQ1 and REQ2, both situated at _save_table, pin down exactly this behavior: a new instance carrying an explicit pk where the pk field has a default must not be forced into an INSERT merely because of the default, and must instead UPDATE the existing row with that pk. S_IMPL_1's outcome claim (use pk to attempt UPDATE so an existing row is updated rather than a duplicate INSERT) is precisely this contract; the raw=True scoping is a peripheral implementation qualifier that doesn't contradict or exceed what the visible requirements establish."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The key source is django/db/models/base.py, in Model._save_table. The buggy logic is the block: 'updated = False' then '# Skip an UPDATE when adding an instance and primary key has a default.' / 'if (not force_insert and self._state.adding and self._meta.pk.default and self._meta.pk.default is not NOT_PROVIDED): force_insert = True' — this forces an INSERT based solely on the pk having a default, regardless of whether an explicit pk value was supplied."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "pk handling in _save_table: 'pk_val = self._get_pk_val(meta); if pk_val is None: pk_val = meta.pk.get_pk_value_on_save(self); ...; pk_set = pk_val is not None'. get_pk_value_on_save (Field) returns self.get_default() when self.default is truthy."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The model in the issue maps directly onto tests/model_fields/models.py 'class PrimaryKeyUUIDModel(models.Model): id = models.UUIDField(primary_key=True, default=uuid.uuid4)'. Its tests (TestAsPrimaryKey in tests/model_fields/test_uuid.py: test_uuid_pk_on_save, test_uuid_pk_on_bulk_create, etc.) cover creating instances with pk default but do NOT currently assert the 'save a new instance with an explicit pre-existing pk produces an UPDATE, not a second INSERT' regression scenario described in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue also notes this regresses loaddata (raw saves) when a fixture carries explicit pk values for objects that already exist — same insert-vs-update decision point, fixed together."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds only one conjunct ('not raw and') to an existing guard that sets force_insert=True at the top of Model._save_table. The change is therefore scoped exclusively to raw saves (raw=True) — i.e. the code path used by fixture/loaddata loading via save_base(raw=True)/_save_table(raw=True). Non-raw saves of a new instance whose pk has a default continue to force an INSERT as before."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "pk handling in _save_table: pk is read via _get_pk_val, populated via meta.pk.get_pk_value_on_save if None, so the guard only materially re-routes a raw save when a pk is present (explicit or default-derived)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

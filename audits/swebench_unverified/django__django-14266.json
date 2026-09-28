@@ -1,0 +1,137 @@
+{
+  "task_id": "django__django-14266",
+  "status": "ok",
+  "duration_seconds": 328.8234354999149,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14266",
+    "s_vis": [
+      {
+        "id": "VIS-1",
+        "statement": "CookieStorage._decode() must decode message data that was signed in the pre-Django-3.2 legacy format (a value produced by get_cookie_signer(salt=...).sign(MessageEncoder().encode(messages)) — plain signed JSON that is not RFC 6265 base64) back to the same list of messages without raising an exception, even for legacy data whose character count/content would not be a valid strict-base64 input (i.e. must not crash with the base64 'Invalid base64-encoded string' error).",
+        "subject": "django.contrib.messages.storage.cookie.CookieStorage._decode",
+        "hunk_ids": [],
+        "cited_from": "Issue traceback: 'File \".../django/core/signing.py\", line 195, in unsign_object ... File \".../base64.py\", line 87, in b64decode ... Exception Value: Invalid base64-encoded string: number of data characters (369) cannot be 1 more than a multiple of 4'; and test_legacy_encode_decode: 'value = encoder.encode(messages); signer = get_cookie_signer(salt=storage.key_salt); encoded_messages = signer.sign(value); decoded_messages = storage._decode(encoded_messages); self.assertEqual(messages, decoded_messages)'."
+      },
+      {
+        "id": "VIS-2",
+        "statement": "Decoding a cookie value whose signature is invalid (e.g. a truncated encoded value) must not raise; _decode must return None (so the storage reports no loaded messages, []), consistent with the docstring 'If the encoded text stream contained an invalid hash or was in an invalid format, return None.'",
+        "subject": "django.contrib.messages.storage.cookie.CookieStorage._decode",
+        "hunk_ids": [],
+        "cited_from": "cookie.py _decode docstring: 'Safely decode an encoded text stream back into a list of messages. If the encoded text stream contained an invalid hash or was in an invalid format, return None.'; and test_get_bad_cookie: 'set_cookie_data(storage, example_messages, invalid=True) # Truncate the first character so that the hash is invalid. ... self.assertEqual(list(storage), [])'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "CookieStorage._decode no longer raises when self.signer.unsign_object fails because the stored cookie value is not decodable as strict base64 (binascii.Error); such data falls through to the legacy pre-RFC-6265 decode path instead of propagating the exception.",
+        "subject": "CookieStorage._decode",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "A legacy-format (uncompressed, pre-RFC-6265) signed messages cookie whose value is not valid strict base64 still decodes to its Message list through the fallback path rather than being lost to a crash.",
+        "subject": "CookieStorage._decode",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-3",
+        "statement": "When binascii.Error data cannot be successfully decoded by the legacy fallback (e.g. the unsigned payload is not valid legacy JSON), CookieStorage._decode returns None and marks the storage as used rather than raising an exception.",
+        "subject": "CookieStorage._decode",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-1 explicitly states _decode must not crash with the 'Invalid base64-encoded string' binascii error and must decode pre-RFC-6265 legacy signed data back to the message list, pinning the fall-through-from-unsign_object-to-legacy-decode-path-without-raising behavior described by impl-1."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "true",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-1 directly covers this: data that is not valid strict base64 (legacy pre-RFC-6265, un/plain signed JSON) must decode back to the same list of messages via the legacy path without a crash, matching impl-2's requirement."
+      },
+      {
+        "requirement_id": "impl-3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "VIS-1",
+          "VIS-2"
+        ],
+        "rationale": "VIS-2's docstring ('If the encoded text stream ... was in an invalid format, return None') suggests invalid-format data returns None rather than raising, which relates to impl-3, but the specific doubly-failing case (binascii-invalid AND invalid legacy JSON) and the 'marks storage as used' behavior are not pinned precisely enough by the visible evidence to conclusively entail impl-3."
+      }
+    ],
+    "target_requirement_id": "impl-3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_binascii_error_legacy_returns_none",
+      "test_source": "def test_binascii_error_legacy_returns_none():\n    from django.conf import settings\n    settings.configure(\n        SECRET_KEY='verso-secret',\n        MESSAGE_TAGS={},\n        INSTALLED_APPS=['django.contrib.messages'],\n    )\n    from django.contrib.messages.storage.cookie import CookieStorage\n    from django.core.signing import get_cookie_signer\n    from django.http import HttpRequest\n    storage = CookieStorage(HttpRequest())\n    content = \"['a',\"\n    signer = get_cookie_signer(salt=storage.key_salt)\n    data = signer.sign(content)\n    assert storage.used is False\n    result = storage._decode(data)\n    assert result is None\n    assert storage.used is True\n",
+      "gold_result": "PASSED — _decode returned None and set storage.used = True (no exception).",
+      "buggy_result": "FAILED — _decode raised binascii.Error \"Invalid base64-encoded string: number of data characters (1) cannot be 1 more than a multiple of 4\" from base64.urlsafe_b64decode inside signer.unsign_object, which the buggy code (only catching signing.BadSignature and json.JSONDecodeError) does not catch.",
+      "explanation": "[impl-3] fixes CookieStorage._decode so that when legacy (pre-3.2) signed data whose strict-base64 decoding fails (a binascii.Error raised inside self.signer.unsign_object's b64_decode) also turns out not to be valid legacy JSON, the method returns None and marks the storage used rather than letting the binascii.Error propagate. The buggy code only catches signing.BadSignature and json.JSONDecodeError around unsign_object; the fixed code additionally catches binascii.Error.\n\nThe witness builds an in-memory CookieStorage and signs the invalid-JSON content \"['a',\" with the same get_cookie_signer(salt=storage.key_salt) used by the actual legacy encoder. That payload's only base64-alphabet character ('a', count 1 ≡ 1 mod 4) makes binascii.a2b_base64 raise binascii.Error (\"...number of data characters (1) cannot be 1 more than a multiple of 4\") inside unsign_object, and after the fallback decoder runs it is also not parseable as legacy JSON, so gold returns None and sets used=True. Confirmed execution: PASSED against gold (returns None, marks used) and FAILED against buggy with the actual binascii.Error propagating out of _decode. This precisely isolates the except-(binascii.Error,...) change, and is not covered by any existing visible test (test_legacy_encode_decode/test_get_bad_cookie use payloads that either decode cleanly or fail via the BadSignature path, never via binascii.Error)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "In Django 3.2 the CookieStorage message encoding changed to a compressible signed base64 format (MessageSerializer + signer.sign_object/unsign_object); docs mark this: 'Messages format was changed to the :rfc:6265 compliant format' (docs/ref/contrib/messages.txt CookieStorage section)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "cookie.py _decode() contains a deprecated pre-3.2 legacy-format fallback guarded by '# RemovedInDjango41Warning' that only triggers on signing.BadSignature or json.JSONDecodeError; the base64 binascii decode failure raised inside signer.unsign_object is NOT one of those, so legacy-format data can crash here instead of reaching the legacy unsign() fallback."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/messages_tests/test_cookie.py provides direct expected-behavior tests: test_legacy_encode_decode (legacy signed-format decodes to messages) and test_get_bad_cookie (invalid/truncated cookie decodes to no messages)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter's legacy cookie value in the issue is a plain (non-compressed) signed JSON text (starts with '['), i.e. pre-RFC-6265 format, whose length/content is not decodable as strict base64."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is confined to CookieStorage._decode's exception handling and adds the import binascii to django/contrib/messages/storage/cookie.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed except branch carries a 'RemovedInDjango41Warning' comment: the whole pre-RFC-6265 legacy fallback (triggered by signing.BadSignature, json.JSONDecodeError, and now binascii.Error) is scheduled for removal in Django 4.1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The strict-base64 failure surfaces through signing/serializer decoding machinery inside self.signer.unsign_object before the patch reached the json.JSONDecodeError handler, which is why legacy signed cookies with non-base64 content crashed in 3.2."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-3]: I investigated every message-storage test file in the oracle for requirement [impl-3] (that CookieStorage._decode returns None / marks storage used rather than raising when a binascii.Error occurs on legacy-format signed data that fails strict base64 decoding).\n\nChecked:\n- tests/messages_tests/test_cookie.py ([VISIBLE]) — holds every CookieStorage._decode test (test_legacy_encode_decode, test_get_bad_cookie, test_json_encoder_decoder, test_safedata, test_message_rfc6265). None of them construct a cookie payload that triggers strict-base64 binascii.Error in the legacy fallback path; e.g. test_get_bad_cookie truncates a character making the hash invalid → BadSignature (a different exception/path), and test_legacy_encode_decode encodes real messages whose serialized base64 is valid. All content is [VISIBLE], so none could serve as a witness regardless.\n- tests/messages_tests/test_middleware.py ([HIDDEN]) — only tests MessageMiddleware tolerance of a missing _messages attribute; unrelated to CookieStorage._decode.\n- tests/messages_tests/base.py, tests.py, test_session.py, test_fallback.py — exercise CookieStorage decode only through test_cookie helper paths already deemed inapplicable; no binascii/non-base64-legacy assertions.\n- tests/signed_cookies_tests/tests.py ([VISIBLE]) — generic django.core.signing signed-cookie mechanics, not the messages CookieStorage legacy decode path.\n\nDecisively, the buggy program reports ZERO tests failing, yet a witness must fail against the buggy program by definition. Combined with the fact that the only test files exercising CookieStorage._decode are [VISIBLE] and none construct the binascii.Error legacy scenario, no genuine execution-confirmed witness exists for [impl-3] in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-3] (CookieStorage._decode): When binascii.Error data cannot be successfully decoded by the legacy fallback (e.g. the unsigned payload is not valid legacy JSON), CookieStorage._decode returns None and marks the storage as used rather than raising an exception. — not entailed by S_vis (VIS-2's docstring ('If the encoded text stream ... was in an invalid format, return None') suggests invalid-format data returns None rather than raising, which relates to impl-3, but the specific doubly-failing case (binascii-invalid AND invalid legacy JSON) and the 'marks storage as used' behavior are not pinned precisely enough by the visible evidence to conclusively entail impl-3.); confirmed by a synthesized witness: [impl-3] fixes CookieStorage._decode so that when legacy (pre-3.2) signed data whose strict-base64 decoding fails (a binascii.Error raised inside self.signer.unsign_object's b64_decode) also turns out not to be valid legacy JSON, the method returns None and marks the storage used rather than letting the binascii.Error propagate. The buggy code only catches signing.BadSignature and json.JSONDecodeError around unsign_object; the fixed code additionally catches binascii.Error.\n\nThe witness builds an in-memory CookieStorage and signs the invalid-JSON content \"['a',\" with the same get_cookie_signer(salt=storage.key_salt) used by the actual legacy encoder. That payload's only base64-alphabet character ('a', count 1 ≡ 1 mod 4) makes binascii.a2b_base64 raise binascii.Error (\"...number of data characters (1) cannot be 1 more than a multiple of 4\") inside unsign_object, and after the fallback decoder runs it is also not parseable as legacy JSON, so gold returns None and sets used=True. Confirmed execution: PASSED against gold (returns None, marks used) and FAILED against buggy with the actual binascii.Error propagating out of _decode. This precisely isolates the except-(binascii.Error,...) change, and is not covered by any existing visible test (test_legacy_encode_decode/test_get_bad_cookie use payloads that either decode cleanly or fail via the BadSignature path, never via binascii.Error).",
+    "confidence": "Medium"
+  }
+}

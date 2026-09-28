@@ -1,0 +1,141 @@
+{
+  "task_id": "pandas__114",
+  "status": "ok",
+  "duration_seconds": 1216.276609749999,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "pandas__114",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Index.get_value(series, key) does not densify (does not call np.asarray/__array__ on) the underlying ExtensionArray when `series` is backed by an ExtensionArray and `key` is a non-scalar (e.g. boolean-mask) key; i.e. it must not route a non-scalar key through com.values_from_object(series) in a way that materializes the ExtensionArray to a numpy array.",
+        "subject": "pandas.core.indexes.base.Index.get_value",
+        "hunk_ids": [],
+        "cited_from": "Issue trace: '__array__ being called from: ... to_dense from .../core/internals/blocks.py ... get_values from .../core/internals/managers.py ... _internal_get_values from .../core/series.py ... get_value from .../core/indexes/base.py ... __getitem__ from .../core/series.py'. Issue text: 'And inside `Index.get_value`, this is calling `values_from_object`'. Visible source of Index.get_value: `s = getattr(series, \"_values\", series)` then `if isinstance(s, (ExtensionArray, Index)) and is_scalar(key):` (scalar-only guard) then falls through to `s = com.values_from_object(series)`."
+      },
+      {
+        "id": "S2",
+        "statement": "Series.__getitem__ with a boolean-mask key (`s[mask]`) on a Series backed by an ExtensionArray does not densify the ExtensionArray — it must not cause the ExtensionArray's __array__ to be invoked (as happens in the issue when `s[mask]` calls `index.get_value(...)` first).",
+        "subject": "pandas.core.series.Series.__getitem__",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: 'In [4]: mask = s > 0.5' / 'In [5]: subset = s[mask]' followed by '__array__ being called from:' with the frame chain ending '__getitem__ from .../core/series.py'. Issue text: 'So this comes from the fact that we first try `index.get_value(..)` in `__getitem__` before doing anything else'."
+      },
+      {
+        "id": "S3",
+        "statement": "Series.loc with a boolean mask (`s.loc[mask]`) on a Series backed by an ExtensionArray does not densify the ExtensionArray (i.e. does not invoke its __array__).",
+        "subject": "pandas.core.series.Series.loc",
+        "hunk_ids": [],
+        "cited_from": "Issue text: '(`s.loc[mask]` does not have the problem)'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "Index.get_value raises InvalidIndexError(key) when the values of `series` are an ExtensionArray and `key` is not a scalar (e.g. an ndarray/list of labels), rather than falling through to a numpy-based lookup of the values.",
+        "subject": "Index.get_value",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-2",
+        "statement": "Index.get_value with an ExtensionArray-valued `series` and a scalar key still resolves the key as a location via self.get_loc(key) and returns the element at that location, re-raising the KeyError when the index is non-empty and holds integers or booleans, and otherwise returning the element at integer position `key` when `key` is an integer.",
+        "subject": "Index.get_value",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3"
+        ],
+        "rationale": "S1 (and the issue/source evidence) only describes avoiding densification of an ExtensionArray for non-scalar keys; it never mentions raising InvalidIndexError. Nothing in S_vis pins down this specific error-raising behavior, so S_vis does not entail it."
+      },
+      {
+        "requirement_id": "S_impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2",
+          "S3"
+        ],
+        "rationale": "S_vis entries only address densification-avoidance for non-scalar (boolean-mask) keys; none describe scalar-key resolution via self.get_loc(key), KeyError re-raising semantics, or integer-position fallback. S_vis does not entail this scalar-key behavior."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_get_value_non_scalar_ea_raises_invalid_index_error",
+      "test_source": "import decimal\n\nimport numpy as np\nimport pytest\n\nimport pandas as pd\nfrom pandas.core.indexes.base import InvalidIndexError\nfrom pandas.tests.extension.decimal.array import DecimalArray\n\n\nclass NoMaterializeArray(DecimalArray):\n    def __array__(self, dtype=None):\n        raise AssertionError(\"materialized!\")\n\n\ndef test_get_value_non_scalar_ea_raises_invalid_index_error():\n    arr = NoMaterializeArray([decimal.Decimal(\"1.0\"), decimal.Decimal(\"2.0\")])\n    ser = pd.Series(arr, index=[\"a\", \"b\"])\n    with pytest.raises(InvalidIndexError):\n        ser.index.get_value(ser, [\"a\", \"b\"])\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The target requirement [S_impl-1] states that Index.get_value must raise InvalidIndexError(key) when the Series' values are an ExtensionArray and the key is non-scalar, rather than falling through to numpy-based lookup (com.values_from_object). The buggy code guards the EA shortcut with `isinstance(s, (ExtensionArray, Index)) and is_scalar(key)`, so a non-scalar key skips the shortcut and hits `s = com.values_from_object(series)`, which materializes the EA via `Series._internal_get_values` -> `to_dense` -> `np.asarray` (calling the EA's `__array__`). The gold code uses `extract_array(series, extract_numpy=True)` and raises InvalidIndexError directly in an `else` for non-scalar keys, before any materialization. I built a witness using a hidden DecimalArray subclass (from pandas/tests/extension/decimal/array.py, [HIDDEN]) whose `__array__` raises AssertionError, and directly call `ser.index.get_value(ser, [\"a\",\"b\"])`. On the buggy program this FAILS because get_value materializes the array (AssertionError from __array__) instead of raising InvalidIndexError; on gold it PASSES because get_value raises InvalidIndexError directly without materializing. This is exactly the behavior r describes (raise InvalidIndexError rather than fall through to a numpy-based lookup). Note: a naive `pytest.raises(InvalidIndexError)` without the materialization guard passes on both (the buggy fall-through eventually raises InvalidIndexError too via its TypeError handler at base.py:4535), so the materialization guard is what discriminates the two code paths and pins the requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible in this repo snapshot: pandas/core/indexes/base.py and pandas/tests/extension/decimal/test_decimal.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug is diagnosed in the issue as an interaction between pandas/core/series.py::Series.__getitem__ (calls index.get_value first) and pandas/core/indexes/base.py::Index.get_value; only the latter is visible here (Series.__getitem__ is NOT visible)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible source of Index.get_value already contains an ExtensionArray shortcut guarded by `is_scalar(key)`; the fall-through line `s = com.values_from_object(series)` matches the issue's quoted diagnosis (it is only reached for non-scalar keys)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The decimal test file (pandas/tests/extension/decimal/test_decimal.py) defines TestGetitem(BaseDecimal, base.BaseGetitemTests) but its body only adds test_take_na_value_other_decimal; it contains no assertion about densification/__array__ calls, so it does not itself nail down the non-densification requirement. The referenced base classes (pandas/tests/extension/base.py etc.) are not visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The DecimalArray used in the issue's reproduction (pandas/tests/extension/decimal/array.py) is imported by the test file but is not itself among the visible files."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only pandas/core/indexes/base.py is changed by the patch; hunk H1 is the sole behavioral change, hunk H0 is an added import of `extract_array` from pandas.core.construction and has no observable behavior of its own."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The before-state guard was `isinstance(s, (ExtensionArray, Index)) and is_scalar(key)`, so for an EA-backed Series with a non-scalar key the guard was False and control fell through to `s = com.values_from_object(series)` (numpy/object conversion) followed by the engine-based `get_value` path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The after-state guard is `isinstance(s, ExtensionArray)` evaluated on `extract_array(series, extract_numpy=True)`; for numpy-backed Series/arrays the extracted object is an ndarray, so the shortcut block is not entered, whereas for EA-backed Series the extracted object is the ExtensionArray itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In this snapshot `Series._values` / `Index._values` already returns the underlying ExtensionArray for EA-backed objects, so the extraction change and the previous `getattr(series, \"_values\", series)` coincide for the EA case; the `Index` arm of the old isinstance check was effectively unreachable because Index/Series expose a `_values` attribute."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The scalar-key body of the EA branch (get_loc -> s[iloc], KeyError re-raise on non-empty integer/boolean index, integer-key positional fallback) is textually unchanged between before and after states."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "When the ExtensionArray branch is not entered, Index.get_value continues to use `com.values_from_object(series)` / `com.values_from_object(key)`, `self._convert_scalar_indexer(k, kind=\"getitem\")`, then `self._engine.get_value`, with the pre-existing KeyError/TypeError handling."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "pandas/core/series.py (the other half of the reported interaction) is not present in this repo snapshot, so Series.__getitem__ behavior cannot be inspected here."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-1] (Index.get_value): Index.get_value raises InvalidIndexError(key) when the values of `series` are an ExtensionArray and `key` is not a scalar (e.g. an ndarray/list of labels), rather than falling through to a numpy-based lookup of the values. — not entailed by S_vis (S1 (and the issue/source evidence) only describes avoiding densification of an ExtensionArray for non-scalar keys; it never mentions raising InvalidIndexError. Nothing in S_vis pins down this specific error-raising behavior, so S_vis does not entail it.); confirmed by a oracle witness: The target requirement [S_impl-1] states that Index.get_value must raise InvalidIndexError(key) when the Series' values are an ExtensionArray and the key is non-scalar, rather than falling through to numpy-based lookup (com.values_from_object). The buggy code guards the EA shortcut with `isinstance(s, (ExtensionArray, Index)) and is_scalar(key)`, so a non-scalar key skips the shortcut and hits `s = com.values_from_object(series)`, which materializes the EA via `Series._internal_get_values` -> `to_dense` -> `np.asarray` (calling the EA's `__array__`). The gold code uses `extract_array(series, extract_numpy=True)` and raises InvalidIndexError directly in an `else` for non-scalar keys, before any materialization. I built a witness using a hidden DecimalArray subclass (from pandas/tests/extension/decimal/array.py, [HIDDEN]) whose `__array__` raises AssertionError, and directly call `ser.index.get_value(ser, [\"a\",\"b\"])`. On the buggy program this FAILS because get_value materializes the array (AssertionError from __array__) instead of raising InvalidIndexError; on gold it PASSES because get_value raises InvalidIndexError directly without materializing. This is exactly the behavior r describes (raise InvalidIndexError rather than fall through to a numpy-based lookup). Note: a naive `pytest.raises(InvalidIndexError)` without the materialization guard passes on both (the buggy fall-through eventually raises InvalidIndexError too via its TypeError handler at base.py:4535), so the materialization guard is what discriminates the two code paths and pins the requirement.",
+    "confidence": "High"
+  }
+}

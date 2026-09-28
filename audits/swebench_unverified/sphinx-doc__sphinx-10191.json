@@ -1,0 +1,119 @@
+{
+  "task_id": "sphinx-doc__sphinx-10191",
+  "status": "ok",
+  "duration_seconds": 475.38078962499276,
+  "llm_calls": 46,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-10191",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When explicitly-numbered footnotes are each referenced more than once and the references to two distinct footnotes alternate/are interleaved in the body (rather than grouped per footnote), the LaTeX (latexpdf) build must render every footnote reference mark as the correct visible footnote number with a resolvable target and a hyperlink — never as a literal '?' mark with no hyperlink (the fallback taken by \\sphinxfootref when a footnote reference cannot be resolved).",
+        "subject": "sphinx/builders/latex/transforms.py LaTeXFootnoteTransform/LaTeXFootnoteVisitor and sphinx/writers/latex.py footnote emission (visit_footnote/visit_footnotemark) and sphinx/texinputs/sphinxpackagefootnote.sty \\sphinxfootref",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction body: \"First reference to first footnote [1]_ \\nFirst reference to second footnote [2]_\\nSecond reference to first footnote [1]_\\nSecond reference to second footnote [2]_ ... .. [1] A first footnote .. [2] A second footnote\" ; Expected behavior: \"Footnotes are rendered correctly\"; symptom: \"footnote mark is rendered as `?` and there is no hyperlink\"; matching fallback in sphinx/texinputs/sphinxpackagefootnote.sty's \\sphinxfootref: \"\\ltx@ifundefined{r@\\thesphinxscope.#1}% {\\gdef\\@thefnmark{?}\\H@@footnotemark}%\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When rendering a `footnote` node that is tagged `referred` (i.e. it is referenced more than once, so the later references have been rewritten to `footnotemark` nodes by the LaTeXFootnoteTransform), the emitted LaTeX is a plain footnote environment that starts directly with `\\begin{footnote}[<label>]\\sphinxAtStartFootnote`, and the writer no longer prefixes that environment with a `\\sphinxstepexplicit ` invocation and no longer inserts a `\\phantomsection\\label{\\thesphinxscope.<label>}%` anchor (with its trailing comment-newline) inside the environment body.",
+        "subject": "LaTeXTranslator.visit_footnote (sphinx/writers/latex.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When rendering a `footnotetext` body (the deferred footnote definition produced by LaTeXFootnoteTransform for footnotes in restricted positions such as headings and table titles/captions/headers), the emitted LaTeX starts directly with `\\begin{footnotetext}[<label>]\\sphinxAtStartFootnote`, and the writer no longer inserts a `\\phantomsection\\label{\\thesphinxscope.<label>}%` anchor (with its trailing comment-newline) inside the environment body.",
+        "subject": "LaTeXTranslator.visit_footnotetext (sphinx/writers/latex.py)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] describes only a behavioral symptom/output-level requirement (interleaved references to distinct notes must render as correct numbers with hyperlinks, not '?'), citing the \\sphinxfootref fallback. It says nothing about the internal LaTeX text visit_footnote emits for a `referred` footnote node — no mention of the `referred` tag, removal of a \\sphinxstepexplicit prefix, or removal of a \\phantomsection\\label anchor. Those are code-level implementation details invisible in the visible evidence, so S_vis does not pin them down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] is entirely about footnote reference-mark rendering for interleaved references; it never addresses the `footnotetext` node path produced for restricted positions or the exact LaTeX that visit_footnotetext emits, and gives no lead toward removing a \\phantomsection\\label anchor from that environment. Absent any such visible detail, the specific behavior in R2 is not entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_referred_footnote_not_explicit",
+      "test_source": "from io import StringIO\nimport os\nimport shutil\nimport tempfile\n\nfrom sphinx.testing.path import path\nfrom sphinx.testing.util import SphinxTestApp\n\n\ndef test_referred_footnote_not_explicit():\n    root = 'tests/roots/test-footnotes'\n    srcdir = path(tempfile.mkdtemp(prefix='witness-footnotes-'))\n    for item in os.listdir(root):\n        s = os.path.join(root, item)\n        d = srcdir / item\n        if os.path.isdir(s):\n            shutil.copytree(s, str(d))\n        else:\n            shutil.copy2(s, str(d))\n    status, warning = StringIO(), StringIO()\n    app = SphinxTestApp('latex', srcdir=srcdir.abspath(),\n                        freshenv=True, status=status, warning=warning)\n    try:\n        app.builder.build_all()\n        result = (app.outdir / 'python.tex').read_text()\n        assert '\\\\sphinxstepexplicit' not in result\n    finally:\n        app.cleanup()\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: '\\sphinxstepexplicit' found in generated python.tex at the 'Explicitly numbered footnote' \\begin{footnote}[100]... block)",
+      "explanation": "R1 is exactly the deletion in sphinx/writers/latex.py visit_footnote of the `\\sphinxstepexplicit ` prefix that was emitted before `\\begin{footnote}[<label>]` for every `referred` footnote node. The fix leaves `\\sphinxstepexplicit` completely gone from the writer, so a LaTeX build of a root that contains multiply-`referred` footnotes must contain no occurrence of that macro anywhere in the emitted .tex.\n\nI wrote a fully self-contained pytest that (a) copies the Sphinx `tests/roots/test-footnotes` root (which contains the reachable `[100]`/`[#twice]` referred footnotes plus table/URL footnotes that are not referred) into a fresh temp dir, (b) builds it with the real `latex` builder via `SphinxTestApp`, and (c) asserts `'\\\\sphinxstepexplicit' not in the resulting python.tex`. On the gold revision this passes (there is no other place that emits the macro). On the buggy revision the very `\\begin{footnote}[100]\\phantomsection\\label{\\thesphinxscope.100}` block described by R1 is present, as is the `\\sphinxstepexplicit ` before `\\begin{footnote}[13]`, so the assertion fails. Confirmed by actually running against both revisions: gold PASSED, buggy FAILED.\n\nNote the only visible on-point test (test_footnote_referred_multiple_times) asserts the opposite (presence of \\sphinxstepexplicit) and so would fail on the fixed code; it cannot guard the fix. This witness independently establishes the new gold constraint on the same referred-footnote scenario and discriminates gold vs buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The literal '?' footnote mark the report describes corresponds to the undefined-reference fallback in sphinx/texinputs/sphinxpackagefootnote.sty's \\sphinxfootref: when \\texttt{r@\\string\\thesphinxscope.<num>} is undefined it does \\gdef\\@thefnmark{?}."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "\\thesphinxscope (defined in sphinx/texinputs/sphinx.sty) is '\\number\\value{sphinxscope}.\\number\\value{sphinxexplicit}', and \\sphinxstepexplicit steps sphinxexplicit for each 'referred' footnote. The writer emits \\sphinxstepexplicit + \\begin{footnote}[N]\\phantomsection\\label{\\thesphinxscope.N} for the first-occurrence footnote env but the later \\sphinxfootnotemark[N] resolves r@\\thesphinxscope.N with whichever explicit counter value is current at the mark's emission point — so ordering of first-versus-repeat references across distinct footnotes determines resolvability."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The multiply-referred handling lives in sphinx/builders/latex/transforms.py: LaTeXFootnoteVisitor.visit_footnote_reference tags a footnote 'referred' and swaps its second/subsequent references for footnotemark nodes; footnote definition nodes are otherwise moved to their first reference. Writer side: sphinx/writers/latex.py visit_footnote (emits \\sphinxstepexplicit and the \\label) and visit_footnotemark/\\sphinxfootnotemark."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing test root tests/roots/test-footnotes and test_footnote_referred_multiple_times (tests/test_build_latex.py) only exercise double references that are grouped per footnote consecutively ('Explicitly numbered footnote: [100]_ [100]_' and 'Named footnote: [#twice]_ [#twice]_'), not the alternating/interleaved arrangement in the bug report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction is for two explicitly numbered footnotes ([1] and [2]) each referenced twice in an alternating sequence; Sphinx version reported 4.4.0 and current 4.x."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks only delete writer-emitted tokens; the rest of visit_footnote/visit_footnotetext (the `%`+CR comment line, `\\begin{footnote}[N]`/`\\begin{footnotetext}[N]` mark with the number, and `\\sphinxAtStartFootnote`) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The deleted `\\label{\\thesphinxscope.<number>}` anchors and the `\\sphinxstepexplicit` step macro are the writer side of a scope/explicit counter scheme (“\\thesphinxscope” = \\number\\value{sphinxscope}.\\number\\value{sphinxexplicit}) documented in sphinx/texinputs/sphinxpackagefootnote.sty, where `\\sphinxfootnotemark[N]`/`\\sphinxfootref` resolve `r@\\thesphinxscope.<N>` to place a clickable footnote mark and, when undefined, fall back to rendering the mark as `?`. In the gold code the ``'referred' in node`` branch in visit_footnote is retained but replaced by a `pass`/TODO comment."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two hunks affect distinct node kinds by distinct triggers: in visit_footnote (H0) the removed anchor applied only to `referred` footnotes, whereas in visit_footnotetext (H1) it was removed unconditionally for every deferred footnote body."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "LaTeXFootnoteVisitor (sphinx/builders/latex/transforms.py) marks a footnote `referred` and rewrites its later references to footnotemark nodes; `footnotetext` nodes are produced for restricted contexts (section titles, figure/table titles, table thead/etc.)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tests/test_build_latex.py and roots/test-footnotes exercise footnote rendering via string comparisons of the generated .tex and also by compiling the .tex."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I audited R1: that the writer's visit_footnote, for a `referred` footnote node, no longer prefixes the footnote environment with `\\sphinxstepexplicit ` and no longer inserts a `\\phantomsection\\label{\\thesphinxscope...}%` anchor.\n\nI mechanically confirmed the gold/buggy contrast by building a small LaTeX document containing interleaved double references [1]_ [2]_ [1]_ [2]_: gold emits plain `\\begin{footnote}[1]\\sphinxAtStartFootnote\\nFirst note...` (no stepexplicit / no anchor), whereas buggy emits `\\sphinxstepexplicit %\\n\\begin{footnote}[1]\\phantomsection\\label{\\thesphinxscope.1}%\\n...`. I also confirmed at source level that buggy's visit_footnote still contains `self.body.append(r'\\sphinxstepexplicit ')` while gold's does not.\n\nA valid Witness for R1 would be a pre-existing oracle test whose assertion checks that a referred footnote is emitted plainly (passes gold / fails buggy). I searched the oracle for such content and found none that qualifies:\n\n1. Every Python test that asserts footnote LaTeX output lives in tests/test_build_latex.py and tests/test_writer_latex.py, both labeled [VISIBLE] (not usable as a witness). The on-point test, test_footnote_referred_multiple_times, moreover still asserts the OLD pre-fix output (`\\sphinxstepexplicit %\\n\\begin{footnote}[100]\\phantomsection\\label{\\thesphinxscope.100}%...`) — i.e., the opposite of R1's behavior, so it would fail on gold rather than pass; it cannot distinguish the fix.\n\n2. The [HIDDEN] root files (tests/roots/test-footnotes/index.rst, bar.rst, baz.rst and tests/roots/test-root/footnote.txt) contain footnote/citation input but no referred-footnote reproduction (no interleaved/alternating references of the kind R1 targets), and they are data inputs, not test assertions of R1. No [HIDDEN] Python test file asserts the plain referred-footnote emission.\n\nBecause all relevant assertions are in [VISIBLE] content (and even there test the pre-fix behavior), there is no genuine [HIDDEN] oracle witness for R1, so I submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (LaTeXTranslator.visit_footnote (sphinx/writers/latex.py)): When rendering a `footnote` node that is tagged `referred` (i.e. it is referenced more than once, so the later references have been rewritten to `footnotemark` nodes by the LaTeXFootnoteTransform), the emitted LaTeX is a plain footnote environment that starts directly with `\\begin{footnote}[<label>]\\sphinxAtStartFootnote`, and the writer no longer prefixes that environment with a `\\sphinxstepexplicit ` invocation and no longer inserts a `\\phantomsection\\label{\\thesphinxscope.<label>}%` anchor (with its trailing comment-newline) inside the environment body. — not entailed by S_vis (S_vis [1] describes only a behavioral symptom/output-level requirement (interleaved references to distinct notes must render as correct numbers with hyperlinks, not '?'), citing the \\sphinxfootref fallback. It says nothing about the internal LaTeX text visit_footnote emits for a `referred` footnote node — no mention of the `referred` tag, removal of a \\sphinxstepexplicit prefix, or removal of a \\phantomsection\\label anchor. Those are code-level implementation details invisible in the visible evidence, so S_vis does not pin them down.); confirmed by a synthesized witness: R1 is exactly the deletion in sphinx/writers/latex.py visit_footnote of the `\\sphinxstepexplicit ` prefix that was emitted before `\\begin{footnote}[<label>]` for every `referred` footnote node. The fix leaves `\\sphinxstepexplicit` completely gone from the writer, so a LaTeX build of a root that contains multiply-`referred` footnotes must contain no occurrence of that macro anywhere in the emitted .tex.\n\nI wrote a fully self-contained pytest that (a) copies the Sphinx `tests/roots/test-footnotes` root (which contains the reachable `[100]`/`[#twice]` referred footnotes plus table/URL footnotes that are not referred) into a fresh temp dir, (b) builds it with the real `latex` builder via `SphinxTestApp`, and (c) asserts `'\\\\sphinxstepexplicit' not in the resulting python.tex`. On the gold revision this passes (there is no other place that emits the macro). On the buggy revision the very `\\begin{footnote}[100]\\phantomsection\\label{\\thesphinxscope.100}` block described by R1 is present, as is the `\\sphinxstepexplicit ` before `\\begin{footnote}[13]`, so the assertion fails. Confirmed by actually running against both revisions: gold PASSED, buggy FAILED.\n\nNote the only visible on-point test (test_footnote_referred_multiple_times) asserts the opposite (presence of \\sphinxstepexplicit) and so would fail on the fixed code; it cannot guard the fix. This witness independently establishes the new gold constraint on the same referred-footnote scenario and discriminates gold vs buggy.",
+    "confidence": "Medium"
+  }
+}

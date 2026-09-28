@@ -1,0 +1,142 @@
+{
+  "task_id": "Csv-15",
+  "status": "ok",
+  "duration_seconds": 286.487549423,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "Csv-15",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When printing a record with CSVFormat.EXCEL (MINIMAL quote mode) whose first value is an otherwise-plain CJK string such as \"あ\" (containing no delimiter, quote, newline, or CR), the value must NOT be wrapped in the quote character, so that the record of values あ, い, う prints unquoted as `あ,い,う` rather than `\"あ\",い,う`.",
+        "subject": "CSVFormat.printAndQuote / printing under QuoteMode.MINIMAL — first value of a record leading with a printable CJK character must not be quoted",
+        "hunk_ids": [],
+        "cited_from": "\"There are 3 data members in a record, with Japanese chars: \"あ\", \"い\", \"う\":\n  Microsoft Excel outputs:\n  あ,い,う\n  Apache Common CSV outputs:\n  \"あ\",い,う\""
+      },
+      {
+        "id": "R2",
+        "statement": "Printing a record whose first value is the single euro sign character U+20AC with CSVFormat.RFC4180 (MINIMAL quote mode), followed by the value \"Deux\", must NOT wrap the euro value in quotes; the resulting output must be exactly \"\\u20AC,Deux\" followed by the record separator.",
+        "subject": "CSVFormat.printAndQuote / printing under QuoteMode.MINIMAL — first value of a record leading with U+20AC (euro sign) must not be quoted",
+        "hunk_ids": [],
+        "cited_from": "private static final char EURO_CH = '\\u20AC';  ...  @Test public void testDontQuoteEuroFirstChar() throws IOException { final StringWriter sw = new StringWriter(); try (final CSVPrinter printer = new CSVPrinter(sw, CSVFormat.RFC4180)) { printer.printRecord(EURO_CH, \"Deux\"); assertEquals(EURO_CH + \",Deux\" + recordSeparator, sw.toString()); } }"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-r1",
+        "statement": "When printing a value under an explicit MINIMAL QuoteMode or with no QuoteMode configured (which defaults to MINIMAL), a value that is the first field (newRecord) of a record and whose first character has a code point greater than 0x7E (e.g. U+20AC euro '\\u20ac' or a CJK character such as U+3042 '\\u3042') is no longer quoted merely because of that leading character: such a value is emitted without surrounding quotes provided it contains no CR/LF, no configured quote character, no configured delimiter, and does not end in a character <= 0x20 (space).",
+        "subject": "CSVFormat.printAndQuote (MINIMAL/default quote mode, first field of record)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-r2",
+        "statement": "Under the same MINIMAL/unspecified print-and-quote path, a value whose first character is <= the comment character (COMMENT '#' = 0x23, thereby also covering control characters below 0x20, space, '!', and '\"') is still force-quoted on account of that leading position, even for the first field of a record; the removal does not loosen quoting for these lower leading characters.",
+        "subject": "CSVFormat.printAndQuote (MINIMAL/default quote mode, leading char <= comment char)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-r3",
+        "statement": "The removal of the first-on-record leading-character auto-quote window applies only to the leading (first) character of a value; the remaining per-character quoting triggers are unchanged, i.e. in that same quoting path a value is still quoted when any of its characters equals CR, LF, the configured quote char, or the configured delimiter, or when its final character is <= 0x20 (space).",
+        "subject": "CSVFormat.printAndQuote (MINIMAL/default quote mode, interior and trailing trigger chars)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-r1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 (CJK あ as first field under EXCEL/MINIMAL prints unquoted) and R2 (euro U+20AC as first field under RFC4180/MINIMAL prints unquoted) both directly instantiate impl-r1's rule: a first-value-of-record starting char above 0x7E, with no CR/LF/quote/delimiter present, is no longer force-quoted in MINIMAL/default mode."
+      },
+      {
+        "requirement_id": "impl-r2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only demonstrates that high (>0x7E) leading chars of a first field are unquoted; neither visible artifact states that low leading chars (<= comment '#'/space/control) remain force-quoted in that position. That boundary/regression claim is not established by the visible evidence."
+      },
+      {
+        "requirement_id": "impl-r3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible examples all contain plain values with no CR/LF/quote/delimiter and no trailing space, so S_vis never demonstrates that interior/trailing trigger characters (CR, LF, quote, delimiter, final char <= 0x20) still cause quoting. The unchanged-interior-triggers claim is not pinned down by visible info."
+      }
+    ],
+    "target_requirement_id": "impl-r2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "impl-r2 asserts a PRESERVATION property: under the MINIMAL (default) print-and-quote path, a value whose FIRST field's leading char is <= COMMENT (0x23 '#', i.e. control chars <0x20, space 0x20, '!' 0x21, '\"' 0x22, '#' 0x23) must STILL be force-quoted even for the first field of a record — i.e. the gold hunk's removal of the `newRecord && (codepoint-window)` guard must NOT loosen quoting for these lower leading characters.\n\nAnalysis of the two revisions shows this behavior is IDENTICAL on buggy and gold, so no test can discriminate them. Difference in the MINIMAL branch: buggy had `if (newRecord && (c<0x20 || c>0x21&&c<0x23 || c>0x2B&&c<0x2D || c>0x7E)) quote=true; else if (c<=COMMENT){quote=true;}`; gold removed the newRecord window leaving only `if (c<=COMMENT){quote=true;}`. For every leading char in r2's domain (0x00..0x23), the buggy quotes via EITHER the guard (control chars <0x20, and 0x22 '\"') OR the retained `c<=COMMENT` rule, and gold quotes via the retained `c<=COMMENT` rule — so the observable output is byte-identical. (The buggy-only guard chars outside r2's domain — 0x2C ',' and >0x7E non-ASCII on a first field — are exactly what the hunk loosens and belong to the SIBLING requirement impl-r1 / the euro/CJK issue, not impl-r2.)\n\nI verified empirically by running tests against both revisions: a first-field value \\u0001x, and values leading with control \\u0001/\\u0007, space ' ', '!', '\"', and '#' all produce the SAME force-quoted output (e.g. the '\"'-leading value doubles to `\"\"\"x\"` identically on both) — PASSED on buggy and PASSED on gold in every case. A genuine witness requires FAIL on buggy + PASS on gold, which is impossible for r2 because buggy already satisfied it before the patch and the patch preserves it. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The quote-vs-not decision under minimal/no-explicit QuoteMode is centralized in CSVFormat.printAndQuote, whose MINIMAL branch forces quoting when the leading char of a first-on-record value falls outside the printable ASCII windows, i.e. `if (newRecord && (c < 0x20 || c > 0x21 && c < 0x23 || c > 0x2B && c < 0x2D || c > 0x7E)) quote = true;` — this is the region that also catches U+20AC (euro) and CJK chars such as あ, which the tests/issue assert should stay unquoted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test file CSVPrinterTest.java does not contain any CJK-named test; the euro test (testDontQuoteEuroFirstChar) is the closest existing spec-level example of a non-ASCII leading character that must not be quoted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CSVFormat.EXCEL is built from DEFAULT with withIgnoreEmptyLines(false) and withAllowMissingColumnNames(); it uses a comma delimiter, double-quote char, and CRLF record separator, and forwards to the same printAndQuote code path as RFC4180."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue cites upstream tracker CSV-219; no developer patch was visible, so requirement texts describe only desired output behavior inferred from the issue example and the disclosed euro test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests reference classes/methods (CSVPrinter, CSVRecord, Utils, CSVFormatTest.EmptyEnum, org.h2/h2 value classes, commons-io FileUtils) not all present under src; CSVPrinter.java itself is not in the visible file set — only CSVFormat.java and CSVPrinterTest.java are visible."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 edits printAndQuote's QuoteMode.MINIMAL branch (the null/default quote mode path) in CSVFormat.java, removing a `newRecord && (codepoint-window)` leading-character guard that previously forced quoting of a first-on-record value whose first char was a control char (<0x20), \" (0x22), , (0x2C), or any char >0x7E."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After the removal the surviving logic quotes a leading char <= COMMENT (0x23 '#') regardless of newRecord, then scans interior chars for CR/LF/quote/delim, and finally checks the trailing char against <= SP; these retained rules are unchanged between buggy and gold."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For the standard comma/double-quote formats (DEFAULT/EXCEL/RFC4180) the chars 0x22 and 0x2C that the removed window also named still end up quoted (0x22 <= COMMENT; 0x2C is the delimiter caught by the scan), so the only externally observable tightening is for leading codepoints > 0x7E on the first record field. A ','-or '\"'-leading first value under a non-comma/non-double-quote format is an edge case of the same hunk but not the tested/issue behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The tests/issue context for CSV-15 concerns not quoting a first character such as euro (U+20AC) or a CJK glyph (e.g. U+3042); the extractor had CSVFormat.java at both revisions and the constant COMMENT is referenced from org.apache.commons.csv.Constants."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-r2]: impl-r2 asserts that under MINIMAL/default print-and-quote, a value whose first character is <= COMMUNICATION/COMMENT (0x23 '#', covering control chars <0x20, space, '!', '\"') is STILL force-quoted even at the first field of a record; i.e. the patch (removal of the `newRecord && (codepoint window ...)` guard) must NOT loosen quoting for these lower leading characters.\n\nI confirmed by direct execution that this property holds identically BEFORE and AFTER the patch. A control-leading field (\\u0001), and leading space/'!' values printed as first record fields all produced the SAME quoted output on both the buggy and the gold program (my test asserting `\" x\",\"!y\",Deux\\r\\n` and `\"\\u0001xyz\",Deux\\r\\n` passed on BOTH). This is because the surviving (unchanged-in-both-version) logic already force-quotes any leading character <= COMMENT regardless of newRecord, so every char in {<0x20, space(0x20), '!'(0x21), '\"'(0x22), '#'(0x23)} is quoted in both revisions via that rule (for 0x22, also via the removed window, replaced by the <=-COMMENT rule in gold — output identical).\n\nA Witness must FAIL on buggy and PASS on gold. Since impl-r2's behavior is identical in buggy and gold, no test can serve as a witness for it. The only currently-failing oracle test, testDontQuoteEuroFirstChar (in the [VISIBLE] CSVPrinterTest), exercises the OPPOSITE direction: a euro (U+20AC, > 0x7E, and > 0x23) leading first field NOT being quoted anymore — that is the impl-r1 loosening, not the impl-r2 char <= COMMENT must-still-be-quoted safeguard. I read every oracle test file (CSVPrinterTest[VISIBLE], CSVFormatTest[HIDDEN], CSVParserTest[HIDDEN], CSVFileParserTest[HIDDEN], LexerTest[HIDDEN], CSVRecordTest[HIDDEN], CSVFormatPredefinedTest[HIDDEN], JiraCsv164/198/203[HIDDEN]); none contains an assertion that fails on buggy while testing impl-r2. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-r2]: impl-r2 asserts a PRESERVATION property: under the MINIMAL (default) print-and-quote path, a value whose FIRST field's leading char is <= COMMENT (0x23 '#', i.e. control chars <0x20, space 0x20, '!' 0x21, '\"' 0x22, '#' 0x23) must STILL be force-quoted even for the first field of a record — i.e. the gold hunk's removal of the `newRecord && (codepoint-window)` guard must NOT loosen quoting for these lower leading characters.\n\nAnalysis of the two revisions shows this behavior is IDENTICAL on buggy and gold, so no test can discriminate them. Difference in the MINIMAL branch: buggy had `if (newRecord && (c<0x20 || c>0x21&&c<0x23 || c>0x2B&&c<0x2D || c>0x7E)) quote=true; else if (c<=COMMENT){quote=true;}`; gold removed the newRecord window leaving only `if (c<=COMMENT){quote=true;}`. For every leading char in r2's domain (0x00..0x23), the buggy quotes via EITHER the guard (control chars <0x20, and 0x22 '\"') OR the retained `c<=COMMENT` rule, and gold quotes via the retained `c<=COMMENT` rule — so the observable output is byte-identical. (The buggy-only guard chars outside r2's domain — 0x2C ',' and >0x7E non-ASCII on a first field — are exactly what the hunk loosens and belong to the SIBLING requirement impl-r1 / the euro/CJK issue, not impl-r2.)\n\nI verified empirically by running tests against both revisions: a first-field value \\u0001x, and values leading with control \\u0001/\\u0007, space ' ', '!', '\"', and '#' all produce the SAME force-quoted output (e.g. the '\"'-leading value doubles to `\"\"\"x\"` identically on both) — PASSED on buggy and PASSED on gold in every case. A genuine witness requires FAIL on buggy + PASS on gold, which is impossible for r2 because buggy already satisfied it before the patch and the patch preserves it. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[impl-r2] (CSVFormat.printAndQuote (MINIMAL/default quote mode, leading char <= comment char)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: impl-r2 asserts a PRESERVATION property: under the MINIMAL (default) print-and-quote path, a value whose FIRST field's leading char is <= COMMENT (0x23 '#', i.e. control chars <0x20, space 0x20, '!' 0x21, '\"' 0x22, '#' 0x23) must STILL be force-quoted even for the first field of a record — i.e. the gold hunk's removal of the `newRecord && (codepoint-window)` guard must NOT loosen quoting for these lower leading characters.\n\nAnalysis of the two revisions shows this behavior is IDENTICAL on buggy and gold, so no test can discriminate them. Difference in the MINIMAL branch: buggy had `if (newRecord && (c<0x20 || c>0x21&&c<0x23 || c>0x2B&&c<0x2D || c>0x7E)) quote=true; else if (c<=COMMENT){quote=true;}`; gold removed the newRecord window leaving only `if (c<=COMMENT){quote=true;}`. For every leading char in r2's domain (0x00..0x23), the buggy quotes via EITHER the guard (control chars <0x20, and 0x22 '\"') OR the retained `c<=COMMENT` rule, and gold quotes via the retained `c<=COMMENT` rule — so the observable output is byte-identical. (The buggy-only guard chars outside r2's domain — 0x2C ',' and >0x7E non-ASCII on a first field — are exactly what the hunk loosens and belong to the SIBLING requirement impl-r1 / the euro/CJK issue, not impl-r2.)\n\nI verified empirically by running tests against both revisions: a first-field value \\u0001x, and values leading with control \\u0001/\\u0007, space ' ', '!', '\"', and '#' all produce the SAME force-quoted output (e.g. the '\"'-leading value doubles to `\"\"\"x\"` identically on both) — PASSED on buggy and PASSED on gold in every case. A genuine witness requires FAIL on buggy + PASS on gold, which is impossible for r2 because buggy already satisfied it before the patch and the patch preserves it. found=false.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "task_id": "Math-44",
+  "status": "ok",
+  "duration_seconds": 334.75965844299935,
+  "llm_calls": 37,
+  "error": null,
+  "record": {
+    "task_id": "Math-44",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Across the whole integration when two resetting event handlers each fire at times closer together than fits in the current step, the event g(time, state) function — shared across the two handlers — must never be evaluated at a time earlier than the largest event-trigger time already recorded by either handler (i.e. event handling must never step back in time after an event has been triggered).",
+        "subject": "AbstractIntegrator.acceptStep / event state re-evaluation ordering",
+        "hunk_ids": [],
+        "cited_from": "public double g(double t, double[] y) { // the bug corresponding to issue 695 causes the g function // to be called at obsolete times t despite an event // occurring later has already been triggered. // When this occurs, the following assertion is violated Assert.assertTrue(\"going backard in time! (\" + t + \" < \" + lastTriggerTime + \")\", t >= lastTriggerTime); return t - tEvent; } ... public Action eventOccurred(double t, double[] y, boolean increasing) { // remember in a class variable when the event was triggered lastTriggerTime = t; return Action.RESET_STATE; }"
+      },
+      {
+        "id": "R2",
+        "statement": "Integrating the scalar ODE yDot[0]=1.0 from t=0 with y[0]=0 to target 30.0, using a DormandPrince853Integrator with two event handlers whose RESET_STATE actions add 1 to y[0] at t≈10.99 and t≈11.01 (step size 3.0, absolute/relative tolerances 1.0e-14, convergence 1.0e-9, maxCheckInterval 0.1), must complete without throwing and return a final integration time of 30.0 (within 1.0e-10) and a final state y[0] of 32.0 (within 1.0e-10).",
+        "subject": "AbstractIntegrator.acceptStep event handling with multiple RESET_STATE events",
+        "hunk_ids": [],
+        "cited_from": "integrator.addEventHandler(new ResettingEvent(10.99), 0.1, 1.0e-9, 1000);\n        integrator.addEventHandler(new ResettingEvent(11.01), 0.1, 1.0e-9, 1000);\n        integrator.setInitialStepSize(3.0);\n\n        double target = 30.0;\n        double[] y = new double[1];\n        double tEnd = integrator.integrate(equation, 0.0, y, target, y);\n        Assert.assertEquals(target, tEnd, 1.0e-10);\n        Assert.assertEquals(32.0, y[0], 1.0e-10);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "When, during acceptance of one integrator step that had multiple event handlers scheduled to occur (pending) inside it, the chronologically-first event's handler requests a state/derivative reset so that acceptStep copies the interpolated state into y, recomputes the derivatives, sets resetOccurred, and returns that event's time early, every other event handler that was also scheduled to occur later within the same candidate step is notified via stepAccepted at that same event time (with the interpolated/reset state) before acceptStep returns. Observable consequence: when two separately-registered RESET_STATE event handlers have their crossing times within a large adaptive step, both still trigger at their own (later) event times, integration proceeds to the requested end time, and neither handler's switching function g is ever subsequently called at a time earlier than the last already-triggered event time (integration completes at the target time and the final state reflects both state resets).",
+        "subject": "AbstractIntegrator.acceptStep (reset branch)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-2",
+        "statement": "When, during acceptance of one integrator step that had multiple event handlers scheduled to occur (pending) inside it, the chronologically-first event's handler requests STOP so that acceptStep copies its interpolated state into y and returns that event's time early having marked the step as last, every other event handler that was also scheduled to occur later within the same candidate step is notified via stepAccepted at that same event time (with the copied state) before acceptStep returns, so none of the remaining handlers is left stepping from stale (pre-event) bracketing state.",
+        "subject": "AbstractIntegrator.acceptStep (STOP branch)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 is the exact reproducing test for this scenario: two RESET_STATE handlers at t≈10.99/11.01 within a large step, and it pins final time 30.0 and final state 32.0 (both resets fired at their own later times and integration proceeded to target). R1 pins the companion behavior that g is never evaluated earlier than an already-recorded trigger time. Together these S_vis entries cover the observable consequences S_impl-1 commits to."
+      },
+      {
+        "requirement_id": "S_impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes only a RESET_STATE scenario (R2) and its no-backward-time consequence (R1). Nothing in the visible evidence addresses the STOP branch where the chronologically-first handler requests STOP with further handlers pending in the same step, nor does any test exercise the 'no remaining handler left stepping from stale bracketing state' behavior."
+      }
+    ],
+    "target_requirement_id": "S_impl-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "stopEventsInSameStepNotifyLaterHandler",
+      "test_source": "import org.junit.Assert;\nimport org.apache.commons.math.ode.events.EventHandler;\n@Test public void stopEventsInSameStepNotifyLaterHandler() throws Exception {\n    org.apache.commons.math.ode.FirstOrderDifferentialEquations equation = new org.apache.commons.math.ode.FirstOrderDifferentialEquations() {\n        public int getDimension() { return 1; }\n        public void computeDerivatives(double t, double[] y, double[] yDot) { yDot[0] = 1.0; }\n    };\n    // second handler, whose root lies strictly after the first (STOP) event,\n    // records every time value at which its switching function g is evaluated.\n    final java.util.List<Double> secondGtimes = new java.util.ArrayList<Double>();\n    org.apache.commons.math.ode.nonstiff.DormandPrince853Integrator integrator =\n        new org.apache.commons.math.ode.nonstiff.DormandPrince853Integrator(0.001, 1000, 1.0e-14, 1.0e-14);\n    // chronologically first event inside the candidate step requests STOP\n    integrator.addEventHandler(new EventHandler() {\n        public double g(double t, double[] y) { return t - 10.99; }\n        public EventHandler.Action eventOccurred(double t, double[] y, boolean increasing) { return EventHandler.Action.STOP; }\n        public void resetState(double t, double[] y) {}\n    }, 0.1, 1.0e-9, 100);\n    // second event, scheduled to occur later within the same candidate step\n    integrator.addEventHandler(new EventHandler() {\n        public double g(double t, double[] y) { secondGtimes.add(t); return t - 11.01; }\n        public EventHandler.Action eventOccurred(double t, double[] y, boolean increasing) { return EventHandler.Action.STOP; }\n        public void resetState(double t, double[] y) {}\n    }, 0.1, 1.0e-9, 100);\n    // a single candidate step large enough to cover both pending events\n    integrator.setInitialStepSize(3.0);\n    double[] y = new double[1];\n    double tEnd = integrator.integrate(equation, 0.0, y, 30.0, y);\n    // integration halts at the first event's stop time and copies its state\n    Assert.assertEquals(10.99, tEnd, 1.0e-9);\n    // the second (later) handler must have been acknowledged at that same STOP\n    // event time: gold re-evaluates g there through remaining.stepAccepted,\n    // whereas buggy leaves it bracketing from its stale pre-event state.\n    boolean notifiedAtStopTime = false;\n    for (double t : secondGtimes) {\n        if (Math.abs(t - 10.99) < 1.0e-6) { notifiedAtStopTime = true; }\n    }\n    Assert.assertTrue(\"later handler not acknowledged at stop time 10.99\", notifiedAtStopTime);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: later handler not acknowledged at stop time 10.99)",
+      "explanation": "The target requirement S_impl-2 concerns the STOP branch of AbstractIntegrator.acceptStep: when the chronologically-first of several pending events inside one candidate step requests STOP, the lifted H1 code in gold additionally calls remaining.stepAccepted(eventT, eventY) on every other EventState scheduled later within that same step, so none is left bracketing from stale pre-event state; the buggy code merely copies eventY and returns eventT.\n\nI built a concrete scenario that gets both events pending inside ONE candidate step and the first one STOPping. Driving DormandPrince853Integrator over dy/dt=1 from 0 to 30 with initial step 3.0, I registered event #1 with root g=t-10.99 returning Action.STOP and event #2 with root g=t-11.01 (also STOP, but irrelevant because integration halts first). EventState.stepAccepted on a remaining event (whose pending time is strictly later than eventT) sets t0=eventT and re-evaluates g0=handler.g(eventT,eventY); so the entire externally-observable difference between gold and buggy is whether the second handler's g is ever evaluated at exactly the STOP time 10.99. Empirically, gold evaluates the second handler's g 118 times with exactly one call at 10.99 (the extra remaining.stepAccepted), whereas buggy evaluates it 117 times with zero calls at 10.99 — leaving that handler bracketing from its stale pre-event state.\n\nThe witness asserts tEnd==10.99 (integration truly stops at the first event) and that the second handler's g was invoked at 10.99. It PASSES on gold (which runs the added loop) and FAILS on buggy (which omits it), confirmed by executing the identical source on both revisions. It is independent of the visible material: testIssue695 (the only failing test) uses RESET_STATE handlers at the same roots and only asserts the reset outcome (tEnd=30, y[0]=32), never entering the STOP branch, and does not assert any g-at-stop-time notification, so nothing visible pins this STOP-branch behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible to a repair system: src/main/java/org/apache/commons/math/ode/AbstractIntegrator.java and src/test/java/org/apache/commons/math/ode/events/EventStateTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test drives the ODE integration itself through DormandPrince853Integrator and EventState classes that are NOT among the visible sources; only EventStateTest and AbstractIntegrator are available, so the concrete endpoint/ordering expectations of the test are the checkable surface."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "EventStateTest.java's second test testIssue695 corresponds to JIRA MATH-695 and to this Math-44 bug; the file's other test closeEvents corresponds to an unrelated already-fixed issue MATH-322."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "lastTriggerTime is a static field shared across both ResettingEvent instances, so the g-time ordering guarantee in the test spans the two handlers, not just one."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Event g-values depend only on t (g(t,y)=t-tEvent); state resets (y[0]+=1) do not alter future event bracketing time behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The center of the reported bug is AbstractIntegrator.acceptStep's loop that, after one RESET_STATE event is accepted during a step and returns eventT, fails to fully re-initialize so a second event due later within the same step cannot be located and g gets probed at stale/earlier times."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch modifies only AbstractIntegrator.java; EventState.java and EventStateTest.java are unchanged between the buggy and gold revisions."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes the assignment resetOccurred=false at the top of acceptStep. resetOccurred is a protected field that is set true in the reset branch of acceptStep but is never read by the visible driving integrators (EmbeddedRungeKuttaIntegrator / GraggBulirschStoerIntegrator / DormandPrince853Integrator all omit it in the gold code), and it is not reachable from the visible EventStateTest interface, so H0 exposes no separately observable behavior on the visible surface."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "EventState.stepAccepted(t,y) sets t0=t and g0=handler.g(t,y); only when t lies within convergence of that EventState's own pendingEventTime does it additionally fire eventOccurred and force the event sign. In the injected notifications the receiving events' pending times are strictly later than eventT, so each call just advances t0 and re-orients g0's sign to the event-endpoint condition."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible regression test testIssue695 registers two RESET_STATE handlers (roots at 10.99 and 11.01) with a DormandPrince853Integrator and an initial step of 3.0, so both crossings can fall inside one candidate step; it therefore exercises only the H2 (reset) branch, not the STOP branch exercised by H1."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-2]: Target requirement S_impl-2 concerns the STOP branch of AbstractIntegrator.acceptStep: when several events are pending within one candidate step and the chronologically-first one requests STOP (causing acceptStep to copy interpolated state into y, mark the step last, and return early), every other event scheduled later in the same step must still be notified via stepAccepted at that event time so none is left bracketing from stale pre-event state.\n\nI inventoried all 28 oracle test files. The only immediately-failing test against the buggy program is EventStateTest::testIssue695, and it is [VISIBLE]. Moreover, per the notes its handlers request `Action.RESET_STATE` (roots at 10.99 / 11.01 with step 3.0), so it exercises only the reset branch of acceptStep, NOT the STOP branch described in r; in addition, being [VISIBLE] content it can never serve as a Witness.\n\nI then checked every event-related file for a hidden test that could exercise the STOP-branch multi-pending-event scenario. OverlappingEventsTest ([HIDDEN]) is the only hidden suite that registers multiple EventHandlers that return `Action.STOP` simultaneously. But its events are all at essentially the same time (concurrent, tolerance-overlapping crossings) rather than chronologically distinct events within a single candidate step, and it is not in the failing-test set. I reproduced its testOverlappingEvents0 geometry in a self-contained run against the buggy program and it PASSED, confirming that this suite does not discriminate buggy vs. gold and therefore cannot be a Witness for r. The remaining ODE test files (DormandPrince853, GraggBulirschStoer, Adams, etc.) register at most single/simple event handlers and do not set up the concrete scenario r describes.\n\nSince the only oracle test that fails against the buggy build is the [VISIBLE] RESET-based testIssue695, and no [HIDDEN] test genuinely enforces the STOP-branch behavior of r (OverlappingEventsTest passes buggy and largely targets concurrent rather than chronologically-distinct pending events), no genuine Witness exists in the oracle. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-2] (AbstractIntegrator.acceptStep (STOP branch)): When, during acceptance of one integrator step that had multiple event handlers scheduled to occur (pending) inside it, the chronologically-first event's handler requests STOP so that acceptStep copies its interpolated state into y and returns that event's time early having marked the step as last, every other event handler that was also scheduled to occur later within the same candidate step is notified via stepAccepted at that same event time (with the copied state) before acceptStep returns, so none of the remaining handlers is left stepping from stale (pre-event) bracketing state. — not entailed by S_vis (S_vis describes only a RESET_STATE scenario (R2) and its no-backward-time consequence (R1). Nothing in the visible evidence addresses the STOP branch where the chronologically-first handler requests STOP with further handlers pending in the same step, nor does any test exercise the 'no remaining handler left stepping from stale bracketing state' behavior.); confirmed by a synthesized witness: The target requirement S_impl-2 concerns the STOP branch of AbstractIntegrator.acceptStep: when the chronologically-first of several pending events inside one candidate step requests STOP, the lifted H1 code in gold additionally calls remaining.stepAccepted(eventT, eventY) on every other EventState scheduled later within that same step, so none is left bracketing from stale pre-event state; the buggy code merely copies eventY and returns eventT.\n\nI built a concrete scenario that gets both events pending inside ONE candidate step and the first one STOPping. Driving DormandPrince853Integrator over dy/dt=1 from 0 to 30 with initial step 3.0, I registered event #1 with root g=t-10.99 returning Action.STOP and event #2 with root g=t-11.01 (also STOP, but irrelevant because integration halts first). EventState.stepAccepted on a remaining event (whose pending time is strictly later than eventT) sets t0=eventT and re-evaluates g0=handler.g(eventT,eventY); so the entire externally-observable difference between gold and buggy is whether the second handler's g is ever evaluated at exactly the STOP time 10.99. Empirically, gold evaluates the second handler's g 118 times with exactly one call at 10.99 (the extra remaining.stepAccepted), whereas buggy evaluates it 117 times with zero calls at 10.99 — leaving that handler bracketing from its stale pre-event state.\n\nThe witness asserts tEnd==10.99 (integration truly stops at the first event) and that the second handler's g was invoked at 10.99. It PASSES on gold (which runs the added loop) and FAILS on buggy (which omits it), confirmed by executing the identical source on both revisions. It is independent of the visible material: testIssue695 (the only failing test) uses RESET_STATE handlers at the same roots and only asserts the reset outcome (tEnd=30, y[0]=32), never entering the STOP branch, and does not assert any g-at-stop-time notification, so nothing visible pins this STOP-branch behavior.",
+    "confidence": "Medium"
+  }
+}

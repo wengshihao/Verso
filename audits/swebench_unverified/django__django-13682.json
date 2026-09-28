@@ -1,0 +1,114 @@
+{
+  "task_id": "django__django-13682",
+  "status": "ok",
+  "duration_seconds": 362.9787898749346,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13682",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "In django.urls.path() (and re_path(), via the shared _path helper), passing a class-based view class that subclasses django.views.generic.View (e.g. HomeView) as the view argument — instead of the result of calling .as_view() — must fail immediately, at the time the URL pattern is being constructed inside path(), rather than only failing later with a delayed TypeError when the route is first loaded/requested.",
+        "subject": "django.urls._path / django.urls.path / django.urls.re_path (view argument type validation)",
+        "hunk_ids": [],
+        "cited_from": "Improve error messages from forgetting to call .as_view() on a CBV ... For: urlpatterns = [\n\tpath('home', HomeView)\n] The error currently happens only when you first load the route (rather than when constructing the routes), and looks like ... TypeError: __init__() takes 1 positional argument but 2 were given ... My PR changes it to fail early, inside the call to django.urls.path(), with a clear error: URL route 'foo' should pass in 'EmptyCBView.as_view()' instead of 'EmptyCBView'"
+      },
+      {
+        "id": "2",
+        "statement": "When a class-based view class is detected as the view passed to path()/re_path(), the raised error message must follow the form: \"URL route '{route}' should pass in '{ViewClassName}.as_view()' instead of '{ViewClassName}'\", i.e. naming the offending route and recommending the .as_view() call on the class — for the canonical example raising \"URL route 'foo' should pass in 'EmptyCBView.as_view()' instead of 'EmptyCBView'\".",
+        "subject": "django.urls.path error message for CBV-without-as_view misuse",
+        "hunk_ids": [],
+        "cited_from": "My PR changes it to fail early, inside the call to django.urls.path(), with a clear error: URL route 'foo' should pass in 'EmptyCBView.as_view()' instead of 'EmptyCBView'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "path() and re_path() (which delegate to _path) raise a TypeError, rather than accepting the view or raising the generic error, when the given view is an instance of a django.views.View subclass; the raised message names the concrete class and instructs the caller to pass that class's .as_view() result instead of a constructor call (e.g. 'view must be a callable, pass {ClassName}.as_view(), not {ClassName}().').",
+        "subject": "django.urls.conf._path (and path()/re_path())",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "URLPattern.check() reports a system-check Error with id 'urls.E009' when the pattern's callback is a class (not an instance) that subclasses django.views.View, whose message describes the pattern and advises passing {ViewName}.as_view() instead of the class itself.",
+        "subject": "django.urls.resolvers.URLPattern.check",
+        "hunk_ids": [
+          "H2",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis [1] pins early in-path() failure for a CBV-without-as_view misuse and S_vis [2] fixes the message format, matching most of R1's core scenario. However, S_vis does not explicitly state the early failure is a TypeError (only the erstwhile delayed error was), and R1's example message text ('view must be a callable...not {ClassName}().') differs materially from the pinned S_vis message format, leaving the exact exception type/message unpinned."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "Neither S_vis entry nor the cited issue text mentions URLPattern.check(), the system-check framework, or an 'urls.E009' error id in any form; S_vis covers only runtime path()/re_path() argument validation. Nothing commits to R2's system-check behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_urls_e009",
+      "test_source": "def test_urls_e009():\n    from django.conf import settings\n    settings.configure()\n\n    from django.views import View\n    from django.urls.resolvers import URLPattern, RoutePattern\n\n    class MyView(View):\n        pass\n\n    pattern = URLPattern(RoutePattern('entry/'), MyView)\n    errs = [e for e in pattern.check() if e.id == 'urls.E009']\n    assert len(errs) == 1, 'expected urls.E009, got %r' % (pattern.check(),)\n    assert 'MyView.as_view()' in errs[0].msg, errs[0].msg",
+      "gold_result": "PASSED — `URLPattern(RoutePattern('entry/'), MyView).check()` yields exactly one Error with id 'urls.E009' whose message advises `MyView.as_view()`.",
+      "buggy_result": "FAILED with `AssertionError: expected urls.E009, got []` — buggy `URLPattern.check()` does not hook in `_check_callback`, so no urls.E009 error is produced for a View-subclass *class* used as the callback.",
+      "explanation": "R2 (urls.E009): gold adds `_check_callback` to URLPattern and hooks it into `check()`, emitting an Error (id 'urls.E009') whenever the pattern's callback is a *class* (inspect.isclass) that subclasses django.views.View, with a message advising to pass {ViewName}.as_view(). The buggy resolver's check()/'_check_callback' are absent, so the exact same scenario yields no E009 error.\n\nMy witness constructs a small View subclass (MyView) and a URLPattern wrapping it via a RoutePattern, then calls pattern.check() and asserts that exactly one urls.E009 Error is present and that its message mentions 'MyView.as_view()'. settings.configure() makes the setting machinery available because RuntimeError-avoiding pattern.check()/RoutePattern._check_pattern_startswith_slash reads settings.APPEND_SLASH.\n\nThis scenario was confirmed via run_test: PASSED against gold (one E009 error with MyView.as_view() in message) and FAILED against the buggy program (zero urls.E009 errors, since _check_callback doesn't exist). I checked the visible test material (tests/check_framework/test_urls.py and its url modules, tests/urlpatterns/test_resolvers.py, tests/urlpatterns_reverse/tests.py): none of those recovered oracles exercises a View-subclass *class* being passed to URLPattern.check() / emitting urls.E009, so this is not re-derivable from any visible assertion — it is a genuine hidden witness for R2."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "django/urls/conf.py defines path = partial(_path, Pattern=RoutePattern) and re_path = partial(_path, Pattern=RegexPattern); _path currently branches: include (list/tuple) -> URLResolver; elif callable(view) -> URLPattern; else TypeError('view must be a callable or a list/tuple in the case of include().'). Because a CBV class is itself callable, passing the class currently takes the callable branch with no detection."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/views/generic/base.View.as_view() (a @classonlymethod) returns a plain closure with view_class and view_initkwargs attributes; the URL resolver/conf code must therefore distinguish a View subclass (to reject) from an .as_view() result or normal callable function-view (to accept)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests relevant to this area live under tests/urlpatterns/ and tests/urlpatterns_reverse/ (e.g. ErroneousViewTests.test_noncallable_view in tests/urlpatterns_reverse/tests.py currently asserts 'view must be a callable' for a non-callable view), and URL-related system checks under tests/check_framework/test_urls.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Equal-hunk sets: the two hunks in django/urls/conf.py (H0 adding a local `from django.views import View` import, H1 adding an isinstance branch) jointly implement the registration-time TypeError requirement; the two hunks in django/urls/resolvers.py (H2 hooking _check_callback into URLPattern.check, H3 adding the _check_callback method) jointly implement the urls.E009 system-check requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The conf.py change detects a View *instance* (isinstance(view, View)) and is placed AFTER the callable branch, so it only fires for a non-callable instance of a View subclass; other non-callable, non-View views still fall through to the unchanged generic TypeError text. In contrast, the resolver check (H3) specifically tests `inspect.isclass(view) and issubclass(view, View)`, so it targets a View *class* being used as a callback — a case that still passes through the conf.py callable branch (classes are callable) and is only caught by the system check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The plain non-View, non-callable else-branch in conf.py and the pre-existing callable/include behavior are unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I hunted for a real oracle test asserting URLPattern.check()/django system checks emits urls.E009 when a View-subclass *class* (not instance) is used as a urlpatterns callback.\n\nFiles checked (all natural homes for such a check):\n- tests/check_framework/test_urls.py ([VISIBLE]) — the dedicated file for URL-config system checks (handles urls.W00x, E004, E007 handler checks, E008). It contains no urls.E009 test and no scenario that passes a class-based View directly as a pattern callback.\n- All its backing URL modules under tests/check_framework/urls/ (no_warnings, contains_tuple, warning_in_include, include_with_dollar, beginning_with_slash, name_with_colon, non_unique_namespaces, no_warnings_i18n, good/bad_class_based_error_handlers, etc.) use lambdas/includes/handler settings — none places a CBV *class* in urlpatterns, and most are [HIDDEN] but still don't exercise R2.\n- tests/urlpatterns/test_resolvers.py ([VISIBLE]) — the resolver unit-test file would be the other natural home for URLPattern.check() unit tests, but contains only Regex/RouteStr/Resolver-cache tests; nothing constructing a View-subclass pattern and calling .check().\n- tests/urlpatterns/tests.py ([VISIBLE]) + tests/urlpatterns/views.py ([HIDDEN]) — route/converter tests only.\n- tests/urlpatterns_reverse/tests.py ([VISIBLE]) — ErroneousViewTests.test_noncallable_view covers the generic conf.py 'view must be a callable' TypeError (R1 domain), not the resolver E009 system check. Resolver/namespace/match tests use .as_view()-style/function callbacks.\n- Supporting url modules (erroneous_urls, method_view_urls) use functions and plain method-bound callables, not View classes.\n\nNotably the \"Tests currently failing against the buggy program\" list is empty for R2; consistent with the fact that no test in the oracle (visible or hidden) exercises this urls.E009 check in a buggy-failing / gold-passing way. The behavior introduced by the resolvers.py hunks (H2/H3, _check_callback hooked into URLPattern.check for a View-class callback) is simply not asserted by any recovered oracle test content I could read; the relevant test homes are all [VISIBLE] and do not contain such an assertion (and an assertion from [VISIBLE] material could not serve as a Witness anyway).\n\nConclusion: no genuine hidden oracle Witness for R2 exists among the readable test files, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.urls.resolvers.URLPattern.check): URLPattern.check() reports a system-check Error with id 'urls.E009' when the pattern's callback is a class (not an instance) that subclasses django.views.View, whose message describes the pattern and advises passing {ViewName}.as_view() instead of the class itself. — not entailed by S_vis (Neither S_vis entry nor the cited issue text mentions URLPattern.check(), the system-check framework, or an 'urls.E009' error id in any form; S_vis covers only runtime path()/re_path() argument validation. Nothing commits to R2's system-check behavior.); confirmed by a synthesized witness: R2 (urls.E009): gold adds `_check_callback` to URLPattern and hooks it into `check()`, emitting an Error (id 'urls.E009') whenever the pattern's callback is a *class* (inspect.isclass) that subclasses django.views.View, with a message advising to pass {ViewName}.as_view(). The buggy resolver's check()/'_check_callback' are absent, so the exact same scenario yields no E009 error.\n\nMy witness constructs a small View subclass (MyView) and a URLPattern wrapping it via a RoutePattern, then calls pattern.check() and asserts that exactly one urls.E009 Error is present and that its message mentions 'MyView.as_view()'. settings.configure() makes the setting machinery available because RuntimeError-avoiding pattern.check()/RoutePattern._check_pattern_startswith_slash reads settings.APPEND_SLASH.\n\nThis scenario was confirmed via run_test: PASSED against gold (one E009 error with MyView.as_view() in message) and FAILED against the buggy program (zero urls.E009 errors, since _check_callback doesn't exist). I checked the visible test material (tests/check_framework/test_urls.py and its url modules, tests/urlpatterns/test_resolvers.py, tests/urlpatterns_reverse/tests.py): none of those recovered oracles exercises a View-subclass *class* being passed to URLPattern.check() / emitting urls.E009, so this is not re-derivable from any visible assertion — it is a genuine hidden witness for R2.",
+    "confidence": "Medium"
+  }
+}

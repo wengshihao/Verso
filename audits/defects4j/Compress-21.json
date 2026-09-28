@@ -1,0 +1,151 @@
+{
+  "task_id": "Compress-21",
+  "status": "ok",
+  "duration_seconds": 196.70318204700015,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "Compress-21",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "After writing an archive consisting of one directory entry ('foo/') plus N file entries each named 'foo/<i>.txt' (for N = 6, 7, 8, 9 with 0 or 2 of the files written with content under COMPRESS-252 scenarios), reading the archive back with SevenZFile must yield exactly N+1 entries in total.",
+        "subject": "SevenZOutputFile write header / SevenZFile read round-trip",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(numberOfFiles + 1, filesFound);   // in verifyCompress252 (SevenZOutputFileTest)"
+      },
+      {
+        "id": "R2",
+        "statement": "Under the same write-then-read scenarios, exactly the intended number of non-empty file entries (0 or 2) must be present among the entries read back.",
+        "subject": "SevenZOutputFile/SevenZFile round-trip content",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(numberOfNonEmptyFiles, nonEmptyFilesFound);"
+      },
+      {
+        "id": "R3",
+        "statement": "The directory entry written first must be read back first, named 'foo/', and reported as a directory (isDirectory true); each subsequent file entry must be named 'foo/<index>.txt' in the order written and reported as not a directory.",
+        "subject": "SevenZArchiveEntry name/directory flags round-trip",
+        "hunk_ids": [],
+        "cited_from": "verifyDir: assertEquals(\"foo/\", entry.getName()); assertTrue(entry.isDirectory());  /  verifyFile: assertEquals(\"foo/\" + index + \".txt\", entry.getName()); assertEquals(false, entry.isDirectory());"
+      },
+      {
+        "id": "R4",
+        "statement": "Each file entry written with content must be readable back as a single byte with value 17 followed by end-of-stream (read returns -1); each file entry written empty must come back with size 0 and not be counted as containing a stream.",
+        "subject": "SevenZFile content reading of written entries",
+        "hunk_ids": [],
+        "cited_from": "assertEquals(1, entry.getSize()); assertEquals(17, archive.read()); assertEquals(-1, archive.read());  and  if (entry.getSize() == 0) { return false; }"
+      },
+      {
+        "id": "R5",
+        "statement": "Writing an archive that contains multiple non-empty streams (during header serialization) must not require that every entry have a stream; empty (streamless) file entries mixed together with streamed entries must still be retractable as distinct, correctly-named entries (bug symptom: with many entries the archive degenerates to a single folder or per-file entries all named after the archive, or 7zip cannot open it).",
+        "subject": "SevenZOutputFile writeStreamsInfo/writeFilesInfo header encoding of empty vs non-empty entries",
+        "hunk_ids": [],
+        "cited_from": "if (numNonEmptyStreams > 0) { writePackInfo(header); writeUnpackInfo(header); } ... writeFileEmptyStreams(...); writeFileEmptyFiles(...);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMPL-1",
+        "statement": "When serializing a bitset whose length (number of entries) is a positive multiple of 8 — i.e. the bits exactly fill whole 8-bit groups — SevenZOutputFile's bit serialization writes exactly length/8 bytes and does not emit an extra trailing byte for the final, already-full byte group.",
+        "subject": "SevenZOutputFile.writeBits (output byte stream written to the header)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMPL-2",
+        "statement": "Each serialized bit is placed in the strictly most-significant-bit-first order within its byte: bit (7 - i%8) of byte i/8, so that the emitted bytes for any length correctly reconstruct the original bit sequence without either an extra flush at byte boundaries (the pre-fix bug) or the loss/truncation of bits in a non-byte-aligned final group.",
+        "subject": "SevenZOutputFile.writeBits (output byte stream written to the header)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMPL-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4",
+          "R5"
+        ],
+        "rationale": "S_vis describes observable round-trip entry/output behaviors (entry counts, names, directory flags, content values) and a high-level header-encoding property about empty streams, but none of it states the specific internal writeBits behavior that exactly length/8 bytes are emitted with no extra trailing byte for a whole-byte-group bit set. The precise byte-count invariant SIMPL-1 demands is nowhere pinned down by visible info."
+      },
+      {
+        "requirement_id": "SIMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4",
+          "R5"
+        ],
+        "rationale": "None of the S_vis requirements state the MSB-first bit-placement order (bit 7-i%8 of byte i/8) or the no-flush/byte-boundary bit ordering internal to SevenZOutputFile.writeBits. R4's content assertions only concern per-file byte values read back, while R5 concerns the presence/retraction of empty streams, neither specifying how individual header bits are serialized."
+      }
+    ],
+    "target_requirement_id": "SIMPL-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    java.io.File out = java.io.File.createTempFile(\"witnessCT\", \".7z\");\n    out.deleteOnExit();\n    java.util.Date now = new java.util.Date();\n    org.apache.commons.compress.archivers.sevenz.SevenZOutputFile a =\n        new org.apache.commons.compress.archivers.sevenz.SevenZOutputFile(out);\n    for (int i = 0; i < 8; i++) {\n        org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry e =\n            new org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry();\n        e.setName(\"f\" + i);\n        a.putArchiveEntry(e);\n        // all but last have a creation date -> triggers 8-entry masking writeBits\n        if (i < 7) {\n            e.setCreationDate(now);\n        }\n        a.write(new byte[0]);\n        a.closeArchiveEntry();\n    }\n    a.close();\n\n    org.apache.commons.compress.archivers.sevenz.SevenZFile z =\n        new org.apache.commons.compress.archivers.sevenz.SevenZFile(out);\n    int count = 0;\n    org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry cur;\n    while ((cur = z.getNextEntry()) != null) {\n        if (count < 7) {\n            org.junit.Assert.assertTrue(cur.getHasCreationDate());\n        } else {\n            org.junit.Assert.assertFalse(cur.getHasCreationDate());\n        }\n        count++;\n    }\n    z.close();\n    org.junit.Assert.assertEquals(8, count);\n}\n",
+      "gold_result": "PASSED (archive round-trips; all 8 entries read back with correct per-entry creation-date flags)",
+      "buggy_result": "FAILED with java.io.IOException: Unknown property 128 inside SevenZFile.readFilesInfo → readHeader — the archive header desyncs because the buggy writeBits emits an extra trailing byte for the 8-entry (multiples-of-8) creation-date boundary mask.",
+      "explanation": "Requirement [SIMPL-1] is about the shared private helper SevenZOutputFile.writeBits(DataOutput,BitSet,int): for a bit count that is an exact multiple of 8, the serializer must emit exactly length/8 bytes and no extra trailing byte. gold flushes a byte only after bit 0 of the final group is consumed then drops the trailing write when shift==7; buggy flushes mid-way and then, for length%8==0, still emits a trailing partial-flush byte (my trace of length=8 gives 2 bytes in buggy vs 1 in gold).\n\nwriteBits is private and has no direct observable effect; it is reached, among others, via the kCTime masking block in writeFileCTimes, where writeBits(out, cTimes, files.size()) is invoked only when not all files carry a creation date. I constructed a scenario with exactly 8 entries (empty files), 7 of which have a creation date and 1 does not — so numLastModified/creation = 7 != 8 > 0 triggers writeBits with length = 8, an exact byte boundary, and the extra byte desyncs header parsing for the reader.\n\nWhy this is a genuinely HIDDEN witness rather than a restatement of the [VISIBLE] oracle: S_vis = {SevenZOutputFile.java, SevenZOutputFileTest.java, AbstractTestCase.java}. The visible testCompress252(N,k) regression family that bites at this boundary (testEightEmptyFiles etc.) always builds a leading directory entry and uses empty-streams/empty-files bitsets of byte-UNaligned sizes (9 etc.). The visible testDirectoriesAndEmptyFiles touches creation-date masks but with a small non-multiple-of-8 entry count, so it never stresses the exact 8-bit boundary. Neither any visible test nor any visible production text states the outcome of an exactly-8-item creation-date masking writeBits. My scenario (8 entries, 7 dated) drives the byte-exact multiple-of-8 boundary through a distinct, previously-unpinned caller and is not asserted anywhere in visible source.\n\nMechanically confirmed: identical method source, run via run_test, PASSED against gold and FAILED against buggy (reader throws IOException: Unknown property 128 while parsing the header, caused by the shifted byte alignment from buggy's extra trailing byte)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug under test is COMPRESS-252, reproduced via SevenZOutputFile scenarios: writing many file entries (some/all empty) yields a corrupt archive (7zip crash / wrong entry names)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Regression tests for the bug already exist in SevenZOutputFileTest as testCompress252(N, k) invoked for N in {6,7,8,9} with k (non-empty) in {0,2}: testSix/testSeven/testEight/testNineEmptyFiles and ...FilesSomeNotEmpty."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testCompress252 writes one directory entry 'foo/' then N file entries named 'foo/<i>.txt'; non-empty files get a single byte 17 then closeArchiveEntry; round-trip is verified with SevenZFile reader (verifyDir/verifyFile)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible production source is only SevenZOutputFile.java; its collaborators (SevenZFile, SevenZArchiveEntry, Coders, NID, SevenZMethod) are not present in the visible tree, so requirements are expressed at the writer/round-trip level."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "SevenZOutputFile tracks numNonEmptyStreams, and header methods writeBits/writeFolder/writePackInfo etc. decide to emit kPackInfo/kUnpackInfo blocks only when there is at least one non-empty stream while empty-stream/files bookkeeping is handled via BitSet in writeFileEmptyStreams/writeFileEmptyFiles."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patched helper writeBits(DataOutput, BitSet, int) is private and is reused by writeFileEmptyStreams, writeFileEmptyFiles, writeFileAntiItems, and the writeFileXTimes masking blocks; its only observable effect is through the archive header bytes it writes (all flush to the shared 'header' DataOutput during SevenZOutputFile.finish)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The mutation is localized to the byte-flush decision at 8-bit boundaries: the buggy code flushed on shift==0 before consuming the bit at position 0 of a full byte (unconditionally writing a partial/full byte even at exact byte-count boundaries), whereas repeated 'when length is a multiple of 8' the buggy serializer emitted one extra trailing byte; gold flushes only after bit 0 of the final group is consumed and emits nothing extra when that group ends exactly at 8 bits."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only the multiple-of-8 (whole-byte) boundary behavior differs between before and after; empty-bit or non-byte-aligned lengths behave identically before and after the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "writeBits writes a zero byte (not a non-flushing path) in the case length==0 in both revisions — for length 0 buggy's trailing condition (length>0) and gold's (shift!=7) both skip the final write, so no byte is emitted for an empty bitset in either."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMPL-1]: The oracle contains exactly two test files. The regression tests that genuinely exercise the [SIMPL-1] writeBits byte-boundary — the testCompress252(N, k) scenarios (testSixEmptyFiles / ... / testNineFilesSomeNotEmpty, e.g. testEightEmptyFiles where 8 empty files fill an empty-files bitset exactly to a multiple of 8) — all reside in SevenZOutputFileTest.java, which is labeled [VISIBLE]. A witness may never rest on [VISIBLE] content, regardless of how precisely it matches the requirement, since that content was never hidden from the repair system.\n\nThe only [HIDDEN] file is SevenZTestCase.java, whose testSevenZArchiveCreationUsing*/helper writes an archive with exactly two NON-EMPTY files (test1.xml/test2.xml) round-tripped via COPY/LZMA2/BZIP2/DEFLATE. It creates no directory entries, no empty files, and hence never builds an empty-streams/empty-files bitset of multiple-of-8 length; its assertions cover only basic entry presence/name and content round-trip. I confirmed mechanically that a file-only non-empty round trip passes against BOTH buggy and gold (PASSED in each), demonstrating that this hidden test never reaches the byte-exact-boundary code path on which [SIMPL-1]'s before/after behavior differs, so it can never fail-on-buggy/pass-on-gold for this requirement.\n\nSince the only tests that bite at the [SIMPL-1] boundary are in the [VISIBLE] file, and the sole [HIDDEN] file does not test that behavior, no genuine witness exists in the real oracle. Result: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMPL-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMPL-1] (SevenZOutputFile.writeBits (output byte stream written to the header)): When serializing a bitset whose length (number of entries) is a positive multiple of 8 — i.e. the bits exactly fill whole 8-bit groups — SevenZOutputFile's bit serialization writes exactly length/8 bytes and does not emit an extra trailing byte for the final, already-full byte group. — not entailed by S_vis (S_vis describes observable round-trip entry/output behaviors (entry counts, names, directory flags, content values) and a high-level header-encoding property about empty streams, but none of it states the specific internal writeBits behavior that exactly length/8 bytes are emitted with no extra trailing byte for a whole-byte-group bit set. The precise byte-count invariant SIMPL-1 demands is nowhere pinned down by visible info.); confirmed by a synthesized witness: Requirement [SIMPL-1] is about the shared private helper SevenZOutputFile.writeBits(DataOutput,BitSet,int): for a bit count that is an exact multiple of 8, the serializer must emit exactly length/8 bytes and no extra trailing byte. gold flushes a byte only after bit 0 of the final group is consumed then drops the trailing write when shift==7; buggy flushes mid-way and then, for length%8==0, still emits a trailing partial-flush byte (my trace of length=8 gives 2 bytes in buggy vs 1 in gold).\n\nwriteBits is private and has no direct observable effect; it is reached, among others, via the kCTime masking block in writeFileCTimes, where writeBits(out, cTimes, files.size()) is invoked only when not all files carry a creation date. I constructed a scenario with exactly 8 entries (empty files), 7 of which have a creation date and 1 does not — so numLastModified/creation = 7 != 8 > 0 triggers writeBits with length = 8, an exact byte boundary, and the extra byte desyncs header parsing for the reader.\n\nWhy this is a genuinely HIDDEN witness rather than a restatement of the [VISIBLE] oracle: S_vis = {SevenZOutputFile.java, SevenZOutputFileTest.java, AbstractTestCase.java}. The visible testCompress252(N,k) regression family that bites at this boundary (testEightEmptyFiles etc.) always builds a leading directory entry and uses empty-streams/empty-files bitsets of byte-UNaligned sizes (9 etc.). The visible testDirectoriesAndEmptyFiles touches creation-date masks but with a small non-multiple-of-8 entry count, so it never stresses the exact 8-bit boundary. Neither any visible test nor any visible production text states the outcome of an exactly-8-item creation-date masking writeBits. My scenario (8 entries, 7 dated) drives the byte-exact multiple-of-8 boundary through a distinct, previously-unpinned caller and is not asserted anywhere in visible source.\n\nMechanically confirmed: identical method source, run via run_test, PASSED against gold and FAILED against buggy (reader throws IOException: Unknown property 128 while parsing the header, caused by the shifted byte alignment from buggy's extra trailing byte).",
+    "confidence": "Medium"
+  }
+}

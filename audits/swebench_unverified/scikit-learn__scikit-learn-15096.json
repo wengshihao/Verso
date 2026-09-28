@@ -1,0 +1,116 @@
+{
+  "task_id": "scikit-learn__scikit-learn-15096",
+  "status": "ok",
+  "duration_seconds": 148.65497445804067,
+  "llm_calls": 12,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-15096",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a search's parameter grid contains estimator objects as candidate parameter values (e.g. replacing a pipeline step by its name with another estimator), running the search must not leave those candidate estimator objects fitted: the estimators the search records in cv_results_['params'] and in each cv_results_['param_<name>'] array must remain in their pre-search (unfitted) state, with the actual per-fold / refit fitting performed on separate cloned instances.",
+        "subject": "sklearn.model_selection._search.BaseSearchCV.fit / GridSearchCV.fit",
+        "hunk_ids": [],
+        "cited_from": "Title: \"GridSearchCV saves all fitted estimator in cv_results['params'] when params are estimators\". Body: \"It happens that cv_results_['params'] and all cv_results_['param_*'] objects contains fitted estimators, as much as there are points on my grid.\" and \"My guess is that during the grid search, those estimator's aren't cloned before use (which could be a problem if using the same grid search several times, because estimators passed in the next grid would be fitted...).\" and \"I couldn't figure why dumping cv_results_ would take so much memory on disk.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Re-running a search whose candidate parameter values include estimator objects (whether by calling fit again on the same GridSearchCV/RandomizedSearchCV instance or by reusing the same estimator-valued param_grid) must not start subsequent runs from candidates that were already fitted by a previous run: no fit state may leak from one search run into the estimators supplied for the next grid.",
+        "subject": "sklearn.model_selection._search.BaseSearchCV.fit (reuse across runs)",
+        "hunk_ids": [],
+        "cited_from": "\"...because estimators passed in the next grid would be fitted...\" (issue body)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "During cross-validation fitting, when a parameter dict is applied to the per-fold estimator, each parameter value that is an estimator object (e.g. a candidate Pipeline embedded as a step of the searched estimator) is used via a fresh clone rather than by reference, so the fold's `fit` never mutates fitted state into the candidate estimator objects passed in the parameter dict; those candidate objects remain unfitted after all cross-validation folds have run.",
+        "subject": "BaseSearchCV._fit_and_score (sklearn/model_selection/_validation.py)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl_2",
+        "statement": "When BaseSearchCV refits `best_estimator_` on the full dataset, the best candidate parameter values (including any estimator objects, e.g. pipeline steps, among `best_params_`) are applied to a clone and then the whole estimator is cloned again, so `best_estimator_` is fitted on copies of those parameter objects that are distinct from the objects recorded in `best_params_`/`cv_results_`; refitting on the whole dataset does not mutate (refit) the estimator-valued objects referenced by `best_params_`/`cv_results_`.",
+        "subject": "BaseSearchCV.fit best_estimator_ refit step (sklearn/model_selection/_search.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 states that the per-fold CV fitting must be performed on separate cloned instances so the candidate estimator objects in the parameter dict remain unfitted after all folds — exactly the behavior S_impl_1 pins down. R2 (reuse across runs) was checked but is not the specific fold-cloning mechanism."
+      },
+      {
+        "requirement_id": "S_impl_2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 explicitly says the refit fitting of best_estimator_ on the full dataset is performed on separate cloned instances, distinct from the (unfitted) estimator-valued objects recorded in cv_results_/best_params_. This entails a refit that never mutates those candidate objects. Its double-clone detail is an implementation mechanism consistent with R1."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Affected code lives in sklearn/model_selection/_search.py (BaseSearchCV.fit / evaluate_candidates / _format_results) and the fold fit is delegated to _fit_and_score in sklearn/model_selection/_validation.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause in the visible code: in _fit_and_score, the per-fold estimator is clone(base_estimator) of the whole outer estimator, then `estimator.set_params(**parameters)` (BaseSearchCV passes return_parameters=False but evaluate_candidates calls _fit_and_score with parameters=the candidate dict). Because each candidate value (e.g. a pipeline-step estimator) is set by reference — never cloned — fitting the pipeline also fits that exact candidate object, and _format_results then records those same now-fitted objects under 'params' and 'param_<name>'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "When n_jobs>1, joblib serializes the candidates to worker processes, so the in-memory candidate objects are only fitted in the workers' copies; hence the symptom appears only for n_jobs=1/sequential, matching the issue's report that it happens only with n_jobs=1."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No existing test in sklearn/model_selection/tests/test_search.py passes estimators as candidate parameter values; existing candidates are plain hyperparameters (e.g. kernels, C, degree, foo_param) or None/random_state, so nothing in the visible tests exercises/guards the estimator-as-param case described in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue reports version 0.19.0; repo under analysis is an in-development 0.22 where this behavior is still present (doc/whats_new/v0.22.rst has no entry for it yet)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks together make grid/randomized searches over estimator-valued candidates (e.g. searching choices of whole Pipelines as parameters) behave correctly; the symptom originally surfaced only with n_jobs=1 (sequential) because joblib worker processes already serialize the candidates."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 uses clone(v, safe=False): clone reconstructs estimators fresh via get_params/set_params and falls back to copy.deepcopy for objects without get_params, so scalar parameters (strings, numbers) behave unchanged while estimator-valued parameters are never fitted in place."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0's extra outer clone after set_params is applied unconditionally in the refit branch (clone of an estimator is cheap relative to fitting), so scalar-only best_params_ produce behavior equivalent to before."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1_clone applies to every key/value in the parameters dict as applied per fold in _fit_and_score, regardless of whether the value is a top-level estimator param or a nested '<comp>__<param>' key."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

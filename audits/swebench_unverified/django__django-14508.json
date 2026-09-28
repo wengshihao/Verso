@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-14508",
+  "status": "ok",
+  "duration_seconds": 763.248259624932,
+  "llm_calls": 44,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14508",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "For the reported structure — an abstract base model (Meta.abstract=True) declaring a @property, with a concrete descendant re-declaring a Field under that same property name — instantiating the descendant must not produce the opaque failure reported below, where the ordinary Model constructor path dies with `AttributeError: can't set attribute` inside `setattr(self, field.attname, val)`; the situation must instead be surfaced with a diagnostic precise enough to explain the assignment failed because the base-class @property overrides the field's attribute of that name.",
+        "subject": "Model.__init__ / overridden-inherited-property handling (base.py Model.__init__ setattr path)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"And then if you do: >>> from testapp.models import * >>> o = OtherModel() Traceback ... File \".../django/db/models/base.py\", line 357, in __init__ setattr(self, field.attname, val) AttributeError: can't set attribute\" ... \"my suggestion is that there should be at least a warning somewhere (during model's init perhaps) that could be more precise about why attribute couldn't been set. (or attribute to which object (either Model or Field).\" Model Code: \"class SomeTestModel(models.Model): some_field = models.CharField(max_length=100); class Meta: abstract = True; @property def other_field(self): return '[OTHER] %s' % self.some_field\" and \"class OtherModel(SomeTestModel): other_field = models.CharField(max_length=100)\""
+      },
+      {
+        "id": "vis-2",
+        "statement": "The Django field-name-hiding restriction (that a child cannot override a base attribute that is a model Field) applies only to attributes that are Field instances; overriding a normal non-Field Python attribute (e.g. a @property) inherited from a base with another ordinary non-Field Python attribute/method must remain permitted and must not become newly rejected by any fix.",
+        "subject": "field-hiding restriction scope (docs/topics/db/models.txt 'Field name hiding is not permitted')",
+        "hunk_ids": [],
+        "cited_from": "Docs: \"This restriction only applies to attributes which are Field instances. Normal Python attributes can be overridden if you wish.\" (also quoted word-for-word in the issue) and \"This restriction doesn't apply to model fields inherited from an abstract model. Such fields may be overridden with another field or value, or be removed by setting field_name = None.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a concrete (DB column-bearing) Field is contributed to a model class, the field's attribute access (descriptor) is always installed on that model class regardless of whether the same-named attribute is already present on or inherited by the model, so the field's attribute takes precedence over (shadows) any pre-existing colliding class-level attribute (method, classmethod, or property/data-descriptor inherited from a base, e.g. an abstract model).",
+        "subject": "Field.contribute_to_class → field descriptor shadowing of colliding inherited class attributes on the model",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A concrete model may declare a Field whose name matches a @property (read-only data descriptor) defined on an abstract/base class it inherits; assigning the field's value on instances of that concrete model succeeds and is stored as the field value (no AttributeError such as 'can't set attribute'), because the field's own descriptor is installed on the concrete model rather than the base property being reached through the MRO during instance creation/assignment.",
+        "subject": "Model field vs inherited abstract-model property collision → instance field assignment",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "vis-1",
+          "vis-2"
+        ],
+        "rationale": "S_vis describes the collision as a conflict that must be surfaced with a diagnostic explaining 'the assignment failed because the base-class @property overrides the field's attribute' (vis-1) — implying the base property wins and each field does not simply get its descriptor installed to shadow it. vis-2 only confirms the override is not rejected by the field-hiding rule; it never states the field descriptor is always installed on the concrete class and takes precedence over an inherited property, so the specific 'field shadows pre-existing property/data-descriptor' behavior is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "vis-1",
+          "vis-2"
+        ],
+        "rationale": "R2 commits to instance assignment succeeding and being stored as the field value because the field's descriptor is installed on the concrete model rather than the base property reached via MRO. In contrast, vis-1 (backed by the issue) explicitly describes the assignment as failing (AttributeError) and mandates that the situation 'must instead be surfaced with a diagnostic precise enough' about why the field attribute couldn't be set — i.e. the base @property keeps precedence. vis-2 does not establish that instance assignment succeeds or is stored, so the success behavior of R2 is not entailed (indeed it leans the other way)."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_a_concrete_field_descriptor_shadows_an_inherited_class_attribute",
+      "test_source": "from django.db.models.fields import IntegerField\nfrom django.db.models.query_utils import DeferredAttribute\n\n\nclass _FakeMeta:\n    \"\"\"Minimal options placeholder consumed by Field.contribute_to_class.\n\n    Real Django Options() wiring needs a bootstrapped app registry, which is\n    unavailable in this bare pytest context, so we supply the tiny add_field\n    hook that contribute_to_class actually calls before it decides whether to\n    install the field's attribute descriptor.\n    \"\"\"\n    def add_field(self, field, private=False):\n        pass\n\n\nclass InheritedAttrBase:\n    # A data-descriptor (property) presumably inherited from an abstract\n    # base model - a colliding, same-named class-level attribute whose\n    # presence must NOT prevent the concrete DB field descriptor from\n    # shadowing it on the child model.\n    price = property(lambda self: self._backing)\n\n\ndef test_a_concrete_field_descriptor_shadows_an_inherited_class_attribute():\n    cls = type(\n        \"ConcreteModel\",\n        (InheritedAttrBase,),\n        {\"__module__\": __name__, \"_meta\": _FakeMeta()},\n    )\n    price = IntegerField(name=\"price\")\n    price.contribute_to_class(cls, \"price\")\n\n    assert isinstance(getattr(cls, \"price\"), DeferredAttribute)\n    assert isinstance(cls.__dict__[\"price\"], DeferredAttribute)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "R1 states that when a concrete (DB-column-bearing) Field is contributed to a model class via Field.contribute_to_class, the field's DeferredAttribute accessor is ALWAYS installed on that model regardless of a same-named class-level attribute inherited from a base; the buggy (pre-fix) code gated the desktop install behind `if not getattr(cls, self.attname, None):`, so any truthy inherited colliding attribute (here a data-descriptor @property that, being a property, does not bind at the class level and therefore shows up as a truthy object via getattr) suppressed descriptor installation and kept the shadow-y inherited attribute in effect.\n\nThe witness drives the exact repaired code path directly: it constructs a target class that inherits a truthy `price` property from a base and contributes a concrete IntegerField named 'price' via the real Field.contribute_to_class. The assertion verifies that after contribution the field's DeferredAttribute is what getattr/__dict__ expose on the class (i.e., the descriptor shadows the inherited property). On gold this passes (own _dict__ now holds the DeferredAttribute and class access resolves to it); on buggy it fails — getattr(cls,'price') still returns the raw inherited property object and 'price' is not in cls.__dict__ because the guard skipped the setattr. Each outcome was execution-confirmed via run_test against the gold and buggy revisions.\n\nI checked the visible material (model_inheritance/test_abstract_inheritance.py precedents test_override_field_with_attr / test_multiple_inheritance_cannot_shadow_inherited_field / test_virtual_field, properties/tests.py setters, invalid_models_tests ShadowingFields) and none of them encodes this specific interaction - a concrete/DB-column Field contributed to shadow a same-named inherited data-descriptor (property) from a base/abstract model - so R1's behavior is not already pinned down by any visible assertion. A minimal Django-free harness is necessary because the bare pytest context here is not bootstrapped with a settings/app registry, but it executes the exact contribute_to_class branch modified by the fix, so the discriminating behavior (descriptor always installed, shadowing the inherited attr) is faithfully captured."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy tree is essentially the Django source pre-fix; no disclosed test in the visible test dirs (tests/model_inheritance*, tests/properties, tests/invalid_models_tests, tests/check_framework) encodes the #14508 scenario, so S_vis must be inferred from the issue text plus the docs/source."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Key existing precedent checks live in model_inheritance/test_abstract_inheritance.py (e.g. test_override_field_with_attr and test_multiple_inheritance_cannot_shadow_inherited_field) and invalid_models_tests/test_models.py ShadowingFieldsTests, but none covers overriding an inherited abstract @property with a Field on a child."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/topics/db/models.txt section 'Overriding fields in a parent model... / Field name hiding' (quoted in issue) is the normative statement on what may be overridden."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The clashing behavior the reporter hits is a data-descriptor property on the abstract base being reached via MRO during Model.__init__ setattr(self, attname, val), reproducibly raising AttributeError: can't set attribute."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change also means the previous remark in the removed code—'Don't override classmethods with the descriptor... such fields can't be deferred'—no longer applies: a model field's same-named colliding classmethod is now overridden by the field's descriptors. Field-choice handling (get_*_display) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Descriptor installation remains gated by `if self.column:` (unchanged), so virtual / non-concrete fields without a column are unaffected by this fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "R2 is illustrated by and subsumes the scenario in the code, but is stated separately because it is the directly witnessable consequence (assigning the field works / no crash on construction)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: No qualifying witness exists in the oracle for R1. I examined all on-topic test modules for this fix: tests/model_inheritance/test_abstract_inheritance.py (with its field-override precedents test_override_field_with_attr, test_virtual_field, and the MRO-mixin tests), tests/model_inheritance/tests.py, tests/model_inheritance_regress/tests.py, tests/invalid_models_tests/test_models.py (ShadowingFieldsTests and related clash checks), tests/properties/tests.py, tests/check_framework/test_model_checks.py, tests/defer/tests.py, tests/defer_regress/tests.py, tests/field_subclassing/tests.py, tests/model_fields/*, and tests/custom_methods/tests.py. Every one of these test modules is labeled [VISIBLE], and none tests the R1 behavior (a concrete/DB-column Field being contributed to a model that already inherits a colliding @property/classmethod/data-descriptor from an abstract base, with the field descriptor taking precedence). The only [HIDDEN] content I found consists of model *definition* files (model_inheritance/models.py, model_inheritance_regress/models.py, properties/models.py, defer/models.py, defer_regress/models.py, custom_methods/models.py, etc.), and none of those fixtures actually encodes a Field c) shadow-collision on an inherited abstract attribute — so they cannot underpin a hidden witness either. Since no [HIDDEN] test assertion enforces R1, found=false is the correct result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Field.contribute_to_class → field descriptor shadowing of colliding inherited class attributes on the model): When a concrete (DB column-bearing) Field is contributed to a model class, the field's attribute access (descriptor) is always installed on that model class regardless of whether the same-named attribute is already present on or inherited by the model, so the field's attribute takes precedence over (shadows) any pre-existing colliding class-level attribute (method, classmethod, or property/data-descriptor inherited from a base, e.g. an abstract model). — not entailed by S_vis (S_vis describes the collision as a conflict that must be surfaced with a diagnostic explaining 'the assignment failed because the base-class @property overrides the field's attribute' (vis-1) — implying the base property wins and each field does not simply get its descriptor installed to shadow it. vis-2 only confirms the override is not rejected by the field-hiding rule; it never states the field descriptor is always installed on the concrete class and takes precedence over an inherited property, so the specific 'field shadows pre-existing property/data-descriptor' behavior is not pinned down.); confirmed by a synthesized witness: R1 states that when a concrete (DB-column-bearing) Field is contributed to a model class via Field.contribute_to_class, the field's DeferredAttribute accessor is ALWAYS installed on that model regardless of a same-named class-level attribute inherited from a base; the buggy (pre-fix) code gated the desktop install behind `if not getattr(cls, self.attname, None):`, so any truthy inherited colliding attribute (here a data-descriptor @property that, being a property, does not bind at the class level and therefore shows up as a truthy object via getattr) suppressed descriptor installation and kept the shadow-y inherited attribute in effect.\n\nThe witness drives the exact repaired code path directly: it constructs a target class that inherits a truthy `price` property from a base and contributes a concrete IntegerField named 'price' via the real Field.contribute_to_class. The assertion verifies that after contribution the field's DeferredAttribute is what getattr/__dict__ expose on the class (i.e., the descriptor shadows the inherited property). On gold this passes (own _dict__ now holds the DeferredAttribute and class access resolves to it); on buggy it fails — getattr(cls,'price') still returns the raw inherited property object and 'price' is not in cls.__dict__ because the guard skipped the setattr. Each outcome was execution-confirmed via run_test against the gold and buggy revisions.\n\nI checked the visible material (model_inheritance/test_abstract_inheritance.py precedents test_override_field_with_attr / test_multiple_inheritance_cannot_shadow_inherited_field / test_virtual_field, properties/tests.py setters, invalid_models_tests ShadowingFields) and none of them encodes this specific interaction - a concrete/DB-column Field contributed to shadow a same-named inherited data-descriptor (property) from a base/abstract model - so R1's behavior is not already pinned down by any visible assertion. A minimal Django-free harness is necessary because the bare pytest context here is not bootstrapped with a settings/app registry, but it executes the exact contribute_to_class branch modified by the fix, so the discriminating behavior (descriptor always installed, shadowing the inherited attr) is faithfully captured.",
+    "confidence": "Medium"
+  }
+}

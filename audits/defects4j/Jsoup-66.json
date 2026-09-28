@@ -1,0 +1,95 @@
+{
+  "task_id": "Jsoup-66",
+  "status": "ok",
+  "duration_seconds": 201.75653125900135,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-66",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On a parsed HTML Document and on a deep clone of that same Document (obtained via Document.clone()), having inserted sibling markup after an element with element.after(\"<div>\" + text + \"</div>\"), element.nextElementSibling() must return the newly inserted <div> element whose text() equals the inserted text, and element.nextSibling() must likewise return that same new <div> element whose text() equals the inserted text — for the original document with text \"New element\" and for the clone with text \"New element in clone\".",
+        "subject": "org.jsoup.nodes.Element#after(String) / nextElementSibling() / nextSibling() on an Element (html()/body() child) of both an original Document and a Document produced by Document.clone()",
+        "hunk_ids": [],
+        "cited_from": "@Test public void testNextElementSiblingAfterClone() { // via https://github.com/jhy/jsoup/issues/951 ... Document original = Jsoup.parse(html); Document clone = original.clone(); ... originalElement.after(\"<div>\" + expectedText + \"</div>\"); Element originalNextElementSibling = originalElement.nextElementSibling(); Element originalNextSibling = (Element) originalElement.nextSibling(); assertEquals(expectedText, originalNextElementSibling.text()); assertEquals(expectedText, originalNextSibling.text()); ... cloneElement.after(\"<div>\" + cloneExpect + \"</div>\"); Element cloneNextElementSibling = cloneElement.nextElementSibling(); Element cloneNextSibling = (Element) cloneElement.nextSibling(); assertEquals(cloneExpect, cloneNextElementSibling.text()); assertEquals(cloneExpect, cloneNextSibling.text()); }"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "After an Element is cloned via clone(), a subsequent structural mutation of the clone's child-node list (for example appending a new descendant/sibling element) must invalidate and refresh the clone's own cached shadow child-elements list, so that element-tree queries that depend on that cache (e.g. nextElementSibling, previousElementSibling, children of the affected element) on the clone reflect the new child — behaving for later mutation queries the same as an equivalent independently-built element would.",
+        "subject": "Element.doClone / Element.NodeList.onContentsChanged / Element.nodelistChanged",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis demonstrates a concrete instance of the mechanism: on both an original and a clone, after() inserting a sibling div causes nextElementSibling()/nextSibling() to return the new element — which requires the clone's cached shadow list to refresh after mutation. However, S_impl claims a broader invariant covering other structural mutations (appending descendant/child nodes) and other cache-dependent queries (previousElementSibling, children of the affected element), none of which S_vis exercises, so S_vis only partially pins down the mechanism described."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "r1witness",
+      "test_source": "    @Test public void r1witness() throws Exception {\n        org.jsoup.nodes.Document doc = org.jsoup.Jsoup.parse(\"<div><p>One</p><p>Two</p></div>\");\n        org.jsoup.nodes.Element div = doc.select(\"div\").first();\n        org.jsoup.nodes.Element clone = div.clone(); // orphan deep copy\n        // first read populates the clone's shadow child-elements cache\n        org.junit.Assert.assertEquals(2, clone.children().size());\n\n        // structural mutation of the clone's own child-node list must refresh ITS cache\n        clone.appendElement(\"p\").text(\"Three\");\n\n        org.jsoup.select.Elements refreshed = clone.children();\n        org.junit.Assert.assertEquals(3, refreshed.size());\n        org.junit.Assert.assertEquals(\"Three\", refreshed.get(2).text());\n    }",
+      "gold_result": "PASSED (all assertions including refreshed.size()==3 and refreshed.get(2).text()==\"Three\" hold)",
+      "buggy_result": "FAILED at assertEquals(3, refreshed.size()): expected <3> but was <2> — the clone's cached childElementsList stayed stale (only the two cloned children), showing its NodeList-bound mutation notification went to the original Element, not the clone",
+      "explanation": "R1 requires that after an Element is cloned, a structural mutation of the clone's child-node list must invalidate/refresh the CLONE's own cached shadow child-elements list. In the buggy revision, doClone builds the clone's NodeList as an implicitly-non-static inner-class NodeList whose enclosing instance is the ORIGINAL element, so a later mutation (appendElement -> ensureChildNodes().add -> ChangeNotifyingArrayList.onContentsChanged -> owner.nodelistChanged) notifies the original element's nodelistChanged, leaving the clone's shadowChildrenRef stale. My witness drives that exact failure through a scenario the visible oracle does not pin down: I clone a standalone (orphan) inner Element via Element.clone(), seed its shadow child cache by calling clone.children(), then perform a structural append (clone.appendElement(\"p\").text(\"Three\")) and re-read the clone's own cache-backed children() list. On gold the clone's cache is invalidated and children() reflects the new third child (PASSED, size 3, text 'Three'); on buggy the clone's cache is never refreshed so children() still returns the stale 2-element list (FAILED at assertEquals(3, ...): expected 3 was 2). That is precisely the R1 regression (#951). The choice of mutation path (appendChild into the clone itself rather than after() on the clone's child) and query path (the clone's own children()/childElementsList rather than a sibling query) differs from the visible testNextElementSiblingAfterClone, which uses a whole-Document clone + after() + nextElementSibling; no visible test clones an orphan element, appends a child element into it, and then rereads its own children() shadow cache."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: only src/main/java/org/jsoup/nodes/Element.java, src/main/java/org/jsoup/nodes/Node.java, and src/test/java/org/jsoup/nodes/ElementTest.java (tests live under src/test)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue (#951) regression is exercised only by ElementTest.testNextElementSiblingAfterClone, which carries the comment '// via https://github.com/jhy/jsoup/issues/951' and strings expectedText='New element' and cloneExpect='New element in clone'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Element.java overrides clone() and doClone(Node); Element.doClone rebuilds childNodes as a new NodeList and copies child node references (child nodes are deep-cloned by Node.clone's BFS loop setting each cloned child into place)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Element maintains a shadow child-element cache (shadowChildrenRef) invalidated by nodelistChanged() when the NodeList contents change."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The original Document vs the clone follow near-identical operations but are parameter-distinct; they are combined into one requirement since a single fix to Element sibling/clone integrity settles both together."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Root cause: in the buggy revision, Element's NodeList was a non-static inner class, so a NodeList instantiated during doClone ('clone.childNodes = new NodeList(size)') was implicitly bound to the source Element being cloned (the enclosing instance), not to the clone. Thus mutations of the clone's child list invoked nodelistChanged() on the original, failing to invalidate the clone's cached childElementsList (shadowChildrenRef)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix makes NodeList a static nested class owning an explicit 'owner' field, and passes the owning element at every construction site ('this' in ensureChildNodes, 'clone' in doClone). H0 and H1 implement one combined behavior: child-list onContentsChanged always notifies its actual owning Element."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 (ensureChildNodes) is behavior-neutral for freshly-lazy-initialized child lists (still bound to this) but was required syntactically once NodeList became static and gained the owner constructor parameter."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 is the jsoup #951 regression: after an Element is cloned, a structural mutation to the clone's child-node list must invalidate the CLONE's cached shadow child-elements list, because in the buggy revision the clone's rebuild NodeList was an implicitly-bound inner class attached to the ORIGINAL Element (so mutations notified the original's nodelistChanged, leaving the clone's shadowChildrenRef stale). The behavior is exercised only by a query on the clone such as nextElementSibling after adding a sibling child.\n\nI surveyed every file in the oracle (all 22). The only test that actually clones an element/body, then structurally appends a sibling to the CLONE, and then reads the sibling via the element-parent's cached childElements (nextElementSibling) is ElementTest.testNextElementSiblingAfterClone (carries '// via https://github.com/jhy/jsoup/issues/951' and the cloneExpect text). That file is labeled [VISIBLE], and an assertion from [VISIBLE] content can never serve as a Witness regardless of how exactly it matches r.\n\nAll genuinely [HIDDEN] clone-related tests were considered and none qualify:\n- NodeTest.supportsClone (HIDDEN): clones a doc and checks that class/text changes to the clone leave the original text/class intact — that is attribute/text isolation of clones, not invalidation of the clone's shadow child-element cache after a structural child-list mutation; no nextElementSibling/children query on the mutated clone.\n- DocumentTest.testClone / testClonesDeclarations (HIDDEN): clone independence of title/text/id and that clone.html() equals an expected expanded html; the mutations are text/id/attribute updates and there is no structural child sibling/children shadow-cache query on the clone.\n- The remaining HIDDEN files (NodeTest, DocumentTest, CssTest, SelectorTest, ElementsTest, TraversorTest, HtmlParserTest, XmlTreeBuilderTest, CleanerTest, AttributeTest, AttributesTest, EntitiesTest, FormElementTest, TextNodeTest, DocumentTypeTest, AttributeParseTest, DataUtilTest, StringUtilTest, HttpConnectionTest, W3CDomTest, ParseTest) only parse/traverse freshly-built trees (never calling clone()) or operate on attributes/URLs/entities/cleaners, and do not exercise the clone→structural-mutation→shadow-child-sibling/children cache-refresh behavior.\n\nAdditionally, the task's own failure census lists only testNextElementSiblingAfterClone as failing against the buggy program; a Witness must fail there, so no [HIDDEN] test can satisfy the failure condition either. Consequently no genuinely [HIDDEN] oracle assertion tests R1, so there is no valid Witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Element.doClone / Element.NodeList.onContentsChanged / Element.nodelistChanged): After an Element is cloned via clone(), a subsequent structural mutation of the clone's child-node list (for example appending a new descendant/sibling element) must invalidate and refresh the clone's own cached shadow child-elements list, so that element-tree queries that depend on that cache (e.g. nextElementSibling, previousElementSibling, children of the affected element) on the clone reflect the new child — behaving for later mutation queries the same as an equivalent independently-built element would. — not entailed by S_vis (S_vis demonstrates a concrete instance of the mechanism: on both an original and a clone, after() inserting a sibling div causes nextElementSibling()/nextSibling() to return the new element — which requires the clone's cached shadow list to refresh after mutation. However, S_impl claims a broader invariant covering other structural mutations (appending descendant/child nodes) and other cache-dependent queries (previousElementSibling, children of the affected element), none of which S_vis exercises, so S_vis only partially pins down the mechanism described.); confirmed by a synthesized witness: R1 requires that after an Element is cloned, a structural mutation of the clone's child-node list must invalidate/refresh the CLONE's own cached shadow child-elements list. In the buggy revision, doClone builds the clone's NodeList as an implicitly-non-static inner-class NodeList whose enclosing instance is the ORIGINAL element, so a later mutation (appendElement -> ensureChildNodes().add -> ChangeNotifyingArrayList.onContentsChanged -> owner.nodelistChanged) notifies the original element's nodelistChanged, leaving the clone's shadowChildrenRef stale. My witness drives that exact failure through a scenario the visible oracle does not pin down: I clone a standalone (orphan) inner Element via Element.clone(), seed its shadow child cache by calling clone.children(), then perform a structural append (clone.appendElement(\"p\").text(\"Three\")) and re-read the clone's own cache-backed children() list. On gold the clone's cache is invalidated and children() reflects the new third child (PASSED, size 3, text 'Three'); on buggy the clone's cache is never refreshed so children() still returns the stale 2-element list (FAILED at assertEquals(3, ...): expected 3 was 2). That is precisely the R1 regression (#951). The choice of mutation path (appendChild into the clone itself rather than after() on the clone's child) and query path (the clone's own children()/childElementsList rather than a sibling query) differs from the visible testNextElementSiblingAfterClone, which uses a whole-Document clone + after() + nextElementSibling; no visible test clones an orphan element, appends a child element into it, and then rereads its own children() shadow cache.",
+    "confidence": "Medium"
+  }
+}

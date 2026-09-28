@@ -1,0 +1,94 @@
+{
+  "task_id": "django__django-13012",
+  "status": "ok",
+  "duration_seconds": 729.7337453330401,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13012",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "For a query like Model.objects.annotate(expr_res=ExpressionWrapper(Value(3, output_field=IntegerField()), output_field=IntegerField())).values('expr_res', 'column_a').annotate(sum=Sum('column_b')), the constant wrapped by ExpressionWrapper must not appear in the generated GROUP BY clause (the GROUP BY must be only the real grouped columns, e.g. GROUP BY \"model\".\"column_a\"), so that the query executes instead of raising a ProgrammingError such as 'aggregate functions are not allowed in GROUP BY'.",
+        "subject": "django.db.models.sql.compiler.SQLCompiler.get_group_by / ExpressionWrapper",
+        "hunk_ids": [],
+        "cited_from": "\"when the given expr is a constant expression (e.g., Value(3)), Django generates an SQL query that contains this constant expression in its GROUP BY clause.\nSELECT \"model\".\"column_a\", 3 AS \"expr_res\", SUM(\"model\".\"column_b\") AS \"sum\" FROM \"model\" GROUP BY \"model\".\"column_a\", 3 ... django.db.utils.ProgrammingError: aggregate functions are not allowed in GROUP BY\" and \"Note that when the given query expression is not wrapped by the ExpressionWrapper object, Django correctly identifies and omits the constant from the GROUP BY clause. ... SELECT \"model\".\"column_a\", 3 AS \"expr_res\", SUM(\"model\".\"column_b\") AS \"sum\" FROM \"model\" GROUP BY \"model\".\"column_a\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "A constant expression wrapped by an ExpressionWrapper must be treated like the equivalent unwrapped constant for GROUP BY purposes: an ExpressionWrapper should produce the same GROUP BY grouping columns as the expression it wraps (here the wrapped Value yields no group-by columns), so wrapping a constant must not change which columns are grouped by.",
+        "subject": "django.db.models.expressions.ExpressionWrapper",
+        "hunk_ids": [],
+        "cited_from": "django/db/models/expressions.py: \"class Value(Expression): ... def get_group_by_cols(self, alias=None): return []\" and \"class ExpressionWrapper(Expression): ... def as_sql(self, compiler, connection): return self.expression.as_sql(compiler, connection)\" — contrasted with the issue: wrapping a Value(3) in ExpressionWrapper puts the constant in GROUP BY while the bare Value(3) 'Django correctly identifies and omits the constant from the GROUP BY clause.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "ExpressionWrapper.get_group_by_cols(alias=None) delegates transparently to its wrapped inner expression, returning self.expression.get_group_by_cols(alias=alias). As a result, when an ExpressionWrapper is included in GROUP BY processing it contributes exactly the GROUP BY columns that its wrapped inner expression contributes (e.g. none when the inner expression is a bare constant Value, because Value.get_group_by_cols() returns []), rather than the wrapper expression node itself being treated as a GROUP BY column.",
+        "subject": "ExpressionWrapper.get_group_by_cols",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "The visible evidence (esp. REQ-2 and its citation) pins down the desired behavior — a constant Value wrapped by ExpressionWrapper must contribute no GROUP BY columns, i.e. the wrapper should yield the same group-by columns as its wrapped expression (Value.get_group_by_cols() returns []). That behavioral outcome matches R1's stated effect. However, S_vis never names the mechanism R1 commits to — a new ExpressionWrapper.get_group_by_cols(alias=None) override that delegates via self.expression.get_group_by_cols(alias=alias) — so whether the visible bug report alone pins down this exact code-level patch is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_wrapper_delegates_group_by_cols_to_value",
+      "test_source": "def test_wrapper_delegates_group_by_cols_to_value():\n    from django.db.models.expressions import ExpressionWrapper, Value\n    inner = Value(42)\n    wrapper = ExpressionWrapper(inner, output_field=None)\n    assert wrapper.get_group_by_cols() == inner.get_group_by_cols() == []\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — assert [ExpressionWrapper(Value(42))] == [] (on buggy, ExpressionWrapper lacks a get_group_by_cols override, so it inherits BaseExpression.get_group_by_cols() and returns [self], i.e. [ExpressionWrapper(Value(42))], instead of [])",
+      "explanation": "Target requirement R1 is exactly that ExpressionWrapper.get_group_by_cols(alias=None) delegates to its wrapped inner expression -- self.expression.get_group_by_cols(alias=alias) -- so that when an ExpressionWrapper participates in GROUP BY it contributes the same group-by columns as its inner expression (e.g. none when the inner expression is a bare Value, whose get_group_by_cols() returns []), instead of treating the wrapper node itself as a GROUP BY column.\n\nMy witness constructs a fresh ExpressionWrapper around a bare Value(42) constant (no output_field needed) and asserts wrapper.get_group_by_cols() == inner.get_group_by_cols() == []. On the GOLD program (which has the added get_group_by_cols delegation in expressions.py) the test PASSES: both the wrapper and the inner Value return []. On the BUGGY program (ExpressionWrapper lacks get_group_by_cols, so it inherits BaseExpression.get_group_by_cols(), which for a non-aggregate returns [self]) the test FAILS with the wrapper contributing [ExpressionWrapper(Value(42))]. The execution results confirm the correct discriminating direction.\n\nRelevance to the hidden fact: I audited the visible test surface before finalizing. tests/expressions/tests.py and the related tests use ExpressionWrapper extensively for filtering/annotating date-subtraction/duration/Q-boolean contexts, and ReprTests only check its repr; GetGroupByColsTest in tests/expressions/test_deprecation.py uses a custom MissingAliasFunc with values()/annotate() rather than ExpressionWrapper delegation, and expressions_window tests cover Window/WindowFrame empty group_by_cols. None of those visible assertions ever call get_group_by_cols() on an ExpressionWrapper or encode the wrapped-constant/empty-GROUP-BY delegation behavior of R1. My chosen input (ExpressionWrapper wrapping a bare Value constant, checked at the get_group_by_cols() level) is therefore a genuinely reinventing-independent concrete scenario that only the hidden semantics decide between the two programs."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible artifacts are the issue report plus the Django source tree under django/db/models; no regression test in the visible tree directly covers this scenario, so requirements are grounded in the issue text and the source."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In django/db/models/expressions.py, Value.get_group_by_cols() returns [] while ExpressionWrapper defines no get_group_by_cols, so it inherits BaseExpression.get_group_by_cols() which returns [self] for a non-aggregate expression; SQLCompiler.get_group_by (django/db/models/sql/compiler.py) appends expr.get_group_by_cols() for every SELECT expression, which is the mechanism that emits the wrapped constant into GROUP BY."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ExpressionWrapper.as_sql() delegates straight to self.expression.as_sql() (expressions.py), i.e. the wrapper is otherwise transparent to SQL rendering."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to django/db/models/expressions.py: it adds a get_group_by_cols override on ExpressionWrapper that forwards to the inner expression, passing through the alias argument. Before the change, ExpressionWrapper inherited BaseExpression.get_group_by_cols(), which for a non-aggregate expression returns [self], causing wrapped expressions to be emitted into GROUP BY (per SQLCompiler.get_group_by)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ExpressionWrapper.as_sql() already delegates to self.expression.as_sql(), so the wrapper is otherwise transparent to SQL rendering; the new method makes GROUP BY column resolution equally transparent."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The alias parameter is only meaningful to expressions like Subquery.get_group_by_cols; the delegation still forwards it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the oracle's test suite for a witness of R1 (ExpressionWrapper.get_group_by_cols(alias=None) delegating to the wrapped inner expression).\n\nWhat I checked:\n- The only tests that directly exercise get_group_by_cols group-by semantics are in [VISIBLE] files: tests/expressions/test_deprecation.py (GetGroupByColsTest uses a MissingAliasFunc whose get_group_by_cols() returns []; combined with `.values(one=...).annotate(cnt=Count('company_ceo_set'))`) and tests/expressions_window/tests.py (`test_empty_group_by_cols`/`test_frame_empty_group_by_cols` on Window/WindowFrame). Both are byte-for-byte VISIBLE material, which by the rules can never serve as a Witness.\n- The natural integration-test homes for the new ExpressionWrapper.group-by delegation — tests/expressions/tests.py, tests/expressions/test_queryset_values.py, tests/queries/tests.py, tests/queries/test_query.py, tests/queries/test_q.py, tests/queries/test_qs_combinators.py, tests/queries/test_deprecation.py, tests/queries/test_bulk_update.py, tests/queries/test_db_returning.py, tests/aggregation/tests.py, tests/aggregation/test_filter_argument.py, tests/aggregation_regress/tests.py, tests/annotations/tests.py, tests/distinct_on_fields/tests.py, tests/expressions_case, tests/expressions_window — were all read and are all labeled [VISIBLE]; none contains a Hidden assertion exercising ExpressionWrapper.get_group_by_cols(alias) forwarding, nor a wrapped-constant-in-GROUP-BY behavior test.\n- No tests are recorded as failing against the buggy program, which further indicates no oracle test directly encodes R1.\n\nBecause every location that plausibly tests this behavior is [VISIBLE] (content already seen by any repair system) and no Hidden assertion covering R1's delegation/transparency could be found, there is no HIDDEN-based witness. I did not fabricate a test; submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ExpressionWrapper.get_group_by_cols): ExpressionWrapper.get_group_by_cols(alias=None) delegates transparently to its wrapped inner expression, returning self.expression.get_group_by_cols(alias=alias). As a result, when an ExpressionWrapper is included in GROUP BY processing it contributes exactly the GROUP BY columns that its wrapped inner expression contributes (e.g. none when the inner expression is a bare constant Value, because Value.get_group_by_cols() returns []), rather than the wrapper expression node itself being treated as a GROUP BY column. — not entailed by S_vis (The visible evidence (esp. REQ-2 and its citation) pins down the desired behavior — a constant Value wrapped by ExpressionWrapper must contribute no GROUP BY columns, i.e. the wrapper should yield the same group-by columns as its wrapped expression (Value.get_group_by_cols() returns []). That behavioral outcome matches R1's stated effect. However, S_vis never names the mechanism R1 commits to — a new ExpressionWrapper.get_group_by_cols(alias=None) override that delegates via self.expression.get_group_by_cols(alias=alias) — so whether the visible bug report alone pins down this exact code-level patch is genuinely ambiguous.); confirmed by a synthesized witness: Target requirement R1 is exactly that ExpressionWrapper.get_group_by_cols(alias=None) delegates to its wrapped inner expression -- self.expression.get_group_by_cols(alias=alias) -- so that when an ExpressionWrapper participates in GROUP BY it contributes the same group-by columns as its inner expression (e.g. none when the inner expression is a bare Value, whose get_group_by_cols() returns []), instead of treating the wrapper node itself as a GROUP BY column.\n\nMy witness constructs a fresh ExpressionWrapper around a bare Value(42) constant (no output_field needed) and asserts wrapper.get_group_by_cols() == inner.get_group_by_cols() == []. On the GOLD program (which has the added get_group_by_cols delegation in expressions.py) the test PASSES: both the wrapper and the inner Value return []. On the BUGGY program (ExpressionWrapper lacks get_group_by_cols, so it inherits BaseExpression.get_group_by_cols(), which for a non-aggregate returns [self]) the test FAILS with the wrapper contributing [ExpressionWrapper(Value(42))]. The execution results confirm the correct discriminating direction.\n\nRelevance to the hidden fact: I audited the visible test surface before finalizing. tests/expressions/tests.py and the related tests use ExpressionWrapper extensively for filtering/annotating date-subtraction/duration/Q-boolean contexts, and ReprTests only check its repr; GetGroupByColsTest in tests/expressions/test_deprecation.py uses a custom MissingAliasFunc with values()/annotate() rather than ExpressionWrapper delegation, and expressions_window tests cover Window/WindowFrame empty group_by_cols. None of those visible assertions ever call get_group_by_cols() on an ExpressionWrapper or encode the wrapped-constant/empty-GROUP-BY delegation behavior of R1. My chosen input (ExpressionWrapper wrapping a bare Value constant, checked at the get_group_by_cols() level) is therefore a genuinely reinventing-independent concrete scenario that only the hidden semantics decide between the two programs.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "task_id": "sphinx-doc__sphinx-7454",
+  "status": "ok",
+  "duration_seconds": 305.3980355410604,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-7454",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "With the default autodoc_typehints='signature' mode and an intersphinx mapping to the Python 3 docs, when a function's return annotation is the literal `None` (e.g. `def f1() -> None` documented via `.. autofunction:: f1`), the `None` return annotation rendered in the signature must be a clickable intersphinx external link to the `None` documentation (https://docs.python.org/3/library/constants.html#None), just as an `int` return annotation is linked.",
+        "subject": "sphinx.domains.python PyFunction signature return-annotation rendering (autodoc autodoc_typehints='signature')",
+        "hunk_ids": [],
+        "cited_from": "Expected behavior: \"That `None` in a type hint links to the documentation for the `None` singleton regardless of whether 'description' or 'signature' mode is used.\" plus reproduction HTML where `f2`'s int links: \"<code ...&#x2192; <a class=\\\"reference external\\\" href=\\\"https://docs.python.org/3/library/functions.html#int\\\" title=\\\"(in Python v3.8)\\\">int</a>...\" while the report notes there is no corresponding link from `f1` to the `None` docs. Config line in repro: \"intersphinx_mapping = {\\\"python\\\": (\\\"https://docs.python.org/3\\\", None)}\" (autodoc_typehints stays signature since \"#autodoc_typehints = 'description'\" is commented out)."
+      },
+      {
+        "id": "R2",
+        "statement": "Regardless of whether autodoc_typehints is configured as 'description' or 'signature', the return-annotation `None` must be rendered as a clickable link to the *same* `None` documentation URL (https://docs.python.org/3/library/constants.html#None), i.e. the two modes must not produce inconsistent linking behavior for `None`.",
+        "subject": "sphinx.ext.autodoc typehint output consistency across autodoc_typehints='description' and 'signature'",
+        "hunk_ids": [],
+        "cited_from": "Expected behavior: \"That `None` in a type hint links to the documentation for the `None` singleton regardless of whether 'description' or 'signature' mode is used.\"; and the description-mode output given for None: \"<dd class=\\\"field-odd\\\"><p><a class=\\\"reference external\\\" href=\\\"https://docs.python.org/3/library/constants.html#None\\\" title=\\\"(in Python v3.8)\\\">None</a></p>\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "1",
+        "statement": "When Sphinx parses a type annotation into cross-reference nodes (via sphinx.domains.python._parse_annotation, reached from both signature parameter annotations via _parse_arglist and return annotations via handle_signature), any bare-name text equal to the literal string 'None' is turned into a pending_xref node with refdomain='py', reftarget='None', and reftype='obj', so that 'None' is referenced as a Python object/data rather than as a class.",
+        "subject": "sphinx.domains.python._parse_annotation(make_xref)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "2",
+        "statement": "For every annotation name other than the exact string 'None' (e.g. 'int', 'str', 'list', and dotted attribute names), _parse_annotation continues to produce a pending_xref node with refdomain='py' and reftype='class' as before; only the literal top-level/nested name 'None' is treated as 'obj', not any of its character variants.",
+        "subject": "sphinx.domains.python._parse_annotation(make_xref)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Visible info only states the desired rendered outcome: the 'None' return annotation must be a clickable intersphinx link to the None docs regardless of autodoc_typehints mode. It says nothing about the internal mechanism in _parse_annotation — pending_xref nodes, refdomain='py', reftarget='None', or reftype='obj' — so the specific implementation strategy (treating the literal 'None' as reftype 'obj' in both arglist and return paths) is not inferable from it."
+      },
+      {
+        "requirement_id": "2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible requirements concern output linking for 'None' and consistency across modes; they never describe node internals such as other names keeping reftype='class' while only the literal 'None' becomes 'obj'. This scoping of the fix to only the name 'None' (not character variants) is a developer implementation decision not pinned by any visible evidence."
+      }
+    ],
+    "target_requirement_id": "1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_none_annotation_is_obj_reftype",
+      "test_source": "def test_none_annotation_is_obj_reftype():\n    from sphinx.domains.python import _parse_annotation\n    from sphinx.addnodes import pending_xref\n    result = _parse_annotation('None')\n    assert len(result) == 1\n    node = result[0]\n    assert isinstance(node, pending_xref)\n    assert node['refdomain'] == 'py'\n    assert node['reftarget'] == 'None'\n    assert node['reftype'] == 'obj'\n",
+      "gold_result": "PASSED (gold's make_xref maps bare-name 'None' to reftype='obj')",
+      "buggy_result": "FAILED: AssertionError assert 'class' == 'obj' (buggy's make_xref always sets reftype='class')",
+      "explanation": "Requirement [1] is precisely that sphinx.domains.python._parse_annotation's local make_xref, when handing a bare-name annotation equal to the literal string 'None', must emit a pending_xref whose reftype is 'obj' (None referenced as a Python data object) rather than 'class'. The gold (fixed) code has `if text == 'None': reftype = 'obj'`; the buggy pre-fix code always sets `reftype='class'`. This is observable directly by calling the module-level `_parse_annotation('None')`: it ends up invoking make_xref('None') on the single name node, so the sole resulting pending_xref carries refdomain='py', reftarget='None', reftype='obj' (gold) versus reftype='class' (buggy). I confirmed by running the exact test_source through run_test: against gold it PASSED, against buggy it FAILED with `AssertionError: assert 'class' == 'obj'` at the reftype line. Why this is a genuine (non-visible) witness: the visible unit test in tests/test_domain_py.py (test_parse_annotation) only checks bare 'int' and container annotations List[int]/Tuple[int,int]/Callable[[...],int], never 'None' and never inspects any pending_xref's reftype attribute; Oracle Search confirmed it passes on the buggy program too, so no already-visible assertion pins the None->obj mapping. My test adds a fresh, specifically discriminating assertion on the always-'None' annotation path that is not derived from anything the visible tests/sources already guarantee."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The `None` annotation is stringified as the literal string 'None' (sphinx/util/typing.py stringify: `elif annotation is NoneType: return 'None'`), so both in-signature and field-list rendering see text 'None'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "'description' mode already produces a clickable None link: the `:rtype:` body is handled by a `PyField`/`PyTypedField` whose make_xref maps `reftype='class', target=='None'` to `reftype='obj'` (sphinx/domains/python.py), letting intersphinx find Python's `py:data None` at constants.html."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "For 'signature' mode, return annotations are turned into pending_xref nodes by `sphinx.domains.python._parse_annotation`, whose local `make_xref` assigns `reftype='class'` to every top-level name including `None` (reaching nitpicky suppression via builtin_resolver but no link), which is why None (a py:data, not a py:class) goes unlinked while class-like names such as `int` resolve."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Default value of config `autodoc_typehints` is 'signature' (sphinx/ext/autodoc/__init__.py setup: `app.add_config_value('autodoc_typehints', \"signature\", ...)`); valid values are 'signature', 'description', 'none' per doc/usage/extensions/autodoc.rst."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reproducer uses `sphinx-build -nW` (nitpicky + warnings-as-errors) with --keep-going, intersphinx to docs.python.org/3; tests for typehints content/shape live in tests/test_ext_autodoc_configs.py (test_autodoc_typehints_signature/none/description) and use root tests/roots/test-ext-autodoc/target/typehints.py, but none of the visible tests assert linking behavior for None, so the S_vis requirements rest on the issue report alone."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The related already-fixed issue #7428 ('A reference to class None emits a nitpicky warning') is mentioned in CHANGES under 3.0.1; both that fix and this issue center on None being treated specially (not as a class) when generating/referencing type hints."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The local make_xref in _parse_annotation is applied to every nodes.Text produced by the AST unparse (top-level names and names nested inside container/slice annotations alike), so 'None' embedded in expressions such as List[None] also becomes reftype='obj'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_parse_annotation is called from two sites: _parse_arglist (parameter/argument annotations) and PyObject.handle_signature (return annotations retann); both use the same make_xref path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing builtin_resolver in the same module already suppresses  nitpicky output for reftype in ('class','obj') with reftarget 'None', so this patch's effect is on how the node's reftype is set (and thus intersphinx linkability) rather than on nitpicky suppression."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch mirrors an existing convention in PyField/PyTypedField.make_xref in the same file, where rolename 'class' with target 'None' is remapped to 'obj' — this issue extends that None-is-an-obj handling to signature-mode type hints."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [1]: Requirement r: when sphinx.domains.python._parse_annotation's local make_xref converts a bare-name annotation string equal to 'None', the resulting pending_xref must carry reftype='obj' (so it is referenced as a Python data object rather than a class).\n\nI searched the full oracle for a test whose assertion would enforce this behavior and be a genuine witness, and found none that qualifies:\n\n1. The reported failing test is tests/test_domain_py.py::test_parse_annotation. I read the whole file (labeled [VISIBLE]) and mechanically ran exactly its test_parse_annotation body against the BUGGY program: it PASSED. Its assertions only cover bare 'int' and containers 'List[int]', 'Tuple[int,int]', 'Callable[[int,int],int]' — none involves 'None', and none inspects the pending_xref reftype/'obj' attribute. So even the unit test tied to _parse_annotation does not discriminate requirement r (it doesn't even check reftype for the names it does test).\n\n2. Every other test file plausibly exercising this code path was [VISIBLE]: test_domain_py.py, test_ext_autodoc.py, test_ext_autodoc_configs.py (test_autodoc_typehints_signature/none/description — these render text only, never assert linking/reftype of 'None'), test_ext_autodoc_events.py, test_ext_autodoc_private_members.py, test_ext_autosummary.py, test_roles.py, test_markup.py, test_domain_c.py, test_domain_js.py, test_domain_std.py, test_util_typing.py (stringify asserts \"None\" text only, no make_xref/reftype). None of them asserts the None->obj reftype mapping.\n\n3. A witness may only rest on [HIDDEN] content, per the rules. All content relevant to r that this oracle contains is [VISIBLE] (already seen by a repair system), and moreover none of it actually tests the None-obj behavior. Therefore no assertion anywhere in the oracle genuinely and exclusively tests the behavior described by r.\n\nConclusion: the oracle's real test suite does not contain a witness for requirement [1]; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[1] (sphinx.domains.python._parse_annotation(make_xref)): When Sphinx parses a type annotation into cross-reference nodes (via sphinx.domains.python._parse_annotation, reached from both signature parameter annotations via _parse_arglist and return annotations via handle_signature), any bare-name text equal to the literal string 'None' is turned into a pending_xref node with refdomain='py', reftarget='None', and reftype='obj', so that 'None' is referenced as a Python object/data rather than as a class. — not entailed by S_vis (Visible info only states the desired rendered outcome: the 'None' return annotation must be a clickable intersphinx link to the None docs regardless of autodoc_typehints mode. It says nothing about the internal mechanism in _parse_annotation — pending_xref nodes, refdomain='py', reftarget='None', or reftype='obj' — so the specific implementation strategy (treating the literal 'None' as reftype 'obj' in both arglist and return paths) is not inferable from it.); confirmed by a synthesized witness: Requirement [1] is precisely that sphinx.domains.python._parse_annotation's local make_xref, when handing a bare-name annotation equal to the literal string 'None', must emit a pending_xref whose reftype is 'obj' (None referenced as a Python data object) rather than 'class'. The gold (fixed) code has `if text == 'None': reftype = 'obj'`; the buggy pre-fix code always sets `reftype='class'`. This is observable directly by calling the module-level `_parse_annotation('None')`: it ends up invoking make_xref('None') on the single name node, so the sole resulting pending_xref carries refdomain='py', reftarget='None', reftype='obj' (gold) versus reftype='class' (buggy). I confirmed by running the exact test_source through run_test: against gold it PASSED, against buggy it FAILED with `AssertionError: assert 'class' == 'obj'` at the reftype line. Why this is a genuine (non-visible) witness: the visible unit test in tests/test_domain_py.py (test_parse_annotation) only checks bare 'int' and container annotations List[int]/Tuple[int,int]/Callable[[...],int], never 'None' and never inspects any pending_xref's reftype attribute; Oracle Search confirmed it passes on the buggy program too, so no already-visible assertion pins the None->obj mapping. My test adds a fresh, specifically discriminating assertion on the always-'None' annotation path that is not derived from anything the visible tests/sources already guarantee.",
+    "confidence": "Medium"
+  }
+}

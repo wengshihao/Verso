@@ -1,0 +1,121 @@
+{
+  "task_id": "django__django-16408",
+  "status": "ok",
+  "duration_seconds": 461.32282200001646,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16408",
+    "s_vis": [
+      {
+        "id": "req1",
+        "statement": "When evaluating PoolStyle.objects.annotate(tournament_pool=FilteredRelation('pool__tournament__pool'),).select_related('tournament_pool') over the ExistingRelatedInstancesTests fixture data, each result poolstyle p loaded must have the related tournament accessible at p.tournament_pool.tournament be the actual owning Tournament of the Pool reached through that FilteredRelation — i.e. the assertion p.pool.tournament == p.tournament_pool.tournament must pass (currently p[0].tournament_pool.tournament is wrongly set to a PoolStyle instead of a Tournament).",
+        "subject": "PoolStyle queryset select_related with multi-level FilteredRelation object population / known_related_objects",
+        "hunk_ids": [],
+        "cited_from": "self.assertEqual(p[0].pool.tournament, p[0].tournament_pool.tournament) ... AssertionError: <Tournament: Tournament object (1)> != <PoolStyle: PoolStyle object (1)>"
+      },
+      {
+        "id": "req2",
+        "statement": "The queryset evaluation in the reported test must complete issuing exactly 3 database queries (the context wrapper assertNumQueries(3) must not fail), i.e. fetching the annotate(...)+select_related('tournament_pool') result set must not introduce extra per-object queries or duplicate main queries.",
+        "subject": "PoolStyle queryset select_related with multi-level FilteredRelation query count",
+        "hunk_ids": [],
+        "cited_from": "with self.assertNumQueries(3):\n\t\t\tp = list(PoolStyle.objects.annotate(\n\t\t\t\ttournament_pool=FilteredRelation('pool__tournament__pool'),\n\t\t\t\t).select_related('tournament_pool'))\n\t\t\tself.assertEqual(p[0].pool.tournament, p[0].tournament_pool.tournament)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "For a restricted select_related query whose selected relation goes through a FilteredRelation path that crosses more than two joins (e.g. selecting an FK field of a model reached via a reverse nullable one-to-one under a FilteredRelation), populating that filtered-related model does not assign the reverse-relation cache value onto the parent from-object. As a result the reverse cached pointers (e.g. a Pool reached under the filtered relation such that its reverse style/… reverse-FK cache) of the returned objects reflect the consistent object graph rather than being overwritten with the model instance fetched through the multi-join filtered path, so cross-checks such as '<separately-fetched related>.pool.<reverse attr> is <itself>' hold/object identities between the reverse relation of a loaded instance remain those actually present.",
+        "subject": "SQLCompiler.get_related_selections: klass_info['local_setter'] for filtered relations reached through >2 joins → reverse cache not set on parent (RelatedPopulator population)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "For a restricted select_related query selecting a FilteredRelation reached through at most two joins, the filtered-related model's klass_info retains the previous local_setter semantics: when the reverse relation on the parent from-object is non-empty (from_obj truthy and a matching reverse target is expected), the reverse cached-value is set on that parent from-object via the final field's remote_field.set_cached_value during population; shallow filtered-relation select_related population still wires the reverse (e.g. poolstyle/another_style) cache onto the parent as before.",
+        "subject": "SQLCompiler.get_related_selections: klass_info['local_setter'] for filtered relations reached through <=2 joins → reverse cache still set on parent (RelatedPopulator population)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "req1",
+          "req2"
+        ],
+        "rationale": "Req1 reproduces the exact >2-join FilteredRelation select_related failure where a wrong PoolStyle overwrites a pointer where a Tournament should be (p.pool.tournament == p.tournament_pool.tournament fails), which is the observable symptom of the reverse-cache-on-parent overwrite S1 addresses, so it strongly supports S1's consistent-graph outcome. However req1 only fixes the black-box equality and shows the wrong-object symptom; it does not pin down S1's precise internal mechanism (omitting the net static cached reverse set for >2 joins) or its additional separately-fetched object-identity cross-checks, so exact entailment is not fully confirmed."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "req1",
+          "req2"
+        ],
+        "rationale": "S2 describes the shallow filtered-relation (<=2 join) case where the reverse cache is still set on the parent preserving prior local_setter behavior. The S_vis evidence (req1, req2) only covers the deep multi-level >2-join filtered select_related scenario, giving no indication that shallow filtered-relation population retains its reverse-cache wiring, so nothing in S_vis would lead to this specific behavior."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement [S2] concerns SQLCompiler.get_related_selections  behaviour for a *restricted* (dict) select_related whose FilteredRelation resolves through at most two joins (`len(joins) <= 2`): in that regime the klass_info's local_setter must keep the old semantics `partial(local_setter, final_field)` so the reverse poolstyle/another_style cache is still wired onto the Pool/PoolStyle parent during RelatedPopulator.populate.\n\nComparing gold vs buggy at the exact [H1] location, the trigger branch is precisely `len(joins) <= 2`. In gold, `partial(local_setter, final_field)` is chosen for `len(joins) <= 2` and `local_setter_noop` only for `len(joins) > 2`. In buggy, the code is unconditional `partial(local_setter, final_field)` (no length guard at all). Hence for every scenario that [S2] describes (a ≤2-join FilteredRelation), the two revisions produce byte-for-byte identical klass_infos (same local_setter, remote_setter, reverse=True, field, model) and therefore identical RelatedPopulator population and cached-value wiring. The buggy pre-fix only diverges from gold in the `len(joins) > 2` regime (where gold introduces local_setter_noop), which lies *outside* the scope S2 asserts.\n\nBecause a genuine witness must PASS on gold and FAIL on buggy, and the S2 interval is behaviourally identical across the two revisions, no executable assertion can separate them: anything that passes on gold for a ≤2-join FilteredRelation (e.g. reverse poolstyle/another_style set on the parent) also passes on buggy, since the buggy code still unconditionally applies that same local_setter there. The known oracle tests that exercise this behaviour in tests/known_related_objects/tests.py (test_reverse_one_to_one_select_related style and test_reverse_fk_select_related_multiple with pool_1/pool_2 FilteredRelations) are labelled VISIBLE, so even rephrasing them could never serve as a witness of hidden enforcement; and there is no HIDDEN test in this module.\n\nSeparately, the run_test harness could not even produce an execution-verified pass/fail: it runs pytest without DJANGO settings/DATABASES configured ('Requested setting DATABASES ... settings are not configured'), so a DB-backed select_related/population assertion on the known_related_objects models cannot actually run there to discriminate revisions. Taken together, S2 is a \"preserve the pre-existing ≤2-join semantics\" requirement that both the buggy and the fixed program satisfy identically, so no discriminating witness exists."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug scenario and test belong to tests/known_related_objects (models.py, tests.py), whose ExistingRelatedInstancesTests test_wrong_select_related is NOT yet present in the repo — it is the test proposed in the issue. Existing tests there (e.g. test_foreign_key, test_one_to_one_select_related) already assert object-identity/caching semantics between related objects, which must be preserved by any fix."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "known_related_objects models: Tournament, Organiser, Pool(tournament=FK(Tournament) with default reverse pool_set, organiser=FK(Organiser)); PoolStyle(pool=OneToOne(Pool), another_pool=OneToOne(Pool, null, related_name='another_style')). setUpTestData creates t1/t2 Tournaments and pools p1..p4 (p1,p2 in t1; p3,p4 in t2) and poolstyles ps1(pool=p2), ps2(pool=p3), ps3(pool=p1, another_pool=p3)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FilteredRelation is defined in django/db/models/query_utils.py; multi-level relation_name handling happens via Query.names_to_path/setup_joins in django/db/models/sql/query.py, and select_related filtered-relation klass_infos are built in SQLCompiler.get_related_selections (django/db/models/sql/compiler.py), which only handles filtered relations by name at the top level (cur_depth==1); the rows are wired via RelatedPopulator and the known_related_objects map in ModelIterable (django/db/models/query.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed code sits in SQLCompiler.get_related_selections (django/db/models/sql/compiler.py), in the loop that builds klass_info dicts for FilteredRelation names within a restricted (dictionary-form) select_related; these klass_infos later drive RelatedPopulator.populate in django/db/models/query.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "local_setter/remote_setter in a klass_info are consumed by RelatedPopulator: 'local_setter(from_obj, obj)' applies the fetched model onto the parent, 'remote_setter(obj, from_obj)' (if obj present) wires the parent back onto the child."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The branching condition is len(joins) <= 2 where 'joins' is the join list returned by setup_joins([name], opts, root_alias) for the filtered-relation name; 'reverse': True on these klass_infos reflects that the filtered relation resolves to the reverse/non-m2m direction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Task-notebook notes indicate the intended regression test (not yet present in this repo revision) is known_related_objects ExistingRelatedInstancesTests.test_wrong_select_related exercising identity consistency across FilteredRelation-based select_related; existing tests there (e.g. test_one_to_one_select_related, test_reverse_one_to_one_select_related, test_reverse_fk_select_related_multiple with pool_1/pool_2 FilteredRelations) already assert such reverse-cache identity semantics that the multi-join change must not regress."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "known_related_objects models: Pool.tournament/organiser FKs; PoolStyle.pool OneToOne default reverse 'poolstyle', PoolStyle.another_pool nullable OneToOne reverse 'another_style' — the nullable reverse one-to-one is relevant to the deep-join filtered-relation path (from_parent/from_obj truthiness and reverse cache wiring)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: Requirement [S2] is about the shallow (≤2-join) FilteredRelation select_related path in SQLCompiler.get_related_selections preserving the reverse-cache wiring onto the parent object during RelatedPopulator.populate — concretely pool_1/pool_2 FilteredRelations over Pool.select_related('pool_1','pool_2') that still set poolstyle/another_style reverse caches on the Pool parent.\n\nEvery oracle test that actually asserts this behavior lives in tests/known_related_objects/tests.py, and that file is labeled [VISIBLE]. The matching assertions are:\n- test_reverse_one_to_one_select_related / test_reverse_one_to_one_multi_select_related: single reverse OneToOne (poolstyle) wired to parent Pool via a non-FilteredRelation select_related;\n- most directly test_reverse_fk_select_related_multiple, which annotates FilteredRelation(\"pool\") and FilteredRelation(\"another_pool\") and select_related('pool_1','pool_2'), asserting ps[i].pool_1.poolstyle and ps[i].pool_2.another_style (i.e., the reverse cache is placed on the parent PoolStyle/Pool).\n\nPer the audit rules, an assertion drawn from [VISIBLE] content can NEVER serve as a witness for this requirement, regardless of how precisely it matches S2 — these assertions were never hidden from the repair pipeline, so they cannot demonstrate gold>buggy enforcement of hidden behavior. The only [HIDDEN] file in that module (models.py / __init__.py) contains model definitions, not behavioral assertions about reverse caching.\n\nI also checked tests/filtered_relation (its tests are [VISIBLE] and concern query results / SQL rather than reverse RelatedPopulator cache wiring on the parent from-object), and scanned the listed test files for any [HIDDEN] test that uses the known_related_objects Pool/PoolStyle models with FilteredRelation select_related — the models are only referenced from the (visible) known_related_objects/tests.py, so no hidden oracle test exercises S2. The extractor's own note confirms the issue's proposed regression test test_wrong_select_related is NOT present in this repo revision, so it does not exist in the oracle. Consequently no genuine (execution-confirmed, hidden-content) oracle test is a witness for [S2]; answer is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: Requirement [S2] concerns SQLCompiler.get_related_selections  behaviour for a *restricted* (dict) select_related whose FilteredRelation resolves through at most two joins (`len(joins) <= 2`): in that regime the klass_info's local_setter must keep the old semantics `partial(local_setter, final_field)` so the reverse poolstyle/another_style cache is still wired onto the Pool/PoolStyle parent during RelatedPopulator.populate.\n\nComparing gold vs buggy at the exact [H1] location, the trigger branch is precisely `len(joins) <= 2`. In gold, `partial(local_setter, final_field)` is chosen for `len(joins) <= 2` and `local_setter_noop` only for `len(joins) > 2`. In buggy, the code is unconditional `partial(local_setter, final_field)` (no length guard at all). Hence for every scenario that [S2] describes (a ≤2-join FilteredRelation), the two revisions produce byte-for-byte identical klass_infos (same local_setter, remote_setter, reverse=True, field, model) and therefore identical RelatedPopulator population and cached-value wiring. The buggy pre-fix only diverges from gold in the `len(joins) > 2` regime (where gold introduces local_setter_noop), which lies *outside* the scope S2 asserts.\n\nBecause a genuine witness must PASS on gold and FAIL on buggy, and the S2 interval is behaviourally identical across the two revisions, no executable assertion can separate them: anything that passes on gold for a ≤2-join FilteredRelation (e.g. reverse poolstyle/another_style set on the parent) also passes on buggy, since the buggy code still unconditionally applies that same local_setter there. The known oracle tests that exercise this behaviour in tests/known_related_objects/tests.py (test_reverse_one_to_one_select_related style and test_reverse_fk_select_related_multiple with pool_1/pool_2 FilteredRelations) are labelled VISIBLE, so even rephrasing them could never serve as a witness of hidden enforcement; and there is no HIDDEN test in this module.\n\nSeparately, the run_test harness could not even produce an execution-verified pass/fail: it runs pytest without DJANGO settings/DATABASES configured ('Requested setting DATABASES ... settings are not configured'), so a DB-backed select_related/population assertion on the known_related_objects models cannot actually run there to discriminate revisions. Taken together, S2 is a \"preserve the pre-existing ≤2-join semantics\" requirement that both the buggy and the fixed program satisfy identically, so no discriminating witness exists."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S2] (SQLCompiler.get_related_selections: klass_info['local_setter'] for filtered relations reached through <=2 joins → reverse cache still set on parent (RelatedPopulator population)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement [S2] concerns SQLCompiler.get_related_selections  behaviour for a *restricted* (dict) select_related whose FilteredRelation resolves through at most two joins (`len(joins) <= 2`): in that regime the klass_info's local_setter must keep the old semantics `partial(local_setter, final_field)` so the reverse poolstyle/another_style cache is still wired onto the Pool/PoolStyle parent during RelatedPopulator.populate.\n\nComparing gold vs buggy at the exact [H1] location, the trigger branch is precisely `len(joins) <= 2`. In gold, `partial(local_setter, final_field)` is chosen for `len(joins) <= 2` and `local_setter_noop` only for `len(joins) > 2`. In buggy, the code is unconditional `partial(local_setter, final_field)` (no length guard at all). Hence for every scenario that [S2] describes (a ≤2-join FilteredRelation), the two revisions produce byte-for-byte identical klass_infos (same local_setter, remote_setter, reverse=True, field, model) and therefore identical RelatedPopulator population and cached-value wiring. The buggy pre-fix only diverges from gold in the `len(joins) > 2` regime (where gold introduces local_setter_noop), which lies *outside* the scope S2 asserts.\n\nBecause a genuine witness must PASS on gold and FAIL on buggy, and the S2 interval is behaviourally identical across the two revisions, no executable assertion can separate them: anything that passes on gold for a ≤2-join FilteredRelation (e.g. reverse poolstyle/another_style set on the parent) also passes on buggy, since the buggy code still unconditionally applies that same local_setter there. The known oracle tests that exercise this behaviour in tests/known_related_objects/tests.py (test_reverse_one_to_one_select_related style and test_reverse_fk_select_related_multiple with pool_1/pool_2 FilteredRelations) are labelled VISIBLE, so even rephrasing them could never serve as a witness of hidden enforcement; and there is no HIDDEN test in this module.\n\nSeparately, the run_test harness could not even produce an execution-verified pass/fail: it runs pytest without DJANGO settings/DATABASES configured ('Requested setting DATABASES ... settings are not configured'), so a DB-backed select_related/population assertion on the known_related_objects models cannot actually run there to discriminate revisions. Taken together, S2 is a \"preserve the pre-existing ≤2-join semantics\" requirement that both the buggy and the fixed program satisfy identically, so no discriminating witness exists.",
+    "confidence": "Medium"
+  }
+}

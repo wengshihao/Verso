@@ -1,0 +1,103 @@
+{
+  "task_id": "django__django-13590",
+  "status": "ok",
+  "duration_seconds": 555.1525450840127,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13590",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When Query.resolve_lookup_value receives a tuple subclass (named tuple / namedtuple), such as a named 2-tuple used as the value of a range-queryset filter, it must resolve each element of the value independently and reconstruct an instance of the same namedtuple type whose fields are those resolved elements supplied positionally (the resolved iterator contents expanded into the constructor), so that processing never raises TypeError like \"__new__() missing 1 required positional argument: 'far'\".",
+        "subject": "Query.resolve_lookup_value",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"This project passes named 2-tuples as arguments to range queryset filters ... On 3.0 it causes the following error: TypeError: __new__() missing 1 required positional argument: 'far'. This happens because django.db.models.sql.query.Query.resolve_lookup_value goes into the tuple elements to resolve lookups and then attempts to reconstitute the tuple with the resolved elements. When it attempts to construct the new tuple it preserves the type (the named tuple) but it passes a iterator to it's constructor. NamedTuples don't have the code path for copying an iterator, and so it errors on insufficient arguments. The fix is to * expand the contents of the iterator into the constructor.\" Combined with the visible code in django/db/models/sql/query.py: `elif isinstance(value, (list, tuple)): return type(value)(self.resolve_lookup_value(sub_value, can_reuse, allow_joins) for sub_value in value)`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a lookup value passed through Query.resolve_lookup_value is an instance of a (list/tuple) *subclass that was created by the namedtuple factory*, filtering no longer raises: instead of feeding the whole value as a single argument to that subclass's constructor (which fails because a namedtuple constructor requires one positional argument per field), each element is independently resolved and a new instance of the same namedtuple subclass is reconstructed from the resolved elements, so that e.g. a range filter whose bounds are held in a namedtuple compares against the intended (resolved) bounds and returns correct rows.",
+        "subject": "Query.resolve_lookup_value / queryset lookup values (tuple subclasses produced by collections.namedtuple)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a lookup value that is an ordinary list or tuple (not a namedtuple), Query.resolve_lookup_value keeps resolving each element independently and reconstructing a container of the same type/list-vs-tuple kind holding the resolved elements (reconstruction still built from the element iterator), i.e. existing per-element resolution semantics for iterable lookup values are preserved.",
+        "subject": "Query.resolve_lookup_value / queryset filter lookup values (plain list or tuple)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (and its citation) directly describes the same scenario: a namedtuple (named 2-tuple) used as a range filter lookup value raising 'TypeError: __new__() missing 1 required positional argument: far', with the fix being to individually resolve each element and reconstruct the same namedtuple type by expanding the resolved iterator contents positionally into the constructor. This pins down R1 exactly."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 and its citation are scoped entirely to namedtuple subclasses and the specific TypeError they trigger; nothing is asserted about ordinary lists/tuples retaining per-element resolution in the fixed behavior. The cited visible code quotes the existing `(list, tuple)` branch, which hints plain containers work, but S_vis does not explicitly pin down that plain-list/tuple semantics are preserved, so coverage of this regression-avoidance claim is genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target requirement R2 asserts PRESERVATION (no-regression) of existing per-element resolution + same-kind (list-vs-tuple) container reconstruction for ordinary (non-namedtuple) list/tuple lookup values inside Query.resolve_lookup_value.\n\nInspecting both revisions' resolve_lookup_value confirms the only code difference is the addition of a namedtuple branch (checking hasattr(type(value), '_make')), which affects only namedtuples (i.e. R1's scope). For any ordinary list/tuple the observable behavior is byte-for-byte identical:\n- buggy:  return type(value)( <genexpr of resolved sub-values> )\n- gold:   value raw assigned to a generator; type_ = type(value); since it lacks '_make' it falls through to type_( <same generator> )\n\nBoth therefore reconstruct the container with the same type and the same per-element resolution. I empirically confirmed with an executable test that calls resolve_lookup_value with a plain list, a plain tuple, and a nested plain list-of-tuples, checking type identity (list vs tuple) and content of each resolved element: it PASSED on BOTH the gold and the buggy program.\n\nSince a genuine Witness must FAIL on the buggy program and PASS on gold, and every R2-scoped assertion (plain list/tuple resolution/reconstruction) passes identically on both revisions, no oracle witness can be constructed for R2 — the buggy program already satisfies the preserved behavior. The empirically-confirming runs support this: the same candidate test passed against both gold and buggy. found=false is the expected outcome for this no-regression requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The core code is Query.resolve_lookup_value in django/db/models/sql/query.py:398-406 (visible, buggy): it recurses into each element for (list, tuple) values then reconstructs via `type(value)(<generator>)`, which fails for namedtuples because their constructors require one positional argument per field."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/queries/test_query.py::TestQuery::test_iterable_lookup_value exercises the plain-list reconstruction path for a lookup value (Q(name=['a','b'])), confirming the method's intended element-wise resolution/reconstruction semantics for iterable lookup values."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repository is a full Django source tree; range-filter tests for this regression are not present in the visible state and are expected to arrive with the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Method context: Query.resolve_lookup_value (django/db/models/sql/query.py, resolve_lookup_value) is called from build_filter shortly before any Iterator values are coerced with list(); it recurses into each element for list/tuple values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "namedtuple detection is implemented by checking hasattr(type(value), '_make'); namedtuple types are reconstructed via type_(*resolved_generator), non-namedtuple containers via type_(resolved_generator). This `_make`/unpacking detail is internal mechanism, folded into the observable requirements R1/R2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For both revisions the whole changed region is applied when the value does not have resolve_expression and is an instance of list or tuple; scalar/expression values fall through unchanged in both revisions."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 asserts PRESERVATION of existing per-element resolution + same-kind container reconstruction for plain (non-namedtuple) list/tuple lookup values. This is a no-regression property, not a behavior introduced by the patch: the buggy resolve_lookup_value already does exactly `type(value)(self.resolve_lookup_value(sub,...) for sub in value)` for any list/tuple, and the gold revision only adds a separate namedtuple (`hasattr(type(value),'_make')`) branch while leaving the plain list/tuple reconstruction path byte-for-byte identical.\n\nSince a Witness must FAIL on the buggy program and PASS on gold, and R2's observable behavior is already satisfied by the buggy program itself, no oracle assertion about plain list/tuple resolution can differentiate the two revisions. I empirically confirmed this: a plain tuple resolution test PASSES on both buggy and gold, and a plain list resolution test PASSES on both buggy and gold — behavior identical across revisions.\n\nI inspected the core source (django/db/models/sql/query.py), the only direct resolve-path test file tests/queries/test_query.py (whose test_iterable_lookup_value is [VISIBLE] content and passes on both revisions anyway), plus tests/queries/tests.py, tests/queries/test_q.py, and tests/lookup/test_lookups.py — all labeled [VISIBLE], and none asserts behavior that distinguishes the two revisions for the plain list/tuple path. The drop in the number of oracle tests recording no failures against the buggy program for this requirement is consistent with R2 being preserved (already-passing-on-buggy) rather than enforced-as-a-fix. Therefore there is no genuine oracle witness for R2; found=false is the expected outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target requirement R2 asserts PRESERVATION (no-regression) of existing per-element resolution + same-kind (list-vs-tuple) container reconstruction for ordinary (non-namedtuple) list/tuple lookup values inside Query.resolve_lookup_value.\n\nInspecting both revisions' resolve_lookup_value confirms the only code difference is the addition of a namedtuple branch (checking hasattr(type(value), '_make')), which affects only namedtuples (i.e. R1's scope). For any ordinary list/tuple the observable behavior is byte-for-byte identical:\n- buggy:  return type(value)( <genexpr of resolved sub-values> )\n- gold:   value raw assigned to a generator; type_ = type(value); since it lacks '_make' it falls through to type_( <same generator> )\n\nBoth therefore reconstruct the container with the same type and the same per-element resolution. I empirically confirmed with an executable test that calls resolve_lookup_value with a plain list, a plain tuple, and a nested plain list-of-tuples, checking type identity (list vs tuple) and content of each resolved element: it PASSED on BOTH the gold and the buggy program.\n\nSince a genuine Witness must FAIL on the buggy program and PASS on gold, and every R2-scoped assertion (plain list/tuple resolution/reconstruction) passes identically on both revisions, no oracle witness can be constructed for R2 — the buggy program already satisfies the preserved behavior. The empirically-confirming runs support this: the same candidate test passed against both gold and buggy. found=false is the expected outcome for this no-regression requirement."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (Query.resolve_lookup_value / queryset filter lookup values (plain list or tuple)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target requirement R2 asserts PRESERVATION (no-regression) of existing per-element resolution + same-kind (list-vs-tuple) container reconstruction for ordinary (non-namedtuple) list/tuple lookup values inside Query.resolve_lookup_value.\n\nInspecting both revisions' resolve_lookup_value confirms the only code difference is the addition of a namedtuple branch (checking hasattr(type(value), '_make')), which affects only namedtuples (i.e. R1's scope). For any ordinary list/tuple the observable behavior is byte-for-byte identical:\n- buggy:  return type(value)( <genexpr of resolved sub-values> )\n- gold:   value raw assigned to a generator; type_ = type(value); since it lacks '_make' it falls through to type_( <same generator> )\n\nBoth therefore reconstruct the container with the same type and the same per-element resolution. I empirically confirmed with an executable test that calls resolve_lookup_value with a plain list, a plain tuple, and a nested plain list-of-tuples, checking type identity (list vs tuple) and content of each resolved element: it PASSED on BOTH the gold and the buggy program.\n\nSince a genuine Witness must FAIL on the buggy program and PASS on gold, and every R2-scoped assertion (plain list/tuple resolution/reconstruction) passes identically on both revisions, no oracle witness can be constructed for R2 — the buggy program already satisfies the preserved behavior. The empirically-confirming runs support this: the same candidate test passed against both gold and buggy. found=false is the expected outcome for this no-regression requirement.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "task_id": "scikit-learn__scikit-learn-9288",
+  "status": "ok",
+  "duration_seconds": 310.560556499986,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-9288",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "KMeans.fit must produce identical clustering results (cluster_centers_, labels_, and inertia_) for a given dataset and random_state regardless of the value of n_jobs, since n_jobs only parallelizes the independent n_init restarts and must not alter the algorithm's numeric outcome; in the reported reproduction all of n_jobs=1..4 should yield inertia_ = 17815.060435554242 rather than n_jobs=1 diverging to 17815.004991244623.",
+        "subject": "sklearn.cluster.KMeans.fit / k_means",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'Should expect the the clustering result (e.g. the inertia) to be the same regardless of how many jobs are run in parallel.' Expected: '(n_jobs=1) kmeans.inertia_ = 17815.060435554242 ... (n_jobs=4) kmeans.inertia_ = 17815.060435554242'; Actual: '(n_jobs=1) kmeans.inertia_ = 17815.004991244623 (n_jobs=2) kmeans.inertia_ = 17815.060435554242 (n_jobs=3) kmeans.inertia_ = 17815.060435554242 (n_jobs=4) kmeans.inertia_ = 17815.060435554242'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For a fixed input (X, n_clusters, init, n_init, random_state, and remaining k_means parameters), the k-means result is invariant to the n_jobs configuration: the final chosen best run's labels, cluster centers, inertia, and (where returned) n_iter are identical whether the n_init runs are executed sequentially with effective_n_jobs(n_jobs) == 1 or in parallel with n_jobs > 1.",
+        "subject": "sklearn.cluster.k_means_.k_means / KMeans.fit",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The n_init candidate runs of k_means are each initialized from an independent per-run random seed (each run receiving its own fresh RandomState seeded by one element of a pre-sampled seed array drawn from the caller's random_state at the start), rather than from a single shared advancing random stream whose state depends on the sequential execution path, so each of the n_init runs' initialization outcome is the same regardless of whether the calling path is single-job or parallel.",
+        "subject": "sklearn.cluster.k_means_.k_means cluster initialization",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The visible issue states the whole clustering result (inertia shown as 17815.060435554242 for n_jobs=1..4, plus labels and cluster_centers per the extractor summary) must be identical regardless of n_jobs, since n_jobs only parallelizes the independent n_init restarts. This pins down the requested result-invariance across sequential vs parallel n_init execution."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "Visible info asserts that n_init restarts are independent and the numeric outcome must not vary with execution path, but it never specifies the implementation mechanism of pre-sampling a per-run seed array and giving each run a fresh RandomState versus a shared advancing stream. The outcome-claim implies independence but does not pin down this exact mechanism."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_single_job_matches_parallel_seeding",
+      "test_source": "import numpy as np\nfrom sklearn.cluster import KMeans\nfrom sklearn.datasets.samples_generator import make_blobs\n\ndef test_single_job_matches_parallel_seeding():\n    # R2: each of the n_init candidate runs must derive its initialization\n    # from an independent per-run seed (pre-sampled once from the caller's\n    # random_state), so the outcome is the same whether the runs are executed\n    # in one job (sequential loop) or spread across several parallel jobs.\n    X, _ = make_blobs(n_samples=300, n_features=4, centers=6,\n                      cluster_std=2.5, random_state=1)\n    single = KMeans(n_clusters=6, n_init=5, random_state=0, n_jobs=1).fit(X)\n    parallel = KMeans(n_clusters=6, n_init=5, random_state=0, n_jobs=4).fit(X)\n    assert single.inertia_ == parallel.inertia_\n",
+      "gold_result": "PASSED — single-job inertia == parallel-job inertia (both 6916.050954), because on gold both the sequential loop and the parallel branch pre-sample the same `seeds` array once from random_state and give each of the n_init runs its own per-run seed.",
+      "buggy_result": "FAILED — single-job inertia 6919.814892751013 != parallel-job inertia 6916.050954121529. In the buggy code the n_jobs==1 branch passes the live, shared random_state (whose stream advances between runs as each init draws from it), while only the parallel branch samples a per-run seed array, so the two paths do not produce identical n_init outcomes.",
+      "explanation": "R2 says each of the n_init candidate runs should be initialized from an independent per-run random seed (pre-sampled once at the start from the caller's random_state), so a call runs identically whether it goes down the n_jobs==1 loop or the n_jobs>1 Parallel branch. The gold code (H0) moves `seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)` ahead of the branch and passes `random_state=seed` per run on BOTH paths; the buggy n_jobs==1 loop passes the shared live `random_state` object instead (only the parallel branch had independent seeds). The witness therefore fits KMeans with the same data/random_state and n_init>1 under n_jobs=1 vs n_jobs=4 and asserts the chosen best inertia is identical. I chose a dataset (make_blobs, n_samples=300, n_features=4, centers=6, cluster_std=2.5, random_state=1; caller random_state=0) whose local-optima landscape makes the differing seed streams genuinely change the best result on buggy: buggy single=6919.8149 vs parallel=6916.0510 (confirmed FAIL), while gold single==parallel==6916.0510 (confirmed PASS). I first probed 40 data seeds on the buggy build and found most caused a divergence; data seed 1 gives a clean, robust failure. No visible test (test_k_means.py) asserts this cross-n_jobs equality of initialization outcome, and the otherwise-failing/intended regression test was not readable/byte-reconstructible, so this is an independent witness. Verified by actually running this exact source against gold (PASSED) and buggy (FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The inconsistency originates in sklearn/cluster/k_means_.py function k_means(): the n_jobs==1 branch runs n_init kmeans_single calls passing the same live random_state (which each run's init draws from, so stream advances between runs), whereas the parallel branch pre-samples n_init distinct int32 seeds via 'seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)' and gives each run a fresh RandomState(seed). Different initialization streams across paths => slightly different convergence/inertia."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Default KMeans dense algorithm is 'elkan' (auto); reproducibility reproduction in issue uses dense make_blobs data so default algorithm elkan would be affected, but the invariance expectation is algorithm-general."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in sklearn/cluster/tests/test_k_means.py; test_k_means_plus_plus_init_2_jobs only checks a 2-job fit succeeds, and no existing visible test asserts n_jobs invariance, so the regression check post-fix is new."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 alone is a pure relocation: it removes the `seeds = random_state.randint(...)` line from inside the parallel `else` branch and relies on the identical seed-array statement now placed before the branch in H0; H0 contains the substantive logic change (passing per-run seed to kmeans_single in the single-thread loop)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the buggy version the n_jobs==1 branch passed the live `random_state` object into each kmeans_single call, whose init draws advanced that shared stream; the parallel branch gave each run a fresh RandomState(seed). The fix aligns the single-job behavior with the parallel one."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 requires an oracle test that (a) fails on buggy, (b) passes on gold, and (c) genuinely asserts that each of the n_init runs is seeded by an independent per-run seed so that single-job and parallel paths give identical k-means results. The reported failing test test_result_of_kmeans_equal_in_diff_n_jobs matches this intent by name, but it is NOT present in any content I can read: reading sklearn/cluster/tests/test_k_means.py (the only k-means test file; checked twice) returns content entirely labeled [VISIBLE] that lacks this test entirely and contains no assertion comparing kmeans outputs across different n_jobs, nor any check of per-run independent seeding. The only other relevant oracle file, sklearn/cluster/tests/common.py, is [HIDDEN] but is merely a data-generation helper (generate_clustered_data) unrelated to R2. Existing n_jobs-touching tests in the [VISIBLE] file (e.g., test_k_means_plus_plus_init_2_jobs) only confirm a multi-job fit succeeds and would pass on the buggy program, so they cannot be witnesses. Since a Witness may rest only on [HIDDEN] assertions, and no accessible [HIDDEN] assertion tests R2 (the matching test is in a layer I cannot read or reconstruct byte-for-byte to execution-verify), nothing in the oracle genuinely qualifies. Submitted found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (sklearn.cluster.k_means_.k_means cluster initialization): The n_init candidate runs of k_means are each initialized from an independent per-run random seed (each run receiving its own fresh RandomState seeded by one element of a pre-sampled seed array drawn from the caller's random_state at the start), rather than from a single shared advancing random stream whose state depends on the sequential execution path, so each of the n_init runs' initialization outcome is the same regardless of whether the calling path is single-job or parallel. — not entailed by S_vis (Visible info asserts that n_init restarts are independent and the numeric outcome must not vary with execution path, but it never specifies the implementation mechanism of pre-sampling a per-run seed array and giving each run a fresh RandomState versus a shared advancing stream. The outcome-claim implies independence but does not pin down this exact mechanism.); confirmed by a synthesized witness: R2 says each of the n_init candidate runs should be initialized from an independent per-run random seed (pre-sampled once at the start from the caller's random_state), so a call runs identically whether it goes down the n_jobs==1 loop or the n_jobs>1 Parallel branch. The gold code (H0) moves `seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)` ahead of the branch and passes `random_state=seed` per run on BOTH paths; the buggy n_jobs==1 loop passes the shared live `random_state` object instead (only the parallel branch had independent seeds). The witness therefore fits KMeans with the same data/random_state and n_init>1 under n_jobs=1 vs n_jobs=4 and asserts the chosen best inertia is identical. I chose a dataset (make_blobs, n_samples=300, n_features=4, centers=6, cluster_std=2.5, random_state=1; caller random_state=0) whose local-optima landscape makes the differing seed streams genuinely change the best result on buggy: buggy single=6919.8149 vs parallel=6916.0510 (confirmed FAIL), while gold single==parallel==6916.0510 (confirmed PASS). I first probed 40 data seeds on the buggy build and found most caused a divergence; data seed 1 gives a clean, robust failure. No visible test (test_k_means.py) asserts this cross-n_jobs equality of initialization outcome, and the otherwise-failing/intended regression test was not readable/byte-reconstructible, so this is an independent witness. Verified by actually running this exact source against gold (PASSED) and buggy (FAILED).",
+    "confidence": "Medium"
+  }
+}

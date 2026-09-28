@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-16910",
+  "status": "ok",
+  "duration_seconds": 504.26766550005414,
+  "llm_calls": 43,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16910",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a query on model Main that uses select_related() through a reverse OneToOne relation (e.g. related_name='secondary' on the forward OneToOneField pointing back at Main) together with only() naming a subset of Main's fields and of the reverse-related model's fields, the generated SELECT clause must select only the named fields plus the necessary primary/foreign-key columns from the main and reverse-related tables (Main: 'id' + 'main_field_1'; joined Secondary: 'main_id' + 'secondary_field_1'), and must not include the other concrete fields of the reverse-related model (it must not include 'secondary_field_2' or 'secondary_field_3'). In other words, only() must constrain the columns pulled for the reverse OneToOne model too, not merely for the root model.",
+        "subject": "SQLCompiler.get_related_selections / Query.get_select_mask (reverse OneToOne select_related + only column selection)",
+        "hunk_ids": [],
+        "cited_from": "Sample code:\nMain.objects.select_related('secondary').only('main_field_1', 'secondary__secondary_field_1')\n...\nGenerated query on Django 4.2.1:\nSELECT \"bugtest_main\".\"id\", \"bugtest_main\".\"main_field_1\", \"bugtest_secondary\".\"main_id\", \"bugtest_secondary\".\"secondary_field_1\", \"bugtest_secondary\".\"secondary_field_2\", \"bugtest_secondary\".\"secondary_field_3\" FROM \"bugtest_main\" LEFT OUTER JOIN \"bugtest_secondary\" ON (\"bugtest_main\".\"id\" = \"bugtest_secondary\".\"main_id\")\nGenerated query on Django 4.1.9:\nSELECT \"bugtest_main\".\"id\", \"bugtest_main\".\"main_field_1\", \"bugtest_secondary\".\"main_id\", \"bugtest_secondary\".\"secondary_field_1\" FROM \"bugtest_main\" LEFT OUTER JOIN \"bugtest_secondary\" ON (\"bugtest_main\".\"id\" = \"bugtest_secondary\".\"main_id\")"
+      },
+      {
+        "id": "R2",
+        "statement": "Evaluating Main.objects.select_related('secondary').only('main_field_1', 'secondary__secondary_field_1') must load the reverse-related 'secondary' object into the Main result set (the LEFT OUTER JOIN remains present and the row for secondary is hydrated) while keeping secondary_field_2 and secondary_field_3 deferred/unloaded from the database, so that accessing an unlisted reverse-side field triggers an additional query rather than being fetched via the select_related SELECT.",
+        "subject": "only() deferred field semantics for the reverse OneToOne related object (get_related_populators/ModelIterable hydration)",
+        "hunk_ids": [],
+        "cited_from": "class Secondary(models.Model):\n\tmain = models.OneToOneField(Main, primary_key=True, related_name='secondary', on_delete=models.CASCADE)\n\tsecondary_field_1 = models.CharField(blank=True, max_length=45)\n\tsecondary_field_2 = models.CharField(blank=True, max_length=45)\n\tsecondary_field_3 = models.CharField(blank=True, max_length=45)\n...\nMain.objects.select_related('secondary').only('main_field_1', 'secondary__secondary_field_1')"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ-16910-1",
+        "statement": "When building the only()-based select mask, a mask entry that names a reverse relationship on the model's options (one of opts.related_objects, e.g. a reverse OneToOne accessor traversed from the 'holding' side) is registered in the returned select mask keyed by the forward field that backs that reverse relation (the related_object.field), not by the reverse relation descriptor object itself.",
+        "subject": "Query._get_only_select_mask / Query.get_select_mask reverse-relation keying",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ-16910-2",
+        "statement": "When a queryset restricts fields of a reverse one-to-one relation via only() and that relation is fetched through select_related, the generated SQL selects only the reverse model's explicitly restricted columns named in the only() mask (plus required keys), rather than every concrete column of the reverse model; i.e. only()-based column narrowing is honored for reverse one-to-one relations joined via select_related instead of falling back to full-table selection.",
+        "subject": "QuerySet.only()+select_related reverse one-to-one column narrowing (generated SQL)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ-16910-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "This is an internal implementation detail about how the select-mask entry is keyed internally (forward field backing the reverse relation vs. the reverse descriptor). Neither S_vis requirement, nor the cited SQL/sample evidence, describes any such internal keying mechanism — they only capture observable SELECT narrowing and hydration/deferral behavior."
+      },
+      {
+        "requirement_id": "REQ-16910-2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1's citation quotes the expected generated SELECT clause that pulls only secondary_field_1 (plus keys) for the reverse relation while excluding secondary_field_2/3 when using only() with select_related on a reverse OneToOne, which exactly pins down this column-narrowing behavior."
+      }
+    ],
+    "target_requirement_id": "REQ-16910-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is Django's source repository; the relevant mechanism spreads across django/db/models/query.py (QuerySet.only/defer + add_immediate_loading/add_deferred_loading + get_select_mask/_get_only_select_mask/_get_defer_select_mask), django/db/models/sql/query.py, django/db/models/sql/compiler.py (get_select with select_mask, get_related_selections, get_default_columns), and django/db/models/query_utils.py (select_related_descend)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reverse (rel-side) select_related columns are produced in SQLCompiler.get_related_selections via the `related_objects ... o.field.unique` branch — it calls get_default_columns(select_mask.get(related_field) or {}, ...). Field name/attname keying coordination between Query.get_select_mask and that branch is the area where correctness for reverse OneToOne only()-restricted column sets lives."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing test coverage that exercises only()/defer() with select_related is in tests/defer_regress/tests.py (e.g. test_proxy_model_defer_with_select_related, test_reverse_one_to_one_relations uses defer but not only-on-a-specific-o2o-field), tests/defer/tests.py (test_only_with_select_related for a forward FK), and tests/select_related_onetoone (reverse select traversal but with only used only for inheritance cases). None of the visible tests pin the reverse-OneToOne-only-'-field' column narrowing scenario from the issue, so the requirement rests primarily on the issue's concrete SQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue frames this as a 4.1 -> 4.2 regression: on the trunk code here the repro expectedly fails the same way the 4.2.1 query does (all reverse-side fields emitted), i.e. the repo state already contains the bug that a patch should fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Patch is a single hunk confined to Query._get_only_select_mask (the QuerySet.only() mask path); it does not touch _get_defer_select_mask, which already keyed reverse-relation entries by their forward field (field = reverse_rel.field; setdefault(field, {}))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The observable regression being corrected manifests in SQLCompiler.get_related_selections' reverse unique-relation branch, which fetches the restriction as select_mask.get(o.field) using the forward field; because the only() mask previously stored the restriction under the reverse Rel object, the lookup returned empty and get_default_columns emitted all reverse-model concrete columns."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No tests are added/modified by this patch (only django/db/models/sql/query.py changed); correctness of the narrowing is checkable from the emitted SQL/query construction rather than from new test fixtures."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ-16910-1]: I investigated the candidate oracle test files where a regression test for only()/defer() with select_related over reverse OneToOne relations would live: tests/defer/tests.py, tests/defer_regress/tests.py (+ its models, incl. the Item/OneToOneItem reverse-o2o scenario), tests/select_related_onetoone/tests.py (+ models, User/UserProfile, User/UserStat reverse o2o), tests/select_related_regress/tests.py, tests/one_to_one/tests.py, and tests/queries models.py (the low-level query suite).\n\nTarget requirement REQ-16910-1 is the very narrow, internal behavior that Query._get_only_select_mask must register a reverse-relation (reverse OneToOne) entry in the select mask keyed by the *forward* field (related_object.field) rather than by the reverse Rel descriptor, so that SQLCompiler.get_related_selections' reverse unique-relation branch (which looks up select_mask.get(o.field)) can actually apply the field-level narrowing and not fall back to emitting every concrete column of the reverse model.\n\nNone of the oracle tests I read enforces this. The select_related tests that combine only() with a reverse OneToOne traversal (e.g. select_related_onetoone.test_inheritance_deferred/_deferred2, defer_regress.test_reverse_one_to_one_relations, defer.test_only_with_select_related/defer.test_defer_with_select_related, select_related_regress.test_regression_12851) either (a) traverse forward FKs, (b) use only()/defer() on inheritance chains, or (c) pass only the bare reverse relation name (e.g. only('one_to_one_item')) rather than a specific 'field' on a reverse object and then verifying that exactly that column is loaded and the other reverse-model concrete columns remain deferred (i.e. the masked column-list emitted for the joined reverse table). No test asserts the emitted/reduced SQL column set of the joined reverse o2o table after `.only('reverse_o2o__specificfield')` + `.select_related('reverse_o2o')`.\n\nCrucially, all the relevant test suites I read are labelled [VISIBLE], so even the closer ones (which are co-located with but not testing this behavior) could never serve as witnesses per the rules. And no test is currently recorded as failing against the buggy program (a necessary precondition for any witness), consistent with the earlier extractor note that the requirement is only pinned by the issue's concrete SQL and that the patch adds no regression test. I therefore conclude the real oracle contains no witness for this requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ-16910-1]: gave up after exhausting its exploration budget without concluding (22 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ-16910-1] (Query._get_only_select_mask / Query.get_select_mask reverse-relation keying) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

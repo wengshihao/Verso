@@ -1,0 +1,146 @@
+{
+  "task_id": "psf__requests-1944",
+  "status": "ok",
+  "duration_seconds": 267.8466017910978,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-1944",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Following an auto-processable redirect (e.g. HTTP 301 with a Location header, allow_redirects=True) must succeed and return the final, non-redirect response without raising ContentDecodingError, even when an intermediate redirect response carries a Content-Encoding: gzip header but its body is actually uncompressed (i.e. not valid gzip) — the redirect body should not be decoded because it is never returned to the caller, and consuming the socket for release must not trigger that decode failure.",
+        "subject": "requests.sessions.SessionRedirectMixin.resolve_redirects / requests.Session.get",
+        "hunk_ids": [],
+        "cited_from": "\"The issue seems to be that the server's initial 301 response has a header falsely claiming that the response body (a simple HTML page) is gzipped, when it's actually uncompressed.\" ... \"When resolving redirects, Requests does (in `requests.sessions.resolve_redirects`): `resp.content  # Consume socket so it can be released` which attempts to decode\" ... \"conceptually, why decode the response body of a redirect, which won't get returned?\" ... \"raise ContentDecodingError... requests.exceptions.ContentDecodingError: ('Received response with content-encoding: gzip, but failed to decode it.', ...)\" (from the Example of error trace raised by `requests.get('http://www.whatbird.com/forum/index.php?/gallery/image/291517-foo/')`)"
+      },
+      {
+        "id": "R2",
+        "statement": "The redirect-response body is drained purely to release the socket/connection; that drain must read/consume the raw body without applying content-encoding (gzip) decompression, so that a decode-error on a redirect body is never propagated as a ContentDecodingError to the caller of the redirect-following request.",
+        "subject": "requests.sessions.SessionRedirectMixin.resolve_redirects (redirect-body draining step)",
+        "hunk_ids": [],
+        "cited_from": "\"resp.content  # Consume socket so it can be released\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "During redirect resolution, if draining (reading) an intermediate redirect response's body via `resp.content` raises ChunkedEncodingError, ContentDecodingError, or RuntimeError, resolve_redirects consumes the connection by reading the raw undecoded bytes via `resp.raw.read(decode_content=False)` and continues resolving the redirect chain rather than propagating that exception to the caller.",
+        "subject": "requests/sessions.py SessionRedirectMixin.resolve_redirects",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "HTTPAdapter.send no longer eagerly reads the response body (`.content`) for a non-stream request (stream=False); it builds and returns the Response without having preloaded/decode-read the content, so a Content-Encoding or chunked decoding failure of the raw response is not raised by send itself (the response body is left for the caller/another layer to consume).",
+        "subject": "requests/adapters.py HTTPAdapter.send",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Session.send, after redirect handling, reads the full body (`r.content`) of the returned final (post-redirect) response when the send is not streamed (stream=False), so the final response body is fully consumed before Session.send returns r.",
+        "subject": "requests/sessions.py Session.send",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 do describe the redirect-drain area: the drain must consume raw undecoded bytes so a decode error is not propagated, and redirect following must still succeed returning the final response, which matches R1's core goal. However, S_vis R2 frames the fix as draining raw without decoding outright, whereas S_impl R1 commits to a distinct conditional mechanism (try resp.content first, fall back to resp.raw.read(decode_content=False) only for ChunkedEncodingError/ContentDecodingError/RuntimeError), detail (three exception types) not foreshadowed in S_vis — ambiguous mechanism-wise."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry concerns HTTPAdapter.send behavior for stream=False requests or whether send preloads/decodes the response body; they only discuss resolve_redirects' draining of intermediate redirect bodies."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis says nothing about Session.send reading the full body (.content) of the final post-redirect response for non-stream sends; both entries concern draining intermediate redirect bodies, not consuming the returned final response."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_adapter_send_does_not_eagerly_decode",
+      "test_source": "import io\nimport pytest\nfrom requests.adapters import HTTPAdapter\nfrom requests.packages.urllib3.response import HTTPResponse\nfrom requests.models import Request\nfrom requests.exceptions import ContentDecodingError\n\n\ndef test_adapter_send_does_not_eagerly_decode():\n    class FakeConn(object):\n        def urlopen(self, **kwargs):\n            hdr = {'Content-Encoding': 'gzip', 'Content-Length': '17'}\n            body = io.BytesIO(b'NOT_GZIP_AT_ALL_XX')\n            return HTTPResponse(body=body, headers=hdr, status=200,\n                                reason='OK', preload_content=False,\n                                decode_content=False)\n\n    class FakeAdapter(HTTPAdapter):\n        def get_connection(self, url, proxies=None):\n            return FakeConn()\n        def close(self):\n            pass\n\n    adapter = FakeAdapter()\n    req = Request('GET', 'http://example.com/').prepare()\n    r = adapter.send(req, stream=False, verify=False)\n    # send returns a Response without decoding the body; decode\n    # failure is deferred until the caller consumes .content\n    assert r is not None and r.status_code == 200\n    with pytest.raises(ContentDecodingError):\n        _ = r.content\n",
+      "gold_result": "PASSED - send(stream=False) returns the Response without decoding; ContentDecodingError only raised later on r.content access.",
+      "buggy_result": "FAILED - send(stream=False) eagerly accesses r.content at requests/adapters.py line 391, so ContentDecodingError propagates out of HTTPAdapter.send itself.",
+      "explanation": "R2 requires that HTTPAdapter.send no longer eagerly consumes/decode-reads the response body (.content) for a non-stream (stream=False) request, deferring decoding to the caller. The visible oracle (test_requests.py, fully VISIBLE) contains no local reproduction of a bogus Content-Encoding / decode-failure scenario inside HTTPAdapter.send: the RedirectSession raw body is an empty StringIO and tests only exercise external httpbin URLs. I built an ADAPTER-level witness (different from any visible assertion) that feeds HTTPAdapter.send a fake connection whose urlopen returns a urllib3 HTTPResponse carrying Content-Encoding: gzip but with garbage (non-gzip) body bytes and preload_content=False/decode_content=False. On the GOLD revision, send with stream=False merely builds and returns the Response; the gzip decode ContentDecodingError is deferred and only surfaces when the caller accesses r.content (test PASSED). On the BUGGY revision, send ends with `r = self.build_response(...); if not stream: r.content`, so it eagerly reads/decodes the body inside send itself and raises ContentDecodingError from requests/adapters.py's send (line 391) before returning (test FAILED). This exactly discriminates R2's bug (error raised by send itself for a non-stream request) from the fix (error deferred to the caller)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Redirect resolution lives in requests/sessions.py: `SessionRedirectMixin.resolve_redirects` drains each intermediate response via `resp.content` and then calls `resp.close()` to release the connection."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The decode happens in requests/models.py `Response.iter_content.generate()` which calls `self.raw.stream(chunk_size, decode_content=True)` and re-raises urllib3 `DecodeError` as `ContentDecodingError`; `Response.content` joins that stream."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HTTPAdapter.send opens responses with `preload_content=False, decode_content=False` (requests/adapters.py), so decoding is deferred until `.content`/`.stream(decode_content=True)` is touched — which during redirect resolution is `resp.content` in resolve_redirects."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests in test_requests.py cover redirect behavior (TestRedirects mock via RedirectSession, history/list assertions) but contain no visible test for a redirect response with a bogus Content-Encoding; the bug scenarios are exercised against external httpbin/whatbird URLs."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "REDIRECT_STATI (= resp.is_redirect criterion) is defined in requests/models.py as (301 moved, 302 found, 303 other, 307 temporary)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The integration tests depend on a live server (HTTPBIN defaulting to http://httpbin.org/), so a regression test reproducing #1944 would need a local mock server (none found among visible files)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 only adds the import of ChunkedEncodingError and ContentDecodingError from .exceptions (no behavioral change by itself); it enables H2's except clause. Its hunk contributes no standalone requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 + H2 + H3 together relocate where a non-stream request's body is consumed: in the buggy revision HTTPAdapter.send drained content for every send (so each intermediate redirect hop, sent internally with stream=False inside resolve_redirects, was drained in the adapter and could raise ContentDecodingError on a bogus-Content-Encoding redirect body before resolve_redirects could cope); after the fix the adapter never preloads on non-stream, redirect intermediates are drained in resolve_redirects with decode-failure tolerance, and only the final response is drained in Session.send."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "resolve_redirects still calls resp.close() after the content drain (in both revisions), releasing the connection back to the pool."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Bug scenario (#1944) is a redirect response carrying a bogus Content-Encoding; the visible tests contain no local reproduction (live httpbin/url-based integration tests only)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: The oracle consists of a single test file, test_requests.py, whose entire content is labeled [VISIBLE]. list_test_files returned only this one file; read_test_file labeled all of it [VISIBLE], so no assertion within it can ever serve as a Witness for R2 (a Witness must rest on [HIDDEN] content that was never visible). I additionally inspected the content: it contains no local reproduction of the bogus-Content-Encoding / chunked-decode failure scenario from #1944. The two tests named as currently failing against the buggy program (RequestsTestCase.test_redirect_with_wrong_gzipped_header and RequestsTestCase.test_manual_redirect_with_partial_body_read) do not even appear anywhere in this visible content. The redirect-related tests that do exist (e.g., TestRedirects.test_requests_are_updated_each_time) use a RedirectSession mock whose raw body is an empty StringIO and only assert on redirect-call bookkeeping — they neither test decode-failure tolerance of HTTPAdapter.send for non-stream requests nor exercise a bogus Content-Encoding body. Since the entire oracle is [VISIBLE] and contains no relevant hidden assertion, no genuine witness can be built; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (requests/adapters.py HTTPAdapter.send): HTTPAdapter.send no longer eagerly reads the response body (`.content`) for a non-stream request (stream=False); it builds and returns the Response without having preloaded/decode-read the content, so a Content-Encoding or chunked decoding failure of the raw response is not raised by send itself (the response body is left for the caller/another layer to consume). — not entailed by S_vis (Neither S_vis entry concerns HTTPAdapter.send behavior for stream=False requests or whether send preloads/decodes the response body; they only discuss resolve_redirects' draining of intermediate redirect bodies.); confirmed by a synthesized witness: R2 requires that HTTPAdapter.send no longer eagerly consumes/decode-reads the response body (.content) for a non-stream (stream=False) request, deferring decoding to the caller. The visible oracle (test_requests.py, fully VISIBLE) contains no local reproduction of a bogus Content-Encoding / decode-failure scenario inside HTTPAdapter.send: the RedirectSession raw body is an empty StringIO and tests only exercise external httpbin URLs. I built an ADAPTER-level witness (different from any visible assertion) that feeds HTTPAdapter.send a fake connection whose urlopen returns a urllib3 HTTPResponse carrying Content-Encoding: gzip but with garbage (non-gzip) body bytes and preload_content=False/decode_content=False. On the GOLD revision, send with stream=False merely builds and returns the Response; the gzip decode ContentDecodingError is deferred and only surfaces when the caller accesses r.content (test PASSED). On the BUGGY revision, send ends with `r = self.build_response(...); if not stream: r.content`, so it eagerly reads/decodes the body inside send itself and raises ContentDecodingError from requests/adapters.py's send (line 391) before returning (test FAILED). This exactly discriminates R2's bug (error raised by send itself for a non-stream request) from the fix (error deferred to the caller).",
+    "confidence": "Medium"
+  }
+}

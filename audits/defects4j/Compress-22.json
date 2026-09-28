@@ -1,0 +1,161 @@
+{
+  "task_id": "Compress-22",
+  "status": "ok",
+  "duration_seconds": 468.71162054800016,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "Compress-22",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "Decompressing a bz2 stream that is truncated by removing the final 10 bytes (6-byte end-of-stream magic + 4-byte stored combined CRC) yields all of the decompressed content correctly: a call reading exactly TEXT.length() bytes returns bytes byte-for-byte equal to the TEXT payload, without throwing.",
+        "subject": "BZip2CompressorInputStream.read / truncated-stream decompression (decompressConcatenated=true over TRUNCATED_DATA)",
+        "hunk_ids": [],
+        "cited_from": "// Drop the eos_magic field (6 bytes) and CRC (4 bytes).\nTRUNCATED_DATA = Arrays.copyOfRange(DATA, 0, DATA.length - 10); ... final int length = TEXT.length();\nByteBuffer buffer = ByteBuffer.allocate(length);\nbz2Channel.read(buffer);\nassertArrayEquals(Arrays.copyOfRange(TEXT.getBytes(), 0, length), buffer.array());"
+      },
+      {
+        "id": "2",
+        "statement": "Once the full decompressed content of the truncated bz2 stream has been delivered without error, a further single-byte read must throw java.io.IOException (not return a clean -1/EOF, and not admit any more data).",
+        "subject": "BZip2CompressorInputStream.read (post-content read on truncated stream)",
+        "hunk_ids": [],
+        "cited_from": "// subsequent read should throw\nbuffer = ByteBuffer.allocate(1);\ntry {\n    bz2Channel.read(buffer);\n    Assert.fail(\"The read should have thrown.\");\n} catch (IOException e) {\n    // pass\n}"
+      },
+      {
+        "id": "3",
+        "statement": "Reading the entire truncated bz2 stream in a single large (8192-byte) read must throw java.io.IOException — reaching the truncation boundary must be reported as a stream-corruption/termination error, not as a successful short or clean end-of-input read.",
+        "subject": "BZip2CompressorInputStream.read (whole-stream read on truncated stream)",
+        "hunk_ids": [],
+        "cited_from": "public void testTruncatedData() throws IOException {\n    //with BZ2File(self.filename) as f:\n    //    self.assertRaises(EOFError, f.read)\n    System.out.println(\"Attempt to read the whole thing in, should throw ...\");\n    ByteBuffer buffer = ByteBuffer.allocate(8192);\n    bz2Channel.read(buffer);\n}"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SPL1",
+        "statement": "Reading a BZip2 stream exposes its decompressed block content byte-for-byte in order, with each decoded byte delivered exactly once: consecutive read()/read(byte[],…) steps return consecutive output bytes and no byte is duplicated, dropped, or replayed across a block or decode-phase transition (including the final content byte reached before end-of-block/end-of-stream handling).",
+        "subject": "BZip2CompressorInputStream read/read0 decode stream output",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SPL2",
+        "statement": "For a stream whose block content decodes but whose end-of-stream terminator bytes are absent (truncated input), the read() operation that, after all decodable content has been delivered, must consume further bytes to locate/read the end-of-stream marker throws an IOException; the stream is not terminated as a clean end-of-file (read() returning -1 without error). A stream that genuinely ends at a valid end-of-stream marker is instead reported as exhausted by returning -1.",
+        "subject": "BZip2CompressorInputStream read/read0 end-of-stream handling",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SPL3",
+        "statement": "Byte production for a decoded block is initiated lazily on the read path rather than during construction: a freshly-constructed stream whose decoder is positioned at START_BLOCK_STATE yields its first decompressed byte on the first read() call (START_BLOCK_STATE is serviced by performing block output setup and returning its byte), rather than having block output set up and a pending byte buffered ahead of time by the constructor.",
+        "subject": "BZip2CompressorInputStream constructor / START_BLOCK_STATE read dispatch",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SPL1",
+        "entailed": "true",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis [1] directly pins the content-output behavior: reading exactly TEXT.length() bytes from the (truncated) stream returns bytes byte-for-byte equal to TEXT without throwing, confirming decoded block content is delivered in order exactly once, including the final content byte reached before end-of-stream handling."
+      },
+      {
+        "requirement_id": "SPL2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "2",
+          "3"
+        ],
+        "rationale": "S_vis [2] and [3] pin the truncated/EOS-absent half strongly (further reads and a whole-stream read throw IOException rather than returning clean -1). But SPL2's separate scenario clause — a stream genuinely ending at a valid EOS marker is exhausted by returning -1 — is not exercised by any S_vis entry, so the full requirement is only partially covered."
+      },
+      {
+        "requirement_id": "SPL3",
+        "entailed": "false",
+        "checked_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "rationale": "No S_vis entry addresses construction-time vs read-time byte production or START_BLOCK_STATE dispatch/lazy initialization; the visible tests only cover read behavior on truncated streams, so SPL3's internal initialization timing claim is unsupported."
+      }
+    ],
+    "target_requirement_id": "SPL3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;\nimport org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;\n@Test public void t() throws Exception {\n    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();\n    BZip2CompressorOutputStream bz = new BZip2CompressorOutputStream(out);\n    byte[] text = \"corncob corncob corncob\".getBytes(\"UTF-8\");\n    bz.write(text);\n    bz.close();\n    byte[] full = out.toByteArray();\n    // Corrupt the 24-bit origPtr block-output rotation field so it points\n    // beyond the decoded block. origPtr is validated only inside setupBlock().\n    full[15] = (byte)0xFF;\n    // SPL3 demands lazy block-output setup: the constructor must NOT run setupBlock.\n    // A corrupt origPtr (only checked inside setupBlock) must therefore NOT surface at\n    // construction time, but only on the first read() which services START_BLOCK_STATE.\n    BZip2CompressorInputStream in = new BZip2CompressorInputStream(new java.io.ByteArrayInputStream(full), true);\n    boolean threwStreamCorrupted = false;\n    try {\n        in.read();\n    } catch (java.io.IOException e) {\n        threwStreamCorrupted = true;\n    }\n    in.close();\n    org.junit.Assert.assertTrue(\"corrupt origPtr should surface on first read(), not during construction\", threwStreamCorrupted);\n}\n",
+      "gold_result": "PASSED: constructor succeeds; first read() throws IOException \"stream corrupted\" (deferred onto the read path servicing START_BLOCK_STATE via setupBlock).",
+      "buggy_result": "FAILED: constructor throws IOException \"stream corrupted\" from setupBlock() inside <init> (eager block-output setup) — since construction throws, the constructor-succeeds assertion is violated. Verified by run_test FAILED.",
+      "explanation": "SPL3 is the deferral of block-output setup (setupBlock) out of the BZip2CompressorInputStream constructor onto the read path: green/buggy diff is `init(true); initBlock();` (+ no setupBlock) vs buggy `init(true); initBlock(); setupBlock();`. The single observable that setupBlock's execution moves is WHEN its internal error path fires. origPtr is read during initBlock (both variants) but validated only inside setupBlock (\"stream corrupted\" when origPtr >= decoded block length). I build a well-formed bzip2 stream for a fixed 23-byte text and corrupt the fixed-structure origPtr field byte 15 to 0xFF so origPtr becomes >= 0xFF00 > block length. On GOLD (lazy) the constructor performs no setupBlock, so construction succeeds and the first read() (which services START_BLOCK_STATE by calling setupBlock) throws IOException -> test PASSES. On BUGGY (eager) the constructor itself runs setupBlock and throws IOException during new ... -> test FAILS. This input is not pinned by visible S_vis content (the visible PythonTruncatedBzip2Test exercises truncated-stream byte delivery/exceptions, not the construction-vs-read timing of a setupBlock \"stream corrupted\" error on a well-formed block with a bad origPtr). Both runs were mechanically confirmed via run_test (gold PASSED, buggy FAILED with this exact source)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible files: src/main/java/.../BZip2CompressorInputStream.java, src/main/java/.../CompressorInputStream.java, and the target test src/test/java/.../bzip2/PythonTruncatedBzip2Test.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CompressorInputStream is the abstract parent providing count()/getBytesRead tracking; BZip2CompressorInputStream overrides read() and read(byte[],int,int)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The unit under test is driven through a ReadableByteChannel via Channels.newChannel(new BZip2CompressorInputStream(bin, true)) — decompressConcatenated=true is used."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TRUNCATED_DATA is produced by stripping exactly the last 10 bytes of a fully-valid bz2 stream: per the comment, the 6-byte eos magic plus the 4-byte combined CRC."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The trigger for the described bug: the decoder reaches end-of-block and attempts to read/verify end-of-stream info that is absent from TRUNCATED_DATA; expected behaviour per test suite is a thrown IOException on the read that consumes past the delivered content."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue frames the fix as matching CPython bz2 behavior on truncated files (e.g. raising where the stream's block content can be decoded but the stream is not complete)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch converts read0() to a direct-return pump: each per-state setup routine returns the byte it computed and read() returns that value, replacing the removed currentChar one-read-ahead buffer. The Java-external surface constrained is the byte sequence and exception behavior of reads on BZip2CompressorInputStream (single- and decompressConcatenated streams) driven via read()/read(byte[],int,int) or a ReadableByteChannel."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The removed currentChar field (H0) and the per-routine currentChar writes removed by H3–H6 are internal state-machine mechanisms; they are not restated as separate requirements because no independent test input distinguishes them from the observable 'bytes delivered once, in order' contract (SPL1)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "START_BLOCK_STATE previously threw IllegalStateException if ever reached from read0(); that value is unreachable in a normal decode, so SPL3's checkable essence is the deferral of block-output setup out of the constructor."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The reference test PythonTruncatedBzip2Test is byte-identical at buggy and gold revisions; it checks that an exact-length read returns the full text and that the following read throws, and that a whole-stream read throws."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SPL3]: Target SPL3 is the deferral of block-output setup for the first decoded block out of the BZip2CompressorInputStream constructor / lazy first-byte production servicing START_BLOCK_STATE on read().\n\nI investigated the full oracle test set (all 11 files). The only test relevant to BZip2 read/constructor semantics are PythonTruncatedBzip2Test (testTruncatedData, testPartialReadTruncatedData) and BZip2TestCase (testBzipCreation, testBzip2Unarchive, testConcatenatedStreamsReadFirstOnly, testConcatenatedStreamsReadFully, testCOMPRESS131), plus ChainingTestCase.testTarBzip2 and DetectCompressorTestCase.testDetection (only type/detection checks). The remaining files (SevenZ/FramedSnappy/GZip/XZ/Z) exercise other compressors and cannot touch this code.\n\nDecisive facts:\n1. PythonTruncatedBzip2Test.java is labeled [VISIBLE], so none of its assertions can serve as a Witness — regardless of how well they match. I reproduced its lone distinguishing test (testPartialReadTruncatedData) mechanically: it FAILS against the buggy program (IOException \"unexpected end of stream\" thrown mid-way through decoding on the first read, from setupNoRandPartA/initBlock) and PASSES against gold. But it is visible content.\n2. The task tells me the ONLY oracle test failing against the buggy program is that visible testPartialReadTruncatedData — and I confirmed testTruncatedData passes on both buggy and gold. A genuine Witness must FAIL on the buggy program; since no [HIDDEN] oracle test fails on buggy (and I found none whose assertion exercises SPL3's lazy-init/deferral — BZip2TestCase's methods decode well-formed/complete streams whose byte output and -1/EOF behavior is identical under eager and lazy construction, and simply read 'a','b',available=0,-1 or compare round-tripped content), no hidden oracle content provides a gold-failing, SPL3-matching assertion.\n\nConclusion: the only oracle behavior that distinguishes buggy from gold lives in [VISIBLE] content; there is no genuine [HIDDEN] Witness for SPL3, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SPL3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SPL3] (BZip2CompressorInputStream constructor / START_BLOCK_STATE read dispatch): Byte production for a decoded block is initiated lazily on the read path rather than during construction: a freshly-constructed stream whose decoder is positioned at START_BLOCK_STATE yields its first decompressed byte on the first read() call (START_BLOCK_STATE is serviced by performing block output setup and returning its byte), rather than having block output set up and a pending byte buffered ahead of time by the constructor. — not entailed by S_vis (No S_vis entry addresses construction-time vs read-time byte production or START_BLOCK_STATE dispatch/lazy initialization; the visible tests only cover read behavior on truncated streams, so SPL3's internal initialization timing claim is unsupported.); confirmed by a synthesized witness: SPL3 is the deferral of block-output setup (setupBlock) out of the BZip2CompressorInputStream constructor onto the read path: green/buggy diff is `init(true); initBlock();` (+ no setupBlock) vs buggy `init(true); initBlock(); setupBlock();`. The single observable that setupBlock's execution moves is WHEN its internal error path fires. origPtr is read during initBlock (both variants) but validated only inside setupBlock (\"stream corrupted\" when origPtr >= decoded block length). I build a well-formed bzip2 stream for a fixed 23-byte text and corrupt the fixed-structure origPtr field byte 15 to 0xFF so origPtr becomes >= 0xFF00 > block length. On GOLD (lazy) the constructor performs no setupBlock, so construction succeeds and the first read() (which services START_BLOCK_STATE by calling setupBlock) throws IOException -> test PASSES. On BUGGY (eager) the constructor itself runs setupBlock and throws IOException during new ... -> test FAILS. This input is not pinned by visible S_vis content (the visible PythonTruncatedBzip2Test exercises truncated-stream byte delivery/exceptions, not the construction-vs-read timing of a setupBlock \"stream corrupted\" error on a well-formed block with a bad origPtr). Both runs were mechanically confirmed via run_test (gold PASSED, buggy FAILED with this exact source).",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "task_id": "psf__requests-6028",
+  "status": "ok",
+  "duration_seconds": 178.16614154190756,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-6028",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "requests.utils.get_auth_from_url must percent-decode the username and password embedded in a URL's userinfo (netloc auth) and return them as a decoded (username, password) tuple. This includes decoding encoded reserved/percent characters: '%25' -> '%', '%20' -> space, '%23' -> '#', and the set '%!*'();:@&=+$,/?#[] ' when percent-encoded; a URL with no userinfo yields ('', '').",
+        "subject": "requests.utils.get_auth_from_url",
+        "hunk_ids": [],
+        "cited_from": "tests/test_utils.py test_get_auth_from_url rows, verbatim: (\"'http://user:pass%20pass@complex.url.com/path?query=yes', ('user', 'pass pass')\", \"'http://user%25user:pass@complex.url.com/path?query=yes', ('user%user', 'pass')\", \"'http://user:pass%23pass@complex.url.com/path?query=yes', ('user', 'pass#pass')\", \"'http://complex.url.com/path?query=yes', ('', '')\"). Also USER = PASSWORD = \"%!*'();:@&=+$,/?#[] \" with ENCODED_* = compat.quote(...) and the URL 'http://' + ENCODED_USER + ':' + ENCODED_PASSWORD + '@' + 'request.com/url.html#test' expecting (USER, PASSWORD)."
+      },
+      {
+        "id": "R2",
+        "statement": "HTTPAdapter.proxy_headers(proxy) must parse credentials out of the proxy URL and, when a username is present, return {'Proxy-Authorization': 'Basic <b64(user:pass)>'} — including a non-empty proxy URL password such that user:pass maps to base64 dXNlcjpwYXNz and an empty password (user:@) still emits the Basic header with base64 dXNlcjo=.",
+        "subject": "requests.adapters.HTTPAdapter.proxy_headers",
+        "hunk_ids": [],
+        "cited_from": "tests/test_requests.py: def test_proxy_auth(self): adapter.proxy_headers(\"http://user:pass@httpbin.org\"); assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}  ; def test_proxy_auth_empty_pass(self): adapter.proxy_headers(\"http://user:@httpbin.org\"); assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "prepend_scheme_if_needed preserves userinfo/authentication credentials embedded in the input URL across scheme prepending: when the URL's auth component (as parsed by urllib3's parse_url) is non-empty, the returned URL's authority (netloc, reconstructed via urlunparse) includes 'auth@' prefixed onto the host[:port] so the credentials are not dropped from the result.",
+        "subject": "requests.utils.prepend_scheme_if_needed",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis covers only get_auth_from_url percent-decoding and proxy_headers Proxy-Authorization construction — both verified against tests for those exact functions. Neither states anything about prepend_scheme_if_needed or about preserving userinfo when prepending a scheme and reconstructing netloc via urlunparse, so no visible info pins down that specific behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_prepend_scheme_if_needed_auth",
+      "test_source": "def test_prepend_scheme_if_needed_auth():\n    from requests.utils import prepend_scheme_if_needed\n    assert prepend_scheme_if_needed('//user:pass@example.com', 'http') == 'http://user:pass@example.com'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The target R1 says prepend_scheme_if_needed must re-attach the auth/userinfo parsed by urllib3's parse_url into the returned authority (netloc) when the input's auth component is non-empty. Gold code does `if auth: netloc = '@'.join([auth, netloc])`; buggy code lacks that block, so auth gets silently dropped. I feed a scheme-less URL carrying userinfo in its authority, `//user:pass@example.com` (netloc present, scheme absent, auth='user:pass'), and prepend 'http'. Gold returns `http://user:pass@example.com` (auth preserved, PASSED); buggy returns `http://example.com` (auth dropped, FAILED). This auth-bearing input is not pinned by any visible test: the only visible prepend_scheme_if_needed assertions use `example.com/path`, `//example.com/path`, `example.com:80` — none carry credentials — and urldefragauth tests exercise a different function that strips auth. The candidate was run against both programs with the exact source below."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue (psf__requests-6028) is a proxy-authentication regression: a request made through a username/password proxy returns HTTP 407 on CPython 3.8.12 while returning 200 on other Python versions; reporter links it to the urllib urlparse behavior change in Python 3.8.12. The 200-vs-407 regression itself is not unit-testable locally without a real authenticated proxy, but it is the high-level outcome of the parsing behavior covered by R1/R2."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Proxy credentials flow through two paths that both rely on requests.utils.get_auth_from_url: (a) requests/adapters.py HTTPAdapter.proxy_headers (used by proxy_manager_for/get_connection on the HTTPAdapter side) and (b) sessions.py SessionRedirectMixin.rebuild_proxies (which sets headers['Proxy-Authorization'] only when both username and password are truthy)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "get_auth_from_url in requests/utils.py currently does: parsed = urlparse(url); return (unquote(parsed.username), unquote(parsed.password)) with a fallback to ('','') on AttributeError/TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Benchmark is post-2.27.0 'dev' per HISTORY.md, so no changelog entry for this fix exists yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test coverage for this area lives in tests/test_utils.py (TestGetAuthFromUrlPercent / test_get_auth_from_url) and tests/test_requests.py (test_proxy_auth, test_proxy_auth_empty_pass, test_proxy_authorization_preserved_on_request)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is in requests.utils.prepend_scheme_if_needed. urllib3's parse_url returns auth separately from netloc (netloc never contains auth), so without this fix prepending a scheme to a URL carrying credentials (notably an authenticated proxy URL) would silently discard its userinfo, which is the mechanism behind the HTTP 407 proxy-auth regression."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The auth re-injection only runs when parse_url yields a truthy auth value; '@'.join([auth, netloc]) reattaches the userinfo (which may itself contain 'user:pass') before scheme/path defaulting and urlunparse reconstruction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This same prepend_scheme_if_needed function (and its netloc/auth handling) is mirrored conceptually in requests.utils.urldefragauth, which strips auth using netloc.rsplit('@', 1)[-1]; urldefragauth was not changed by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined every file in the oracle. The requirement R1 is about `requests.utils.prepend_scheme_if_needed` preserving userinfo/auth credentials when they're embedded in a (scheme-less) URL whose urllib3 parse_url auth component is non-empty.\n\nThe only oracle tests that touch `prepend_scheme_if_needed` live in `tests/test_utils.py` (`test_prepend_scheme_if_needed`, parametrized with `example.com/path`, `//example.com/path`, `example.com:80`), and that whole file is labeled [VISIBLE]. Moreover, its inputs contain NO auth userinfo whatsoever, so even ignoring the VISIBLE constraint those assertions do not test R1's auth-preservation behavior and would pass identically on buggy and gold programs.\n\nAll other ostensibly related tests (`test_proxy_auth`, `test_proxy_auth_empty_pass`, `test_select_proxies`, `test_proxy_authorization_preserved_on_request`, digest/proxy tests in test_requests.py and test_lowlevel.py) are also [VISIBLE] and either don't route an auth-bearing scheme-less proxy URL through `prepend_scheme_if_needed`'s new re-injection path or exercise a different behavior entirely (plain proxy provisioning, env-var proxies with explicit scheme, request-header preservation) rather than R1's specific netloc re-injection.\n\nThe only [HIDDEN]-labeled files in the oracle are test infrastructure/helpers (`test_packages.py`, `conftest.py`, `tests/compat.py`, `tests/utils.py`, `tests/__init__.py`, `testserver/server.py`, `testserver/__init__.py`) — none of them assert any prepend_scheme_if_needed/auth-preservation behavior.\n\nSince no oracle assertion drawn from [HIDDEN] content tests R1's auth-preservation, and no test is even currently recorded as failing against the buggy program, there is no qualified witness. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (requests.utils.prepend_scheme_if_needed): prepend_scheme_if_needed preserves userinfo/authentication credentials embedded in the input URL across scheme prepending: when the URL's auth component (as parsed by urllib3's parse_url) is non-empty, the returned URL's authority (netloc, reconstructed via urlunparse) includes 'auth@' prefixed onto the host[:port] so the credentials are not dropped from the result. — not entailed by S_vis (S_vis covers only get_auth_from_url percent-decoding and proxy_headers Proxy-Authorization construction — both verified against tests for those exact functions. Neither states anything about prepend_scheme_if_needed or about preserving userinfo when prepending a scheme and reconstructing netloc via urlunparse, so no visible info pins down that specific behavior.); confirmed by a synthesized witness: The target R1 says prepend_scheme_if_needed must re-attach the auth/userinfo parsed by urllib3's parse_url into the returned authority (netloc) when the input's auth component is non-empty. Gold code does `if auth: netloc = '@'.join([auth, netloc])`; buggy code lacks that block, so auth gets silently dropped. I feed a scheme-less URL carrying userinfo in its authority, `//user:pass@example.com` (netloc present, scheme absent, auth='user:pass'), and prepend 'http'. Gold returns `http://user:pass@example.com` (auth preserved, PASSED); buggy returns `http://example.com` (auth dropped, FAILED). This auth-bearing input is not pinned by any visible test: the only visible prepend_scheme_if_needed assertions use `example.com/path`, `//example.com/path`, `example.com:80` — none carry credentials — and urldefragauth tests exercise a different function that strips auth. The candidate was run against both programs with the exact source below.",
+    "confidence": "Medium"
+  }
+}

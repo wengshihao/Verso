@@ -1,0 +1,120 @@
+{
+  "task_id": "django__django-16950",
+  "status": "ok",
+  "duration_seconds": 852.1738792080432,
+  "llm_calls": 39,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16950",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the Django admin adds a parent object together with an inline child whose ForeignKey references the parent via to_field pointing at a distinct non-editable field that carries a callable default (a UUIDField with default=uuid.uuid4), the add-and-save flow must preserve that referenced field's generated default instead of setting it to None, so the parent object is created with a non-null value for that field and the inline child is saved referencing it successfully.",
+        "subject": "BaseInlineFormSet.add_fields / admin inline add path (django/forms/models.py; ModelAdmin._changeform_view/save_related)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: models declare 'id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)' and a child with 'thing = models.ForeignKey('bugapp.Thing', to_field='id', ...)'. Report: 'When logging into the admin, if you delete all of the entries for \"subthings\", add a name, and save the model, it will work. As soon as you try to add a subthing alongside the main Thing, it fails with the following exception ... It shows that the value of \"id\" in the Thing model is being set to null.' The relevant existing code in BaseInlineFormSet.add_fields: 'if self.instance._state.adding: ... if kwargs.get(\"to_field\") is not None: to_field = ... else: to_field = self.instance._meta.pk; if to_field.has_default(): setattr(self.instance, to_field.attname, None)'"
+      },
+      {
+        "id": "R2",
+        "statement": "The admin add operation for a model that alone (with no inline child) saves successfully must also complete successfully when one valid inline child is provided along with it, given the child's ForeignKey targets the parent's default-bearing unique non-pk field; that is, presence of the inline must be the only difference between the failing and succeeding scenario.",
+        "subject": "ModelAdmin add view + save_model for an object that is simultaneously the to_field subject of an inline",
+        "hunk_ids": [],
+        "cited_from": "Issue report: 'if you delete all of the entries for \"subthings\", add a name, and save the model, it will work. As soon as you try to add a subthing alongside the main Thing, it fails with the following exception: ... It shows that the value of \"id\" in the Thing model is being set to null. I believe this is a bug in django.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "imp-1",
+        "statement": "When BaseInlineFormSet.add_fields runs for an unsaved parent instance (the parent's _state.adding is truthy) and the child's ForeignKey references a to_field of the parent that is a distinct field from the parent model's own pk and has a default, the formset must clear that to_field attribute on the parent instance to None only when the set has no submitted form data; if bound form data is present the attribute's value is preserved (not nulled), so a to_field key selected/supplied through the submitted inline data is kept and used rather than being reset.",
+        "subject": "django.forms.models.BaseInlineFormSet.add_fields",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "imp-2",
+        "statement": "When BaseInlineFormSet.add_fields runs for an unsaved parent instance and the FK's to_field is the parent model's own pk (i.e. to_field.attname equals the pk field name) and that pk has a default, the formset clears the pk attribute on the parent instance to None regardless of whether bound form data is present, so a fresh auto-generated primary key is produced for the parent on save.",
+        "subject": "django.forms.models.BaseInlineFormSet.add_fields",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "imp-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1/R2 establish that in the admin inline-add flow the parent's default-bearing distinct to_field must be preserved rather than nulled (R1 states 'preserve that referenced field's generated default instead of setting it to None', matching the bound-form admin reproduction). However, imp-1 codifies a specific bound/unbound conditional (clear only when no submitted data), and S_vis says nothing about the unbound branch or that the clearing must be gated on absence of data, so the full exact behavior is not pinned down."
+      },
+      {
+        "requirement_id": "imp-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "imp-2 describes behavior for the case where the FK's to_field is the parent's own pk (clearing the pk regardless of bound form data to regenerate a fresh key). Both S_vis R1 and R2 frame the reported scenario exclusively as a to_field distinct from the parent pk (a UUID non-pk unique field), and no S_vis evidence addresses the pk-as-to_field branch or the fresh-auto-key regeneration behavior."
+      }
+    ],
+    "target_requirement_id": "imp-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I chased requirement [imp-2] by diffing the only hunk (django/forms/models.py: BaseInlineFormSet.add_fields). The gold change adds a bound-form-data suppression guard to the parent-add clearing:\n  buggy: if to_field.has_default(): setattr(self.instance, to_field.attname, None)\n  gold : if to_field.has_default() and (to_field.attname == parent.pk.name or not form.data): setattr(...)\nimp-2 describes the case where the child FK's to_field is the parent's OWN pk (to_field.attname == pk name) and that pk has a default: the parent pk must be cleared to None regardless of bound data so a fresh auto pk is produced on save. Notice that in the pk sub-case the gold condition is true no matter what form.data is, so gold and buggy do exactly the same thing there (both clear). \n\nI verified this mechanically in the harness with a working in-process Django/SQLite setup using the repo's UUIDPKParent/UUIDPKChild models (FK to_field = parent's uuid pk, which has a default): in the bound-data parent-add scenario both gold and buggy clear the parent pk (InlineForeignKeyField for the inline 'parent' field has initial None), i.e. the same assertion PASSES on gold AND on buggy. So there is no assertion on imp-2's actual pk branch that fails on buggy yet passes on gold — it is behaviourally unchanged by the fix, and visible regression tests already cover it.\n\nThe only branch altered by the patch is the sibling case (defaulted NON-pk to_field with bound form data, e.g. ParentWithUUIDAlternateKey/ChildRelatedViaAK), where I confirmed gold leaves the parent's alternate key untouched while buggy wrongly nulls it. That discriminates gold from buggy but corresponds to the sibling non-pk bound-suppression requirement, not to imp-2's pk-always-cleared premise. I therefore found no genuine witness for imp-2 itself."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug domain is django/contrib/admin + django/forms/models. Intest on save-the-parent path: ModelAdmin._changeform_view builds formsets via _create_formsets for the unsaved instance, then (all_valid -> save_form -> save_model -> save_related) which calls each inline formset.save()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant mechanism lives in BaseInlineFormSet.add_fields in django/forms/models.py; for a parent being added it nulls any to_field that has a default: 'if self.instance._state.adding: ... if to_field.has_default(): setattr(self.instance, to_field.attname, None)'. That is the code that would produce a NULL 'id' for the reported UUID-to_field inline scenario."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo's own model/test files (tests/admin_inlines/*, django/forms/models.py) do not already reproduce this UUID-to_field-inline case; the repro is described only in the issue report text, so S_vis is grounded in that report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ForeignKey defined child->parent via to_field vs pk is handled throughout by kwargs['to_field'] = self.fk.remote_field.field_name (non-pk related field) in BaseInlineFormSet.add_fields, and InlineForeignKeyField / _construct_form set the fk value from self.instance."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The modified logic only executes when the inline formset's parent instance is being added (self.instance._state.adding truthy); for a pre-existing saved parent no such clearing/attribute reset is performed by this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'form.data present' test inside the new condition is how the patch distinguishes a bound formset (non-empty data) from an unbound one (empty data); clearing a defaulted to_field is suppressed only in the bound case for non-pk targets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "to_field here is resolved against the parent instance's own Meta (self.instance._meta), while self.fk.remote_field.model is the parent model whose _meta.pk.name provides the pk reference used in the new guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The scenario fixed is: child FK pointing at a parent non-pk unique field that carries a default (e.g. an auto-generated key), where submitted data selects a specific parent value that was previously being wrongly nulled."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [imp-2]: Target requirement imp-2 concerns BaseInlineFormSet.add_fields clearing an unsaved parent's pk attribute (a pk field that has a default and is the FK's to_field target, i.e. to_field.attname == pk field name) to None regardless of whether bound form data is present, so a fresh auto-generated pk is produced on save.\n\nI investigated the oracle test corpus for a test that genuinely witnesses this behavior and that rests only on [HIDDEN] content. The behavior is exercised, in the repo, by the UUID-parent inline scenarios in tests/model_formsets (UUIDPKParent/UUIDPKChild, AutoPKParent/UUIDPKChildOfAutoPKParent, etc.) and by the to_field alternate-key scenario (ParentWithUUIDAlternateKey/ChildRelatedViaAK). However:\n\n1. The entire model_formsets/test_uuid.py (which holds tests like test_inlineformset_factory_nulls_default_pks, test_inlineformset_factory_ignores_default_pks_on_submit, and the alternate-key variants that are the closest analogues to imp-2) is labeled [VISIBLE] content. Under the Verso rule, a Witness may never rest on [VISIBLE] assertions, because those were never hidden from a repair system.\n2. I also inspected the other inline/admin candidate files (tests/admin_inlines/models.py, admin.py, tests.py, urls.py; tests/inline_formsets/models.py, tests.py; tests/model_formsets/models.py; tests/model_formsets_regress/models.py and tests.py). The admin_inlines code contains no pk-with-default / to_field parent-add scenario matching imp-2, and those files either lack the scenario or are [VISIBLE]. No [HIDDEN] test file contains an assertion that a defaulted parent pk is cleared to None on an unsaved/inline parent add while the formset is bound.\n3. The requirement text specifically predicates the clearing on whether bound-form data is present (the sibling 'non-pk to_field' requirement has the bound-suppression guard; imp-2 keeps the pk relation always cleared). I could not locate any [HIDDEN] assertion that discriminates that exact case.\n\nAdditionally, I was unable to mechanically confirm pass/fail of candidate executions because the isolated run harness does not configure a Django settings/test database for these model-backed test modules (several attempts produced 'Django settings are not configured' / module-collection failures). Even setting that aside, the only candidate assertions matching imp-2 are [VISIBLE], which disqualify them from serving as a witness regardless of run outcome.\n\nConclusion: no genuine [HIDDEN]-content oracle test witnesses requirement imp-2, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [imp-2]: I chased requirement [imp-2] by diffing the only hunk (django/forms/models.py: BaseInlineFormSet.add_fields). The gold change adds a bound-form-data suppression guard to the parent-add clearing:\n  buggy: if to_field.has_default(): setattr(self.instance, to_field.attname, None)\n  gold : if to_field.has_default() and (to_field.attname == parent.pk.name or not form.data): setattr(...)\nimp-2 describes the case where the child FK's to_field is the parent's OWN pk (to_field.attname == pk name) and that pk has a default: the parent pk must be cleared to None regardless of bound data so a fresh auto pk is produced on save. Notice that in the pk sub-case the gold condition is true no matter what form.data is, so gold and buggy do exactly the same thing there (both clear). \n\nI verified this mechanically in the harness with a working in-process Django/SQLite setup using the repo's UUIDPKParent/UUIDPKChild models (FK to_field = parent's uuid pk, which has a default): in the bound-data parent-add scenario both gold and buggy clear the parent pk (InlineForeignKeyField for the inline 'parent' field has initial None), i.e. the same assertion PASSES on gold AND on buggy. So there is no assertion on imp-2's actual pk branch that fails on buggy yet passes on gold — it is behaviourally unchanged by the fix, and visible regression tests already cover it.\n\nThe only branch altered by the patch is the sibling case (defaulted NON-pk to_field with bound form data, e.g. ParentWithUUIDAlternateKey/ChildRelatedViaAK), where I confirmed gold leaves the parent's alternate key untouched while buggy wrongly nulls it. That discriminates gold from buggy but corresponds to the sibling non-pk bound-suppression requirement, not to imp-2's pk-always-cleared premise. I therefore found no genuine witness for imp-2 itself."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[imp-2] (django.forms.models.BaseInlineFormSet.add_fields) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I chased requirement [imp-2] by diffing the only hunk (django/forms/models.py: BaseInlineFormSet.add_fields). The gold change adds a bound-form-data suppression guard to the parent-add clearing:\n  buggy: if to_field.has_default(): setattr(self.instance, to_field.attname, None)\n  gold : if to_field.has_default() and (to_field.attname == parent.pk.name or not form.data): setattr(...)\nimp-2 describes the case where the child FK's to_field is the parent's OWN pk (to_field.attname == pk name) and that pk has a default: the parent pk must be cleared to None regardless of bound data so a fresh auto pk is produced on save. Notice that in the pk sub-case the gold condition is true no matter what form.data is, so gold and buggy do exactly the same thing there (both clear). \n\nI verified this mechanically in the harness with a working in-process Django/SQLite setup using the repo's UUIDPKParent/UUIDPKChild models (FK to_field = parent's uuid pk, which has a default): in the bound-data parent-add scenario both gold and buggy clear the parent pk (InlineForeignKeyField for the inline 'parent' field has initial None), i.e. the same assertion PASSES on gold AND on buggy. So there is no assertion on imp-2's actual pk branch that fails on buggy yet passes on gold — it is behaviourally unchanged by the fix, and visible regression tests already cover it.\n\nThe only branch altered by the patch is the sibling case (defaulted NON-pk to_field with bound form data, e.g. ParentWithUUIDAlternateKey/ChildRelatedViaAK), where I confirmed gold leaves the parent's alternate key untouched while buggy wrongly nulls it. That discriminates gold from buggy but corresponds to the sibling non-pk bound-suppression requirement, not to imp-2's pk-always-cleared premise. I therefore found no genuine witness for imp-2 itself.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-12304",
+  "status": "ok",
+  "duration_seconds": 177.03649304201826,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12304",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Enumeration/Choices classes (e.g. TextChoices YearInSchool, IntegerChoices Suit) and their members, when referenced inside a Django template expression such as an {% if %} comparison, must be usable without the template engine invoking them — i.e. a template like '{% if student.year_in_school == YearInSchool.FRESHMAN %}' must not trigger a no-argument call of the class that then fails because the class requires a value argument.",
+        "subject": "django.db.models.Choices template resolution",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"{% if student.year_in_school == YearInSchool.FRESHMAN %} This is because YearInSchool, being a class, is callable, and Django Templates always call callables with no arguments. The call fails because the required value argument is missing.\" Also setup in the issue: \"This doesn't work: {% if student.year_in_school == YearInSchool.FRESHMAN %}\" and the docstring in django/db/models/enums.py ''__str__'' : 'Use value when cast to str, so that Choices set as model instance attributes are rendered as expected in templates and similar contexts.'"
+      },
+      {
+        "id": "R2",
+        "statement": "Each Choices subclass (Choices, IntegerChoices, TextChoices, and enums derived from models.Choices) must carry the template 'do_not_call_in_templates' marker so that Django templates treat references to these classes as plain (non-callable) values rather than invoking them with no arguments.",
+        "subject": "django.db.models.Choices do_not_call_in_templates flag",
+        "hunk_ids": [],
+        "cited_from": "Issue proposed fix: \"The easy solution would be to declare do_not_call_in_templates = True on the various Choices classes.\" Mechanism quoted from django/template/base.py: \"if callable(current):\n    if getattr(current, 'do_not_call_in_templates', False):\n        pass\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Every Choices class created through ChoicesMeta — including Choices, IntegerChoices, TextChoices, and any user-defined subclass of these — gets a class attribute 'do_not_call_in_templates' whose value is True (i.e. it is set when the class is created, not merely inherited through MRO lookup).",
+        "subject": "ChoicesMeta.__new__ / Choices class creation",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A bare reference to a Choices class (or any subclass) used as a template variable resolves to the class object itself rather than being invoked with zero arguments and failing, because template resolution treats it as non-callable (do_not_call_in_templates is set).",
+        "subject": "Choices template variable resolution",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis establishes that Choices classes must carry do_not_call_in_templates so template references aren't invoked, but the visible evidence (issue suggests 'declare do_not_call_in_templates = True on the various Choices classes') does not pin down that S_impl's distinguishing detail — the attribute is set to True per-class at ChoicesMeta creation time for every subclass, not merely obtained via MRO inheritance. The functional requirement is covered, but this implementation distinction is not visible."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 and R2 directly pin down that a bare reference to a Choices class/subclass inside a template must resolve without being zero-argument invoked, precisely because the do_not_call_in_templates marker makes template resolution treat the class as non-callable, matching S_impl R2's described behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "DoNotCallInTemplatesTests::test_set_on_class_creation",
+      "test_source": "import unittest\nfrom django.db import models\n\n\nclass DoNotCallInTemplatesTests(unittest.TestCase):\n    def test_set_on_class_creation(self):\n        for cls in (models.Choices, models.IntegerChoices, models.TextChoices):\n            self.assertIn('do_not_call_in_templates', cls.__dict__)\n            self.assertIs(cls.do_not_call_in_templates, True)\n\n        class MyEnum(models.TextChoices):\n            ALPHA = 'a', 'Alpha'\n\n        self.assertIn('do_not_call_in_templates', MyEnum.__dict__)\n        self.assertIs(MyEnum.do_not_call_in_templates, True)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError: 'do_not_call_in_templates' not found in mappingproxy(...) at line 10 (models.Choices.__dict__)",
+      "explanation": "The target requirement [R1] is that every Choices class created through ChoicesMeta (Choices, IntegerChoices, TextChoices, and any user-defined subclass) has do_not_call_in_templates = True set directly in its own __dict__ at class-creation time (not merely inherited via MRO). The gold patch adds exactly this one line (cls.do_not_call_in_templates = True) in ChoicesMeta.__new__. The witness probes each relevant class for the attribute being present in its own class __dict__ (assertIn), which is precisely the \"set at creation, present in own __dict__, not inherited\" semantics R1 describes, and asserts the value is True. This is genuinely discriminative: run against gold it PASSED; against buggy it FAILED on the very first iteration because the buggy ChoicesMeta never injects the attribute so models.Choices.__dict__ lacks it entirely (an inherited/absent attribute is not in its own __dict__, so assertIn catches the pre-fix failure). It is not co-located coincidence: django/db/models/enums.py contains no other use/definition of do_not_call_in_templates, and the S_vis/oracle material (tests/model_enums/tests.py, tests/template_tests/test_callables.py) contains no assertion tying that flag to any Choices/ChoicesMeta class — the do_not_call_in_templates machinery there is exercised only via unrelated generic Doodad classes. So the observed default behavior for a Choices class was manifestly not pinned by anything visible."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The enum/choices types live in django/db/models/enums.py and define ChoicesMeta (an EnumMeta) plus Choices, IntegerChoices(int, Choices), TextChoices(str, Choices)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A Choices class is internally callable because enum classes invoke their metaclass __call__ to instantiate members by value (e.g. TextChoices('FR'))."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Django template variable resolution in django/template/base.py Variable._resolve_lookup() calls any callable value with no arguments unless it has do_not_call_in_templates (or alters_data) set; when that call raises TypeError it substitutes string_if_invalid. So bare references to a Choices class in a template ('{% if student.year_in_school == YearInSchool.FRESHMAN %}') currently get invoked with zero args and fail. See existing tests in tests/template_tests/test_callables.py for the generic do_not_call_in_templates machinery."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Choices.__str__ already documents that members stringify to their .value 'so that Choices set as model instance attributes are rendered as expected in templates and similar contexts' (existing behavior, not the change)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/model_enums/tests.py covers the Choices API (labels, values, containment, functional API, empty labels, str of members) but contains no template/template-resolution regression test for this issue; visible tests do not encode the template usability requirement directly."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue proposes the fix: 'The easy solution would be to declare do_not_call_in_templates = True on the various Choices classes.'"
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only developer-patch change (H0) is a single added line in ChoicesMeta.__new__: cls.do_not_call_in_templates = True, placed right after the cls.label property is defined and before enum.unique(cls)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The metaclass applies to Choices itself and is inherited by IntegerChoices(int, Choices), TextChoices(str, Choices), and any user-defined subclass, so all of these get the attribute set during class creation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The template-resolution behavior (R2) is produced by Django's generic Variable._resolve_lookup() honoring do_not_call_in_templates; this patch just sets the marker that those generic mechanics consume."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real oracle already contains a test witnessing R1 (Choices/IntegerChoices/TextChoices and user-defined subclasses get do_not_call_in_templates=True set at class creation time).\n\nWhat I checked:\n- tests/model_enums/tests.py (the file that would naturally house a Choices/ChoicesMeta test): it is entirely [VISIBLE] and covers the Choices API (labels/values/containment/functional API/str), but contains NO assertion about do_not_call_in_templates and no template-resolution regression test.\n- tests/template_tests/test_callables.py: also [VISIBLE], and its do_not_call_in_templates assertions are about generic Doodad classes exercising the template machinery; none references a Choices/ChoicesMeta class, so none tests the requirement that the flag is set on Choices class creation.\n- tests/model_enums/__init__.py: the only [HIDDEN] content in the relevant package, and its body is empty, so no hidden test lives there.\n- The benchmark records \"(none recorded)\" tests currently failing against the buggy program; a genuine witness must fail against the buggy build, and no such test is present.\n\nI confirmed mechanically that a hypothetical direct assertion (flag present in the class's own __dict__) does distinguish gold (PASSED) from buggy (FAILED) — so the behavior described by R1 is real and observable. But no such assertion exists in the pre-existing oracle's [HIDDEN] content; everything relevant I could read is [VISIBLE] and does not encode this requirement. Since a Witness must rest on [HIDDEN] assertions that the oracle genuinely enforces, no such test exists here. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ChoicesMeta.__new__ / Choices class creation): Every Choices class created through ChoicesMeta — including Choices, IntegerChoices, TextChoices, and any user-defined subclass of these — gets a class attribute 'do_not_call_in_templates' whose value is True (i.e. it is set when the class is created, not merely inherited through MRO lookup). — not entailed by S_vis (S_vis establishes that Choices classes must carry do_not_call_in_templates so template references aren't invoked, but the visible evidence (issue suggests 'declare do_not_call_in_templates = True on the various Choices classes') does not pin down that S_impl's distinguishing detail — the attribute is set to True per-class at ChoicesMeta creation time for every subclass, not merely obtained via MRO inheritance. The functional requirement is covered, but this implementation distinction is not visible.); confirmed by a synthesized witness: The target requirement [R1] is that every Choices class created through ChoicesMeta (Choices, IntegerChoices, TextChoices, and any user-defined subclass) has do_not_call_in_templates = True set directly in its own __dict__ at class-creation time (not merely inherited via MRO). The gold patch adds exactly this one line (cls.do_not_call_in_templates = True) in ChoicesMeta.__new__. The witness probes each relevant class for the attribute being present in its own class __dict__ (assertIn), which is precisely the \"set at creation, present in own __dict__, not inherited\" semantics R1 describes, and asserts the value is True. This is genuinely discriminative: run against gold it PASSED; against buggy it FAILED on the very first iteration because the buggy ChoicesMeta never injects the attribute so models.Choices.__dict__ lacks it entirely (an inherited/absent attribute is not in its own __dict__, so assertIn catches the pre-fix failure). It is not co-located coincidence: django/db/models/enums.py contains no other use/definition of do_not_call_in_templates, and the S_vis/oracle material (tests/model_enums/tests.py, tests/template_tests/test_callables.py) contains no assertion tying that flag to any Choices/ChoicesMeta class — the do_not_call_in_templates machinery there is exercised only via unrelated generic Doodad classes. So the observed default behavior for a Choices class was manifestly not pinned by anything visible.",
+    "confidence": "Medium"
+  }
+}

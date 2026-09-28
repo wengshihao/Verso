@@ -1,0 +1,134 @@
+{
+  "task_id": "django__django-13315",
+  "status": "ok",
+  "duration_seconds": 513.9593921670457,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13315",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "When the `limit_choices_to` of a ForeignKey model field is a Q object whose lookups traverse a join (multi-valued relation), the model form field generated for that ForeignKey must not render duplicate options: each distinct matching related object must appear at most once in the field's choices/queryset, even though the join-filtered queryset would naturally return duplicate rows.",
+        "subject": "ModelChoiceField queryset used by ForeignKey formfield (django.forms.models.ModelChoiceIterator / apply_limit_choices_to_to_formfield)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"If you pass a Q object as limit_choices_to on a ForeignKey field involving a join, you may end up with duplicate options in your form.\""
+      },
+      {
+        "id": "2",
+        "statement": "Passing a Q object as `limit_choices_to` to a ForeignKey field must still correctly restrict which related objects are selectable in the resulting form field (the filter expressed by limit_choices_to must be honored) — it must not broaden or drop the intended restriction when the join produces duplicate base rows.",
+        "subject": "ForeignKey.limit_choices_to applied to ModelChoiceField queryset (django/forms/models.py apply_limit_choices_to_to_formfield; ForeignKey.formfield queryset = related_model._default_manager)",
+        "hunk_ids": [],
+        "cited_from": "Issue: description of limit_choices_to Q filtering that \"may end up with duplicate options\" (duplicates imply the correct filtered set must still be the option population); tests/model_forms/tests.py `LimitChoicesToTests.test_limit_choices_to_callable_for_fk_rel` shows the FK form field's queryset limited to only matching objects (e.g. only `threepwood`), corroborated by `fields_for_model(StumpJoke, ['has_fooled_today'])` returning only the matching object."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When apply_limit_choices_to_to_formfield restricts a form field's queryset with a limit_choices_to whose lookups match a candidate object more than once (e.g. by traversing a multi-valued/related field), every matching object appears at most once in the resulting formfield.queryset (no duplicate objects / no duplicate options), instead of once per matching row.",
+        "subject": "apply_limit_choices_to_to_formfield resulting queryset cardinality",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "apply_limit_choices_to_to_formfield still applies the limit_choices_to restriction: when get_limit_choices_to() resolves to a non-empty value, the form field's queryset is filtered so that only objects for which the limit_choices_to conditions hold are retained (membership/restriction semantics are preserved).",
+        "subject": "apply_limit_choices_to_to_formfield filtering semantics",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When get_limit_choices_to() resolves to a falsy value (such as None or an empty mapping/dict), apply_limit_choices_to_to_formfield does not restrict the queryset — the form field keeps its original unfiltered queryset.",
+        "subject": "apply_limit_choices_to_to_formfield no-op on falsy limit",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis[1] states plainly that a ForeignKey form field with a Q-object limit_choices_to traversing a join must not render each distinct matching related object more than once in the field's choices/queryset, which is exactly R1's no-duplicate cardinality requirement. S_vis[2] corroborates that the correct filtered option set must remain the population."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis[2] directly commits to the same behavior R2 describes: a Q-object limit_choices_to must still restrict which objects are selectable (only matching objects retained), not broadening or dropping the restriction when the join duplicates base rows."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "Neither S_vis entry mentions a falsy/get_limit_choices_to() resolving to None or empty dict case or a no-op guard when limit_choices_to is falsy; the visible evidence is entirely about duplicate-suppression and filter application on a non-empty Q restriction, so R3's no-op behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_empty_dict_limit_choices_to_is_noop",
+      "test_source": "def test_empty_dict_limit_choices_to_is_noop():\n    from django.forms.models import apply_limit_choices_to_to_formfield\n\n    class FakeQS:\n        def complex_filter(self, limit):\n            raise AssertionError(\"falsy limit {0!r} must NOT reach complex_filter\".format(limit))\n        model = None\n\n    class FakeFormField:\n        def __init__(self):\n            self._queryset = FakeQS()\n        @property\n        def queryset(self):\n            return self._queryset\n        @queryset.setter\n        def queryset(self, value):\n            self._queryset = value\n        def get_limit_choices_to(self):\n            return {}\n\n    ff = FakeFormField()\n    original = ff.queryset\n    apply_limit_choices_to_to_formfield(ff)\n    assert ff.queryset is original, \"queryset should be left unchanged when limit_choices_to is falsy\"\n",
+      "gold_result": "PASSED — empty-dict limit_choices_to {} is falsy under gold's `if limit_choices_to:` guard, so the whole restriction block is skipped and the formfield's queryset object is left untouched (identity preserved).",
+      "buggy_result": "FAILED — under buggy's `if limit_choices_to is not None:` guard the empty mapping {} is not None, so `formfield.queryset.complex_filter({})` is invoked (my FakeQS raises AssertionError when it reaches complex_filter), confirming the falsy-but-non-None limit is NOT treated as a no-op.",
+      "explanation": "R3 requires that when formfield.get_limit_choices_to() resolves to a falsy value (None OR an empty mapping/dict), apply_limit_choices_to_to_formfield leaves the form field's queryset untouched (original unfiltered queryset preserved). The gold fix changes the guard from the buggy `if limit_choices_to is not None:` to a truthiness check `if limit_choices_to:`. The discriminating falsy value is an EMPTY DICT {} — it is falsy yet not None, so: buggy takes the `is not None` branch and calls formfield.queryset.complex_filter({}) (reaching complex_filter / reassigning the queryset), whereas gold's truthiness guard treats {} as falsy and performs a true no-op, keeping the queryset object identical. I built a duck-typed FakeFormField (queryset property + get_limit_choices_to returning {}) and a FakeQS whose complex_filter raises if ever reached. Against gold the test PASSED (queryset identity unchanged → whole restriction block skipped); against buggy it FAILED with the AssertionError proving complex_filter was invoked. No visible test (LimitChoicesToTests, test_modelchoicefield.py, model_formsets, etc.) exercises a falsy/empty limit — they all use non-falsy dict/Q callables that assert matching rows, so this empty-mapping no-op scenario is not already pinned down by visible oracles. Execution confirmed on both programs with this exact source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is django/django bug django__django-13315; the issue text references a regression test that lives only 'in patch' so no concrete data model/output witness for the duplicate-options scenario is present in this checkout."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The limit_choices_to plumbing is split across layers: RelatedField.formfield passes limit_choices_to into ModelChoiceField (django/db/models/fields/related.py), and the actual restricting queryset is built in django/forms/models.py `apply_limit_choices_to_to_formfield` via `formfield.queryset.complex_filter(limit_choices_to)`; ModelChoiceField.choices returns a fresh ModelChoiceIterator each access and iterates that queryset to produce the option list, so any multiplicities in the filtered queryset (from join-involving Q lookups) surface as duplicate options."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/model_forms/tests.py contains `LimitChoicesToTests` (test_limit_choices_to_callable_for_fk_rel, test_limit_choices_to_callable_for_m2m_rel, test_fields_for_model_applies_limit_choices_to), which exercise FK/M2M limit_choices_to that uses callables producing dict/Q filters and assert the resulting form field queryset contains exactly the matching objects; no distinct/join-producing case is covered there."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant tests live under tests/model_forms and tests/model_formsets; model behavior under tests/model_fields; the actual regression/scenario models for #13315 are not among the visible tests."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix rewrites django/forms/models.py apply_limit_choices_to_to_formfield to apply limit_choices_to via a correlated Exists() subquery on formfield.queryset.model._base_manager (Q(**limit_choices_to) & Q(pk=OuterRef('pk'))) and then .filter() the formfield's queryset with that Exists(), rather than directly .complex_filter(limit_choices_to). The Exists/subquery approach avoids projecting the joined limit-choices-to lookups into the outer queryset rows, which is what previously caused duplicate options."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch also changes the guard condition from the old 'limit_choices_to is not None' to a truthiness check ('if limit_choices_to'), and normalizes non-Q limit_choices_to (plain dicts) into Q(**limit_choices_to) before combining."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "apply_limit_choices_to_to_formfield is invoked from BaseModelForm.__init__ for each form field and, when apply_limit_choices_to is enabled, from fields_for_model; a None/falsy limit_choices_to leaves the field's queryset untouched in both before and after code."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: R3 asserts that when `get_limit_choices_to()` resolves to a falsy value (None, empty dict/Q), `apply_limit_choices_to_to_formfield` is a no-op and the field keeps its unfiltered queryset.\n\nI investigated all the test locations where limit_choices_to/formfield behavior is exercised in this checkout:\n- tests/model_forms/tests.py (`LimitChoicesToTests`, `StumpJoke` scenario), models.py — all [VISIBLE]; these exercise FK/M2M fields whose callables return NON-falsy dict/Q filters (today_callable_dict/today_callable_q) and assert the queryset contains exactly the matching object. None tests a falsy limit value.\n- tests/model_forms/test_modelchoicefield.py, tests/model_formsets/tests.py + models.py — all [VISIBLE]; contain no falsy-limit or no-op assertion for the limit_choices_to guard in apply_limit_choices_to_to_formfield.\n- tests/model_fields/test_foreignkey.py — [VISIBLE]; no relevant limit_choices_to falsy content.\n\nNo test is recorded as failing against the buggy program, and nothing in any oracle file I could read (all labeled [VISIBLE]) tests a falsy limit_choices_to resolving to a no-op. Moreover, per the implementation notes, this falsy-limit no-op behavior is identical in the before (guard `limit_choices_to is not None`, complex_filter on falsy empty = no restriction) and after (truthiness guard) code — it does not diverge between buggy and gold, so no byte-of-the-oracle assertion can pass on gold and fail on buggy *specifically* for R3's falsy no-op claim. The genuinely divergent duplicate-options behavior (which the fix's new Exists/subquery logic addresses) corresponds to a *non-falsy* join-producing filter, i.e. a different requirement, not R3, and no such regression test surfaced in the failing set either. I therefore found no genuine Witness for R3 and report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (apply_limit_choices_to_to_formfield no-op on falsy limit): When get_limit_choices_to() resolves to a falsy value (such as None or an empty mapping/dict), apply_limit_choices_to_to_formfield does not restrict the queryset — the form field keeps its original unfiltered queryset. — not entailed by S_vis (Neither S_vis entry mentions a falsy/get_limit_choices_to() resolving to None or empty dict case or a no-op guard when limit_choices_to is falsy; the visible evidence is entirely about duplicate-suppression and filter application on a non-empty Q restriction, so R3's no-op behavior is not pinned down.); confirmed by a synthesized witness: R3 requires that when formfield.get_limit_choices_to() resolves to a falsy value (None OR an empty mapping/dict), apply_limit_choices_to_to_formfield leaves the form field's queryset untouched (original unfiltered queryset preserved). The gold fix changes the guard from the buggy `if limit_choices_to is not None:` to a truthiness check `if limit_choices_to:`. The discriminating falsy value is an EMPTY DICT {} — it is falsy yet not None, so: buggy takes the `is not None` branch and calls formfield.queryset.complex_filter({}) (reaching complex_filter / reassigning the queryset), whereas gold's truthiness guard treats {} as falsy and performs a true no-op, keeping the queryset object identical. I built a duck-typed FakeFormField (queryset property + get_limit_choices_to returning {}) and a FakeQS whose complex_filter raises if ever reached. Against gold the test PASSED (queryset identity unchanged → whole restriction block skipped); against buggy it FAILED with the AssertionError proving complex_filter was invoked. No visible test (LimitChoicesToTests, test_modelchoicefield.py, model_formsets, etc.) exercises a falsy/empty limit — they all use non-falsy dict/Q callables that assert matching rows, so this empty-mapping no-op scenario is not already pinned down by visible oracles. Execution confirmed on both programs with this exact source.",
+    "confidence": "Medium"
+  }
+}

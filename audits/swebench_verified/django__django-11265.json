@@ -1,0 +1,143 @@
+{
+  "task_id": "django__django-11265",
+  "status": "ok",
+  "duration_seconds": 405.4337669170927,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11265",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "Applying exclude()/a negated filter (e.g. .exclude(book_alice__isnull=False), equivalently .filter(~Q(book_alice__isnull=False))) on a queryset that already has a FilteredRelation annotation whose keyword (book_alice) is referenced in the lookup must not raise django.core.exceptions.FieldError 'Cannot resolve keyword \"book_alice\" into field'; the lookup keyword must still resolve to the annotated FilteredRelation present in the original queryset.",
+        "subject": "Query split_exclude building",
+        "hunk_ids": [],
+        "cited_from": "Issue report traceback ends: \"django.core.exceptions.FieldError: Cannot resolve keyword 'book_alice' into field. Choices are: book, content_object, content_type, content_type_id, favorite_books, id, name, object_id\" ; reporter: \"As far as I understand, the function split_exclude(self, filter_expr, can_reuse, names_with_path) seams to be the faulty one. A new query is created without all extra datas from the original query.\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "Author.objects.annotate(book_alice=FilteredRelation('book', condition=Q(book__title__iexact='poem by alice'))).exclude(book_alice__isnull=False) must behave as the logical complement of the equivalent .filter(book_alice__isnull=False): it must resolve successfully and return exactly the Author rows for which the book_alice filtered relation is null, matching how the working filter case is asserted in the issue (the filter form currently returns [self.author1]).",
+        "subject": "Query split_exclude / filter complement semantics",
+        "hunk_ids": [],
+        "cited_from": "Issue example 'if we change this ... to this' replacing \").filter(book_alice__isnull=False),\\n\\t\\t[self.author1]\" with \").exclude(book_alice__isnull=False),\\n\\t\\t[]\" — i.e. the same annotated queryset with filter swapped for exclude; existing working filter asserted via test_with_join: \"Author.objects.annotate(book_alice=FilteredRelation('book', condition=Q(book__title__iexact='poem by alice'))).filter(book_alice__isnull=False), [self.author1]\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Query.split_exclude() builds the inner NOT IN subquery for an exclude() applied to a filter whose lookup path goes through a relation defined by a FilteredRelation annotation (an m2m / many-branched connection), the freshly created inner Query is seeded with the outer query's FilteredRelation definitions, so the exclude lookup resolves without raising (e.g. a 'Cannot resolve keyword ... into field' field-resolution error).",
+        "subject": "django/db/models/sql/query.py :: Query.split_exclude",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Querying with an exclude() (or equivalent negation) whose rejected condition is evaluated through the generated NOT IN subquery over a path that traverses a FilteredRelation works and returns exactly the rows not matched by that filter — i.e. exclude exhibits its ordinary complement semantics — while the FilteredRelation's own filter condition is still enforced inside the subquery, so a base-model row is excluded only if it actually has a related row satisfying the FilteredRelation restriction (rows the FilteredRelation would have pruned are not wrongly excluded).",
+        "subject": "django/db/models/sql/query.py :: Query.split_exclude / Query.trim_start (FilteredRelation + exclude)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When trimming leading joins off the exclude subquery, a leading 'self'/base-table join may only be removed when the following join is not tied to a FilteredRelation; if that join originates from a FilteredRelation (an INNER join carrying one), it is kept so that the FilteredRelation's filter condition continues to apply inside the subquery.",
+        "subject": "django/db/models/sql/query.py :: Query.trim_start",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-1 pins that applying exclude() on a FilteredRelation-annotated queryset must not raise FieldError and that the lookup keyword must still resolve to the FilteredRelation; its citation shows the reporter diagnosing exactly that split_exclude creates a new inner query without the original query's FilteredRelation ('extra datas'), i.e. the inner query must be seeded with them."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-2 pins the observable complement semantics: exclude(book_alice__isnull=False) must resolve and return exactly the Author rows whose book_alice filtered relation is null, matching the working filter case (filter→[author1]). This covers returning the complement rows with the FilteredRelation's own condition honored so pruned rows are not wrongly excluded."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "R3 describes an internal trim_start join-trimming rule (which leading self/base-table join may be removed relative to a FilteredRelation-carrying INNER join). Neither S_vis summary nor its cited issue/test evidence mentions trim_start, join-trimming conditions, or this mechanism, so visible info gives no basis for this specific behavior."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_exclude_with_filtered_relation_keeps_join_filter",
+      "test_source": "import os\nimport sys\n\nsys.path.insert(0, os.path.join(os.getcwd(), 'tests'))\n\nimport django\nfrom django.conf import settings\n\nsettings.configure(\n    DEBUG=True,\n    DATABASES={'default': {\n        'ENGINE': 'django.db.backends.sqlite3',\n        'NAME': ':memory:',\n    }},\n    INSTALLED_APPS=['django.contrib.contenttypes', 'filtered_relation'],\n    USE_TZ=True,\n)\ndjango.setup()\n\nfrom django.contrib.contenttypes.models import ContentType\nfrom django.db import connection\nfrom django.db.models import FilteredRelation, Q\n\nfrom filtered_relation.models import Author, Book, Editor\n\nwith connection.schema_editor() as se:\n    for model in (ContentType, Author, Book, Editor):\n        se.create_model(model)\n\n\ndef test_exclude_with_filtered_relation_keeps_join_filter():\n    author1 = Author.objects.create(name='Alice')\n    author2 = Author.objects.create(name='Jane')\n    editor_a = Editor.objects.create(name='a')\n    editor_b = Editor.objects.create(name='b')\n    Book.objects.create(title='Poem by Alice', editor_id=editor_a.pk, author_id=author1.pk)\n    Book.objects.create(title='The book by Jane A', editor_id=editor_b.pk, author_id=author2.pk)\n    qs = Author.objects.annotate(\n        book_alice=FilteredRelation(\n            'book', condition=Q(book__title__iexact='poem by alice'),\n        ),\n    ).exclude(book_alice__editor__name='a')\n    names = [a.name for a in qs]\n    assert names == ['Jane'], names\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: django.core.exceptions.FieldError: Cannot resolve keyword 'book_alice' into field ... (raised from split_exclude in django/db/models/sql/query.py)",
+      "explanation": "R3 concerns the exclude()->split_exclude()->trim_start path: when an outer queryset carries a FilteredRelation annotation and an `.exclude()` crosses that relation (a negated one-to-many traversal), the generated NOT-IN subquery must be able to reference the FilteredRelation alias and, when trimming the leading join of the subquery, keep the join so the FilteredRelation's own filter restriction remains applied inside the subquery. Gold implements this (split_exclude copies the query's _filtered_relations and trim_start refuses to strip a base/self join whose following join belongs to a FilteredRelation), so it evaluates the queryset and returns the complement member Jane (the author whose only qualifying book has editor name != 'a'). The pre-fix/buggy code lacks both of those behaviors, so the identical queryset crashes with FieldError 'Cannot resolve keyword book_alice' as soon as the fresh inner Query from split_exclude tries to resolve the FilteredRelation-aliased filter in its (empty) _filtered_relations -- i.e., precisely the R3 exclude/trim-start scenario. The scenario and its expected complement result are not pinned down anywhere in the visible oracle (the visible tests/filtered_relation/tests.py suite only exercises .filter()/annotation semantics over FilteredRelation, never an outer .exclude() that reaches split_exclude/trim_start), so it is a genuine non-reinvented witness. Execution-confirmed: gold PASSED, buggy FAILED with the same byte-identical source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Files consulted: tests/filtered_relation/tests.py, tests/filtered_relation/models.py, django/db/models/sql/query.py (split_exclude/trim_start/names_to_path/build_filter path)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug-report quote in the issue is a proposed modification of existing test method test_with_join (running in tests/filtered_relation/tests.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test dataset for FilteredRelationTests.setUpTestData: Author author1='Alice', author2='Jane'; Book book1='Poem by Alice' authored by author1; only book1's title matches iexact 'poem by alice', so the book_alice annotate+filter(book_alice__isnull=False) matches only author1 (asserted [self.author1] in the existing test_with_join)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reporter's stated expected result for the exclude variant is [] but, given the shared setUpTestData in the visible test file, the complement/filter-exclude semantics would leave only author2; only the non-crashing exclude behavior plus complement semantics are asserted here, not the specific set enum from the issue text."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "split_exclude builds a brand-new Query(self.model) and calls query.add_filter(filter_expr) on it, copying none of the original query's annotations/_filtered_relations, which is what the reporter diagnoses ('a new query is created without all extra datas from the original query')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "split_exclude creates a brand-new Query(self.model) for the exclude's NOT IN subquery and previously copied none of the outer query's annotations/_filtered_relations; H0 copies only _filtered_relations (annotations are not copied)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "trim_start() is reached only from split_exclude(); its prior condition (join_type != LOUTER) trimmed the self/base-table join even over a filtered-relation INNER join, discarding that FilteredRelation's WHERE restriction."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The Join datastructure carries a filtered_relation attribute; setup_joins creates the join with the cloned FilteredRelation when a path element is a filtered relation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tests/filtered_relation contains a FilteredRelationTests suite whose setUpTestData creates two Authors (Alice/Jane) with Books keyed by title so that only Alice has a 'Poem by Alice' book (used to assert filter-vs-exclude complement membership around the book_alice FilteredRelation)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: R3 concerns the exclude-subquery path (split_exclude --> trim_start) keeping a FilteredRelation-carrying join when trimming leading base-table joins. I checked the full oracle FilteredRelation test suite. Every behavioral test in tests/filtered_relation/tests.py uses .filter() semantics on the filtered-relation queryset — none invokes an outer .exclude() that would reach split_exclude/trim_start while a FilteredRelation join must be retained. Even test_exclude_relation_with_join is only a .filter(book_alice__isnull=False).distinct() query; it never drives trim_start and asserts plain filter complement semantics. No variant of the issue's proposed .exclude test_for test_with_join exists in the oracle. Additionally, the entire tests/filtered_relation/tests.py file is labeled [VISIBLE], so no assertion drawn from it can serve as a witness, and the sole [HIDDEN] file here (models.py) contains only schema with no assertions. Consistent with this, no test is recorded as currently failing against the buggy program (a necessary precondition for a witness). Therefore no genuine [HIDDEN]-backed oracle test witnesses the trim_start/FilteredRelation behavior described by R3."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (django/db/models/sql/query.py :: Query.trim_start): When trimming leading joins off the exclude subquery, a leading 'self'/base-table join may only be removed when the following join is not tied to a FilteredRelation; if that join originates from a FilteredRelation (an INNER join carrying one), it is kept so that the FilteredRelation's filter condition continues to apply inside the subquery. — not entailed by S_vis (R3 describes an internal trim_start join-trimming rule (which leading self/base-table join may be removed relative to a FilteredRelation-carrying INNER join). Neither S_vis summary nor its cited issue/test evidence mentions trim_start, join-trimming conditions, or this mechanism, so visible info gives no basis for this specific behavior.); confirmed by a synthesized witness: R3 concerns the exclude()->split_exclude()->trim_start path: when an outer queryset carries a FilteredRelation annotation and an `.exclude()` crosses that relation (a negated one-to-many traversal), the generated NOT-IN subquery must be able to reference the FilteredRelation alias and, when trimming the leading join of the subquery, keep the join so the FilteredRelation's own filter restriction remains applied inside the subquery. Gold implements this (split_exclude copies the query's _filtered_relations and trim_start refuses to strip a base/self join whose following join belongs to a FilteredRelation), so it evaluates the queryset and returns the complement member Jane (the author whose only qualifying book has editor name != 'a'). The pre-fix/buggy code lacks both of those behaviors, so the identical queryset crashes with FieldError 'Cannot resolve keyword book_alice' as soon as the fresh inner Query from split_exclude tries to resolve the FilteredRelation-aliased filter in its (empty) _filtered_relations -- i.e., precisely the R3 exclude/trim-start scenario. The scenario and its expected complement result are not pinned down anywhere in the visible oracle (the visible tests/filtered_relation/tests.py suite only exercises .filter()/annotation semantics over FilteredRelation, never an outer .exclude() that reaches split_exclude/trim_start), so it is a genuine non-reinvented witness. Execution-confirmed: gold PASSED, buggy FAILED with the same byte-identical source.",
+    "confidence": "Medium"
+  }
+}

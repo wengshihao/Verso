@@ -1,0 +1,120 @@
+{
+  "task_id": "Lang-15",
+  "status": "ok",
+  "duration_seconds": 193.02946158900158,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Lang-15",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "TypeUtils.getTypeArguments(Other.class, This.class), where the test's inner classes are declared as `This<K, V>` and `class Other<T> implements This<String, T>`, must return a Map having exactly 2 entries, whose entry for This's first type parameter (This.class.getTypeParameters()[0]) is java.lang.String.class and whose entry for This's second type parameter (This.class.getTypeParameters()[1]) is Other's own declared type variable T (Other.class.getTypeParameters()[0]).",
+        "subject": "TypeUtils.getTypeArguments(Type, Class)",
+        "hunk_ids": [],
+        "cited_from": "failing test code to add to TypeUtilsTest.testGetTypeArguments(): {code} typeVarAssigns = TypeUtils.getTypeArguments(Other.class, This.class); Assert.assertEquals(2, typeVarAssigns.size()); Assert.assertEquals(String.class, typeVarAssigns.get(This.class.getTypeParameters()[0])); Assert.assertEquals(Other.class.getTypeParameters()[0], typeVarAssigns.get(This.class.getTypeParameters()[1])); {code} ... {code} public interface This<K, V> { } public class Other<T> implements This<String, T> { } {code} This case fails because the current code ignores the Other class due to its specifying its own type variables, which is obviously incorrect."
+      },
+      {
+        "id": "R2",
+        "statement": "The fix must still traverse the generic-interface/supertype inheritance edge when the subject subtype declares its own type parameters: in particular, getTypeArguments(Other.class, This.class) must not terminate with an empty/argument-missing map merely because the subject class Other has a non-empty getTypeParameters() array (i.e. declares type variable T).",
+        "subject": "TypeUtils.getTypeArguments(Type, Class)",
+        "hunk_ids": [],
+        "cited_from": "This case fails because the current code ignores the Other class due to its specifying its own type variables, which is obviously incorrect."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In the raw-class inheritance walk, when the current subject class cls declares its own type parameters but is not itself the target class toClass, getTypeArguments continues walking cls's generic supertypes/interfaces to collect toClass's type arguments instead of short-circuiting merely because cls is generic. In particular, for inner types Other<T> implements This<String,T>, TypeUtils.getTypeArguments(Other.class, This.class) returns the mapping of This's type variables with This's first parameter bound to String and its second parameter bound to Other's own type variable T (map size 2) rather than an empty/premature result.",
+        "subject": "TypeUtils.getTypeArguments(Type, Class)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When validating that a parameterized target type's arguments are assignable from a subject type, isAssignable compares each target and source type argument after fully dereferencing any chain recorded in the argument-assignment maps: an argument whose stored value is itself a type variable that is additionally mapped (possibly through further variable hops, excluding a self-mapping) is followed to its terminal type before the equality/wildcard check. A subject argument that matches the target argument only once both are resolved to their terminal types is therefore accepted rather than rejected for comparing against an intermediate type variable.",
+        "subject": "TypeUtils.isAssignable(Type, ParameterizedType)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 directly specifies that getTypeArguments(Other.class, This.class) returns a map of size 2 with This's first parameter bound to String and second bound to Other's own T. S_vis R2 explicitly pins down that the inheritance walk must not stop merely because subject Other declares its own type parameters but is not the target. Together these fully pin down S_impl R1's behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_impl R2 concerns a completely different method — TypeUtils.isAssignable(Type, ParameterizedType) — and its behavior of dereferencing chains of type-variable argument mappings to terminal types (excluding self-mappings) before the equality/wildcard check. Neither S_vis R1 nor R2 mentions isAssignable or any such argument-mapping dereferencing/self-mapping behavior; they cover only the getTypeArguments(Type, Class) inheritance walk, so this distinct fix dimension is not pinned down by the visible info."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R2 concerns the H0 change in TypeUtils.isAssignable(Type, ParameterizedType, Map): before comparing an argument pair, each argument value stored in the argument-assignment maps must be dereferenced through variable hops (unrollVariableAssignments) to its terminal type.\n\nInvestigation: The repository's only oracle is src/test/java/org/apache/commons/lang3/reflect/TypeUtilsTest.java, whose entire content is [VISIBLE]. The assertions that exercise the H0 code path are the parameterized-type assignability checks in testIsAssignable (the dis/uhder/ding/tester region) and the end-of-testGetTypeArguments walk checks, all of which are plainly visible in the oracle source.\n\nEmpirical attempts: I built fresh-type equivalents (GW<K,V> interface, GSub<X> implements GW<String,X>, plus a Holder with 'GW<String,String> dis' and 'GSub<String> sub' fields) reproducing both the getTypeArguments-walk structure and the isAssignable(sub-to-dis) relationship. The pure getTypeArguments walk discriminates gold from buggy (size-2 map comes back on gold, fails on buggy), but that fact is already fully pinned by the visible end-of-testGetTypeArguments assertions and corresponds more to the R1 walk defect than to R2's isAssignable-unrolling. The isAssignable(subType, disType) reproduction itself passes on BOTH builds, showing the plain concrete-to-parameterized comparison does not engage R2's distinguishing unroll step and is not independently discriminating.\n\nEvery enabled behavior of the H0 change is a re-statement of facts the single, fully-visible oracle file already documents (it is precisely the regression test shipped with the fix). Under the rule that a witness may only rest on [HIDDEN] assertions and may not re-invent already-visible assertions under fresh names, no genuine, additional, execution-confirmed witness exists for R2. This is a normal found=false outcome."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant declarations (This, That, And, The, Other, Thing, Tester) are inner types of test class TypeUtilsTest in TypeUtilsTest.java; This<K,V> and class Other<T> implements This<String,T> are as in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "src/test/java/org/apache/commons/lang3/reflect/TypeUtilsTest.java already contains the failing assertions at the end of testGetTypeArguments()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant implementation is the private overload getTypeArguments(Class<?>, Class<?>, Map) in TypeUtils.java whose early-return condition 'cls.getTypeParameters().length > 0 || toClass.equals(cls)' prevents walking Other's generic interface This<String,T>."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "All three new assertions (map size 2, This.K->String.class, This.V->Other.T) are enforced together by R1/R2; a single fix to the inheritance walk satisfies (or breaks) them jointly."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only changes the call sites in isAssignable(Type, ParameterizedType, Map); the private helper unrollVariableAssignments(TypeVariable, Map) itself already existed unchanged in both revisions and is newly invoked by hunk H0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 is in the private overload getTypeArguments(Class<?>, Class<?>, Map); its early-return guard formerly combined 'cls.getTypeParameters().length > 0' with 'toClass.equals(cls)' and now tests only the latter."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix targets generic-class-to-interface resolution (Other<T> implements This<String,T> with the interface's args bound using Other's own type variable)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 (getTypeArguments walk continuation) and H0 (isAssignable argument unrolling) sit in different private methods and are independently satisfiable/breakable, so they are kept as separate requirements."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: The oracle consists of exactly one test file (src/test/java/org/apache/commons/lang3/reflect/TypeUtilsTest.java), and read_test_file labels its entire content [VISIBLE]. R2 concerns the H0 change in isAssignable(Type, ParameterizedType, Map): dereferencing the argument-assignment maps (following variable hops to the terminal type) when comparing type arguments. The relevant assertions are the parameterized-type assignability checks in testIsAssignable (the dis/uhder/ding region exercising argument unrolling) and the end-of-method assertions in testGetTypeArguments (Other/This: This.V->Other.T followed through a hop), both of which are driven by the same generic-hierarchy walk the notebook notes jointly enforce R1/R2. However, all of this content is [VISIBLE]. A witness may only rest on [HIDDEN] assertions, and an assertion drawn from [VISIBLE] content can never serve as one regardless of how well it matches r. There is no other (hidden) oracle file. Therefore no visible-free witness exists for R2; this is a normal found=false outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target R2 concerns the H0 change in TypeUtils.isAssignable(Type, ParameterizedType, Map): before comparing an argument pair, each argument value stored in the argument-assignment maps must be dereferenced through variable hops (unrollVariableAssignments) to its terminal type.\n\nInvestigation: The repository's only oracle is src/test/java/org/apache/commons/lang3/reflect/TypeUtilsTest.java, whose entire content is [VISIBLE]. The assertions that exercise the H0 code path are the parameterized-type assignability checks in testIsAssignable (the dis/uhder/ding/tester region) and the end-of-testGetTypeArguments walk checks, all of which are plainly visible in the oracle source.\n\nEmpirical attempts: I built fresh-type equivalents (GW<K,V> interface, GSub<X> implements GW<String,X>, plus a Holder with 'GW<String,String> dis' and 'GSub<String> sub' fields) reproducing both the getTypeArguments-walk structure and the isAssignable(sub-to-dis) relationship. The pure getTypeArguments walk discriminates gold from buggy (size-2 map comes back on gold, fails on buggy), but that fact is already fully pinned by the visible end-of-testGetTypeArguments assertions and corresponds more to the R1 walk defect than to R2's isAssignable-unrolling. The isAssignable(subType, disType) reproduction itself passes on BOTH builds, showing the plain concrete-to-parameterized comparison does not engage R2's distinguishing unroll step and is not independently discriminating.\n\nEvery enabled behavior of the H0 change is a re-statement of facts the single, fully-visible oracle file already documents (it is precisely the regression test shipped with the fix). Under the rule that a witness may only rest on [HIDDEN] assertions and may not re-invent already-visible assertions under fresh names, no genuine, additional, execution-confirmed witness exists for R2. This is a normal found=false outcome."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (TypeUtils.isAssignable(Type, ParameterizedType)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R2 concerns the H0 change in TypeUtils.isAssignable(Type, ParameterizedType, Map): before comparing an argument pair, each argument value stored in the argument-assignment maps must be dereferenced through variable hops (unrollVariableAssignments) to its terminal type.\n\nInvestigation: The repository's only oracle is src/test/java/org/apache/commons/lang3/reflect/TypeUtilsTest.java, whose entire content is [VISIBLE]. The assertions that exercise the H0 code path are the parameterized-type assignability checks in testIsAssignable (the dis/uhder/ding/tester region) and the end-of-testGetTypeArguments walk checks, all of which are plainly visible in the oracle source.\n\nEmpirical attempts: I built fresh-type equivalents (GW<K,V> interface, GSub<X> implements GW<String,X>, plus a Holder with 'GW<String,String> dis' and 'GSub<String> sub' fields) reproducing both the getTypeArguments-walk structure and the isAssignable(sub-to-dis) relationship. The pure getTypeArguments walk discriminates gold from buggy (size-2 map comes back on gold, fails on buggy), but that fact is already fully pinned by the visible end-of-testGetTypeArguments assertions and corresponds more to the R1 walk defect than to R2's isAssignable-unrolling. The isAssignable(subType, disType) reproduction itself passes on BOTH builds, showing the plain concrete-to-parameterized comparison does not engage R2's distinguishing unroll step and is not independently discriminating.\n\nEvery enabled behavior of the H0 change is a re-statement of facts the single, fully-visible oracle file already documents (it is precisely the regression test shipped with the fix). Under the rule that a witness may only rest on [HIDDEN] assertions and may not re-invent already-visible assertions under fresh names, no genuine, additional, execution-confirmed witness exists for R2. This is a normal found=false outcome.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "task_id": "django__django-11211",
+  "status": "ok",
+  "duration_seconds": 335.68640695803333,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11211",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Given a model Bar with a GenericForeignKey ('foo_content_type', 'foo_object_id') whose referenced target model Foo declares `id = models.UUIDField(primary_key=True, ...)` and stores the UUID in `foo_object_id = models.CharField(max_length=255, ...)`, evaluating `Bar.objects.all().prefetch_related('foo')` must set the cached `foo` attribute on each matching Bar to the corresponding Foo instance (found by looking up the Foo whose pk equals the value stored in foo_object_id), rather than leaving it as None.",
+        "subject": "django.contrib.contenttypes.fields.GenericForeignKey / prefetch_related of a GenericForeignKey to a model with a UUID primary_key backed by a CharField object_id",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"create model with UUID as primary key\nclass Foo(models.Model):\n\tid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)\n\t...\ncreate another model with GFK to model Foo\nclass Bar(models.Model):\n\tfoo_content_type = models.ForeignKey(\n\t\tContentType, related_name='actor',\n\t\ton_delete=models.CASCADE, db_index=True\n\t)\n\tfoo_object_id = models.CharField(max_length=255, db_index=True)\n\tfoo = GenericForeignKey('foo_content_type', 'foo_object_id')\n\t...\nand try to get queryset with prefetch related (django orm engine return None for attribute foo):\nBar.objects.all().prefetch_related('foo')\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "UUIDField.get_prep_value coerces input through UUIDField.to_python: a non-uuid.UUID string-hexadecimal or integer value is converted into the corresponding uuid.UUID instance (so that a call such as pk.get_prep_value(<string object_id>) yields a uuid.UUID comparable to a UUID primary-key value), an already-uuid.UUID value and None are returned unchanged, and an unparseable value raises the same ValidationError as to_python.",
+        "subject": "UUIDField.get_prep_value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 establishes the scenario where a CharField object_id storing a UUID value must correctly resolve to the Foo instance during prefetch_related, which implies some string→UUID coercion is needed for the pk lookup to succeed. However, the visible evidence does not state that this coercion lives in UUIDField.get_prep_value nor does it pin down the specifics (conversion via to_python, return-unchanged for already-UUID/None, integer coercion, ValidationError propagation)."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "UUIDPrepTest.test_get_prep_value_coerces_string",
+      "test_source": "import uuid\nimport unittest\nfrom django.db import models\n\nclass UUIDPrepTest(unittest.TestCase):\n    def test_get_prep_value_coerces_string(self):\n        field = models.UUIDField()\n        result = field.get_prep_value('550e8400e29b41d4a716446655440000')\n        self.assertEqual(result, uuid.UUID('550e8400e29b41d4a716446655440000'))\n        self.assertIsInstance(result, uuid.UUID)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError: '550e8400e29b41d4a716446655440000' != UUID('550e8400-e29b-41d4-a716-446655440000')",
+      "explanation": "R1 is precisely the added UUIDField.get_prep_value override (django/db/models/fields/__init__.py H0), whose gold body calls super().get_prep_value(value) then self.to_python(value). In the buggy pre-fix revision the method does not exist, so field.get_prep_value falls through to the base Field.get_prep_value which only unwraps Promise values and returns the input string unchanged — no to_python coercion. My witness calls a plain UUIDField's get_prep_value on a string-hexadecimal UUID and asserts it comes back as the uuid.UUID instance it should coerce to (the scenario r states: a non-uuid.UUID string-hex value is converted into the corresponding uuid.UUID). Verified against gold: PASSED (the new method performs to_python and yields uuid.UUID('550e8400-e29b-41d4-a716-446655440000')). Against buggy: FAILED because get_prep_value returns the raw string ('550e8400e29b41d4a716446655440000'), which fails both the equality and isinstance assertions. I checked the visible oracle: tests/model_fields/test_uuid.py is the only behavioral test located near this field, and it only exercises to_python/save/query/form-layers — it never calls UUIDField.get_prep_value (that method did not exist pre-patch), so no visible assertion already pins down this coercion path. Hence this genuinely discriminates gold behavior from buggy behavior for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is the Django source tree at the point before the fix for ticket #11211; the visible test suites under tests/prefetch_related/, tests/generic_relations/, tests/generic_relations_regress/, and tests/contenttypes_tests/ contain UUID-pk + prefetch tests (test_uuid.py) and GenericForeignKey/GenericRelation tests, but no regression test yet for a GenericForeignKey pointing at a UUID-pk model — the only description of the required behavior comes from the issue report itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant mechanism: in django/contrib/contenttypes/fields.py, GenericForeignKey.get_prefetch_queryset() matches prefetched related objects to source instances via the gfk_key closure (returning (model._meta.pk.get_prep_value(getattr(obj, self.fk_field)), model)) against the wrapper lambda obj: (obj.pk, obj.__class__); the type mismatch between the string-form object_id value and the UUID obj.pk (which the issue implies is why foo resolves to None) is the area the eventual fix would touch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Prefetch execution/matching occurs in django/db/models/query.py prefetch_related_objects()/prefetch_one_level(), where rel_obj_attr values dict keys must equal instance_attr values for a single-object prefetch to be cached."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk (H0) adds only a get_prep_value override to django/db/models/fields/UUIDField; the existing to_python and get_db_prep_value are unchanged. get_prep_value defers to super().get_prep_value(value) (which only unwraps lazy Promise values) and then returns to_python(value)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The intended functional effect, per the notebook, is that a string-form object_id passed via pk.get_prep_value() in GenericForeignKey.get_prefetch_queryset now normalizes to a uuid.UUID to match the UUID pk during prefetch matching — the added method itself does not touch contenttypes/query matching."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for any pre-existing test whose assertion would witness R1 (UUIDField.get_prep_value coercing string/int/None/etc. through to_python). The only directly comparable model-field tests live in tests/model_fields/test_uuid.py (to_python coercion, save/load of string forms, querysets, serialization, validation, as-primary-key), but that file is labeled [VISIBLE], contains no call to UUIDField.get_prep_value at all (the method did not exist pre-patch), and every listed behavior there is exercised at the to_python / save / query layer that the patch does not change.\n\nI also examined the GenericForeignKey/UUID cross-suite candidates: tests/generic_relations/test_forms.py & tests.py, tests/generic_relations_regress/tests.py, tests/contenttypes_tests/test_fields.py, test_models.py, and tests/prefetch_related/test_uuid.py & test_prefetch_related_objects.py. All of these test files are [VISIBLE] and none models a GenericForeignKey whose object_id/form value is a string-hex UUID that must be coerced by the UUID pk's get_prep_value during prefetch matching — the git-history/notebook-confirmed scenario the patch targets. The files that ARE [HIDDEN] (generic_relations/models.py, generic_relations_regress/models.py, contenttypes_tests/models.py, prefetch_related/models.py, model_fields/models.py) are model definition files only; they contain no JUnit/oracle assertion and thus cannot serve as a witness, and none even defines a GFK pointing at a UUID-primary-key model.\n\nBecause no oracle test asserts the newly-added get_prep_value coercion, and (per the notebook) the only description of the desired behavior comes from the issue report rather than any existing failing test — the record lists no currently-failing tests — there is no genuine [HIDDEN] oracle test that passes on gold and fails on buggy while asserting R1. Therefore found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (UUIDField.get_prep_value): UUIDField.get_prep_value coerces input through UUIDField.to_python: a non-uuid.UUID string-hexadecimal or integer value is converted into the corresponding uuid.UUID instance (so that a call such as pk.get_prep_value(<string object_id>) yields a uuid.UUID comparable to a UUID primary-key value), an already-uuid.UUID value and None are returned unchanged, and an unparseable value raises the same ValidationError as to_python. — not entailed by S_vis (S_vis R1 establishes the scenario where a CharField object_id storing a UUID value must correctly resolve to the Foo instance during prefetch_related, which implies some string→UUID coercion is needed for the pk lookup to succeed. However, the visible evidence does not state that this coercion lives in UUIDField.get_prep_value nor does it pin down the specifics (conversion via to_python, return-unchanged for already-UUID/None, integer coercion, ValidationError propagation).); confirmed by a synthesized witness: R1 is precisely the added UUIDField.get_prep_value override (django/db/models/fields/__init__.py H0), whose gold body calls super().get_prep_value(value) then self.to_python(value). In the buggy pre-fix revision the method does not exist, so field.get_prep_value falls through to the base Field.get_prep_value which only unwraps Promise values and returns the input string unchanged — no to_python coercion. My witness calls a plain UUIDField's get_prep_value on a string-hexadecimal UUID and asserts it comes back as the uuid.UUID instance it should coerce to (the scenario r states: a non-uuid.UUID string-hex value is converted into the corresponding uuid.UUID). Verified against gold: PASSED (the new method performs to_python and yields uuid.UUID('550e8400-e29b-41d4-a716-446655440000')). Against buggy: FAILED because get_prep_value returns the raw string ('550e8400e29b41d4a716446655440000'), which fails both the equality and isinstance assertions. I checked the visible oracle: tests/model_fields/test_uuid.py is the only behavioral test located near this field, and it only exercises to_python/save/query/form-layers — it never calls UUIDField.get_prep_value (that method did not exist pre-patch), so no visible assertion already pins down this coercion path. Hence this genuinely discriminates gold behavior from buggy behavior for R1.",
+    "confidence": "Medium"
+  }
+}

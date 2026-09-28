@@ -1,0 +1,128 @@
+{
+  "task_id": "scikit-learn__scikit-learn-10581",
+  "status": "ok",
+  "duration_seconds": 346.79183641599957,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-10581",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling ElasticNet(fit_intercept=True, normalize=False, copy_X=True).fit(X, y, check_input=False) on a dense, Fortran-ordered float64 array X must not modify X in place; after the call the passed-in array X must still be elementwise equal to a pre-fit copy of itself (np.all(X == X_copy) evaluated False before the fix).",
+        "subject": "ElasticNet.fit",
+        "hunk_ids": [],
+        "cited_from": "[issue / PR description] \"ElasticNet overwrites X even with copy_X=True ... The `fit` function of an `ElasticNet`, called with `check_input=False`, overwrites X, even when `copy_X=True`\" with reproducer: \"X = rng.randn(n_samples, n_features).copy(order='F') ... X_copy = X.copy() ... enet = ElasticNet(fit_intercept=True, normalize=False, copy_X=True) ... enet.fit(X, y, check_input=False) ... print(\"X unchanged = \", np.all(X == X_copy))\" — expected True. Also class docstring: \"copy_X : boolean, optional, default True  If ``True``, X will be copied; else, it may be overwritten.\""
+      },
+      {
+        "id": "R2",
+        "statement": "The copy_X=True / X-unchanged guarantee must hold regardless of the check_input flag: that is, copy_X must be honored even when fit is invoked with check_input=False (the only path under which X was being overwritten), not only under the default check_input=True path.",
+        "subject": "ElasticNet.fit",
+        "hunk_ids": [],
+        "cited_from": "[issue text] \"The `fit` function of an `ElasticNet`, called with `check_input=False`, overwrites X, even when `copy_X=True`\" — i.e. the failing condition is precisely that X is overwritten in the check_input=False case where check_input=True would have triggered the copy."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-R1",
+        "statement": "When fit is called with copy_X=True on a dense (non-sparse) input X with fit_intercept=True, the caller's X array is left unmodified (the intercept-centering preprocessing that internally does 'X -= X_offset' is applied to a copy), and this guarantee also holds on the validation-bypass path fit(..., check_input=False) that previously skipped the check_X_y copy and mutated the caller's array in place.",
+        "subject": "ElasticNet.fit (Lasso.fit inherits; ElasticNet/Lasso/ElasticNetCV/LassoCV fitting machinery)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMP-R2",
+        "statement": "In the check_input=True path, when copy_X=True but fit_intercept=False, a copy of X still results so that normalize-based in-place preprocessing in the later pre-fit step (X /= X_scale) does not overwrite the caller's X array; i.e. copy_X=True protects X from preprocessing mutation regardless of fit_intercept.",
+        "subject": "ElasticNet.fit (Lasso fits X protected from normalize preprocessing under copy_X=True, fit_intercept=False)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 reproduces exactly this behavior: fit_intercept=True, copy_X=True, dense Fortran X, and check_input=False, requiring X to remain elementwise equal to a pre-fit copy (intercept-centering not mutating the caller's X). R2 additionally confirms the guarantee holds regardless of the check_input flag. SIMP-R1 is fully pinned down."
+      },
+      {
+        "requirement_id": "SIMP-R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis evidence centers on the check_input=False / fit_intercept=True mutation path and specifically uses normalize=False in the reproducer. Nothing in S_vis pins down the separate scenario of check_input=True with fit_intercept=False where normalize-based preprocessing (X /= X_scale) must operate on a copy; the general copy_X docstring gives only weak, non-specific support."
+      }
+    ],
+    "target_requirement_id": "SIMP-R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement SIMP-R2 asks that, in the check_input=True path, when copy_X=True but fit_intercept=False a copy of X results so that normalize-based in-place preprocessing (X /= X_scale) can't clobber the caller's array. The code-level diff between buggy and gold ElasticNet.fit is confined to two lines: gold introduces X_copied=self.copy_X and self.fit_intercept inside the check_input block and forwards copy=self.copy_X and not X_copied to _pre_fit, whereas buggy always forwards copy=False to _pre_fit.\n\nTracing _preprocess_data (sklearn/linear_model/base.py), centered/in-place mutation (X -= X_offset followed by X = f_normalize(...)/X /= X_scale) is performed ONLY inside the `if fit_intercept:` branch of _preprocess_data. In the `else` branch (fit_intercept=False) no in-place mutation of X ever occurs (X_offset and X_scale are just set to zeros/ones). Therefore the extra copy that gold requests in the fit_intercept=False, copy_X=True case is unobservable at the caller: under check_input=True:\n\n- when fit_intercept=False, neither buggy nor gold mutates X (verified: fit_intercept=False, copy_X=True, normalize=True leaves caller X unchanged on BOTH buggy and gold; PASSED both).\n- when fit_intercept=True (the only case where X /= X_scale actually runs), check_X_y is already called with copy = self.copy_X and self.fit_intercept = True in BOTH versions, so both pre-copy X before the pre-fit mutation and both protect the caller (verified: fit_intercept=True, normalize=True, copy_X=True leaves caller X unchanged on the BUGGY build too).\n\nBecause gold's forwarding of copy=copy_X and not X_copied only ever changes behavior relative to buggy when fit_intercept=False — precisely the case where _preprocess_data never mutates X — no input exists for which gold preserves X and buggy clobbers it under the ElasticNet.fit / Lasso.fit check_input=True path. I empirically confirmed several representative F-ordered float scenarios pass on both buggy and gold, matching the earlier Oracle Search Agent's independent failure to establish a pass-gold/fail-buggy split. Consequently no genuine execution-confirmed witness discriminates this requirement in the repair-visible code, so found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in sklearn/linear_model/coordinate_descent.py, ElasticNet.fit (lines ~1150-1240). With check_input=True the copy happens via check_X_y(..., copy=self.copy_X and self.fit_intercept); with check_input=False that block is skipped, so no copy occurs and the later _pre_fit(X, y, ...) -> _preprocess_data(..., copy=False) in sklearn/linear_model/base.py centers X in place via 'X -= X_offset' (when fit_intercept=True and dense X), overwriting the caller's array even though copy_X=True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Lasso and ElasticNetCV/LassoCV share the same underlying fit/path machinery; Lasso(ElasticNet subclass) inherits ElasticNet.fit unchanged, so requirements stated on ElasticNet.fit implicitly cover Lasso as well (same code path)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproducer in the issue uses a Fortran-ordered float64 dense X with fit_intercept=True, normalize=False, copy_X=True, alpha/sel default, check_input=False."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible test test_check_input_false (sklearn/linear_model/tests/test_coordinate_descent.py) exercises fit with check_input=False on F-ordered data but only checks that no error is raised / C-order raises ValueError; it does not currently assert X remains unchanged — no visible test encodes the fixed behavior yet."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk edits ElasticNet.fit (sklearn/linear_model/coordinate_descent.py ~line 700). Lasso subclasses ElasticNet without overriding fit, so Lasso uses the same code path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Underlying machinery: _pre_fit (sklearn/linear_model/base.py) calls _preprocess_data(..., copy=copy) for dense X; with copy=False and fit_intercept=True, _preprocess_data mutates X in place ('X -= X_offset'), and with normalize=True it divides X in place ('X /= X_scale')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold code introduces X_copied, set to the exact copy flag ('self.copy_X and self.fit_intercept') handed to check_X_y inside the check_input block, and forwards copy=should_copy = 'self.copy_X and not X_copied' to _pre_fit, ensuring a copy request is issued exactly once across the two locations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "X_copied records the requested copy value, not whether a physical copy actually occurred; this is safe because _preprocess_data only mutates X when it actually centers/normalizes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "copy_X default is True; precompute='auto' etc. are unrelated to this change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For sparse X, _pre_fit forces copy=False and does not mutate X in place, so the copy_X protection concern is specific to dense X."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-R2]: I read the linear-model oracle test files relevant to ElasticNet.fit copy_X semantics: sklearn/linear_model/tests/test_coordinate_descent.py, test_sparse_coordinate_descent.py, and test_base.py. All three are classified [VISIBLE], meaning none of their assertions can serve as a Witness (visible content can never establish behavior hidden from the repair system). Moreover, the visible coordinate_descent test file does NOT actually contain the test the failing-test list references (test_enet_copy_X_True[False]); the file ends at test_enet_l1_ratio and contains no assertion that caller X is preserved under copy_X=True with fit_intercept=False / normalize=True. The nearest visible tests (test_check_input_false, test_enet_float_precision, test_preprocess_data, test_deprecation_center_data) exercise correctness of coefficients/preprocessing but never assert that the caller's X array is left unmodified when copy_X=True and fit_intercept=False, which is exactly the behavior requirement SIMP-R2 encodes. When I independently reproduced the scenario (ElasticNet fit_intercept=False, normalize=True, copy_X=True on a dense array and asserting X unchanged), it passed on BOTH the buggy and gold programs, so I could not even establish the pass-gold/fail-buggy split that a genuine witness for this requirement requires, and I had no [HIDDEN] oracle assertion text to derive a candidate from. Accordingly no qualified oracle witness exists that I can locate and execution-confirm; result is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMP-R2]: Requirement SIMP-R2 asks that, in the check_input=True path, when copy_X=True but fit_intercept=False a copy of X results so that normalize-based in-place preprocessing (X /= X_scale) can't clobber the caller's array. The code-level diff between buggy and gold ElasticNet.fit is confined to two lines: gold introduces X_copied=self.copy_X and self.fit_intercept inside the check_input block and forwards copy=self.copy_X and not X_copied to _pre_fit, whereas buggy always forwards copy=False to _pre_fit.\n\nTracing _preprocess_data (sklearn/linear_model/base.py), centered/in-place mutation (X -= X_offset followed by X = f_normalize(...)/X /= X_scale) is performed ONLY inside the `if fit_intercept:` branch of _preprocess_data. In the `else` branch (fit_intercept=False) no in-place mutation of X ever occurs (X_offset and X_scale are just set to zeros/ones). Therefore the extra copy that gold requests in the fit_intercept=False, copy_X=True case is unobservable at the caller: under check_input=True:\n\n- when fit_intercept=False, neither buggy nor gold mutates X (verified: fit_intercept=False, copy_X=True, normalize=True leaves caller X unchanged on BOTH buggy and gold; PASSED both).\n- when fit_intercept=True (the only case where X /= X_scale actually runs), check_X_y is already called with copy = self.copy_X and self.fit_intercept = True in BOTH versions, so both pre-copy X before the pre-fit mutation and both protect the caller (verified: fit_intercept=True, normalize=True, copy_X=True leaves caller X unchanged on the BUGGY build too).\n\nBecause gold's forwarding of copy=copy_X and not X_copied only ever changes behavior relative to buggy when fit_intercept=False — precisely the case where _preprocess_data never mutates X — no input exists for which gold preserves X and buggy clobbers it under the ElasticNet.fit / Lasso.fit check_input=True path. I empirically confirmed several representative F-ordered float scenarios pass on both buggy and gold, matching the earlier Oracle Search Agent's independent failure to establish a pass-gold/fail-buggy split. Consequently no genuine execution-confirmed witness discriminates this requirement in the repair-visible code, so found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[SIMP-R2] (ElasticNet.fit (Lasso fits X protected from normalize preprocessing under copy_X=True, fit_intercept=False)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement SIMP-R2 asks that, in the check_input=True path, when copy_X=True but fit_intercept=False a copy of X results so that normalize-based in-place preprocessing (X /= X_scale) can't clobber the caller's array. The code-level diff between buggy and gold ElasticNet.fit is confined to two lines: gold introduces X_copied=self.copy_X and self.fit_intercept inside the check_input block and forwards copy=self.copy_X and not X_copied to _pre_fit, whereas buggy always forwards copy=False to _pre_fit.\n\nTracing _preprocess_data (sklearn/linear_model/base.py), centered/in-place mutation (X -= X_offset followed by X = f_normalize(...)/X /= X_scale) is performed ONLY inside the `if fit_intercept:` branch of _preprocess_data. In the `else` branch (fit_intercept=False) no in-place mutation of X ever occurs (X_offset and X_scale are just set to zeros/ones). Therefore the extra copy that gold requests in the fit_intercept=False, copy_X=True case is unobservable at the caller: under check_input=True:\n\n- when fit_intercept=False, neither buggy nor gold mutates X (verified: fit_intercept=False, copy_X=True, normalize=True leaves caller X unchanged on BOTH buggy and gold; PASSED both).\n- when fit_intercept=True (the only case where X /= X_scale actually runs), check_X_y is already called with copy = self.copy_X and self.fit_intercept = True in BOTH versions, so both pre-copy X before the pre-fit mutation and both protect the caller (verified: fit_intercept=True, normalize=True, copy_X=True leaves caller X unchanged on the BUGGY build too).\n\nBecause gold's forwarding of copy=copy_X and not X_copied only ever changes behavior relative to buggy when fit_intercept=False — precisely the case where _preprocess_data never mutates X — no input exists for which gold preserves X and buggy clobbers it under the ElasticNet.fit / Lasso.fit check_input=True path. I empirically confirmed several representative F-ordered float scenarios pass on both buggy and gold, matching the earlier Oracle Search Agent's independent failure to establish a pass-gold/fail-buggy split. Consequently no genuine execution-confirmed witness discriminates this requirement in the repair-visible code, so found=false.",
+    "confidence": "Medium"
+  }
+}

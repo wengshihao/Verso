@@ -1,0 +1,116 @@
+{
+  "task_id": "Compress-26",
+  "status": "ok",
+  "duration_seconds": 61.95670923700027,
+  "llm_calls": 7,
+  "error": null,
+  "record": {
+    "task_id": "Compress-26",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "IOUtils.skip(input, numToSkip) returns exactly numToSkip (skipping that many bytes, leaving the stream positioned right after them) whenever the underlying stream still has at least that many bytes remaining — even when that stream's own skip() returns 0 before numToSkip bytes have been skipped (i.e., 0 is not interpreted as end-of-stream; the method must fall back to reading to finish the skip).",
+        "subject": "IOUtils.skip(InputStream, long)",
+        "hunk_ids": [],
+        "cited_from": "IOUtils.java javadoc: \"This method will only skip less than the requested number of bytes if the end of the input stream has been reached.\" plus IOUtilsTest.: \"Assert.assertEquals(10, IOUtils.skip(sut, 10)); Assert.assertEquals(11, sut.read());\" run via skipUsingRead (\"return new FilterInputStream(toWrap) { public long skip(long s) { return 0; } }\") and skipUsingSkipAndRead (\"toWrap.skip(5); ... return 5; ... return 0;\") over new byte[] {1,2,3,4,5,6,7,8,9,10,11}; and the issue text \"long skipped = input.skip(numToSkip); if (skipped == 0) { break; }\" / \"In the case of CipherInputStream, it stops at the end of each byte buffer.\""
+      },
+      {
+        "id": "R2",
+        "statement": "IOUtils.skip(input, numToSkip) may skip fewer than numToSkip bytes only when the end of the input stream has actually been reached; it must never stop early (returning fewer than requested) merely because the underlying stream's skip() returned 0 while bytes still remain.",
+        "subject": "IOUtils.skip(InputStream, long)",
+        "hunk_ids": [],
+        "cited_from": "IOUtils.java javadoc: \"     * <p>This method will only skip less than the requested number of\n     * bytes if the end of the input stream has been reached.</p>\" and issue: \"it stops at the end of each byte buffer\" / \"If you check the IOUtils from colleagues at commons-io, they have considered this case in IOUtils.skip() where they use a read to skip through the stream.\" Note: R1 and R2 state the two halves of one contract for the same single method and are expected to be satisfied/broken together by any fix to IOUtils.skip."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When input.skip() returns 0 while some of the requested bytes remain to be skipped (stream not at EOF), IOUtils.skip no longer returns early; it falls back to reading from the stream and returns the full requested count (numToSkip) provided the stream still yields bytes.",
+        "subject": "org.apache.commons.compress.utils.IOUtils.skip",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During the read-based fallback, if the end of the stream is reached (a read consumes fewer than 1 byte) before the full requested amount has been skipped, IOUtils.skip stops and returns the number of bytes actually consumed (available minus the remaining unskipped count).",
+        "subject": "org.apache.commons.compress.utils.IOUtils.skip",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly states IOUtils.skip returns exactly numToSkip whenever the stream has enough bytes, even if the underlying skip() returns 0, by falling back to reading; the cited skipUsingRead test (skip-returning-0 filter over 11 bytes asserting skip==10 then next read==11) pins down this exact behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 (and the shared javadoc) states it skips fewer than requested only when end-of-stream is reached, which fixes the read-based fallback's EOF stop condition and that it returns the bytes actually consumed during fallback; this pins down the same specific behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in src/test/java/org/apache/commons/compress/utils/IOUtilsTest.java; the source to fix is src/main/java/org/apache/commons/compress/utils/IOUtils.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The current buggy loop is: `long skipped = input.skip(numToSkip); if (skipped == 0) { break; } numToSkip -= skipped;` inside a `while (numToSkip > 0)`, with helper local `available`, returning `available - numToSkip`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "All three test methods (skipUsingSkip, skipUsingRead, skipUsingSkipAndRead) delegate to a shared private skip(StreamWrapper) helper that wraps an 11-byte ByteArrayInputStream and asserts skip==10 followed by read()==11; they differ only in the StreamWrapper's own skip() semantics (real skip / always 0 / skip 5 then 0)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "skipUsingSkipAndRead models exactly the issue's CipherInputStream scenario where skip works in chunks and returns 0 at internal buffer boundaries before EOF."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue is a clean duplicate of COMPRESS-277 and refers to commons-io's IOUtils.skip which falls back to reading."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "patch only touches IOUtils.skip(InputStream, long)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The read-fallback behavior was already described in this method's Javadoc before the patch; the patch makes the implementation actually honor it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The Javadoc already documented the contract 'will only skip less than the requested number of bytes if the end of the input stream has been reached' prior to the fix, so R1's behavior was pre-reportedly intended."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SKIP_BUF_SIZE is a private static final int constant holding a buffer size used by the fallback read loop."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

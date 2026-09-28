@@ -1,0 +1,111 @@
+{
+  "task_id": "sympy__sympy-17038",
+  "status": "ok",
+  "duration_seconds": 412.9741805830272,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-17038",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "isqrt(n) must return the largest integer(s) s with s**2 <= n (the mathematical floor square root) for inputs that are mis-computed by the current float fast path because the guard bound (n < 17984395633462800708566937239552) is too large; concretely isqrt(4503599761588224) == 67108864 (currently returns 67108865), and isqrt(9999999999999999) == 99999999 (currently returns 100000000).",
+        "subject": "sympy.core.power.isqrt",
+        "hunk_ids": [],
+        "cited_from": "Issue report: 'def isqrt(n):\n    \"\"\"Return the largest integer less than or equal to sqrt(n).\"\"\"\n    if n < 17984395633462800708566937239552:\n        return int(_sqrt(n))\n    return integer_nthroot(int(n), 2)[0]' followed by '>>> n = 4503599761588224\n>>> s = isqrt(n)\n>>> s  # correct result is 67108864\n67108865\n>>> s**2 <= n  # expect True\nFalse' and '>>> isqrt(9999999999999999)  # should be 99999999\n100000000'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "calling isqrt with a negative argument raises ValueError (with message 'n must be nonnegative') rather than computing via the float/integer-nthroot path",
+        "subject": "sympy.core.power.isqrt",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "for every nonnegative integer n, isqrt(n) returns the largest integer m such that m*m <= n (floor of sqrt(n)) exactly — including values near and above the previous ~2^52 float fast-path threshold where a raw unverified int(math.sqrt(n)) result could previously be off by one and was returned unchanged",
+        "subject": "sympy.core.power.isqrt",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "All visible evidence concerns returning the floor square root for positive inputs near/above the float fast-path boundary (~2^52), with two concrete positive failing examples. Nothing in the issue or code mentions negative-argument handling, raising ValueError, or an 'n must be nonnegative' message, so S_vis does not pin down this behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down exactly this behavior for the boundary region: isqrt must return the largest integer s with s**2 <= n (floor sqrt) instead of the previously returned off-by-one int(math.sqrt) values, with concrete expected results for values near/above the ~2^52 threshold (4503599761588224->67108864, 9999999999999999->99999999). The core correction R2 describes is directly evidenced."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_isqrt_negative_raises_valueerror",
+      "test_source": "from sympy.core.power import isqrt\n\ndef test_isqrt_negative_raises_valueerror():\n    try:\n        isqrt(-1)\n        assert False, \"expected ValueError for negative n\"\n    except ValueError as exc:\n        assert str(exc) == 'n must be nonnegative', str(exc)",
+      "gold_result": "PASSED: gold's isqrt checks `if n < 0: raise ValueError(\"n must be nonnegative\")`, so isqrt(-1) raises ValueError whose str is 'n must be nonnegative', and the assertion holds.",
+      "buggy_result": "FAILED: buggy isqrt(-1) enters `if n < ...: return int(_sqrt(n))`, math.sqrt(-1) raises ValueError(\"math domain error\"); str(exc)=='math domain error' != 'n must be nonnegative', so the assert fails (line 10 AssertionError).",
+      "explanation": "R1 requires isqrt to raise ValueError with message 'n must be nonnegative' for a negative argument, rather than falling through to the float/integer_ntroot path. The gold (H0) implementation adds `if n < 0: raise ValueError(\"n must be nonnegative\")`, whereas the buggy implementation has no nonnegativity guard and for negative n returns int(math.sqrt(n)) (raising Python's unrelated 'math domain error'). My witness test calls isqrt(-1) and asserts the raised ValueError carries exactly the message 'n must be nonnegative'.\n\nI confirmed with run_test: against gold the test PASSED (the intended ValueError with the message is raised); against buggy it FAILED (ValueError 'math domain error' surfaces instead, failing the message assertion). This behavior is a genuine divergence corresponding to R1.\n\nI verified the visible tests do not already pin it down: sympy/core/tests/test_numbers.py::test_isqrt (the only visible isqrt regression) only asserts nonnegative floor-of-sqrt correctness at the 2**104 boundary and never calls isqrt with a negative argument or checks for any ValueError; the other host files (test_power.py, ntheory tests) relay no negative-argument isqrt assertion. So this witness is not a disguised restatement of any already-observable fact, and it carries real enforcement value for the fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "isqrt is defined in sympy/core/power.py; its only use of math.sqrt is the fast path guarded by 'if n < 17984395633462800708566937239552' (~2^104), with fallback 'return integer_nthroot(int(n), 2)[0]'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "isqrt is not re-exported from sympy/core/__init__.py (which imports Pow, integer_nthroot, integer_log from .power but not isqrt); the issue accesses it via 'from sympy.core.power import isqrt'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo's visible test files examined (sympy/core/tests/test_power.py, sympy/ntheory/tests/test_primetest.py, sympy/ntheory/primetest.py) contain no isqrt regression test and do not assert anything about the reported failing values; the requirements above rest on the issue report and isqrt's docstring contract."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's analysis (IEEE 754 binary64, correctly-rounded vs. within-2-ulps math.sqrt, proposed bound 4503599761588224 == 2**52 + 2**27, +0.5 compensation, verify-and-fallback option) is supporting reasoning, not additional independent behavioral requirements beyond correctness of isqrt for these inputs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch (H0) touches only the isqrt function in sympy/core/power.py; integer_nthroot and all other code are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "isqrt is intentionally NOT re-exported from sympy.core; tests/usage reach it via 'from sympy.core.power import isqrt'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "isqrt's structural change: the old code returned int(math.sqrt(n)) with no verification below ~2^104 and fell back to integer_nthroot only above that; the new code converts the argument to int via int(n), checks n >= 0 first, uses math.sqrt only for n < 4503599761588224 == 2**52 + 2**27 and only if the candidate round-tripped (0 <= n - s*s <= 2*s), otherwise always uses integer_nthroot(n, 2)[0]. These structural details are internal; the two externally committed behaviors are the negative-input ValueError (R1) and the exact floor-of-sqrt result for all nonnegative inputs (R2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The core defect fixed is the unverified floating-point fast path returning an incorrect value (off-by-one class) for certain n within its range."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: No genuine witness for R1 (isqrt raising ValueError with message 'n must be nonnegative' for negative arguments) exists in the oracle.\n\nInvestigation performed:\n- The \"tests currently failing against the buggy program\" list is empty. Any real oracle test asserting R1 would call isqrt with a negative argument and expect a ValueError; against the buggy program (which falls through to the float/integer-nthroot path instead of raising) such a test would necessarily FAIL. The absence of any failing test is therefore already strong evidence no R1 witness test exists.\n- I located the canonical isqrt regression test in sympy/core/tests/test_numbers.py (function test_isqrt). It checks the floor-of-sqrt correctness of isqrt for nonnegative inputs around the 2^104 float fast-path boundary (limit and limit±S.Half). It does NOT test negative input or any ValueError, so it is not about R1 (and it is also labeled [VISIBLE], which would disqualify it from serving as a witness regardless).\n- I checked the other files that could plausibly host an isqrt/power/numeric-sqrt regression: sympy/core/tests/test_power.py (the natural home since isqrt lives in sympy/core/power.py), test_arit.py, test_eval.py, test_evalf.py, test_numbers.py, and ntheory tests (test_primetest.py, test_residue.py). None of them contains an assertion that isqrt(-n) raises ValueError with message 'n must be nonnegative', or any negative-argument check.\n- Every file I read was labeled [VISIBLE] (content already visible to the repair system), so none of the examined assertions could serve as a hidden-enforcing witness even if one matched R1.\n\nConclusion: nothing in the oracle genuinely tests R1's negative-input ValueError behavior; the visible isqrt test covers only nonnegative-correctness (R2-flavored), which is a separate behavior. Therefore found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (sympy.core.power.isqrt): calling isqrt with a negative argument raises ValueError (with message 'n must be nonnegative') rather than computing via the float/integer-nthroot path — not entailed by S_vis (All visible evidence concerns returning the floor square root for positive inputs near/above the float fast-path boundary (~2^52), with two concrete positive failing examples. Nothing in the issue or code mentions negative-argument handling, raising ValueError, or an 'n must be nonnegative' message, so S_vis does not pin down this behavior.); confirmed by a synthesized witness: R1 requires isqrt to raise ValueError with message 'n must be nonnegative' for a negative argument, rather than falling through to the float/integer_ntroot path. The gold (H0) implementation adds `if n < 0: raise ValueError(\"n must be nonnegative\")`, whereas the buggy implementation has no nonnegativity guard and for negative n returns int(math.sqrt(n)) (raising Python's unrelated 'math domain error'). My witness test calls isqrt(-1) and asserts the raised ValueError carries exactly the message 'n must be nonnegative'.\n\nI confirmed with run_test: against gold the test PASSED (the intended ValueError with the message is raised); against buggy it FAILED (ValueError 'math domain error' surfaces instead, failing the message assertion). This behavior is a genuine divergence corresponding to R1.\n\nI verified the visible tests do not already pin it down: sympy/core/tests/test_numbers.py::test_isqrt (the only visible isqrt regression) only asserts nonnegative floor-of-sqrt correctness at the 2**104 boundary and never calls isqrt with a negative argument or checks for any ValueError; the other host files (test_power.py, ntheory tests) relay no negative-argument isqrt assertion. So this witness is not a disguised restatement of any already-observable fact, and it carries real enforcement value for the fix.",
+    "confidence": "Medium"
+  }
+}

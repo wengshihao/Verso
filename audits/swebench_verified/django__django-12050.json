@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-12050",
+  "status": "ok",
+  "duration_seconds": 510.97201154206414,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12050",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When given a list value (or a tuple) whose items may need expression resolution, resolve_lookup_value must return a value whose iterable container type matches the input iterable type — a list input must come back as a list and a tuple input as a tuple — rather than unconditionally coercing both to tuple.",
+        "subject": "django.db.models.sql.query.Query.resolve_lookup_value",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Changes introduced in #30687 cause an input value list to be coerced to tuple breaking exact value queries. This affects ORM field types that are dependent on matching input types such as PickledField. The expected iterable return type should match input iterable type.\" Code (django/db/models/sql/query.py): \"elif isinstance(value, (list, tuple)):\n    ...\n    value = tuple(resolved_values)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI1",
+        "statement": "Query.resolve_lookup_value preserves the container type of a list/tuple filter RHS value: when the incoming value is a list, the returned value is a list; when it is a tuple, the returned value is a tuple — rather than always coercing the value to a tuple as the pre-fix code did (relevant to type-sensitive exact comparisons where the RHS container type must match the stored/queried type).",
+        "subject": "django.db.models.sql.query.Query.resolve_lookup_value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI2",
+        "statement": "When resolve_lookup_value is given a list/tuple whose elements are themselves lists/tuples, the nested iterables are resolved recursively and each nested level likewise preserves its own container type (list stays list, tuple stays tuple) across all nesting depths, rather than only the outermost level being handled.",
+        "subject": "django.db.models.sql.query.Query.resolve_lookup_value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI3",
+        "statement": "When resolve_lookup_value resolves the elements of a list/tuple, each element is resolved as an individual resolved value by the same element-resolution semantics used for a scalar RHS: expression-typed elements are resolved via resolve_expression (with F() elements receiving simple_col and other expression elements not), while plain non-expression elements are passed through unchanged.",
+        "subject": "django.db.models.sql.query.Query.resolve_lookup_value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 directly pins down the container-type-preservation behavior: list input returns a list, tuple input returns a tuple, instead of the pre-fix unconditional tuple coercion. SI1 restates exactly this."
+      },
+      {
+        "requirement_id": "SI2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 only addresses the outer iterable's container type matching and does not mention nested iterables being resolved recursively with per-depth type preservation; the type-preserving logic could plausibly generalize recursively, but the visible evidence does not commit to multi-level handling."
+      },
+      {
+        "requirement_id": "SI3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 only notes that elements of a list/tuple may need expression resolution; it does not specify the exact per-element resolution semantics (F() via resolve_expression receiving simple_col, other expressions resolved, plain values passed through), so those precise rules are not pinned by visible evidence."
+      }
+    ],
+    "target_requirement_id": "SI2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_recursive_container_type_preservation",
+      "test_source": "def test_recursive_container_type_preservation():\n    from django.db.models.sql.query import Query\n    q = Query(object)\n    # Deep, mixed nesting: outer list, then list/tuple alternating.\n    value = [[1, (2, [3]), (4,)], [5]]\n    result = q.resolve_lookup_value(value, None, True, False)\n    assert isinstance(result, list)\n    assert result == value\n    # Every container level is recursively resolved and keeps its own type.\n    def check(v):\n        if isinstance(v, list):\n            assert isinstance(v, list)\n            for item in v:\n                check(item)\n        elif isinstance(v, tuple):\n            assert isinstance(v, tuple)\n            for item in v:\n                check(item)\n    check(result)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The target requirement [SI2] asserts that Query.resolve_lookup_value recursively resolves nested list/tuple values while preserving each level's own container type. The gold fix replaces the old per-level rebuild (which ended with `value = tuple(resolved_values)`) with `return type(value)(generator)`, so every nesting level keeps its own type. In the buggy version, only the outermost level is handled at all and is unconditionally forced to a tuple: on input `[[1,(2,[3]),(4,)],[5]]` the outer list becomes a tuple `([1,...],[5])`.\n\nMy witness directly inspects the returned value of resolve_lookup_value (a hidden internal behavior): it feeds a deeply/mixedly nested container of plain non-expression elements (so no SQL/database resolution is triggered) and asserts the outer value is still a list, equals the original, and that every nested list/tuple level is recursively preserved. This runs purely against the dispatch logic in the changed branch and needs no DB.\n\nThis candidate PASSES against gold (outer list stays a list, deep alternating list/tuple types intact) and FAILS against buggy (`Query(object).resolve_lookup_value([[1,(2,[3]),(4,)],[5]], ...)` returns a tuple for the outermost level, so `isinstance(result, list)` is False). I verified there is no existing visible test that probes this internal method's nested-container type preservation (all tests/queries/*, tests/lookup/* etc. actually drive Query.build_where / ORM filters through model fields and never assert the raw structure of the resolved RHS), so this witness rests on hidden knowledge and is not discoverable from the visible surface."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Query.resolve_lookup_value (file django/db/models/sql/query.py, class Query) is the method in question; it is called from Query.build_filter() (also in django/db/models/sql/query.py) to resolve filter RHS values before constructing lookups."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the buggy version, the list/tuple branch of resolve_lookup_value unconditionally ends with `value = tuple(resolved_values)`, i.e. it rebuilds the iterable as a tuple even when the input was a list."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "This ORM main branch predates the Django 4.0 query handling, and the test layout keeps ORM-testsuite under tests/ (e.g. tests/queries/, tests/lookup/, tests/custom_lookups/), but no FAIL_TO_PASS regression test for this specific ticket is present at this snapshot."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's reference to 'PickledField' is to a third-party/example type-sensitive field: exact lookups depend on the comparison input type matching the stored/query value type."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.resolve_lookup_value is an internal method invoked from Query.build_filter (same file) to resolve filter RHS values before building lookups."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-fix list/tuple branch rebuilt every list/tuple value as a tuple; a value that was already a list or a tuple whose elements carried no expressions was nonetheless converted to a tuple."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix is a single hunk inside one branch of resolve_lookup_value; the surrounding logic (single-expression handling, F vs non-F simple_col distinction, final 'return value') is unchanged apart from that branch collapsing its per-level loop into a recursive generator over type(value)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI2]: I searched the oracle for any test that genuinely exercises the [SI2] behavioral claim: that Query.resolve_lookup_value resolves nested list/tuple elements recursively while preserving each level's own container type (list stays list, tuple stays tuple) at every nesting depth.\n\nInvestigation:\n- No tests are recorded as failing against the buggy program, which is itself a necessary condition for any witness to exist; none are present.\n- I read the ORM query/lookup test-suite where a test of this internal method's behavior would naturally live: tests/queries/test_query.py (which is the file that builds Query instances and inspects lookups directly), tests/queries/tests.py, tests/queries/test_q.py, tests/queries/test_qs_combinators.py, tests/queries/test_explain.py, tests/queries/test_bulk_update.py, tests/lookup/tests.py, tests/lookup/test_lookups.py, tests/lookup/test_decimalfield.py, tests/custom_lookups/tests.py, tests/aggregation/test_filter_argument.py, tests/datatypes/tests.py, and tests/postgres_tests/test_array.py.\n- Every one of these files is labeled [VISIBLE] (content a repair pipeline already saw), so none could serve as a Witness even if it matched. More importantly, none asserts recursive container type preservation inside resolve_lookup_value. The closest related tests (e.g. ArrayField __in / endswith nested array tests in postgres_tests) exercise postgres-ArrayField-specific (base_field) resolution paths and not the generic resolve_lookup_value recursion claim, and they are not even failing against the buggy program.\n- The Task Notebook independently concluded that at this ORM-main-branch snapshot there is no FAIL_TO_PASS regression test for this ticket; my reading of the test files is consistent with that.\n\nBecause a Witness must both (a) fail on the buggy program and pass on the gold program and (b) rest on [HIDDEN]-labeled content asserting exactly this behavior, and neither condition is met by any test I could locate, no genuine witness exists. found=false is the correct result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI2] (django.db.models.sql.query.Query.resolve_lookup_value): When resolve_lookup_value is given a list/tuple whose elements are themselves lists/tuples, the nested iterables are resolved recursively and each nested level likewise preserves its own container type (list stays list, tuple stays tuple) across all nesting depths, rather than only the outermost level being handled. — not entailed by S_vis (R1 only addresses the outer iterable's container type matching and does not mention nested iterables being resolved recursively with per-depth type preservation; the type-preserving logic could plausibly generalize recursively, but the visible evidence does not commit to multi-level handling.); confirmed by a synthesized witness: The target requirement [SI2] asserts that Query.resolve_lookup_value recursively resolves nested list/tuple values while preserving each level's own container type. The gold fix replaces the old per-level rebuild (which ended with `value = tuple(resolved_values)`) with `return type(value)(generator)`, so every nesting level keeps its own type. In the buggy version, only the outermost level is handled at all and is unconditionally forced to a tuple: on input `[[1,(2,[3]),(4,)],[5]]` the outer list becomes a tuple `([1,...],[5])`.\n\nMy witness directly inspects the returned value of resolve_lookup_value (a hidden internal behavior): it feeds a deeply/mixedly nested container of plain non-expression elements (so no SQL/database resolution is triggered) and asserts the outer value is still a list, equals the original, and that every nested list/tuple level is recursively preserved. This runs purely against the dispatch logic in the changed branch and needs no DB.\n\nThis candidate PASSES against gold (outer list stays a list, deep alternating list/tuple types intact) and FAILS against buggy (`Query(object).resolve_lookup_value([[1,(2,[3]),(4,)],[5]], ...)` returns a tuple for the outermost level, so `isinstance(result, list)` is False). I verified there is no existing visible test that probes this internal method's nested-container type preservation (all tests/queries/*, tests/lookup/* etc. actually drive Query.build_where / ORM filters through model fields and never assert the raw structure of the resolved RHS), so this witness rests on hidden knowledge and is not discoverable from the visible surface.",
+    "confidence": "Medium"
+  }
+}

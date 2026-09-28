@@ -1,0 +1,111 @@
+{
+  "task_id": "matplotlib__matplotlib-25960",
+  "status": "ok",
+  "duration_seconds": 332.7658388329437,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-25960",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "Figure.subfigures and SubFigure.subfigures must lay out the returned subfigures so that the horizontal spacing between subfigures in adjacent columns and the vertical spacing between subfigures in adjacent rows actually honor the supplied wspace and hspace arguments, expressed as a fraction of the average subfigure width/height — i.e. nonzero wspace/hspace introduces real gaps between adjacent subfigures (and wspace=0/hspace=0 produces no such internal gaps), so that different wspace/hspace values yield different subfigure layouts rather than an identical arrangement.",
+        "subject": "FigureBase.subfigures / SubFigure layout geometry (SubFigure._redo_transform_rel_fig)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"`wspace` and `hspace` in `Figure.subfigures` do nothing.\" Reproduction: \"figs = plt.figure().subfigures(2, 2, wspace=0, hspace=0)\" / \"Same figure independently of the values of hspace and wspace.\" figure.py docstring of subfigures: \"wspace, hspace : float, default: None\\n    The amount of width/height reserved for space between subfigures,\\n    expressed as a fraction of the average subfigure width/height.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When `.subfigures(ncols>1, wspace=w, ...)` is called on a Figure or SubFigure whose layout engine is None (get_layout_engine() returns None) and an explicit non-None wspace is passed, the bounding boxes of the returned column subfigures are adjusted so that a horizontal separation is left between adjacent columns (the grid cells are shrunk to accommodate the wspace gap) rather than every column adjoined flush against the next at the grid width-ratio boundary.",
+        "subject": "FigureBase.subfigures (wspace)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When `.subfigures(nrows>1, hspace=h, ...)` is called on a Figure or SubFigure whose layout engine is None (get_layout_engine() returns None) and an explicit non-None hspace is passed, the bounding boxes of the returned row subfigures are adjusted so that a vertical separation is left between adjacent rows (the grid cells are shrunk to accommodate the hspace gap) rather than every row adjoined flush against the next at the grid height-ratio boundary.",
+        "subject": "FigureBase.subfigures (hspace)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "vis-1 pins down that wspace must create real horizontal gaps between adjacent columns, which matches R1's core behavior. But R1 additionally scopes the requirement to calls where the layout engine is None (grid cells shrunk to leave a gap) — a precondition vis-1 and its cited evidence never mention — so vis-1 does not fully pin down this exact scoped behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "vis-1 pins down that hspace must create real vertical gaps between adjacent rows (both dimensions are explicitly covered), matching R2's core behavior. But R2's engine-is-None precondition and the row-cell-shrink mechanism are never addressed by vis-1's evidence, so the exact scoped requirement is not fully entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_subfigures_wspace_columns_leave_horizontal_gap",
+      "test_source": "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n\ndef test_subfigures_wspace_columns_leave_horizontal_gap():\n    # A plain figure has no layout engine by default.\n    fig = plt.figure()\n    assert fig.get_layout_engine() is None\n    # Explicit non-None wspace on a ncols>1 subfigure grid, no layout engine.\n    sfs = fig.subfigures(1, 2, wspace=0.4)\n    gap = sfs[1].bbox.x0 - sfs[0].bbox.x1\n    # The two column subfigures must not be flush against each other: there\n    # must be a genuine horizontal separation left by the wspace gap.\n    assert gap > 0.5, (\n        \"column subfigures should be separated by the explicit wspace, got \"\n        f\"gap={gap}\")\n",
+      "gold_result": "PASSED — on gold, calling fig.subfigures(1, 2, wspace=0.4) on a plain default Figure (get_layout_engine() is None) triggers the new H1 code path (gs.get_grid_positions -> _redo_transform_rel_fig(bbox=...)), so the two returned column subfigures land with a horizontal gap: assertion gap > 0.5 holds.",
+      "buggy_result": "FAILED — on buggy (no wspace handling), the columns stay flush at the grid width-ratio boundary: sf[1].bbox.x0 - sf[0].bbox.x1 == 0.0, so the assertion gap > 0.5 fails with AssertionError.",
+      "explanation": "R1 requires: when .subfigures(ncols>1, wspace=non-None-w) is called on a Figure/SubFigure whose get_layout_engine() is None, the returned column subfigures' bounding boxes are shrunk/adjusted so a horizontal gap is left between adjacent columns, instead of columns adjoining flush at the width-ratio boundary.\n\nThe gold implementation (H1 in figure.py) adds exactly the block: after creating each SubFigure from the anchored GridSpec (left=0,right=1,bottom=0,top=1), if get_layout_engine() is None and wspace/hspace is not None, it recomputes each subfigure's bbox from gs.get_grid_positions(self) and calls _redo_transform_rel_fig(bbox=...), which injects the wspace separators. The buggy code did not contain this block, so subfigure geometry only came from the raw width/height-ratio sums in SubFigure._redo_transform_rel_fig (flush columns).\n\nMy test creates a plain fig = plt.figure() (asserting get_layout_engine() is None), calls subfigures(1, 2, wspace=0.4) — i.e. ncols=2>1 with an explicit non-None wspace and no layout engine — then checks that the horizontal gap between the two returned column subfigure bounding boxes (sf[1].bbox.x0 - sf[0].bbox.x1) is nonzero (a real separation). Execution confirmation: PASSED against gold (gap realized) and FAILED against buggy (gap==0.0, columns flush). This assertion is not pinned by any visible test: I surveyed the subfigure tests in test_figure.py (test_subfigure, test_subfigure_double, test_subfigure_ticks, test_subfigure_spanning, test_suptitle_subfigures) — those either rely on a layout engine (constrained_layout/layout='constrained', where spacing is engine-managed, not the no-layout-engine path R1 addresses) or only assert non-geometric facts (facecolor/label/ticks); none checks horizontal bbox separation between returned column subfigures on a layout-engine-None figure with explicit wspace. And the Oracle Search Agent reported no [HIDDEN] assertion enforces this, so this is a genuinely independent witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction code calls `plt.figure().subfigures(2, 2, wspace=0, hspace=0)` on a default figure (no `layout` engine, no constrained layout), so spacing between subfigures can only come from the gridspec wspace/hspace separators."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`subfigures` is defined once on `FigureBase` and is therefore shared by both `Figure` and nested `SubFigure`; the geometry of each returned SubFigure is computed in `SubFigure._redo_transform_rel_fig`, which currently places subfigures at raw grid-cell boundaries, using only the gridspec width/height ratios (`wr`/`hr` sums and cumulative sums) and ignoring wspace/hspace separators."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The wspace/hspace semantics for the space-between-cells are defined in `GridSpec.get_grid_positions` (`cell_w = tot_width/(ncols + wspace*(ncols-1)); sep_w = wspace*cell_w`, and analogously for hspace)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests exercising figure/subfigure layout, including subfigure bbox geometry, live in `lib/matplotlib/tests/test_figure.py`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "subfigures is defined on FigureBase, so the behavior change applies to both top-level Figure and nested SubFigure creation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The support for spacing is carried out after subfigure construction by recomputing each returned SubFigure's bbox through gs.get_grid_positions and _redo_transform_rel_fig(bbox=...)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 also anchors the internal GridSpec to the full parent extent (left=0, right=1, bottom=0, top=1); this only matters for the spacing computation since SubFigure geometry is otherwise ratio-derived."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 changes only a docstring describing the wspace/hspace default (rcParams-inferred under constrained layout, zero when no layout engine); it introduces no code change."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires that when `.subfigures(ncols>1, wspace=non-None-w, ...)` is called on a Figure/SubFigure whose get_layout_engine() is None, the bboxes of returned column subfigures are adjusted to leave horizontal separation (grid cells shrunk to make room for wspace), rather than the columns adjoining flush at the grid width-ratio boundary.\n\nI searched the oracle test modules where such figure/subfigure bbox geometry is exercised. The natural home, lib/matplotlib/tests/test_figure.py, contains all subfigure-layout tests (test_subfigure, test_subfigure_ticks, test_subfigure_double, test_subfigure_spanning, test_subfigure_tightbbox, test_suptitle_subfigures, etc.). Examining that file: none of these tests verifies the R1 geometry. The subfigure bbox-position tests that do measure numeric x-bounds/positions (e.g. test_subfigure_spanning, test_subfigure_ticks) all set a layout engine (constrained_layout=True/layout='constrained'); under that path the spacing is managed by the engine, not the no-layout-engine wspace handling R1 concerns. The no-layout-engine default-figure tests that call subfigures with wspace (e.g. test_suptitle_subfigures, test_subfigure_ticks's parent) only assert non-geometric facts (facecolor/label/ticks) and never check horizontal bbox separation between column subfigures for an explicit non-None wspace. I also inspected test_subplots.py, test_gridspec.py, test_constrainedlayout.py, and test_tightlayout.py for any figure/subfigure wspace bbox check; none asserts subfigure column-bbox separation.\n\nMoreover there are no tests currently failing against the buggy program. All the files I examined that could hold such a check are labeled [VISIBLE], so even a superficially matching assertion there could not serve as a Witness (it would rest on already-visible content). No [HIDDEN] assertion anywhere enforces the newly-introduced no-layout-engine wspace separation behavior for subfigure column bboxes, so no execution-confirmed witness could be constructed from the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (FigureBase.subfigures (wspace)): When `.subfigures(ncols>1, wspace=w, ...)` is called on a Figure or SubFigure whose layout engine is None (get_layout_engine() returns None) and an explicit non-None wspace is passed, the bounding boxes of the returned column subfigures are adjusted so that a horizontal separation is left between adjacent columns (the grid cells are shrunk to accommodate the wspace gap) rather than every column adjoined flush against the next at the grid width-ratio boundary. — not entailed by S_vis (vis-1 pins down that wspace must create real horizontal gaps between adjacent columns, which matches R1's core behavior. But R1 additionally scopes the requirement to calls where the layout engine is None (grid cells shrunk to leave a gap) — a precondition vis-1 and its cited evidence never mention — so vis-1 does not fully pin down this exact scoped behavior.); confirmed by a synthesized witness: R1 requires: when .subfigures(ncols>1, wspace=non-None-w) is called on a Figure/SubFigure whose get_layout_engine() is None, the returned column subfigures' bounding boxes are shrunk/adjusted so a horizontal gap is left between adjacent columns, instead of columns adjoining flush at the width-ratio boundary.\n\nThe gold implementation (H1 in figure.py) adds exactly the block: after creating each SubFigure from the anchored GridSpec (left=0,right=1,bottom=0,top=1), if get_layout_engine() is None and wspace/hspace is not None, it recomputes each subfigure's bbox from gs.get_grid_positions(self) and calls _redo_transform_rel_fig(bbox=...), which injects the wspace separators. The buggy code did not contain this block, so subfigure geometry only came from the raw width/height-ratio sums in SubFigure._redo_transform_rel_fig (flush columns).\n\nMy test creates a plain fig = plt.figure() (asserting get_layout_engine() is None), calls subfigures(1, 2, wspace=0.4) — i.e. ncols=2>1 with an explicit non-None wspace and no layout engine — then checks that the horizontal gap between the two returned column subfigure bounding boxes (sf[1].bbox.x0 - sf[0].bbox.x1) is nonzero (a real separation). Execution confirmation: PASSED against gold (gap realized) and FAILED against buggy (gap==0.0, columns flush). This assertion is not pinned by any visible test: I surveyed the subfigure tests in test_figure.py (test_subfigure, test_subfigure_double, test_subfigure_ticks, test_subfigure_spanning, test_suptitle_subfigures) — those either rely on a layout engine (constrained_layout/layout='constrained', where spacing is engine-managed, not the no-layout-engine path R1 addresses) or only assert non-geometric facts (facecolor/label/ticks); none checks horizontal bbox separation between returned column subfigures on a layout-engine-None figure with explicit wspace. And the Oracle Search Agent reported no [HIDDEN] assertion enforces this, so this is a genuinely independent witness.",
+    "confidence": "Medium"
+  }
+}

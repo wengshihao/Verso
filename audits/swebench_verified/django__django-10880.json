@@ -1,0 +1,90 @@
+{
+  "task_id": "django__django-10880",
+  "status": "ok",
+  "duration_seconds": 594.3709116249811,
+  "llm_calls": 40,
+  "error": null,
+  "record": {
+    "task_id": "django__django-10880",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A Count aggregate with distinct=True whose source expression is a conditional Case/When expression (e.g. an annotation Count(Case(When(condition, then=...)), distinct=True)) must not be rendered as SQL in which the DISTINCT keyword runs directly into the CASE keyword (e.g. `... COUNT(DISTINCTCASE WHEN ...)`); the DISTINCT must be separated from the CASE expression so the resulting query is valid SQL and no longer raises a database syntax/query error on any DB backend.",
+        "subject": "django.db.models.aggregates.Count / Aggregate.as_sql (distinct flag rendering combined with a Case expression)",
+        "hunk_ids": [],
+        "cited_from": "\"A Count annotation containing both a Case condition and a distinct=True param produces a query error on Django 2.2 (whatever the db backend). A space is missing at least (... COUNT(DISTINCTCASE WHEN ...).\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "When an Aggregate (e.g. a Count) is compiled to SQL with distinct=True, the rendered function arguments contain the keyword DISTINCT followed by whitespace, so it is separated from the leading source expression rather than being concatenated directly onto it (an expression whose SQL starts with a keyword- or identifier-like token, such as a CASE, previously merged with DISTINCT into a single invalid token). When distinct=False, no DISTINCT is emitted.",
+        "subject": "Aggregate.as_sql / aggregate (COUNT) SQL rendering with distinct",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's bug report ('a space is missing' between DISTINCT and CASE) supports the core whitespace-separation behavior of S_impl_1 for distinct=True with a CASE source, and directly justifies inserting a space so DISTINCT doesn't concatenate onto the expression. However, S_impl_1 generalizes the whitespace rule beyond the CASE case and additionally commits that distinct=False emits no DISTINCT, neither of which R1 pins down, so full entailment of the generalized requirement is not clearly established."
+      }
+    ],
+    "target_requirement_id": "S_impl_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_distinct_aggregate_case_spacing",
+      "test_source": "import os\nimport sys\nimport django\n\n\ndef test_distinct_aggregate_case_spacing():\n    root = os.path.dirname(os.path.dirname(django.__file__))\n    for p in [root, os.path.join(root, 'tests')]:\n        if p not in sys.path:\n            sys.path.insert(0, p)\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            INSTALLED_APPS=['django.contrib.contenttypes', 'aggregation_regress'],\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        )\n    django.setup()\n    from django.db.models import Case, Count, When, IntegerField\n    from aggregation_regress.models import Book\n\n    a_case = Case(When(pages__gt=300, then=1), output_field=IntegerField())\n\n    # distinct=True: DISTINCT must be separated by whitespace from the\n    # leading CASE keyword so the two do not merge into one invalid token.\n    dist_sql = str(Book.objects.annotate(\n        c=Count(a_case, distinct=True)\n    ).query)\n    assert 'DISTINCT CASE' in dist_sql, dist_sql\n    assert 'DISTINTCASE' not in dist_sql, dist_sql\n\n    # distinct=False: no DISTINCT may be emitted at all.\n    plain_sql = str(Book.objects.annotate(\n        c=Count(a_case)\n    ).query)\n    assert 'DISTINCT' not in plain_sql, plain_sql\n",
+      "gold_result": "PASSED — gold renders COUNT(DISTINCT CASE WHEN ...) i.e. 'DISTINCT' is followed by whitespace before the leading CASE token, and the distinct=False query renders no DISTINCT.",
+      "buggy_result": "FAILED — buggy renders COUNT(DISTINCTCASE WHEN ...) (DISTINCT glued onto CASE into an invalid single token); assertion \"assert 'DISTINCT CASE' in dist_sql\" fails.",
+      "explanation": "Requirement [S_impl_1] concerns Aggregate.as_sql's distinct rendering: when an Aggregate (Count) over a source expression whose SQL starts with a keyword-like token (a Case) is compiled with distinct=True, the rendered function args must contain 'DISTINCT' followed by whitespace so it doesn't merge into DISTINCTCASE; and with distinct=False no DISTINCT is emitted. The witness compiles a Count(Case(...), distinct=True) annotation into actual SQL (Book.objects.annotate(...).query) and asserts 'DISTINCT CASE' is present while 'DISTINTCASE' is absent, also verifying that the distinct=False rendering contains no DISTINCT. Execution confirmed: gold PASSED (renders COUNT(DISTINCT CASE WHEN ...)) and buggy FAILED (renders COUNT(DISTINTCASE WHEN ...), the merged invalid token). This input (distinct Aggregate over a leading-Case source) is not exercised by any visible test, which only cover plain-column distinct Counts or .distinct() on the whole QuerySet, so the witness is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The SQL for the aggregate's distinct flag is built in django/db/models/aggregates.py: `Aggregate.template = '%(function)s(%(distinct)s%(expressions)s)'` and in `Aggregate.as_sql` `extra_context['distinct'] = 'DISTINCT' if self.distinct else ''` (no trailing space), while `Func.as_sql` (django/db/models/expressions.py) joins source expressions directly with `arg_joiner` into `data['expressions']`. A distinct count over a plain quoted column still parses because the quote delimiter ends the DISTINCT token, but a `Case` expression starts with the identifier-like keyword CASE, so DISTINCT and CASE get glued into an invalid `DISTINTCASE` token."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Count disallows distinct on '*'-ish/Star with filter (raises ValueError in Count.__init__) and non-Count aggregates reject distinct via allow_distinct=False raising TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Pre-existing conditional/distinct aggregation tests live in tests/aggregation_regress/tests.py (e.g. test_conditional_aggreate, test_distinct_conditional_aggregate), but none exercises a Count(Case(...), distinct=True) combination, so the visible test suite does not yet pin down the exact regression; the requirement is grounded only in the issue-report text and the code's rendering path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only code difference between the buggy and gold revisions is in Aggregate.as_sql (django/db/models/aggregates.py): extra_context['distinct'] value changed from 'DISTINCT' to 'DISTINCT '."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Aggregate.template is '%(function)s(%(distinct)s%(expressions)s)', so the distinct segment is placed directly before the expressions with no other separator; the extra_context distinct value is the only separator mechanism."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The distinct=False branch ('') is unchanged from the pre-fix code; only the distinct=True case gained a trailing space."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Aggregate.as_sql delegates SQL building to Func.as_sql (django/db/models/expressions.py), which joins expressions via an arg_joiner; this hunk only modifies the distinct prefix."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_1]: I searched the oracle's test files for a test that genuinely witnesses [S_impl_1] — i.e. an Aggregate/Count compiled with distinct=True whose SQL rendering produces `DISTINCT` followed by whitespace before an expression that starts with a keyword-like token (essentially a `Case(...)`), where buggy renders an invalid `DISTINTCASE` token and gold renders `DISTINCT CASE`.\n\nFiles checked (all natural homes for Count/Case/distinct aggregate behavior):\n- tests/aggregation_regress/tests.py — contains test_conditional_aggreate / test_distinct_conditional_aggregate / test_sliced_conditional_aggregate, but these either use `.distinct()` on the whole QuerySet, Avg/Sum over Case (no Aggregate distinct=True over Case), and none combines Count/Sum(distinct=True) with a Case as the aggregate source. File is [VISIBLE] anyway.\n- tests/aggregation/tests.py — test_count uses `Count('rating', distinct=True)` on a plain column reference (renders as quoted col; not the keyword-collision case); no distinct-over-Case aggregate.\n- tests/aggregation/test_filter_argument.py — filtered aggregates with filter= kwarg over Case (test_case_aggregate) but not distinct; distinct on Star is rejected by design; no distinct+CASE rendering check.\n- tests/expressions_case/tests.py — Case + Sum/Case aggregate_* tests, but no aggregate with distinct=True over Case.\n- tests/expressions/tests.py — expressions/aggregate repr and Func/subqueries tests; no distinct-over-Case SQL test.\n- tests/annotations/tests.py — no distinct-over-Case aggregate.\n- tests/postgres_tests/test_aggregates.py — StringAgg/ArrayAgg distinct tests over plain fields (quoted), not the CASE keyword-collision path.\n\nFindings: no oracle test anywhere combines an Aggregate (Count/Sum/etc.) with both distinct=True AND a leading-Case (or other KeywordRendering) source expression, so none can fail on buggy (`COUNT(DISTINTCASE …)`) while passing on gold (`COUNT(DISTINCT CASE …)`). Moreover, every relevant file I examined is labeled [VISIBLE], and a witness may not rest on visible content. The task notebook likewise records \"(none recorded)\" failing tests and states the regression is only pinned down by issue text and the code's rendering path, not by any enclosing test. Consequently, while I could construct a synthetic test that distinguishes buggy from gold by hand, that test does not correspond to any assertion the real oracle enforces, so no genuine witness exists in the oracle. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_1] (Aggregate.as_sql / aggregate (COUNT) SQL rendering with distinct): When an Aggregate (e.g. a Count) is compiled to SQL with distinct=True, the rendered function arguments contain the keyword DISTINCT followed by whitespace, so it is separated from the leading source expression rather than being concatenated directly onto it (an expression whose SQL starts with a keyword- or identifier-like token, such as a CASE, previously merged with DISTINCT into a single invalid token). When distinct=False, no DISTINCT is emitted. — not entailed by S_vis (R1's bug report ('a space is missing' between DISTINCT and CASE) supports the core whitespace-separation behavior of S_impl_1 for distinct=True with a CASE source, and directly justifies inserting a space so DISTINCT doesn't concatenate onto the expression. However, S_impl_1 generalizes the whitespace rule beyond the CASE case and additionally commits that distinct=False emits no DISTINCT, neither of which R1 pins down, so full entailment of the generalized requirement is not clearly established.); confirmed by a synthesized witness: Requirement [S_impl_1] concerns Aggregate.as_sql's distinct rendering: when an Aggregate (Count) over a source expression whose SQL starts with a keyword-like token (a Case) is compiled with distinct=True, the rendered function args must contain 'DISTINCT' followed by whitespace so it doesn't merge into DISTINCTCASE; and with distinct=False no DISTINCT is emitted. The witness compiles a Count(Case(...), distinct=True) annotation into actual SQL (Book.objects.annotate(...).query) and asserts 'DISTINCT CASE' is present while 'DISTINTCASE' is absent, also verifying that the distinct=False rendering contains no DISTINCT. Execution confirmed: gold PASSED (renders COUNT(DISTINCT CASE WHEN ...)) and buggy FAILED (renders COUNT(DISTINTCASE WHEN ...), the merged invalid token). This input (distinct Aggregate over a leading-Case source) is not exercised by any visible test, which only cover plain-column distinct Counts or .distinct() on the whole QuerySet, so the witness is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

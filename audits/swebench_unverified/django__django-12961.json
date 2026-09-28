@@ -1,0 +1,119 @@
+{
+  "task_id": "django__django-12961",
+  "status": "ok",
+  "duration_seconds": 152.93013437499758,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12961",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On a union() queryset produced from querysets whose selected columns carry F() aliases (e.g. qs_a = EntityA.objects.values(name=F('name_a'), dt=F('dt_a')) and qs_b = EntityB.objects.values(name=F('name_b'), dt=F('dt_b')); queryset = qs_a.union(qs_b)), calling queryset.order_by() with a column expression such as queryset.order_by(F('dt').desc(nulls_last=True)) must not raise DatabaseError('ORDER BY term does not match any column in the result set.') and must instead produce a valid, correctly ordered result.",
+        "subject": "QuerySet.combined (union) ordering via order_by(F-expression)",
+        "hunk_ids": [],
+        "cited_from": "queryset = qs_a.union(qs_b) ... What I actually want is the same query, but with a NULLS LAST ... queryset.order_by(F(\"dt\").desc(nulls_last=True)) ... but that raises a DatabaseError: ORDER BY term does not match any column in the result set."
+      },
+      {
+        "id": "R2",
+        "statement": "Ordering the same union() queryset of two .values() queries with a plain string order expression (e.g. queryset.order_by('-dt')) succeeds without error and orders rows by that value.",
+        "subject": "QuerySet.union().order_by(string column)",
+        "hunk_ids": [],
+        "cited_from": "I can use a simple ORDER BY clause: queryset.order_by(\"-dt\") ... And everything will work, no problem here."
+      },
+      {
+        "id": "R3",
+        "statement": "Ordering a union() queryset on databases that support it by an F() expression wrapped in an OrderBy (e.g. qs1.union(qs2).order_by(F('num').desc())) returns the unioned rows ordered by that expression (e.g. values [3, 2, 1, 0]), continuing to work after any fix.",
+        "subject": "QuerySet.union().order_by(F expression on non-aliased columns)",
+        "hunk_ids": [],
+        "cited_from": "def test_ordering_by_f_expression(self): qs1 = Number.objects.filter(num__lte=1); qs2 = Number.objects.filter(num__gte=2, num__lte=3); self.assertNumbersEqual(qs1.union(qs2).order_by(F('num').desc()), [3, 2, 1, 0])"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "In a combined (set-operation/combinator) queryset, ordering by an expression built on a plain F() field, where a selected result column carries an alias equal to that F() field's name and corresponds to the ordered field, no longer causes the ORDER BY term to be treated as unmatched; running such a query does not raise DatabaseError 'ORDER BY term does not match any column in the result set.'.",
+        "subject": "SQLCompiler.get_order_by (combined/combinator query ORDER BY relabeling)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "In a combined (set-operation/combinator) queryset ordered by an F() expression whose field name equals an aliased selected column that contains the ordered field, the ORDER BY is resolved to that matching positional result column, so the returned rows are ordered correctly by that field's values.",
+        "subject": "SQLCompiler.get_order_by (combined/combinator query ORDER BY relabeling)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 specifies that ordering a union() queryset (whose selected columns carry F-aliases such that the ordered field's name matches an aliased selected column, e.g. dt=F('dt_a')) by an F-expression must not raise DatabaseError 'ORDER BY term does not match any column in the result set.' — exactly the relabeling behavior S1 demands."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "R1 requires the same alias-matching F-order-by on the union queryset to 'produce a valid, correctly ordered result', and R3 independently confirms F-expression ordering on a combinator queryset yields correctly ordered rows; together they pin down S2's behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The query-compiler logic that relabels ORDER BY columns in combined (combinator) queries lives in SQLCompiler.get_order_by() in django/db/models/sql/compiler.py; it rewrites an order-by source in a combinator query into a raw column number (%d) reference, and when no matching select expression is found for an ordering column it either raises DatabaseError('ORDER BY term does not match any column in the result set.') when the matched select columns carry aliases, or adds the column to the select."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant regression/behavior tests for queryset set operations are under tests/queries/test_qs_combinators.py (class QuerySetSetOperationTests), which uses the Number and ReservedName models from tests/queries/models.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "F('name') builds a plain F; .desc(.nulls_last=True) / .asc() return an OrderBy wrapper whose single source expression is the wrapped F; ordering via raw '-'/'+'-prefixed strings is handled separately in get_order_by via get_order_dir/find_ordering_name."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_qs_combinators.test_order_raises_on_non_selected_column documents that ordering a combined query by a column that is not part of the aliased select must raise DatabaseError with message 'ORDER BY term does not match any column in the result set'; a correct fix must not regress this."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report only asserts the crash and does not itself specify an expected result ordering; the requirement R1 above expresses the behavior the reporter wants (a working NULLS LAST ordering of the union)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 (import of F into django.db.models.sql.compiler) is only enabling support for H1's runtime isinstance(expr_src, F) check and carries no independent observable behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The relabeling logic at issue lives in SQLCompiler.get_order_by(); it iterates self.select entries (sel_expr, (sql,params), col_alias) and rewrites a combinator ORDER BY source into a positional RawSQL('%d') reference, falling back to self.query.add_select_col(src) or raising DatabaseError('ORDER BY term does not match any column in the result set.') when nothing matches (as exercised by tests/queries/test_qs_combinators.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only relaxes the aliased-column skip for plain-F() ordering sources; ordering sources that are not F() (e.g. string-based field ordering producing a Col source) still skip aliased select lines and thus keep the prior unmatched-column/error behavior."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

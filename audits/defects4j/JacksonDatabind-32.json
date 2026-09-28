@@ -1,0 +1,138 @@
+{
+  "task_id": "JacksonDatabind-32",
+  "status": "ok",
+  "duration_seconds": 397.59596055699876,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-32",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Deserializing an Object-typed value when the parser is handed to the deserializer already positioned at END_OBJECT (i.e. an empty JSON object whose START_OBJECT was consumed by the caller) must succeed, returning an empty modifiable java.util.Map, rather than raising a JsonMappingException — in both the plain UntypedObjectDeserializer and its optimized inner class UntypedObjectDeserializer.Vanilla.",
+        "subject": "UntypedObjectDeserializer.deserialize / UntypedObjectDeserializer.Vanilla.deserialize",
+        "hunk_ids": [],
+        "cited_from": "// 28-Oct-2015, tatu: [databind#989] We may also be given END_OBJECT (similar to FIELD_NAME),\n    //    if caller has advanced to the first token of Object, but for empty Object"
+      },
+      {
+        "id": "R2",
+        "statement": "Deserializing Untyped989 (a POJO whose single Object-typed value is bound by a delegating @JsonCreator(Object) constructor) from the JSON input \"[{}]\" must succeed and result in pojo.value being an instance of java.util.List.",
+        "subject": "TestUntypedDeserialization.Untyped989 via UntypedObjectDeserializer (object content, empty-object element)",
+        "hunk_ids": [],
+        "cited_from": "pojo = r.readValue(\"[{}]\");\nassertTrue(pojo.value instanceof List);"
+      },
+      {
+        "id": "R3",
+        "statement": "Deserializing Untyped989 (a POJO whose single Object-typed value is bound by a delegating @JsonCreator(Object) constructor) from the JSON input \"{\\\"a\\\":[]}\" must succeed and result in pojo.value being an instance of java.util.Map.",
+        "subject": "TestUntypedDeserialization.Untyped989 via UntypedObjectDeserializer (object content containing empty-array value)",
+        "hunk_ids": [],
+        "cited_from": "pojo = r.readValue(\"{\\\"a\\\":[]}\");\nassertTrue(pojo.value instanceof Map);"
+      },
+      {
+        "id": "R4",
+        "statement": "Deserializing Untyped989 (a POJO whose single Object-typed value is bound by a delegating @JsonCreator(Object) constructor) from the JSON input \"[]\" must result in pojo.value being an instance of java.util.List, and from \"{}\" must result in pojo.value being an instance of java.util.Map.",
+        "subject": "TestUntypedDeserialization.Untyped989 via UntypedObjectDeserializer (top-level empty array / empty object)",
+        "hunk_ids": [],
+        "cited_from": "pojo = r.readValue(\"[]\");\nassertTrue(pojo.value instanceof List);\n...\npojo = r.readValue(\"{}\");\nassertTrue(pojo.value instanceof Map);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "UntypedObjectDeserializer.deserialize, when the parser's current token is END_OBJECT (the caller having advanced past an empty object's opening), no longer throws a mapping exception; it handles the token through the empty-object path, returning an empty map (an empty LinkedHashMap when no custom map deserializer is configured, or the result of the configured map deserializer when one is set).",
+        "subject": "UntypedObjectDeserializer.deserialize(JsonParser, DeserializationContext)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "UntypedObjectDeserializer.Vanilla.deserialize, when the parser's current token is END_OBJECT (the caller having advanced past an empty object's opening), returns a new empty LinkedHashMap<String,Object> instead of falling through to the default branch and throwing a mapping exception.",
+        "subject": "UntypedObjectDeserializer.Vanilla.deserialize(JsonParser, DeserializationContext)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "R1 pins down the core behavior (plain UntypedObjectDeserializer at END_OBJECT returns an empty modifiable Map instead of throwing), but S1 additionally commits to a delegation branch ('the result of the configured map deserializer when one is set') that no S_vis entry mentions. Since part of S1's described behavior is not covered by visible information, exact entailment is ambiguous."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "R1 explicitly states that Vanilla.deserialize at END_OBJECT must return an empty modifiable java.util.Map rather than raise a JsonMappingException, matching S2's exact behavior for the same specific class and token; 'LinkedHashMap' is a concrete instance consistent with the 'modifiable Map' requirement and S2 adds no behavioral branch beyond R1. R2-R4 concern a different delegating-@JsonCreator(Object) nested scenario and are not relevant."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Targeted requirement S1 is H0: the base (non-vanilla) UntypedObjectDeserializer.deserialize must accept an END_OBJECT current token (caller having advanced past an empty object's opening) and return an empty map / delegate to a configured map deserializer instead of throwing a mapping exception (the gold added `case JsonTokenId.ID_END_OBJECT:` falling into the _mapDeserializer/mapObject branch; buggy falls through to the default mappingException).\n\nI attempted to construct a genuine witness and iterated with run_test extensively:\n\n1) Local delegating-@JsonCreator(Object) POJO route (mirroring real #989 testNestedUntyped989): run_test wraps the method in a top-level class VersoWitnessCandidate, so any helper bean I could declare must be a local/anonymous class, which Jackson outright rejects (\"Can not deserialize Class ...Node (of type local/anonymous) as a Bean\"). So I cannot replicate the ONLY known driver of the END_OBJECT-at-deserialize-entry path (a delegating creator that advances past the object opening), because it requires a bean type.\n\n2) Direct parser-at-END_OBJECT route: I built a JsonParser over \"{}\", advanced tokens to END_OBJECT, registered a custom Number deserializer (to force non-vanilla/base path), and called mapper.readValue(p, Object.class). Probing showed readValue honors the current token for START_OBJECT (returns the empty map) but for a root END_OBJECT it treats the parser as exhausted and returns null instead of routing END_OBJECT into UntypedObjectDeserializer.deserialize. So the END_OBJECT branch is never reached through root binding. It is only reachable when END_OBJECT is an interior token produced by a caller that advanced into an empty object (delegating-creator scenario), which I cannot reproduce with local classes.\n\n3) I confirmed via reflection the need for a live DeserializationContext plus the resolved untyped deserializer to call deserialize directly; the mapper's _deserializationContext field is only a reusable DefaultDeserializationContext factory and not a bound per-read instance that can drive a hand-positioned parser faithfully without also risking non-representative results.\n\nMeanwhile, the audit chain already established the situation that matches my findings: fix H1/Vanilla behavior (empty-object regression) is pinned by the [VISIBLE] testNestedUntyped989, and neither base H0 END_OBJECT dispatch nor any hidden oracle exercises S1; the base-class branch is only meaningfully distinct when a custom (non-standard) map deserializer is configured on the delegating-creator advance path, which cannot be built inside this sandbox (no top-level bean declarations are allowed). Because no input I can execute in this standalone-method harness reaches the changed H0 code in a distinguishing way, and its behaviour is co-pinned by already-visible material, no genuine hidden witness exists here. Result: found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug-fix target class is com.fasterxml.jackson.databind.deser.std.UntypedObjectDeserializer; the visible source contains the #989 comment (28-Oct-2015) but no actual END_OBJECT handling in the inner Vanilla class (which would fall through to 'throw ctxt.mappingException(Object.class)')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Unlike Vanilla, the base UntypedObjectDeserializer.mapObject() already accepts END_OBJECT (key1==null branch returning empty LinkedHashMap), so the gap is specifically in the streamlined Vanilla path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test for this bug is TestUntypedDeserialization.testNestedUntyped989, which deserializes through Untyped989, a POJO with a single field 'value' wired by a delegating @JsonCreator(Object) constructor."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under src/test/java/com/fasterxml/jackson/databind/deser/TestUntypedDeserialization.java and rely on BaseMapTest helpers such as aposToQuotes; StdDeserializer (also visible) is only the shared superclass providing helpers like _coerceIntegral, not directly part of the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 covers the outer/non-vanilla deserialize() used when custom (non-standard) map deserializers are configured; its mapObject() path already answered END_OBJECT with an empty LinkedHashMap before this change, so the new branch mainly matters when _mapDeserializer is non-null."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 covers the streamlined Vanilla inner class (no custom overrides), which previously threw on END_OBJECT."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both paths share the same issue (databind#989): an empty JSON object whose parser has been advanced to END_OBJECT should deserialize to an empty map rather than erroring, but they are separate methods and separately exercisable, so they are kept as distinct requirements."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The empty map returned is constructed as new LinkedHashMap<String,Object>(2) (H1), or via mapObject() which also returns new LinkedHashMap<String,Object>(2) (H0's non-custom branch)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: Requirement [S1] is: UntypedObjectDeserializer.deserialize, when the parser's current token is END_OBJECT (caller having advanced past an empty object's opening), handles the empty-object path and returns an empty map (empty LinkedHashMap when no custom map deserializer, else the configured map deserializer's result) rather than throwing a mapping exception.\n\nThe only test that exercises this behavior is `TestUntypedDeserialization.testNestedUntyped989` (which is the lone test reported as failing against the buggy program), driven through the nested-empty-object / delegating-@JsonCreator(Object) cases `[{}]` and `{}`. I read that file and it is labeled [VISIBLE]. Per the audit rules a witness may only rest on [HIDDEN] assertions, so even though this test's assertions genuinely match requirement [S1]/[S2], they can never serve as a computed witness because the visible build already established that this content does not entail r.\n\nTo be thorough I inspected the other plausibly relevant oracle files that could harbor a hidden duplicate of this behavior: TestMapDeserialization ([HIDDEN], tests various map cases but none deserialize an empty object through UntypedObjectDeserializer at END_OBJECT), TestGenericMapDeser ([HIDDEN], no such case), TestJacksonTypes ([HIDDEN], no such case), and creators/TestCreatorsDelegating ([HIDDEN], delegating-creator tests but no empty-object-untyped END_OBJECT scenario). None of these hidden files contains an assertion testing the S1 empty-object/END_OBJECT behavior of UntypedObjectDeserializer.\n\nConclusion: the concrete behavior described in [S1] is enforced in the oracle solely by the [VISIBLE] testNestedUntyped989; no [HIDDEN] oracle assertion verifies it, so no valid witness exists and found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: Targeted requirement S1 is H0: the base (non-vanilla) UntypedObjectDeserializer.deserialize must accept an END_OBJECT current token (caller having advanced past an empty object's opening) and return an empty map / delegate to a configured map deserializer instead of throwing a mapping exception (the gold added `case JsonTokenId.ID_END_OBJECT:` falling into the _mapDeserializer/mapObject branch; buggy falls through to the default mappingException).\n\nI attempted to construct a genuine witness and iterated with run_test extensively:\n\n1) Local delegating-@JsonCreator(Object) POJO route (mirroring real #989 testNestedUntyped989): run_test wraps the method in a top-level class VersoWitnessCandidate, so any helper bean I could declare must be a local/anonymous class, which Jackson outright rejects (\"Can not deserialize Class ...Node (of type local/anonymous) as a Bean\"). So I cannot replicate the ONLY known driver of the END_OBJECT-at-deserialize-entry path (a delegating creator that advances past the object opening), because it requires a bean type.\n\n2) Direct parser-at-END_OBJECT route: I built a JsonParser over \"{}\", advanced tokens to END_OBJECT, registered a custom Number deserializer (to force non-vanilla/base path), and called mapper.readValue(p, Object.class). Probing showed readValue honors the current token for START_OBJECT (returns the empty map) but for a root END_OBJECT it treats the parser as exhausted and returns null instead of routing END_OBJECT into UntypedObjectDeserializer.deserialize. So the END_OBJECT branch is never reached through root binding. It is only reachable when END_OBJECT is an interior token produced by a caller that advanced into an empty object (delegating-creator scenario), which I cannot reproduce with local classes.\n\n3) I confirmed via reflection the need for a live DeserializationContext plus the resolved untyped deserializer to call deserialize directly; the mapper's _deserializationContext field is only a reusable DefaultDeserializationContext factory and not a bound per-read instance that can drive a hand-positioned parser faithfully without also risking non-representative results.\n\nMeanwhile, the audit chain already established the situation that matches my findings: fix H1/Vanilla behavior (empty-object regression) is pinned by the [VISIBLE] testNestedUntyped989, and neither base H0 END_OBJECT dispatch nor any hidden oracle exercises S1; the base-class branch is only meaningfully distinct when a custom (non-standard) map deserializer is configured on the delegating-creator advance path, which cannot be built inside this sandbox (no top-level bean declarations are allowed). Because no input I can execute in this standalone-method harness reaches the changed H0 code in a distinguishing way, and its behaviour is co-pinned by already-visible material, no genuine hidden witness exists here. Result: found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S1] (UntypedObjectDeserializer.deserialize(JsonParser, DeserializationContext)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Targeted requirement S1 is H0: the base (non-vanilla) UntypedObjectDeserializer.deserialize must accept an END_OBJECT current token (caller having advanced past an empty object's opening) and return an empty map / delegate to a configured map deserializer instead of throwing a mapping exception (the gold added `case JsonTokenId.ID_END_OBJECT:` falling into the _mapDeserializer/mapObject branch; buggy falls through to the default mappingException).\n\nI attempted to construct a genuine witness and iterated with run_test extensively:\n\n1) Local delegating-@JsonCreator(Object) POJO route (mirroring real #989 testNestedUntyped989): run_test wraps the method in a top-level class VersoWitnessCandidate, so any helper bean I could declare must be a local/anonymous class, which Jackson outright rejects (\"Can not deserialize Class ...Node (of type local/anonymous) as a Bean\"). So I cannot replicate the ONLY known driver of the END_OBJECT-at-deserialize-entry path (a delegating creator that advances past the object opening), because it requires a bean type.\n\n2) Direct parser-at-END_OBJECT route: I built a JsonParser over \"{}\", advanced tokens to END_OBJECT, registered a custom Number deserializer (to force non-vanilla/base path), and called mapper.readValue(p, Object.class). Probing showed readValue honors the current token for START_OBJECT (returns the empty map) but for a root END_OBJECT it treats the parser as exhausted and returns null instead of routing END_OBJECT into UntypedObjectDeserializer.deserialize. So the END_OBJECT branch is never reached through root binding. It is only reachable when END_OBJECT is an interior token produced by a caller that advanced into an empty object (delegating-creator scenario), which I cannot reproduce with local classes.\n\n3) I confirmed via reflection the need for a live DeserializationContext plus the resolved untyped deserializer to call deserialize directly; the mapper's _deserializationContext field is only a reusable DefaultDeserializationContext factory and not a bound per-read instance that can drive a hand-positioned parser faithfully without also risking non-representative results.\n\nMeanwhile, the audit chain already established the situation that matches my findings: fix H1/Vanilla behavior (empty-object regression) is pinned by the [VISIBLE] testNestedUntyped989, and neither base H0 END_OBJECT dispatch nor any hidden oracle exercises S1; the base-class branch is only meaningfully distinct when a custom (non-standard) map deserializer is configured on the delegating-creator advance path, which cannot be built inside this sandbox (no top-level bean declarations are allowed). Because no input I can execute in this standalone-method harness reaches the changed H0 code in a distinguishing way, and its behaviour is co-pinned by already-visible material, no genuine hidden witness exists here. Result: found=false.",
+    "confidence": "Medium"
+  }
+}

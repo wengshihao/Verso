@@ -1,0 +1,82 @@
+{
+  "task_id": "matplotlib__matplotlib-26101",
+  "status": "ok",
+  "duration_seconds": 363.2349137919955,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-26101",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a mathtext string (e.g. \"$\\star$\") is passed as the marker (plot(10, 10, rcParams..., marker='$\\star$')), the rendered glyph marker must be center-aligned with its data point: plotting it at the same (x, y) as markers \"*\" and \".\" with the same markersize must keep the visual centers of the glyph and of those markers coincident, i.e. mathtext markers must be centered just like non-mathtext markers.",
+        "subject": "matplotlib.markers.MarkerStyle._set_mathtext_path / mathtext '$...$' plot markers",
+        "hunk_ids": [],
+        "cited_from": "Bug summary image shows three markers (mathtext star \"$\\star$\", \"*\", \".\") at the same location; \"Actual outcome: All markers using mathtext were not center-aligned\"; \"Expected outcome: center-aligned markers (whether mathtext is used or not)\"; code: \"plt.plot(10, 10, color='g', alpha=1.0, marker='$\\star$', markersize=25)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI1",
+        "statement": "For a mathtext ('$...$') marker, the marker's centering translation and size-normalization scale are derived from the curve-aware geometric bounding box of the mathtext text path obtained via Path.get_extents() (which returns the actual extent swept by the glyph outline Bézier segments, evaluated including curve extrema) rather than from the axis-aligned min/max span of the text path's raw vertices/control points.",
+        "subject": "MarkerStyle._set_mathtext_path",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis [R1] only specifies the desired outcome that mathtext markers be center-aligned and size-normalized like '*'/'.' markers. It says nothing about the specific implementation mechanism (deriving centering translation and scaling from Path.get_extents() curve-aware bbox rather than from raw vertex/control-point axis-aligned spans), which is an internal algorithmic commitment from the patch. Any of several computational approaches could achieve the stated visual outcome, so S_vis does not pin down the exact get_extents() behavior SI1 describes."
+      }
+    ],
+    "target_requirement_id": "SI1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mathtext_marker_centers_on_curve_aware_extents",
+      "test_source": "import numpy as np\nimport matplotlib\nmatplotlib.use('Agg')\nfrom matplotlib import markers\nfrom matplotlib.transforms import Affine2D\n\ndef test_mathtext_marker_centers_on_curve_aware_extents():\n    m = markers.MarkerStyle(r'$\\xi$')\n    path = m.get_path()\n    actual = np.asarray(m.get_transform().get_matrix())\n\n    # Curve-aware geometric bounding box of the glyph text path.\n    bbox = path.get_extents()\n    cand_curve = Affine2D().translate(\n        -bbox.x0 + 0.5 * -bbox.width,\n        -bbox.y0 + 0.5 * -bbox.height).scale(1.0 / max(bbox.width, bbox.height))\n    mtx_curve = np.asarray(cand_curve.get_matrix())\n\n    # Raw control-point/vertex min-max bbox (the pre-fix computation).\n    verts = path.vertices\n    vxmin, vymin = verts.min(axis=0)\n    vxmax, vymax = verts.max(axis=0)\n    vw, vh = vxmax - vxmin, vymax - vymin\n    cand_vert = Affine2D().translate(\n        -vxmin + 0.5 * -vw, -vymin + 0.5 * -vh).scale(1.0 / max(vw, vh))\n    mtx_vert = np.asarray(cand_vert.get_matrix())\n\n    # The two candidate centrings genuinely differ for this curved glyph,\n    # so the test actually discriminates between the two implementations.\n    assert not np.allclose(mtx_curve, mtx_vert, atol=1e-9)\n\n    # The marker's intrinsic transform must be the curve-aware one (get_extents).\n    assert np.allclose(actual, mtx_curve, atol=1e-9)\n",
+      "gold_result": "PASSED (verified via run_test against gold)",
+      "buggy_result": "FAILED at final assertion: buggy x-translation matrix entry is -0.28846464 (raw-vertex hull center) instead of -0.30731651 (curve-aware get_extents center), confirming the marker's centering/normalization transform was derived from raw vertices in buggy.",
+      "explanation": "The requirement [SI1] states that MarkerStyle._set_mathtext_path derives a mathtext marker's centering-translation and size-normalization scale from Path.get_extents() (the curve-aware bbox of the interpolated glyph Bézier outline, which the glyph's actual curve extrema can make strictly smaller than the raw control-vertex hull), not from text.vertices.min()/max() as the pre-fix code did.\n\nI constructed MarkerStyle(r'$\\xi$'): this Greek mathtext glyph's control points sweep to an x-min of -0.039 (vertex hull) while the actual drawn Bézier curve only reaches x = 0.327 (curve extents), so the two possible incoming computations genuinely differ (curve width 5.308 vs vertex width 5.673) and the centering translation differs by ~0.36 in unscaled x units (observed matrix x-translation -0.3073 in gold vs -0.2885 in buggy).\n\nThe witness independently recomputes both candidate intrinsic transforms (translate -center of curve bbox then scale by 1/max dim, vs the same formula over the raw-vertex hull) directly from the marker's own stored path, checks they really differ, and asserts the marker's actual stored get_transform() equals the curve-aware (get_extents) one. This passes on gold (get_extents-based) and fails on buggy (raw-vertex), verified by actual run_test execution against both.\n\nWhy it is not re-derivable from visible material: I read lib/matplotlib/tests/test_marker.py in full; it only crash-constructs mathtext markers (r'$\\frac{1}{2}$', '$\\u266B$', '$|||$', '$f$') and checks user-transform composition/rotation/scaling — none assert centering or that normalization uses curve extents. The visible test_path.py::test_exact_extents tests only the generic Path.get_extents API, not MarkerStyle's centering. No visible assertion pins the specific \\u03be missing-glyph-detail result; the centering-vs-vertex choice for the specifically-selected $\\xi$ mathtext glyph is genuinely hidden behavior that a repair system would need this new assertion (the Witness) to enforce."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug file: lib/matplotlib/markers.py, MarkerStyle._set_mathtext_path constructs the mathtext marker via TextPath(xy=(0, 0), s=self.get_marker(), ...) at the baseline origin, computes vertices bbox (xmin/ymin/xmax/ymax), centering with 'ν Affine2D().translate(-xmin + 0.5 * -width, -ymin + 0.5 * -height).scale(1.0 / max_dim)', then stores path/transform; standard MarkerStyle paths like 'star' ('*') are geometry symmetric about origin, so only mathtext (font-metric-based) markers are flagged as off-center."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Mathtext markers are strings that cbook.is_math_text matches (e.g. '$\\star$', '$f$', '$\\u266B$' ); _set_marker routes them to _set_mathtext_path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests live in lib/matplotlib/tests/test_marker.py; they exercise mathtext markers only as 'this doesn't crash' checks (r'$\\frac{1}{2}$', '$\\u266B$', '$|||$', '$f$') plus transform/rotation/scale arithmetic — none of the visible tests assert centering/alignment, so this requirement derives from the issue report text and the module/code interplay."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In _set_mathtext_path, `text` is a TextPath (a Path subclass); Path.get_extents() for curved paths computes the true curve extents via iter_bezier/axis_aligned_extrema instead of the raw control-vertex hull. This is the only behavioral divergence the patch introduces: scale uses 1/max of get_extents() width/height and translate is centered on that bbox (translate(-bbox.xmin + 0.5*-bbox.width, -bbox.ymin + 0.5*-bbox.height)), replacing the prior vertex-min/max based computation."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The surrounding logic (early return when text has no vertices, storing the text path as _path, and _snap=False) is unchanged by the patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI1]: Target SI1 claims that the mathtext marker centering/size-normalization in MarkerStyle._set_mathtext_path are derived from Path.get_extents() (curve-aware extents incl. Bézier extrema) rather than from the raw control-vertex min/max span.\n\nI inspected the oracle test files that could test this behavior. `lib/matplotlib/tests/test_marker.py` (the file the failing-test hint references) is entirely [VISIBLE]. Its full content was read twice and contains only: (a) \"doesn't crash\" constructions of mathtext MarkerStyles (r'$\\frac{1}{2}$', \"$\\u266B$\", '$|||$' in parametrizations), (b) transform/rotation/scale arithmetic on such markers, (c) generic polygon/asterisk image comparisons, and (d) fillstyle/joinstyle/capstyle/transform unit checks. None of these asserts anything about whether the marker is centered or normalized using curve-aware extents vs. the raw vertex span. In particular the mathtext markers appear as `test_markers_valid` crash-checks and as inputs to `test_marker_transformed`/`test_marker_rotated`, which only check the simple composition of an externally supplied Affine2D — they cannot distinguish the get_extents() prefix scale/translation inside _set_mathtext_path from the raw-vertex version.\n\nI also checked related candidate files that touch the same primitives: `test_lines.py` (marker usage but no centering assertion), `test_textpath.py` (only deepcopy of TextPath), and `test_path.py` — its `test_exact_extents` does assert that Path.get_extents() reflects interior/curve extrema rather than control-point hulls, but that is a test of the generic Path API (entirely [VISIBLE]), not of MarkerStyle._set_mathtext_path centering/normalization, and visible content can never constitute a witness anyway.\n\nThe failing-test guidance names `test_marker.py::test_text_marker[png]`, but that function does not appear in the (entirely [VISIBLE]) test_marker.py content; the only [png]-parametrized image comparison there is `test_asterisk_marker` (doubled-lines tolerance test, unrelated to mathtext centering) and other non-text marker comparisons. No readable [HIDDEN] assertion in any oracle file perturbs the actual centering of a mathtext marker such that the gold (get_extents-based) code would pass and the buggy (raw-vertex) code would fail. Since a witness is required to rest on a [HIDDEN] assertion and none is available, no witness exists for this requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI1] (MarkerStyle._set_mathtext_path): For a mathtext ('$...$') marker, the marker's centering translation and size-normalization scale are derived from the curve-aware geometric bounding box of the mathtext text path obtained via Path.get_extents() (which returns the actual extent swept by the glyph outline Bézier segments, evaluated including curve extrema) rather than from the axis-aligned min/max span of the text path's raw vertices/control points. — not entailed by S_vis (S_vis [R1] only specifies the desired outcome that mathtext markers be center-aligned and size-normalized like '*'/'.' markers. It says nothing about the specific implementation mechanism (deriving centering translation and scaling from Path.get_extents() curve-aware bbox rather than from raw vertex/control-point axis-aligned spans), which is an internal algorithmic commitment from the patch. Any of several computational approaches could achieve the stated visual outcome, so S_vis does not pin down the exact get_extents() behavior SI1 describes.); confirmed by a synthesized witness: The requirement [SI1] states that MarkerStyle._set_mathtext_path derives a mathtext marker's centering-translation and size-normalization scale from Path.get_extents() (the curve-aware bbox of the interpolated glyph Bézier outline, which the glyph's actual curve extrema can make strictly smaller than the raw control-vertex hull), not from text.vertices.min()/max() as the pre-fix code did.\n\nI constructed MarkerStyle(r'$\\xi$'): this Greek mathtext glyph's control points sweep to an x-min of -0.039 (vertex hull) while the actual drawn Bézier curve only reaches x = 0.327 (curve extents), so the two possible incoming computations genuinely differ (curve width 5.308 vs vertex width 5.673) and the centering translation differs by ~0.36 in unscaled x units (observed matrix x-translation -0.3073 in gold vs -0.2885 in buggy).\n\nThe witness independently recomputes both candidate intrinsic transforms (translate -center of curve bbox then scale by 1/max dim, vs the same formula over the raw-vertex hull) directly from the marker's own stored path, checks they really differ, and asserts the marker's actual stored get_transform() equals the curve-aware (get_extents) one. This passes on gold (get_extents-based) and fails on buggy (raw-vertex), verified by actual run_test execution against both.\n\nWhy it is not re-derivable from visible material: I read lib/matplotlib/tests/test_marker.py in full; it only crash-constructs mathtext markers (r'$\\frac{1}{2}$', '$\\u266B$', '$|||$', '$f$') and checks user-transform composition/rotation/scaling — none assert centering or that normalization uses curve extents. The visible test_path.py::test_exact_extents tests only the generic Path.get_extents API, not MarkerStyle's centering. No visible assertion pins the specific \\u03be missing-glyph-detail result; the centering-vs-vertex choice for the specifically-selected $\\xi$ mathtext glyph is genuinely hidden behavior that a repair system would need this new assertion (the Witness) to enforce.",
+    "confidence": "Medium"
+  }
+}

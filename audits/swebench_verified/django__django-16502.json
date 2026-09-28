@@ -1,0 +1,141 @@
+{
+  "task_id": "django__django-16502",
+  "status": "ok",
+  "duration_seconds": 465.39232212502975,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16502",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the built-in development server (runserver, via the ServerHandler in django/core/servers/basehttp.py) handles an HTTP HEAD request whose URL would otherwise produce a 200 response with a body (e.g. the default 'Welcome to Django' page), it must send the response headers but must NOT send the response body bytes back to the client.",
+        "subject": "django.core.servers.basehttp ServerHandler/WSGIRequestHandler (runserver)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: 'For compliance with RFC 2616, section 4.3, response bodies must not be returned for HEAD requests. In #26052, the stripping of the response bodies was removed from Django in favour of letting the server perform the body removal ... However it appears that runserver does not strip the body' ... STR step 6 'run curl -iX HEAD http://127.0.0.1:8000/'; Expected response shows only header lines (HTTP/1.0 200 OK, Date, Server, Content-Type, X-Frame-Options) with no body, while Actual shows those headers followed by '<!DOCTYPE html>\\n<html lang=\"en\"><head>...' (the response body) — i.e. the body must be absent after the headers for HEAD requests."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R-H1-del-cl",
+        "statement": "When ServerHandler processes a HEAD request and the WSGI application's response set a Content-Length header, that Content-Length header is removed before the response is finalized, so the HEAD response does not advertise a body length derived from the (stripped) payload.",
+        "subject": "django.core.servers.basehttp.ServerHandler.cleanup_headers",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R-H1-no-close-header",
+        "statement": "The rule that sends a 'Connection: close' header when the response has no Content-Length header is applied only to non-HEAD requests; a HEAD request whose response lacks a Content-Length header is not given 'Connection: close' on that account (so a HEAD response can keep the connection alive on a threading server rather than force-close).",
+        "subject": "django.core.servers.basehttp.ServerHandler.cleanup_headers",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R-H2-no-body",
+        "statement": "When ServerHandler processes a HEAD request, the WSGI application's result iterable is fully consumed but its bytes are not written to the client: the response status and stored headers are still sent, yet no body payload bytes are transmitted for a HEAD request.",
+        "subject": "django.core.servers.basehttp.ServerHandler.finish_response",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R-H2-no-cl-zero",
+        "statement": "When ServerHandler processes a HEAD request whose response never set a Content-Length header, it does not fall back to injecting a default Content-Length value (e.g. '0', which base-class finish_content would produce when headers were unsent); the HEAD response is allowed to omit the Content-Length header entirely, as permitted by RFC 9110 section 9.3.2.",
+        "subject": "django.core.servers.basehttp.ServerHandler.finish_response",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R-H1-del-cl",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (R1) only pins that no body bytes be sent for HEAD responses; it says nothing about removing an application-set Content-Length header before finalization, so which header-stripping mechanism the patch uses is not covered."
+      },
+      {
+        "requirement_id": "R-H1-no-close-header",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis gives no account of 'Connection: close' behavior or any rule guarding against applying the close-when-no-Content-Length rule to HEAD requests; this patch-scope mechanism is entirely unpinned by the visible evidence."
+      },
+      {
+        "requirement_id": "R-H2-no-body",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 states directly that for a HEAD request that would produce a 200/body, headers are sent but no body payload bytes are returned to the client, which is exactly the observable behavior R-H2-no-body requires (consume iterable, send status/headers, emit no body bytes)."
+      },
+      {
+        "requirement_id": "R-H2-no-cl-zero",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis never mentions Content-Length header values or whether a default '0' length might be injected for unsent headers, so the specific behavior of omitting Content-Length entirely (rather than falling back to '0') is not covered by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R-H1-del-cl",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_content_length_removed_for_head_request",
+      "test_source": "import socketserver\nfrom io import BytesIO\nfrom unittest import TestCase\n\nfrom django.core.servers.basehttp import ServerHandler\n\n\nclass _ThreadedServer(socketserver.ThreadingMixIn):\n    pass\n\n\nclass _DummyRequestHandler:\n    def __init__(self):\n        self.server = _ThreadedServer()\n        self.close_connection = False\n        self.connection = BytesIO()\n\n    def log_request(self, code=\"-%s\", size=\"-\"):\n        pass\n\n\ndef _head_app(environ, start_response):\n    start_response(\n        \"200 OK\",\n        [(\"Content-Type\", \"text/plain\"), (\"Content-Length\", \"24\")],\n    )\n    return [b\"hello world\"]\n\n\nclass HeadRequestCleanupHeadersTests(TestCase):\n    def test_content_length_removed_for_head_request(self):\n        handler = ServerHandler(\n            BytesIO(),\n            BytesIO(),\n            BytesIO(),\n            {\n                \"REQUEST_METHOD\": \"HEAD\",\n                \"SERVER_PROTOCOL\": \"HTTP/1.1\",\n                \"SERVER_NAME\": \"testserver\",\n                \"SERVER_PORT\": \"8000\",\n            },\n        )\n        handler.request_handler = _DummyRequestHandler()\n        handler.run(_head_app)\n        output = handler.stdout.getvalue()\n        header_text = output.split(b\"\\r\\n\\r\\n\", 1)[0]\n        self.assertNotIn(b\"Content-Length\", header_text)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: b'Content-Length: 24' still present in the emitted HTTP header block for a HEAD request)",
+      "explanation": "The target requirement R-H1-del-cl is that django.core.servers.basehttp.ServerHandler.cleanup_headers removes a Content-Length header (derived from the response payload) when handling a HEAD request. My witness directly drives the runserver ServerHandler (the code path in scope) with a real WSGI application whose start_response supplies a Content-Length header and an environ REQUEST_METHOD=HEAD, invokes handler.run() so cleanup_headers runs during response finalization, and asserts that the emitted HTTP header block contains no Content-Length line. On gold, cleanup_headers deletes the header and finish_response skips re-deriving a Content-Length, so the assertion passes. On buggy (which predates the HEAD-aware branch and keeps Content-Length for any request), the emitted header block still contains 'Content-Length: 24', so the assertion fails. I confirmed both runs with the identical test source: gold PASSED, buggy FAILED. The visible tests (tests/servers/test_basehttp.py, tests/servers/tests.py, tests/builtin_server/tests.py) only exercise candidate code with GET requests and connection/keep-alive handling, never asserting that a HEAD response drops its Content-Length; the runserver HEAD body/C-L stripping behavior is otherwise unpinned and this test's exact scenario (a custom WSGI app returning a Content-Length on REQUEST_METHOD=HEAD flowing into ServerHandler.cleanup_headers) is novel, so it is a genuine witness for the target requirement rather than a restatement of visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The buggy code is in django/core/servers/basehttp.py: the ServerHandler subclass (of wsgiref simple_server.ServerHandler) used by runserver has no HEAD-request-aware response-body stripping; WSGIRequestHandler.handle_one_request() drives ServerHandler.run()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The WSGI application layer (django/core/handlers/wsgi.py WSGIHandler.__call__ / get_response) no longer strips response bodies for HEAD; conditional_content_removal() that strips content for HEAD (plus 1xx/204/304) lives only in django/test/client.py's ClientHandler for the in-process test client, not the real server."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing tests: tests/builtin_server/tests.py (ServerHandler chunking/file-wrapper tests), tests/servers/test_basehttp.py (WSGIRequestHandler/WSGIServer), tests/servers/tests.py (LiveServer end-to-end, incl. keep-alive/content-length behaviors), tests/test_client/test_conditional_content_removal.py (HEAD body stripping at the test-client level). None of these currently asserts runserver strips HEAD bodies, which is the gap this issue describes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "curl STR in issue targets a fresh project's root page (default_urlconf 'Welcome to Django', a text/html response), served by ./manage.py runserver."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a non-behavioral supporting import ('from collections import deque') used only to drain the WSGI result iterable in finish_response; deque(..., maxlen=0) is an internal consumption mechanism, not a separately observable requirement."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "These ServerHandler methods (cleanup_headers, finish_response) are exercised by django.core.servers.basehttp.WSGIRequestHandler.handle_one_request, i.e. the runserver/standalone serving path; the in-process test client (django.test.client.ClientHandler) uses a different handler and is unaffected by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ServerHandler.cleanup_headers is a wsgiref BaseHandler hook invoked during response finalization; the patch adds HEAD-awareness there and in a new finish_response override."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R-H1-del-cl]: Target requirement R-H1-del-cl concerns the runserver path: django.core.servers.basehttp.ServerHandler.cleanup_headers must remove the Content-Length header (derived from the payload) when handling a HEAD request whose WSGI app set that header. I examined every oracle test file that exercises this code path.\n\nFiles that drive the actual runserver ServerHandler/WSGIRequestHandler — tests/builtin_server/tests.py (ServerHandler chunking & file-wrapper tests using a locally redefined ServerHandler), tests/servers/tests.py (LiveServerTestCase keep-alive/connection/content-length tests, but all via GET), tests/servers/test_basehttp.py (WSGIRequestHandler/WSGIServer), tests/servers/test_liveserverthread.py — are ALL labeled [VISIBLE], and none of them issues a HEAD request and asserts that a Content-Length header is dropped. Their content-length tests (e.g. test_closes_connection_without_content_length, test_keep_alive_on_connection_with_content_length) are strictly GET-based and concern keep-alive/Connection handling, not the HEAD payload-length removal in cleanup_headers.\n\nThe only HEAD+Content-Length body-stripping test that exists is tests/test_client/test_conditional_content_removal.py ([VISIBLE]), which exercises django.test.client.conditional_content_removal — the in-process test-client handler, a distinct handler that is explicitly unaffected by this patch and not the ServerHandler path in scope.\n\nThe relevant supporting modules (tests/servers/views.py, tests/servers/urls.py, tests/builtin_server/views.py, tests/builtin_server/urls.py) are [HIDDEN] but contain only fixture views/URL routing with no HEAD content-length assertion.\n\nThe recorded set of tests failing against the buggy program is \"(none recorded)\", and the notebook likewise confirms no existing test asserts runserver strips HEAD bodies/content-length. Since no [HIDDEN] oracle content actually asserts the R-H1-del-cl behavior (and every server-path harness is [VISIBLE]), there is no eligible witness; I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R-H1-del-cl]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R-H1-del-cl] (django.core.servers.basehttp.ServerHandler.cleanup_headers): When ServerHandler processes a HEAD request and the WSGI application's response set a Content-Length header, that Content-Length header is removed before the response is finalized, so the HEAD response does not advertise a body length derived from the (stripped) payload. — not entailed by S_vis (S_vis (R1) only pins that no body bytes be sent for HEAD responses; it says nothing about removing an application-set Content-Length header before finalization, so which header-stripping mechanism the patch uses is not covered.); confirmed by a synthesized witness: The target requirement R-H1-del-cl is that django.core.servers.basehttp.ServerHandler.cleanup_headers removes a Content-Length header (derived from the response payload) when handling a HEAD request. My witness directly drives the runserver ServerHandler (the code path in scope) with a real WSGI application whose start_response supplies a Content-Length header and an environ REQUEST_METHOD=HEAD, invokes handler.run() so cleanup_headers runs during response finalization, and asserts that the emitted HTTP header block contains no Content-Length line. On gold, cleanup_headers deletes the header and finish_response skips re-deriving a Content-Length, so the assertion passes. On buggy (which predates the HEAD-aware branch and keeps Content-Length for any request), the emitted header block still contains 'Content-Length: 24', so the assertion fails. I confirmed both runs with the identical test source: gold PASSED, buggy FAILED. The visible tests (tests/servers/test_basehttp.py, tests/servers/tests.py, tests/builtin_server/tests.py) only exercise candidate code with GET requests and connection/keep-alive handling, never asserting that a HEAD response drops its Content-Length; the runserver HEAD body/C-L stripping behavior is otherwise unpinned and this test's exact scenario (a custom WSGI app returning a Content-Length on REQUEST_METHOD=HEAD flowing into ServerHandler.cleanup_headers) is novel, so it is a genuine witness for the target requirement rather than a restatement of visible material.",
+    "confidence": "Medium"
+  }
+}

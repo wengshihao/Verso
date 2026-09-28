@@ -1,0 +1,143 @@
+{
+  "task_id": "django__django-11400",
+  "status": "ok",
+  "duration_seconds": 527.4264411249897,
+  "llm_calls": 35,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11400",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "When RelatedFieldListFilter builds its dropdown lookup choices for a related (ForeignKey/M2M) model, if the related model's ordering is not supplied by a ModelAdmin registered for it (i.e. the ordering would otherwise remain the empty tuple), the choices must be ordered (fall back to) the related model's Model.Meta ordering (`_meta.ordering`), rather than remaining unordered.",
+        "subject": "django.contrib.admin.filters.RelatedFieldListFilter",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"RelatedFieldListFilter doesn't fall back to the ordering defined in Model._meta.ordering.\" and \"Ordering gets set to an empty tuple ... and unless ordering is defined on the related model's ModelAdmin class it stays an empty tuple. IMHO it should fall back to the ordering defined in the related model's Meta.ordering field.\" Source: `def field_choices(self, field, request, model_admin):\n    ordering = ()\n    related_admin = model_admin.admin_site._registry.get(field.remote_field.model)\n    if related_admin is not None:\n        ordering = related_admin.get_ordering(request)\n    return field.get_choices(include_blank=False, ordering=ordering)`"
+      },
+      {
+        "id": "S2",
+        "statement": "When RelatedOnlyFieldListFilter builds its dropdown lookup choices for a related model (via field.get_choices), it must apply the same ordering the base related-field filter uses (the related model's ModelAdmin ordering, or fallback to the related Model's Meta.ordering) instead of leaving the choices unordered by omitting the ordering kwarg entirely.",
+        "subject": "django.contrib.admin.filters.RelatedOnlyFieldListFilter",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"RelatedOnlyFieldListFilter doesn't order the related model at all, even if ordering is defined on the related model's ModelAdmin class. That's because the call to field.get_choices ... omits the ordering kwarg entirely.\" Source: `def field_choices(self, field, request, model_admin):\n    pk_qs = model_admin.get_queryset(request).distinct().values_list('%s__pk' % self.field_path, flat=True)\n    return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs})`"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "RelatedOnlyFieldListFilter's lookup/choice list now orders its entries by a non-empty ordering obtained from the registered ModelAdmin for the relation's target model (via the field_admin_ordering helper), i.e. it honors such ordering in the same way RelatedFieldListFilter does; previously it passed no ordering to field.get_choices and hence did not apply this ordering.",
+        "subject": "RelatedOnlyFieldListFilter.field_choices",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "Field.get_choices returns a relation's related objects in the related model's default ordering (the ordering of its default manager, i.e. its Meta.ordering) when the 'ordering' argument is empty/() — instead of stripping that default ordering by appending a blank order_by() — and orders them by the supplied non-empty 'ordering' fields when such are given.",
+        "subject": "django.db.models.fields.Field.get_choices",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-3",
+        "statement": "ForeignObjectRel.get_choices returns the relation's objects in the related model's default (Meta) ordering when the 'ordering' argument is empty/() — instead of stripping that default ordering via a blank order_by() — and orders them by the supplied non-empty 'ordering' fields when such are given.",
+        "subject": "django.db.models.fields.reverse_related.ForeignObjectRel.get_choices",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "S2",
+          "S1"
+        ],
+        "rationale": "S2's citation spells out the exact defect that RelatedOnlyFieldListFilter's field_choices call omits the ordering kwarg and thus never orders even when the related ModelAdmin defines ordering, and requires it to apply the same ordering the base related-field filter uses (obtained from the registered ModelAdmin and passed to field.get_choices). impl-1 describes exactly that behavior, so it is entailed."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S_vis concerns only filter method-level dropdown ordering (the filter computes ordering and passes it to get_choices), and never mentions Field.get_choices' handling of an empty/() ordering argument, Meta-ordering preservation semantics, or any 'blank order_by() stripping' mechanism. The specific behavior impl-2 describes (a change inside the model-field get_choices API) is not pinned down by the visible evidence."
+      },
+      {
+        "requirement_id": "impl-3",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Like impl-2, this describes a change to the reverse-related manager layer (ForeignObjectRel.get_choices preserving default Meta ordering when ordering is empty instead of stripping it via a blank order_by()), a mechanism and location not mentioned anywhere in the filter-scoped S_vis evidence. Not entailed."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_field_get_choices_empty_ordering_preserves_default",
+      "test_source": "def test_field_get_choices_empty_ordering_preserves_default():\n    from django.conf import settings\n    settings.configure(\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=[],\n        SECRET_KEY='witness',\n    )\n    import django\n    django.setup()\n    from django.db import models, connection\n\n    class OrderedModel(models.Model):\n        name = models.CharField(max_length=50)\n\n        class Meta:\n            app_label = 'tmpapp'\n            ordering = ('name',)\n\n        def __str__(self):\n            return self.name\n\n    class HolderModel(models.Model):\n        rel = models.ForeignKey(OrderedModel, models.CASCADE, related_name='+')\n\n        class Meta:\n            app_label = 'tmpapp'\n\n    with connection.schema_editor() as editor:\n        editor.create_model(OrderedModel)\n        editor.create_model(HolderModel)\n\n    # Insert zebra before apple so raw DB natural order conflicts with name ordering.\n    OrderedModel.objects.create(name='zebra')\n    OrderedModel.objects.create(name='apple')\n\n    field = HolderModel._meta.get_field('rel')\n    choices = field.get_choices(include_blank=False, ordering=())\n    names = [str_name for _, str_name in choices]\n    assert names == ['apple', 'zebra'], names\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: ['zebra','apple'] returned instead of ['apple','zebra'])",
+      "explanation": "Requirement impl-2 states Field.get_choices must (a) preserve a related model's default manager ordering (Meta.ordering) when called with an empty 'ordering' argument instead of stripping it via a blank .order_by(), and (b) order by supplied non-empty 'ordering' when present. The visible GetChoicesOrderingTests (model_fields/tests.py) only ever call get_choices with explicit non-empty ordering=('a',)/('-a',), and no visible/hidden app model with a FK to a model that defines Meta.ordering is exercised on the empty-ordering path. So the empty-ordering + Meta.ordering fallback is the un-pinned-down discriminator.\n\nMy witness builds, on the fly inside the test, an OrderedModel with Meta.ordering=('name',) and a HolderModel with a ForeignKey to it, creates both tables on an in-memory sqlite DB, and inserts two rows in an order ('zebra' then 'apple') whose raw-natural order conflicts with name ordering. It then calls holder_field.get_choices(include_blank=False, ordering=()). On gold the empty-ordering branch keeps the default-manager (Meta.ordering) ordering and returns ['apple','zebra'] -> PASSED. On buggy the always-issued empty .order_by() strips default ordering and returns raw-natural ['zebra','apple'] -> FAILED. Execution confirmed gold PASSED and buggy FAILED. The ad-hoc model (which is not part of any visible model file) and the empty-ordering scenario are not pinned by anything visible, so this is a genuine witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The models under test live in tests/admin_filters/models.py (Book has author FK to auth User and contributors M2M to auth User; Employee has FK 'department' to Department keyed on to_field='code'); Employee has no Meta.ordering defined."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/admin_filters/tests.py already contains test_relatedfieldlistfilter_foreignkey_ordering and test_relatedfieldlistfilter_foreignkey_ordering_reverse, which verify RelatedFieldListFilter honors a related model's ModelAdmin.ordering ({'name'} / {'-name'}) by registering internal ModelAdmins with site.register/...addCleanup(site.unregister). These cover only the ModelAdmin-ordering path, not the Meta.ordering fallback the issue requests."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible tests sort the asserted choice lists with sorted(...) (e.g. test_relatedfieldlistfilter_foreignkey compares sorted(filterspec.lookup_choices) to sorted(expected)), so they place no order constraint on the unfixed paths; a regression test asserting an exact ordered tuple would be the natural additional witness for these requirements."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both affected field_choices overrides delegate to RelatedField.choices' underlying field.get_choices(include_blank=False, ordering=...) / get_choices(include_blank=False, limit_choices_to=...); the Fix implied is that both RelatedFieldListFilter and RelatedOnlyFieldListFilter pass ordering through their field.get_choices call, with Meta.ordering('_meta.ordering') as the fallback default."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a pure refactor of RelatedFieldListFilter.field_choices: its inline ordering computation is moved verbatim into a new public method field_admin_ordering(field, request, model_admin) returning the related model admin's get_ordering(request) if a ModelAdmin is registered for the target model, else (). Base RelatedFieldListFilter observable behavior is unchanged by H0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Field.get_choices signature is get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, limit_choices_to=None, ordering=()); ForeignObjectRel.get_choices signature is get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, ordering=())."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2/H3 change observable output only when the related model defines an ordering (e.g. Meta.ordering) that the default manager would apply; for related models with no default ordering the empty-ordering path yields the same (DB-natural) output before and after the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both forward FK/M2M field choices used by the admin filters run through Field.get_choices (H2); ForeignObjectRel.get_choices (H3) in reverse_related.py is the reverse-side analog given the same treatment for consistency."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "New public method RelatedFieldListFilter.field_admin_ordering is introduced; subclasses overriding RelatedOnlyFieldListFilter.field_choices could now reuse it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: I searched for an oracle test that genuinely witnesses requirement [impl-2]: that Field.get_choices (and the admin filter fallback that delegates to it) returns a relation's related objects in the related model's DEFAULT manager ordering (Meta.ordering) when the 'ordering' argument is empty/(), rather than stripping that default by appending an empty order_by().\n\nWhat I checked:\n- tests/model_fields/tests.py [VISIBLE] – Contains GetChoicesOrderingTests (test_get_choices, test_get_choices_reverse_related_field), but these only call get_choices with EXPLICIT non-empty ordering=('a',)/('-a',) and assert those explicit orders. They exercise no empty-ordering, Meta.ordering-fallback path. Moreover the file is labelled [VISIBLE] (same material a repair system would already have seen), so even its content could not serve as a hidden witness. The underlying models Foo/Bar (model_fields/models.py, [HIDDEN]) define no Meta.ordering, so none of these models can even distinguish a Meta.ordering-preserving fix from the stripping bug.\n- tests/admin_filters/tests.py [VISIBLE] – test_relatedfieldlistfilter_foreignkey(_ordering/_reverse) and relatedonlyfilter tests only drive the ModelAdmin.ordering path (registering ModelAdmins via site.register), or compare with sorted(...) so they place no order constraint on the empty-ordering/unfixed path. The related models Employee/Department/User shown in admin_filters/models.py ([HIDDEN]) define no Meta.ordering. So no test can observe the Meta.ordering fallback.\n- tests/model_fields/test_foreignkey.py, test_manytomanyfield.py [VISIBLE] – no get_choices/ordering assertions relevant to Meta.ordering fallback.\n- tests/model_forms/test_modelchoicefield.py and model_forms/models.py [VISIBLE] – ModelChoiceField form tests; even where Writer/Inventory define Meta.ordering, they go through forms.ModelChoiceField, not Field.get_choices, and File is visible.\n\nNo oracle test file was found that asserts the required Meta.ordering default-ordering behavior of Field.get_choices with an empty 'ordering' argument. Every directly-relevant test in the model_fields/admin_filters modules is [VISIBLE] content (ineligible as a witness), and none of the available hidden models define a related-model Meta.ordering that would let gold and buggy diverge on the empty-ordering path. Accordingly, no genuine witness exists in the oracle; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-2] (django.db.models.fields.Field.get_choices): Field.get_choices returns a relation's related objects in the related model's default ordering (the ordering of its default manager, i.e. its Meta.ordering) when the 'ordering' argument is empty/() — instead of stripping that default ordering by appending a blank order_by() — and orders them by the supplied non-empty 'ordering' fields when such are given. — not entailed by S_vis (S_vis concerns only filter method-level dropdown ordering (the filter computes ordering and passes it to get_choices), and never mentions Field.get_choices' handling of an empty/() ordering argument, Meta-ordering preservation semantics, or any 'blank order_by() stripping' mechanism. The specific behavior impl-2 describes (a change inside the model-field get_choices API) is not pinned down by the visible evidence.); confirmed by a synthesized witness: Requirement impl-2 states Field.get_choices must (a) preserve a related model's default manager ordering (Meta.ordering) when called with an empty 'ordering' argument instead of stripping it via a blank .order_by(), and (b) order by supplied non-empty 'ordering' when present. The visible GetChoicesOrderingTests (model_fields/tests.py) only ever call get_choices with explicit non-empty ordering=('a',)/('-a',), and no visible/hidden app model with a FK to a model that defines Meta.ordering is exercised on the empty-ordering path. So the empty-ordering + Meta.ordering fallback is the un-pinned-down discriminator.\n\nMy witness builds, on the fly inside the test, an OrderedModel with Meta.ordering=('name',) and a HolderModel with a ForeignKey to it, creates both tables on an in-memory sqlite DB, and inserts two rows in an order ('zebra' then 'apple') whose raw-natural order conflicts with name ordering. It then calls holder_field.get_choices(include_blank=False, ordering=()). On gold the empty-ordering branch keeps the default-manager (Meta.ordering) ordering and returns ['apple','zebra'] -> PASSED. On buggy the always-issued empty .order_by() strips default ordering and returns raw-natural ['zebra','apple'] -> FAILED. Execution confirmed gold PASSED and buggy FAILED. The ad-hoc model (which is not part of any visible model file) and the empty-ordering scenario are not pinned by anything visible, so this is a genuine witness.",
+    "confidence": "Medium"
+  }
+}

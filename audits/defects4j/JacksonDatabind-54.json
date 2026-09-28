@@ -1,0 +1,126 @@
+{
+  "task_id": "JacksonDatabind-54",
+  "status": "ok",
+  "duration_seconds": 286.87755221300176,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-54",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "With an ObjectMapper configured with default serialization inclusion JsonInclude.Include.NON_ABSENT and a registered Jdk8Module, serializing a bean in which one property is declared as Optional<Object> and holds Optional.empty() omits that property from JSON output (no key written), rather than writing it as null.",
+        "subject": "Serialization inclusion NON_ABSENT of a declared Optional<Object> property holding Optional.empty()",
+        "hunk_ids": [],
+        "cited_from": "Issue code: \"mapper.setSerializationInclusion(JsonInclude.Include.NON_ABSENT); mapper.registerModule(new Jdk8Module()); JsonResult result = new JsonResult(); result.setA(Optional.empty()); result.setB(Optional.empty()); System.out.println(mapper.writeValueAsString(result));\" and \"@Data public class JsonResult { private Object a; private Optional<Object> b; }\" with reported output \"Then I got the output: {\"a\":null}\" (showing only the declared-Optional property b is dropped, and a remains)."
+      },
+      {
+        "id": "R2",
+        "statement": "Under the same NON_ABSENT + Jdk8Module configuration, a property whose held value is Optional.empty() is expected to be excluded from JSON output even when its declared/static property type is plain Object (not Optional/other reference type); the reported output {\"a\":null} for the Object-typed property a is the defect being reported, with the underlying value being the same empty Optional as property b.",
+        "subject": "Serialization inclusion NON_ABSENT excluding an Optional.empty() runtime value whose declared property type is Object",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The real value of both is the same, why the results are different? How can I avoid null in such case?\" following the Object-typed field `private Object a;` reported to serialize as `\"a\":null`."
+      },
+      {
+        "id": "R3",
+        "statement": "When the fallback-only alternative NON_EMPTY is not acceptable because it also drops legitimate zero primitive values and empty arrays — suggesting the NON_ABSENT-equivalent behavior must not be implemented by using NON_EMPTY semantics (must not suppress empty collections/arrays or numeric zero).",
+        "subject": "Scope boundary of the NON_ABSENT empty-value suppression (must not equal NON_EMPTY)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"By the way, I tried 'NON_EMPTY'. It can work, but it also ignores zero and empty array. I want to keep them.\""
+      },
+      {
+        "id": "R4",
+        "statement": "Under default serialization inclusion JsonInclude.Include.NON_ABSENT, serializing a bean whose field `a` is declared with type Object + @JsonSerialize(as=AtomicReference.class) holding an empty AtomicReference, and whose field `b` is declared AtomicReference<Object> holding an empty AtomicReference, yields output exactly \"{}\".",
+        "subject": "Serialization inclusion NON_ABSENT suppressing empty values even when the declared Object type is refined (via @JsonSerialize(as=...)) to a reference type",
+        "hunk_ids": [],
+        "cited_from": "Test file TestJDKAtomicTypes.java, static class Issue1256Bean: \"@JsonPropertyOrder({ \"a\", \"b\" }) static class Issue1256Bean { @JsonSerialize(as=AtomicReference.class) public Object a = new AtomicReference<Object>(); public AtomicReference<Object> b = new AtomicReference<Object>(); }\" and testEmpty1256: \"mapper.setSerializationInclusion(JsonInclude.Include.NON_ABSENT); String json = mapper.writeValueAsString(new Issue1256Bean()); assertEquals(\"{}\", json);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "For a bean property serialized under JsonInclude.Include.NON_ABSENT, the empty/'absent' value is suppressed (via BeanPropertyWriter.MARKER_FOR_EMPTY) when the property's effective serialization type — the type after refinement by @JsonSerialize(as=...) annotation override or static typing — is a reference type, even if the property's declared field type is a broader type such as Object (e.g. an Object-declared property whose refined serialization type is AtomicReference/Optional now suppresses its empty value).",
+        "subject": "PropertyBuilder.buildWriter (NON_ABSENT inclusion handling)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "For a bean property with inclusion ALWAYS/NON_NULL/default where SerializationFeature.WRITE_EMPTY_JSON_ARRAYS is disabled, empty values are suppressed (via BeanPropertyWriter.MARKER_FOR_EMPTY) when the property's effective serialization type — the type after refinement by @JsonSerialize(as=...) annotation override or static typing — is a container type, even if the property's declared field type is not itself a container type.",
+        "subject": "PropertyBuilder.buildWriter (ALWAYS/NON_NULL default inclusion handling)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R4",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R4 pins down the exact behavior: under NON_ABSENT an Object-declared field refined via @JsonSerialize(as=AtomicReference.class) holding an empty AtomicReference is suppressed, producing output exactly '{}', i.e., suppression keyed to the effective (refined) serialization reference type rather than the broad declared type; R1 corroborates Optional's suppression under NON_ABSENT."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ],
+        "rationale": "impl-2 concerns ALWAYS/NON_NULL/default inclusion with WRITE_EMPTY_JSON_ARRAYS disabled and container effective types; all S_vis entries (R1-R4) concern NON_ABSENT inclusion only and never mention WRITE_EMPTY_JSON_ARRAYS or the ALWAYS/NON_NULL default inclusion path, so nothing in S_vis leads to this specific behavior."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "witnessImpl2",
+      "test_source": "@org.junit.Test\npublic void witnessImpl2() throws Exception {\n    class Bean {\n        @com.fasterxml.jackson.databind.annotation.JsonSerialize(as=java.util.ArrayList.class)\n        public Object v;\n    }\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_EMPTY_JSON_ARRAYS);\n    Bean bean = new Bean();\n    bean.v = new java.util.ArrayList<java.lang.Object>();\n    String json = mapper.writeValueAsString(bean);\n    org.junit.Assert.assertEquals(\"{}\", json);\n}\n",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement impl-2 targets the ALWAYS/NON_NULL/default branch of PropertyBuilder.buildWriter where the empty-suppression decision (writing BeanPropertyWriter.MARKER_FOR_EMPTY when WRITE_EMPTY_JSON_ARRAYS is disabled) must use the property's *effective* serialization type (after @JsonSerialize(as=...) refinement / static typing) rather than the declared field type. The patch [H1] changed `declaredType.isContainerType()` to `actualType.isContainerType()`.\n\nThe witness constructs a bean property declared as `Object` (a non-container declared type) but refined via `@JsonSerialize(as=ArrayList.class)` to an effective container, holds an empty ArrayList, and serializes with default (ALWAYS) inclusion and WRITE_EMPTY_JSON_ARRAYS disabled. Against gold (actualType-based) the empty list is suppressed -> `{}` (PASSED). Against buggy (declaredType-based) the declared type Object is not a container so nothing is suppressed -> `{\"v\":[]}` (FAILED). This isolates exactly the impl-2 behavior gap.\n\nThe only visible test (testEmpty1256 in TestJDKAtomicTypes) exercises a completely different path: it uses JsonInclude.Include.NON_ABSENT over AtomicReference (a referential type) exercising the `case NON_ABSENT:` referential-suppression branch — not the ALWAYS/NON_NULL/default + WRITE_EMPTY container branch of impl-2, and not even the eff/container type mechanism. No visible material pins down the scenario my witness asserts, so it genuinely qualifies as a hidden witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files really exist relevant here: src/main/java/com/fasterxml/jackson/databind/ser/PropertyBuilder.java (which contains the NON_ABSENT handling switch, where reference-type emptiness suppression is keyed off `declaredType.isReferenceType()` — see the comment databind#1256) and the serialize test under src/test/java/com/fasterxml/jackson/databind/deser/TestJDKAtomicTypes.java containing testEmpty1256. No Jdk8Module-source or the actual bean from the issue is present in this benchmark snapshot; only AtomicReference-based tests exist."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's Object-typed Optional case (R2) is not covered by any visible test; the disclosed test only pins down the @JsonSerialize(as=...)/direct-AtomicReference variant (R4). Note this benchmark's bug is that Optional.empty in an Object-typed field is not excluded — the issue lands in PropertyBuilder.buildWriter where NON_ABSENT checks declaredType.isReferenceType() rather than the runtime's referential emptiness."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests live under src/test/java/com/fasterxml/jackson/databind/deser/; the serialization test that matches this issue is named testEmpty1256 (issue 1256) in TestJDKAtomicTypes.java."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch changes only PropertyBuilder.java; both hunks swap the type used in the two type-feature conditionals from declaredType to the already-computed actualType field ((serializationType == null) ? declaredType : serializationType), which is the property's serialization type after refinement via findSerializationType (@JsonSerialize(as=...) and static typing)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The NON_ABSENT remaining behavior 'always suppress nulls' (suppressNulls=true) is unchanged by the patch, as is the empty-marker assignments for NON_EMPTY."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: Requirement impl-2 concerns PropertyBuilder.buildWriter choosing the property's *effective* serialization type (after @JsonSerialize(as=...) / static-typing refinement) rather than the declared field type when deciding container-type-driven empty suppression (BeanPropertyWriter.MARKER_FOR_EMPTY) with WRITE_EMPTY_JSON_ARRAYS disabled under ALWAYS/NON_NULL/default inclusion.\n\nI empirically confirmed this behavior gap exists: a field declared `Object` refined via @JsonSerialize(as=ArrayList.class), empty, with WRITE_EMPTY_JSON_ARRAYS disabled, serializes as `{\"v\":[]}` against the buggy program but `{}` against the gold program.\n\nHowever, I could not find any [HIDDEN] oracle test that actually asserts this. The only oracle test that currently fails against the buggy program is `testEmpty1256` (com.fasterxml.jackson.databind.deser.TestJDKAtomicTypes), and that file is labeled [VISIBLE] content, so it cannot serve as a Witness regardless of content. Moreover testEmpty1256 uses JsonInclude.Include.NON_ABSENT against empty AtomicReference fields (a referential/NON_ABSENT scenario distinct from impl-2's ALWAYS/NON_NULL/default + WRITE_EMPTY container scenario); it turns out to exercise the NON_ABSENT referential-suppression path, not the WRITE_EMPTY/effective-container path that impl-2 describes — both `{}` behaviors differ in mechanism.\n\nI systematically read all the [HIDDEN] serialization/inclusion/format test files that could plausibly carry such a test (TestSimpleAtomicTypes, TestJsonSerialize/2/3/As, SerializationFeaturesTest, TestCollectionSerialization (testEmptyListOrArray only uses declared container types), TestMapSerialization, JsonIncludeTest, MapInclusionTest, NullSerializationTest, TestSimpleSerializationIgnore, FormatFeaturesTest, TestJacksonTypes, ObjectWriterTest, TestAnnotations, TestSerialize-include files), and none contains a property whose declared type is a non-container but whose effective (refined/static-typed) type is a container, combined with WRITE_EMPTY_JSON_ARRAYS disabled. Since only visible test-empty1256 (excluded) fails against buggy and no [HIDDEN] test covers impl-2's exact behavior, no valid witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-2] (PropertyBuilder.buildWriter (ALWAYS/NON_NULL default inclusion handling)): For a bean property with inclusion ALWAYS/NON_NULL/default where SerializationFeature.WRITE_EMPTY_JSON_ARRAYS is disabled, empty values are suppressed (via BeanPropertyWriter.MARKER_FOR_EMPTY) when the property's effective serialization type — the type after refinement by @JsonSerialize(as=...) annotation override or static typing — is a container type, even if the property's declared field type is not itself a container type. — not entailed by S_vis (impl-2 concerns ALWAYS/NON_NULL/default inclusion with WRITE_EMPTY_JSON_ARRAYS disabled and container effective types; all S_vis entries (R1-R4) concern NON_ABSENT inclusion only and never mention WRITE_EMPTY_JSON_ARRAYS or the ALWAYS/NON_NULL default inclusion path, so nothing in S_vis leads to this specific behavior.); confirmed by a synthesized witness: Requirement impl-2 targets the ALWAYS/NON_NULL/default branch of PropertyBuilder.buildWriter where the empty-suppression decision (writing BeanPropertyWriter.MARKER_FOR_EMPTY when WRITE_EMPTY_JSON_ARRAYS is disabled) must use the property's *effective* serialization type (after @JsonSerialize(as=...) refinement / static typing) rather than the declared field type. The patch [H1] changed `declaredType.isContainerType()` to `actualType.isContainerType()`.\n\nThe witness constructs a bean property declared as `Object` (a non-container declared type) but refined via `@JsonSerialize(as=ArrayList.class)` to an effective container, holds an empty ArrayList, and serializes with default (ALWAYS) inclusion and WRITE_EMPTY_JSON_ARRAYS disabled. Against gold (actualType-based) the empty list is suppressed -> `{}` (PASSED). Against buggy (declaredType-based) the declared type Object is not a container so nothing is suppressed -> `{\"v\":[]}` (FAILED). This isolates exactly the impl-2 behavior gap.\n\nThe only visible test (testEmpty1256 in TestJDKAtomicTypes) exercises a completely different path: it uses JsonInclude.Include.NON_ABSENT over AtomicReference (a referential type) exercising the `case NON_ABSENT:` referential-suppression branch — not the ALWAYS/NON_NULL/default + WRITE_EMPTY container branch of impl-2, and not even the eff/container type mechanism. No visible material pins down the scenario my witness asserts, so it genuinely qualifies as a hidden witness.",
+    "confidence": "Medium"
+  }
+}

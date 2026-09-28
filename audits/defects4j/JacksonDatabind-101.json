@@ -1,0 +1,111 @@
+{
+  "task_id": "JacksonDatabind-101",
+  "status": "ok",
+  "duration_seconds": 405.80209693300094,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-101",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a bean whose non-default constructor takes creator properties (x,y via @JsonProperty/@JsonCreator) and which also has an @JsonUnwrapped property w assigned via a setter, deserializing JSON where fields of the unwrapped bean appear after the last creator property must still set them on the unwrapped bean rather than skip them: reading {\"x\":1,\"a\":2,\"y\":3,\"b\":4} must yield x==1, y==3, and w set with a==2 and b==4 (so the trailing \"b\" unwrapped value is not lost after the bean is constructed once the final creator property \"y\" is consumed).",
+        "subject": "BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"`@JsonUnwrapped` fields are skipped when using `PropertyBasedCreator` if they appear after the last creator property\"; \"`x`, `y`, and `a` are deserialized as expected. `b` is skipped entirely.\" and test:\n\n    Issue2088Bean bean = MAPPER.readValue(\"{\\\"x\\\":1,\\\"a\\\":2,\\\"y\\\":3,\\\"b\\\":4}\", Issue2088Bean.class);\n    assertEquals(1, bean.x);\n    assertEquals(2, bean.w.a);\n    assertEquals(3, bean.y);\n    assertEquals(4, bean.w.b);\n\nwith Issue2088Bean having constructor `public Issue2088Bean(@JsonProperty(\"x\") int x, @JsonProperty(\"y\") int y)` and `setW(...)` for @JsonUnwrapped field `w` of type Issue2088UnwrappedBean (whose constructor takes @JsonProperty a,b)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "When deserializing (via a property-based @JsonCreator) a bean that also has a non-creator @JsonUnwrapped property, every JSON field that appears after the final creator-argument field and that belongs to the unwrapped target type is buffered together with its field name and value and then applied to the @JsonUnwrapped property (so, e.g., for input {\"x\":1,\"a\":2,\"y\":3,\"b\":4} targeting a bean with creators over x,y and an @JsonUnwrapped sub-bean over a,b, the resulting sub-bean carries a=2 and b=4) — no such remaining field value is skipped or lost due to mishandling in the copy loop.",
+        "subject": "BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped — bean deserialization mixing a property-based creator with an @JsonUnwrapped non-creator property",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "In deserializeUsingPropertyBasedWithUnwrapped, once all remaining trailing fields after the last creator property have been copied into the unwrapped buffer, if the parser's current token is not END_OBJECT, deserialization fails by reporting a wrong-token mismatch against expected token END_OBJECT with a message of the form \"Attempted to unwrap '<handled type name>' value\" rather than proceeding to write the end-object token and process unwrapped content.",
+        "subject": "BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped — end-of-object invariant check when unwrapping trailing fields",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's cited issue report and test directly pin down the exact scenario S1 describes: trailing unwrapped-type fields after the last creator property (the rep of {'x':1,'a':2,'y':3,'b':4}) must still be applied to the @JsonUnwrapped sub-bean (a=2, b=4) and must not be skipped or lost, matching S1's buffered-and-applied behavior."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 addresses only the successful setting of trailing unwrapped values (per the issue description and the readValue/assertEquals test). It says nothing about an end-of-object token check, a wrong-token mismatch reported against END_OBJECT, or an \"Attempted to unwrap '<handled>' value\" error message, so the S2 invariant behavior is not pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    com.fasterxml.jackson.core.JsonParser seed = mapper.getFactory().createParser(\"{}\");\n    com.fasterxml.jackson.databind.util.TokenBuffer tb = new com.fasterxml.jackson.databind.util.TokenBuffer(seed);\n    tb.writeStartObject();\n    tb.writeFieldName(\"x\"); tb.writeNumber(1);\n    tb.writeFieldName(\"a\"); tb.writeNumber(2);\n    tb.writeFieldName(\"y\"); tb.writeNumber(3);\n    tb.writeFieldName(\"b\"); tb.writeNumber(4);\n    tb.writeNumber(99); // leave parser on a non-END_OBJECT token after the trailing field\n    tb.writeEndObject();\n\n    com.fasterxml.jackson.core.JsonParser p = tb.asParser();\n    try {\n        mapper.readerFor(Outer.class).readValue(p);\n        fail(\"Expected wrong-token END_OBJECT mismatch when trailing tokens leave parser off end-of-object\");\n    } catch (com.fasterxml.jackson.databind.JsonMappingException e) {\n        String msg = e.getMessage();\n        assertNotNull(\"expected JsonMappingException message\", msg);\n        assertTrue(\"message should mention expected END_OBJECT: \" + msg, msg.contains(\"expected END_OBJECT\"));\n        assertTrue(\"message should mention 'Attempted to unwrap': \" + msg, msg.contains(\"Attempted to unwrap\"));\n    }\n}\nstatic class InnerC { public int pa; public int[] arr; public int b; public int c; public InnerC(){} }\nstatic class Outer {\n    public int x; public int y;\n    @com.fasterxml.jackson.annotation.JsonUnwrapped public InnerC a;\n    @com.fasterxml.jackson.annotation.JsonCreator public Outer(@com.fasterxml.jackson.annotation.JsonProperty(\"x\") int x, @com.fasterxml.jackson.annotation.JsonProperty(\"y\") int y){this.x=x;this.y=y;}\n    public void setA(InnerC v){this.a=v;}\n}\n",
+      "gold_result": "PASSED — readValue on the synthetic token stream throws com.fasterxml.jackson.databind.exc.MismatchedInputException: \"Unexpected token (VALUE_NUMBER_INT), expected END_OBJECT: Attempted to unwrap 'VersoWitnessCandidate$Outer' value\"; message assertions on \"expected END_OBJECT\" and \"Attempted to unwrap\" both hold.",
+      "buggy_result": "FAILED — buggy (pre-fix) returns the bean silently (readValue succeeds with Outer[x=1,y=3,...]); no wrong-token exception is raised, so the `fail(...)` guard fires with AssertionError \"Expected wrong-token END_OBJECT mismatch...\".",
+      "explanation": "The requirement [S2] is specifically the newly added end-of-object invariant in BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped: after all trailing fields after the last creator property are copied into the unwrapped token buffer, if the parser's current token is not END_OBJECT the deserializer must fail with a wrong-token mismatch (expected END_OBJECT) and an \"Attempted to unwrap '<type>' value\" message instead of blindly writing the end-object token and processing unwrapped content. I drove the exact code path: a bean with a property-based @JsonCreator over x and y plus an @JsonUnwrapped property a (set via setter). I fed a synthetic token stream (JsonMappingException-faithful TokenBuffer turned into a JsonParser) containing creator props x,y, a trailing unwrapped field b, and then a stray VALUE_NUMBER_INT (99) instead of the object's END_OBJECT. On gold the new check fires and readValue throws MismatchedInputException \"expected END_OBJECT: Attempted to unwrap ... value\" (PASSED via message assertions). On buggy the post-loop check is absent, so the code unconditionally writes the end-object token and processes the unwrapped content, returning a bean with no exception (test FAILS on its fail() guard). This witness is distinct from the visible testIssue2088UnwrappedFieldsAfterLastCreatorProp: that test feeds only well-formed JSON that always ends the parser at END_OBJECT and asserts the four deserialized values, never reaching the non-END_OBJECT guard or the \"Attempted to unwrap\" error; only a genuinely non-END_OBJECT terminal token such as this synthetic VALUE_NUMBER_INT exercises the S2 invariant. Confirmed by repeated run_test calls: PASSED against gold and FAILED against buggy with the exact byte source submitted."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Test file is the sole test: src/test/java/com/fasterxml/jackson/databind/struct/TestUnwrapped.java; it carries a testIssue2088UnwrappedFieldsAfterLastCreatorProp that encodes the regression under test."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Source under test: BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped(JsonParser, DeserializationContext) in src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java is the code path that mixes a property-based creator with an @JsonUnwrapped property (selected from deserializeWithUnwrapped)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue bean passes unwrapped via a setter (setW), while the creator properties (x,y) and the unwrapped sub-bean's own creator properties (a,b) come through constructors — @JsonUnwrapped creator properties are explicitly disallowed elsewhere in BeanDeserializerBase._findPropertyUnwrapper."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue/regression number referenced: databind#2088 (beans/client class names Issue2088Bean / Issue2088UnwrappedBean appear verbatim in the test)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch (single hunk H0) is entirely within BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped (BeanDeserializer.java)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The H0 hunk contains two adjacent edits: removal of a p.nextToken() call inside the trailing-field copy loop (the bug fix), and insertion of an END_OBJECT sanity check (if (t != JsonToken.END_OBJECT) ctxt.reportWrongTokenException(...)) before tokens.writeEndObject()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Regression is databind#2088, exercised by TestUnwrapped.testIssue2088UnwrappedFieldsAfterLastCreatorProp; it mixed a bean whose unwrapped property w is set via a setter with a property-based @JsonCreator over x,y, where the sub-bean w itself is created via creator over a,b."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The bean used in this scenario must have the @JsonUnwrapped property supplied via setter/field rather than creator so it reaches the processUnwrapped path."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: I investigated the requirement [S2] (end-of-object invariant check in BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped leading to a wrong-token END_OBJECT mismatch with an \"Attempted to unwrap ... value\" message when trailing fields after the last creator prop leave the parser at a non-END_OBJECT token). The only test flagged as failing against the buggy program is testIssue2088UnwrappedFieldsAfterLastCreatorProp, which lives in src/test/java/com/fasterxml/jackson/databind/struct/TestUnwrapped.java and is labeled [VISIBLE], so its assertions cannot serve as a hidden-requirement witness no matter how well they may align with r.\n\nMoreover, even setting visibility aside, that test feeds fully well-formed JSON (\\\"{\\\\\\\"x\\\\\\\":1,\\\\\\\"a\\\\\\\":2,\\\\\\\"y\\\\\\\":3,\\\\\\\"b\\\\\\\":4}\\\") and asserts the four deserialized field values — i.e. it exercises the success path (ensuring the trailing unwrapped fields after the creator props are not wrongly skipped). It never drives the parser into a non-END_OBJECT state at that point, and it contains no assertion of the wrong-token mismatch failure nor of the \"Attempted to unwrap ...” message that S2 describes. So it tests the sibling token-consumption behavior of the same hunk, not the S2 end-of-object/error-path invariant.\n\nI also reviewed the other unwrapped-related test files (TestUnwrappedRecursive383, TestUnwrappedWithPrefix, TestUnwrappedWithSameName647, TestUnwrappedWithTypeInfo, UnwrappedCreatorParam265Test, UnwrappedWithView1559Test, UnwrapSingleArrayScalarsTest, FormatFeatureUnwrapSingleTest, BuilderWithUnwrappedTest) and deser/TestBeanDeserializer.java. None of them exercise the property-based-creator-plus-unwrapped-setter path with a malformed/trailing non-END_OBJECT token and assert the wrong-token error; the single-value-array unwrap tests concern the unrelated UNWRAP_SINGLE_VALUE_ARRAYS feature path. No [HIDDEN] test witnesses S2's behavior, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S2] (BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped — end-of-object invariant check when unwrapping trailing fields): In deserializeUsingPropertyBasedWithUnwrapped, once all remaining trailing fields after the last creator property have been copied into the unwrapped buffer, if the parser's current token is not END_OBJECT, deserialization fails by reporting a wrong-token mismatch against expected token END_OBJECT with a message of the form \"Attempted to unwrap '<handled type name>' value\" rather than proceeding to write the end-object token and process unwrapped content. — not entailed by S_vis (R1 addresses only the successful setting of trailing unwrapped values (per the issue description and the readValue/assertEquals test). It says nothing about an end-of-object token check, a wrong-token mismatch reported against END_OBJECT, or an \"Attempted to unwrap '<handled>' value\" error message, so the S2 invariant behavior is not pinned down by the visible evidence.); confirmed by a synthesized witness: The requirement [S2] is specifically the newly added end-of-object invariant in BeanDeserializer.deserializeUsingPropertyBasedWithUnwrapped: after all trailing fields after the last creator property are copied into the unwrapped token buffer, if the parser's current token is not END_OBJECT the deserializer must fail with a wrong-token mismatch (expected END_OBJECT) and an \"Attempted to unwrap '<type>' value\" message instead of blindly writing the end-object token and processing unwrapped content. I drove the exact code path: a bean with a property-based @JsonCreator over x and y plus an @JsonUnwrapped property a (set via setter). I fed a synthetic token stream (JsonMappingException-faithful TokenBuffer turned into a JsonParser) containing creator props x,y, a trailing unwrapped field b, and then a stray VALUE_NUMBER_INT (99) instead of the object's END_OBJECT. On gold the new check fires and readValue throws MismatchedInputException \"expected END_OBJECT: Attempted to unwrap ... value\" (PASSED via message assertions). On buggy the post-loop check is absent, so the code unconditionally writes the end-object token and processes the unwrapped content, returning a bean with no exception (test FAILS on its fail() guard). This witness is distinct from the visible testIssue2088UnwrappedFieldsAfterLastCreatorProp: that test feeds only well-formed JSON that always ends the parser at END_OBJECT and asserts the four deserialized values, never reaching the non-END_OBJECT guard or the \"Attempted to unwrap\" error; only a genuinely non-END_OBJECT terminal token such as this synthetic VALUE_NUMBER_INT exercises the S2 invariant. Confirmed by repeated run_test calls: PASSED against gold and FAILED against buggy with the exact byte source submitted.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "task_id": "django__django-16120",
+  "status": "ok",
+  "duration_seconds": 511.93288425006904,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16120",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Running `manage.py migrate --check` when the database is up to date (there are no unapplied migrations) must not emit the pre_migrate and post_migrate migration signals.",
+        "subject": "django.core.management.commands.migrate.Command.handle",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"pre_migrate and post_migrate signals are emitted for migrate --check, but only if the database is up-to-date.\" (in migrate.py the emit_pre_migrate_signal / executor.migrate / emit_post_migrate_signal calls run unconditionally after the early `if exit_dry: sys.exit(1)` which only fires when plan is non-empty, so --check with an up-to-date DB still emits the signals)"
+      },
+      {
+        "id": "R2",
+        "statement": "Running `manage.py migrate --check` when the database is up to date (no unapplied migrations) must not print the normal migrate-run log lines \"Operations to perform:\", \"Running migrations:\", and \"No migrations to apply.\".",
+        "subject": "django.core.management.commands.migrate.Command.handle",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"A related side effect is that the logs also look like a like a real run, as it says 'Operations to perform:' and 'Running migrations:'. The last sentence clarifies that nothing has been applied...\" followed by the reproduced output \"Operations to perform:\\n Apply all migrations: admin, auth, contenttypes, sessions, social_django\\nRunning migrations:\\n No migrations to apply.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When `migrate --check` is run without `--plan` and at least one unapplied migration exists (non-empty plan), the command exits with a nonzero status (sys.exit(1)) without proceeding to apply any migration.",
+        "subject": "Command.handle --check with unapplied migrations (no --plan)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When `migrate --check` is run without `--plan` and no unapplied migrations exist (empty plan), the command returns with exit status 0 and does NOT fall through to the real migrate execution path: no migrations or syncdb work is performed, and no pre_migrate/post_migrate signals are emitted nor 'Operations to perform:'/'Running migrations:' output produced.",
+        "subject": "Command.handle --check with empty plan (no --plan)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When `migrate --plan --check` is run and unapplied migrations exist (non-empty plan), the command prints the planned migration names and their operations, then exits with a nonzero status (sys.exit(1)).",
+        "subject": "Command.handle --plan --check with non-empty plan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "When `migrate --plan --check` is run and no unapplied migrations exist (empty plan), the command prints '  No planned migration operations.' and returns with exit status 0.",
+        "subject": "Command.handle --plan --check with empty plan",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Both S_vis statements concern only the up-to-date/empty-plan check case (no signals, no log output). They say nothing about the non-empty/unapplied-plan case. The R1 citation only incidentally references an existing `if exit_dry: sys.exit(1)` firing for non-empty plans, which hints at exit(1) but does not pin down the full requirement including 'without proceeding to apply any migration.'"
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis directly pins the no-signal and no 'Operations to perform:'/'Running migrations:' output conditions for the up-to-date (empty-plan) check run, matching part of R2. However, the explicit 'exit status 0' and explicit 'no fall through to real migrate execution / no syncdb work' aspects of R2 are not stated in S_vis, so the full behavior is only partly pinned down."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis requirement mentions the --plan option at all, nor printing planned migration names and operations, nor exiting nonzero after doing so. The visible requirements cover only the bare --check empty-plan signal/log behavior."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis says nothing about the --plan path or printing 'No planned migration operations.' with exit status 0 in the empty-plan plan case. This behavior appears nowhere in the visible requirements."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I analyzed the gold and buggy implementations of migrate.py Command.handle for the exact scenario R3 describes (migrate --plan --check with a non-empty plan), and empirically confirmed via the run_test tool (using a fully self-contained Django sqlite setup with a temp app having one RunPython migration) that BOTH the gold and buggy programs behave identically: they print the \"Planned operations:\" header, the planned migration name, and its \"Raw Python operation\" line, and then raise sys.exit(1).\n\nR3 is the non-empty `--plan --check` case. In the buggy code path `exit_dry = plan and options['check_unapplied']`, so when plan is non-empty and --check is set, the for-loop still prints every migration/operation and then `if exit_dry: sys.exit(1)` fires — identical output and identical exit code to gold, which simply moved that same sys.exit into the `else` (non-empty) branch. There is no difference in this scenario that a test could discriminate on; a test asserting exit code 1 plus the printed migration names/operations passes on BOTH variants (run_test: gold PASSED and buggy PASSED with the same assertions).\n\nThe behavior the gold change actually altered is in the EMPTY-plan path (e.g. `--check` alone on a fully-migrated/up-to-date DB where buggy falls through to migration execution/signals while gold returns early) — that is a different scenario, not the non-empty-plan claim in R3, and it is territory of the already-ruled-insufficient adjacent requirements. Because the fix produces no observable divergence for R3's precise non-empty-plan scenario, no genuine witness (gold FAIL / buggy PASS) can be constructed; I submit found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The migrate command lives in django/core/management/commands/migrate.py; its Command.handle computes `exit_dry = plan and options['check_unapplied']` and early-returns sys.exit(1) only when plan is non-empty, so `--check` against an already-migrated DB (empty plan) falls through to the full real-run path that prints the operations/heading lines and emits pre/post_migrate signals."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Signal emission helpers emit_pre_migrate_signal/emit_post_migrate_signal live in django/core/management/sql.py and iterate apps.get_app_configs() sending models.signals.pre_migrate/post_migrate."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for the migrate command are under tests/migrations/test_commands.py; the only --check test there, test_migrate_check, exercises the unapplied-migrations case (expects SystemExit) and does not yet assert anything about the up-to-date/empty-plan case."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Related signal-behavior tests under tests/migrate_signals/tests.py assert that pre/post_migrate are fired for normal migrate and for empty-plan migrate calls, but contain no --check test."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is entirely within Command.handle in django/core/management/commands/migrate.py; it removes the `exit_dry = plan and options['check_unapplied']` optimization and instead computes `plan = executor.migration_plan(targets)` once and handles `--check` inside/near the `--plan` branch, adding an early `return` in the `--check` branch so an empty plan no longer falls through to the signal-emitting/executor.migrate run path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the --plan branch, the migration/operation listing loop is now wrapped in an `else` (hooked to `if not plan:`), and the `sys.exit(1)` for `--check` with unapplied migrations moved from outside to inside that `else`, preserving the exit code for the non-empty-plan case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "describe_operation was reformatted to multi-line (cosmetic only)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Related signal tests (tests/migrate_signals/tests.py) and the prune path (options['prune']) were unaffected by this hunk."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: R3 requires: `migrate --plan --check` with a non-empty plan (unapplied migrations exist) prints the planned migration names + their operations and then exits with sys.exit(1).\n\nI read the two test files that could plausibly host such an assertion:\n1. tests/migrations/test_commands.py — contains test_migrate_check (just expects SystemExit, no output) and test_migrate_check_plan, which runs `migrate <app> 0001 --check --plan` with unapplied migrations and asserts BOTH the exact \"Planned operations:\" output (migration name + Create model/Raw Python operation lines) AND a SystemExit. That test's content precisely matches R3's non-empty-plan behavioral claim.\n2. tests/migrate_signals/tests.py — only covers pre/post_migrate signal behavior for normal and empty-plan migrate runs; no --check --plan test.\n3. tests/migrations/test_base.py — infrastructure only.\n\nCritically, all three files are labeled [VISIBLE]. Per the audit rules a witness may rest ONLY on [HIDDEN] assertions — an assertion the repair system already saw can never serve as a witness, no matter how closely it matches R3. The sole test literally exercising R3's non-empty-plan print-that-exit behavior (test_migrate_check_plan) is [VISIBLE], and both the hidden-eligible migrate command test files contain no additional/new assertion about the combined --plan --check non-empty case. The tooling also reported \"(none recorded)\" as currently-failing tests against the buggy program, and repeated run_test attempts to get an executionable standalone candidate were not collectible by the harness, so I could not/cannot construct an execution-confirmed (gold PASSED / buggy FAILED) witness from hidden material.\n\nI therefore did not find any [HIDDEN] oracle assertion that genuinely enforces R3; nothing in the oracle's hidden content tests this behavior, so found=false is submitted."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: I analyzed the gold and buggy implementations of migrate.py Command.handle for the exact scenario R3 describes (migrate --plan --check with a non-empty plan), and empirically confirmed via the run_test tool (using a fully self-contained Django sqlite setup with a temp app having one RunPython migration) that BOTH the gold and buggy programs behave identically: they print the \"Planned operations:\" header, the planned migration name, and its \"Raw Python operation\" line, and then raise sys.exit(1).\n\nR3 is the non-empty `--plan --check` case. In the buggy code path `exit_dry = plan and options['check_unapplied']`, so when plan is non-empty and --check is set, the for-loop still prints every migration/operation and then `if exit_dry: sys.exit(1)` fires — identical output and identical exit code to gold, which simply moved that same sys.exit into the `else` (non-empty) branch. There is no difference in this scenario that a test could discriminate on; a test asserting exit code 1 plus the printed migration names/operations passes on BOTH variants (run_test: gold PASSED and buggy PASSED with the same assertions).\n\nThe behavior the gold change actually altered is in the EMPTY-plan path (e.g. `--check` alone on a fully-migrated/up-to-date DB where buggy falls through to migration execution/signals while gold returns early) — that is a different scenario, not the non-empty-plan claim in R3, and it is territory of the already-ruled-insufficient adjacent requirements. Because the fix produces no observable divergence for R3's precise non-empty-plan scenario, no genuine witness (gold FAIL / buggy PASS) can be constructed; I submit found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R3] (Command.handle --plan --check with non-empty plan) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I analyzed the gold and buggy implementations of migrate.py Command.handle for the exact scenario R3 describes (migrate --plan --check with a non-empty plan), and empirically confirmed via the run_test tool (using a fully self-contained Django sqlite setup with a temp app having one RunPython migration) that BOTH the gold and buggy programs behave identically: they print the \"Planned operations:\" header, the planned migration name, and its \"Raw Python operation\" line, and then raise sys.exit(1).\n\nR3 is the non-empty `--plan --check` case. In the buggy code path `exit_dry = plan and options['check_unapplied']`, so when plan is non-empty and --check is set, the for-loop still prints every migration/operation and then `if exit_dry: sys.exit(1)` fires — identical output and identical exit code to gold, which simply moved that same sys.exit into the `else` (non-empty) branch. There is no difference in this scenario that a test could discriminate on; a test asserting exit code 1 plus the printed migration names/operations passes on BOTH variants (run_test: gold PASSED and buggy PASSED with the same assertions).\n\nThe behavior the gold change actually altered is in the EMPTY-plan path (e.g. `--check` alone on a fully-migrated/up-to-date DB where buggy falls through to migration execution/signals while gold returns early) — that is a different scenario, not the non-empty-plan claim in R3, and it is territory of the already-ruled-insufficient adjacent requirements. Because the fix produces no observable divergence for R3's precise non-empty-plan scenario, no genuine witness (gold FAIL / buggy PASS) can be constructed; I submit found=false.",
+    "confidence": "Medium"
+  }
+}

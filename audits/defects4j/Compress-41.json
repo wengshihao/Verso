@@ -1,0 +1,120 @@
+{
+  "task_id": "Compress-41",
+  "status": "ok",
+  "duration_seconds": 217.69815809900138,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "Compress-41",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When ZipArchiveInputStream.getNextZipEntry() reads a header whose signature is not the local-file-header signature (LFH_SIG) and not a recognized end-of-cutoff signature (CFH_SIG or AED_SIG) — i.e. an invalid/unexpected record where a local file header was expected — it must throw a java.util.zip.ZipException whose message contains \"Unexpected record signature\", rather than returning null.",
+        "subject": "ZipArchiveInputStream.getNextZipEntry()",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Instead, it should throw an exception if an invalid entry is encountered.\" / \"ZipArchiveInputStream.getNextZipEntry() currently returns null if an invalid entry is encountered.\"  Test (ZipArchiveInputStreamTest.testThrowOnInvalidEntry): \"zip.getNextZipEntry(); fail(\"IOException expected\"); } catch (ZipException expected) { assertTrue(expected.getMessage().contains(\"Unexpected record signature\"));\"  Code under fix (getNextZipEntry): \"if (!sig.equals(ZipLong.LFH_SIG)) { return null; }\""
+      },
+      {
+        "id": "R2",
+        "statement": "ZipArchiveInputStream.getNextZipEntry() must still return null (rather than throw) when reading genuinely ends the archive with no more entries — specifically when a read for the next header hits EOF and when the central-directory signature (CFH_SIG) or archive-extra-data signature (AED_SIG) is reached, which sets the stream to report the end of entries.",
+        "subject": "ZipArchiveInputStream.getNextZipEntry()",
+        "hunk_ids": [],
+        "cited_from": "Code (getNextZipEntry): \"} catch (final EOFException e) { return null; }\" and \"if (sig.equals(ZipLong.CFH_SIG) || sig.equals(ZipLong.AED_SIG)) { hitCentralDirectory = true; skipRemainderOfArchive(); }\" followed by \"if (!sig.equals(ZipLong.LFH_SIG)) { return null; }\" (so the CFH/AED path must still yield null, preserving the 'no more entries' condition the issue says line 1 must keep distinguishable)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "After reading the next local file header signature from a non-first entry (or the shifted first header), if that signature is neither the Local File Header signature (LFH), the Central File Header signature (CFH) nor the Archive Extra Data signature (AED), getNextZipEntry throws a java.util.zip.ZipException whose message contains the offending signature value formatted as '0X%X' (hex), instead of returning null.",
+        "subject": "ZipArchiveInputStream.getNextZipEntry()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the next local file header signature read by getNextZipEntry equals CFH_SIG or AED_SIG (i.e. the stream has reached the central directory / end of archive), getNextZipEntry sets the end-of-iteration state, consumes the remainder of the archive, and returns null directly (normal end of iteration).",
+        "subject": "ZipArchiveInputStream.getNextZipEntry()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 does pin the core behavior that an invalid signature (not LFH/CFH/AED) causes a ZipException whose message contains 'Unexpected record signature' rather than returning null; but S_impl R1 also demands the message embed the offending signature formatted as '0X%X' hex and scopes the check to non-first/shifted-header reads, and no S_vis evidence supports that hex-message payload detail, so full entailment of this specific behavior is unclear."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2's cited code pins exactly this: when the signature equals CFH_SIG or AED_SIG it sets the end-of-iteration flag (hitCentralDirectory = true), skips/consumes the remainder of the archive (skipRemainderOfArchive), and then returns null since the signature is not LFH — matching S_impl R2 precisely."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(1000).order(java.nio.ByteOrder.LITTLE_ENDIAN);\n    bb.putInt(0x04034b50); // LFH sig\n    bb.putShort((short) 10);\n    bb.putShort((short) 0);\n    bb.putShort((short) java.util.zip.ZipEntry.STORED);\n    bb.putShort((short) 0);\n    bb.putShort((short) 0);\n    byte[] data = \"hello world\".getBytes(\"UTF-8\");\n    java.util.zip.CRC32 crc = new java.util.zip.CRC32(); crc.update(data);\n    bb.putInt((int) crc.getValue());\n    bb.putInt(data.length);\n    bb.putInt(data.length);\n    bb.putShort((short) 3);\n    bb.putShort((short) 0);\n    bb.put(\"foo\".getBytes(\"UTF-8\"));\n    bb.put(data);\n    bb.putInt(0xDEADBEEF); // invalid signature for second header read\n    for (int i = 0; i < 26; i++) bb.put((byte) 0);\n    byte[] bytes = new byte[bb.position()];\n    bb.flip();\n    bb.get(bytes);\n    org.apache.commons.compress.archivers.zip.ZipArchiveInputStream zin =\n        new org.apache.commons.compress.archivers.zip.ZipArchiveInputStream(new java.io.ByteArrayInputStream(bytes));\n    assertNotNull(zin.getNextEntry());\n    boolean threw = false;\n    String msg = null;\n    try {\n        zin.getNextZipEntry();\n    } catch (java.util.zip.ZipException ze) {\n        threw = true;\n        msg = ze.getMessage();\n    }\n    assertTrue(\"expected ZipException but none thrown\", threw);\n    assertNotNull(msg);\n    assertTrue(\"message missing hex sig: \" + msg, msg.contains(\"0XDEADBEEF\"));\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - AssertionError \"expected ZipException but none thrown\" (buggy code returns null on invalid signature rather than throwing)",
+      "explanation": "Witness constructed for R1: getNextZipEntry() is driven (on the non-first entry path) to read an invalid local-header signature and must throw a java.util.zip.ZipException whose message embeds that signature as '0X%X' instead of silently returning null.\n\nScenario (created from scratch, not copied from any visible test): bytes for a single fully-formed STORED entry (\"foo\" / \"hello world\" with a correct CRC, little-endian LFH, no data descriptor) are followed, after the entry's payload, by a 30-byte block whose 4-byte leading signature is 0xDEADBEEF (neither LFH/CFH/AED). The first getNextEntry() succeeds on the valid STORED entry and positions the stream after the payload. The second getNextZipEntry() therefore runs with firstEntry=false (the non-first-entry branch), reads LFH_BUF (whose sig is 0xDEADBEEF), and both variants hit the !LFH check. Buggy returns null there, so no ZipException is thrown -> the assertion 'message missing hex sig / expected ZipException' FAILS. Gold throws ZipException(\"Unexpected record signature: 0XDEADBEEF\") -> the assertions (message contains '0XDEADBEEF') PASS.\n\nThis is distinct from the [VISIBLE] testThrowOnInvalidEntry, which only checks the static substring \"Unexpected record signature\" on a pre-built corrupt resource. My synthetic input independently constructs a valid entry followed by garbage, and asserts the thrown message embeds the actual offending signature rendered as 0XDEADBEEF (the specific hex-value check that R1 calls out and which no visible test pins down). Verified by run_test: gold PASSED, buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The method under change is ZipArchiveInputStream.getNextZipEntry(); code shows it returns null in three distinct situations, and the bug report asks that the invalid-signature case be turned into an exception while the genuine end-of-archive cases keep returning null."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant new test lives in src/test/java/org/apache/commons/compress/archivers/zip/ZipArchiveInputStreamTest.java under method testThrowOnInvalidEntry, feeding a resource '/invalid-zip.zip'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Implementation reading local headers relies on constants ZipLong.LFH_SIG, ZipLong.CFH_SIG, ZipLong.AED_SIG; 'current.entry.getMethod()' etc. are ZipArchiveEntry members, and ZipException and EOFException are the relevant exception types already imported."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other ZipArchiveInputStream/ArchiveInputStream tests in the visible files concern unrelated behavior (nested archives, unsupported compression methods, read semantics, trailers), not this change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change lives in ZipArchiveInputStream.getNextZipEntry(). In the buggy version, a signature that is neither CFH/AED nor LFH silently returned null (terminating the iteration as if at a legit end), discarding the offending data; the patch turns that path into a ZipException ('Unexpected record signature: 0X%X')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The CFH/AED branch (R2) was behaviorally unchanged by this hunk (buggy code also ultimately returned null there by falling through to the non-LFH check), but the patch adds an explicit return null inside it; R2 records the end-of-archive contract this code path preserves."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ZipException extends IOException, so the thrown artifact is an IOException-typed failure, checked as a Java exception (not a returned value)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Constants involved: ZipLong.LFH_SIG / CFH_SIG / AED_SIG; sig.getValue() returns the signature as an int rendered via String.format('0X%X')."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement [R1] is: from a non-first (or shifted-first) local file header read in ZipArchiveInputStream.getNextZipEntry(), when the read signature is neither LFH/CFH/AED, a java.util.zip.ZipException is thrown whose message contains the offending signature value rendered as '0X%X' (rather than the pre-fix behavior of silently returning null).\n\nI audited the oracle's test suite thoroughly. The tests that currently fail against the buggy program are testThrowOnInvalidEntry (ZipArchiveInputStreamTest) and testListAllFilesWithNestedArchive (ZipTestCase). \n\n1. testThrowOnInvalidEntry exercises the R1 path (feeding /invalid-zip.zip into ZipArchiveInputStream and expecting a ZipException with message containing \"Unexpected record signature\"). However this method lives in ZipArchiveInputStreamTest.java, which is labeled [VISIBLE] — its content is byte-identical to material the repair system already saw. Per the scoring rule, an assertion drawn from [VISIBLE] content can NEVER serve as a witness, regardless of how well it matches r. Additionally, even this [VISIBLE] test only asserts the static substring \"Unexpected record signature\" and does not check that the message embeds the actual offending signature value formatted as '0X%X', so it does not pin down the precise R1 behavior described.\n\n2. testListAllFilesWithNestedArchive (ZipTestCase, also [VISIBLE]) targets nested-archive reading behavior (it merely tolerates a ZipException when a nested stream can't be formed from trailing data); it is not really about throwing on an invalid LFH/CFH/AED signature and, being [VISIBLE], cannot qualify either.\n\n3. I read every zip-domain test class in the oracle (ZipArchiveInputStreamTest, ZipTestCase, EncryptedArchiveTest, Maven221MultiVolumeTest, UTF8ZipFilesTest, ExplodeSupportTest) plus the other archive-format tests (ar/arj/cpio/dump/jar/sevenz/tar, DetectArchiver/ArchiveRead/LongPath/LongSymLink), their sub-package tests, changes tests, and util/io tests. I found no [HIDDEN] test anywhere that drives ZipArchiveInputStream.getNextZipEntry() through an invalid non-LFH/CFH/AED signature and asserts the thrown ZipException's hex '0X%X' message. All constants/message checks that touch this behavior are [VISIBLE].\n\nBecause a witness may rest only on [HIDDEN] content, and no hidden oracle test genuinely asserts R1's behavior, no qualifying witness exists. Result: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ZipArchiveInputStream.getNextZipEntry()): After reading the next local file header signature from a non-first entry (or the shifted first header), if that signature is neither the Local File Header signature (LFH), the Central File Header signature (CFH) nor the Archive Extra Data signature (AED), getNextZipEntry throws a java.util.zip.ZipException whose message contains the offending signature value formatted as '0X%X' (hex), instead of returning null. — not entailed by S_vis (S_vis R1 does pin the core behavior that an invalid signature (not LFH/CFH/AED) causes a ZipException whose message contains 'Unexpected record signature' rather than returning null; but S_impl R1 also demands the message embed the offending signature formatted as '0X%X' hex and scopes the check to non-first/shifted-header reads, and no S_vis evidence supports that hex-message payload detail, so full entailment of this specific behavior is unclear.); confirmed by a synthesized witness: Witness constructed for R1: getNextZipEntry() is driven (on the non-first entry path) to read an invalid local-header signature and must throw a java.util.zip.ZipException whose message embeds that signature as '0X%X' instead of silently returning null.\n\nScenario (created from scratch, not copied from any visible test): bytes for a single fully-formed STORED entry (\"foo\" / \"hello world\" with a correct CRC, little-endian LFH, no data descriptor) are followed, after the entry's payload, by a 30-byte block whose 4-byte leading signature is 0xDEADBEEF (neither LFH/CFH/AED). The first getNextEntry() succeeds on the valid STORED entry and positions the stream after the payload. The second getNextZipEntry() therefore runs with firstEntry=false (the non-first-entry branch), reads LFH_BUF (whose sig is 0xDEADBEEF), and both variants hit the !LFH check. Buggy returns null there, so no ZipException is thrown -> the assertion 'message missing hex sig / expected ZipException' FAILS. Gold throws ZipException(\"Unexpected record signature: 0XDEADBEEF\") -> the assertions (message contains '0XDEADBEEF') PASS.\n\nThis is distinct from the [VISIBLE] testThrowOnInvalidEntry, which only checks the static substring \"Unexpected record signature\" on a pre-built corrupt resource. My synthetic input independently constructs a valid entry followed by garbage, and asserts the thrown message embeds the actual offending signature rendered as 0XDEADBEEF (the specific hex-value check that R1 calls out and which no visible test pins down). Verified by run_test: gold PASSED, buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

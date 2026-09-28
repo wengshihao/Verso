@@ -1,0 +1,86 @@
+{
+  "task_id": "pylint-dev__pylint-4970",
+  "status": "ok",
+  "duration_seconds": 169.28532695793547,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "pylint-dev__pylint-4970",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "When the pylint configuration option min-similarity-lines is set to 0 (in the rcfile or on the command line), pylint must not emit the duplicate-code (R0801) similarity messages for any code, i.e. setting the value to 0 must disable the duplicate-code check rather than flagging code lines as duplicated.",
+        "subject": "pylint.checkers.similar.SimilarChecker / min-similarity-lines option",
+        "hunk_ids": [],
+        "cited_from": "Issue title \"Setting `min-similarity-lines` to `0` should stop pylint from checking duplicate code\"; \"Current problem: Setting `min-similarity-lines` to `0` in the rcfile doesn't disable checking for duplicate code, it instead treats every line of code as duplicate and raises many errors.\"; \"Desired solution: Setting `min-similarity-lines` to `0` should disable the duplicate code check.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "req1",
+        "statement": "Calling Similar.run() on an instance whose min_lines equals 0 returns immediately and does no similarity computation and produces no similarity report output on stdout (neither computed duplicates nor the TOTAL-lines summary line). Positive min_lines values still compute and display the report as before.",
+        "subject": "Similar.run",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "req1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "vis-1"
+        ],
+        "rationale": "vis-1 (and its underlying issue) pins down that setting min-similarity-lines to 0 must disable the duplicate-code check / not emit R0801 messages, which partially overlaps with 'no computed duplicates when min_lines==0'. However, it says nothing about Similar.run() returning immediately or suppressing the stdout TOTAL-lines summary report, which are implementation-specific commitments req1 makes; so the exact behavior is not fully pinned down."
+      }
+    ],
+    "target_requirement_id": "req1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness",
+      "test_source": "def test_witness():\n    from io import StringIO\n    from contextlib import redirect_stdout\n    from pylint.checkers.similar import Similar\n\n    sim = Similar(min_lines=0)\n    sim.append_stream(\"a\", StringIO(\"print(1)\\nprint(2)\\nprint(3)\\nprint(4)\\nprint(5)\\n\"))\n    sim.append_stream(\"b\", StringIO(\"print(1)\\nprint(2)\\nprint(3)\\nprint(4)\\nprint(5)\\n\"))\n    out = StringIO()\n    with redirect_stdout(out):\n        sim.run()\n    assert out.getvalue() == \"\"\n",
+      "gold_result": "PASSED — with min_lines=0, Similar.run() returns immediately and stdout stays empty (nothing printed).",
+      "buggy_result": "FAILED — buggy run() still calls _display_sims(_compute_sims()) which prints 'TOTAL lines=10 duplicates=0 percent=0.00' to stdout. AssertionError: assert 'TOTAL lines=...percent=0.00\\n\\n' == ''.",
+      "explanation": "The target requirement is that Similar.run() on an instance whose min_lines==0 returns immediately, performing no similarity computation and producing no stdout report (neither duplicate dumps nor the TOTAL summary line). The gold code adds `if self.min_lines == 0: return` at the top of run(). My witness constructs a Similar(min_lines=0), appends two identical in-memory streams, calls run() under redirect_stdout, and asserts stdout is empty.\n\nExecution confirms it: gold prints nothing (PASSED, because the guard short-circuits before _display_sims), while buggy still executes _display_sims(_compute_sims()) and emits the 'TOTAL lines=10 duplicates=0 percent=0.00' summary line (FAILED with the AssertionError shown). I checked the visible test file tests/checkers/unittest_similar.py — it contains only default/positive min-similarity-lines and ignore-* scenarios (comments, docstrings, imports, signatures, help/no-args, get_map_data) and never sets min_lines to 0, so no visible test pins down this no-output-at-zero behavior; the candidate is a genuine hidden-fact witness rather than a reworded visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The duplicate-code checker lives in pylint/checkers/similar.py, class SimilarChecker, which defines the R0801 'duplicate-code' message and registers the '[SIMILARITIES]' config option 'min-similarity-lines' with default DEFAULT_MIN_SIMILARITY_LINE = 4 and help \"Minimum lines number of a similarity.\". The SimilarChecker subclasses similarity-helper classes Similar/LineSet/hash_lineset and runs at close()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reproduction of the disable-at-zero behavior is not covered by any existing visible test: tests/checkers/unittest_similar.py exercises the ignore-comments/docstrings/imports/signatures options and the standalone similar.Run() but contains no case for min-similarity-lines set to 0."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "pylint/checkers/similar.py has no functional test fixture with a .rc setting min-similarity-lines; pylint's SIMILARITIES section examples (in pylintrc and examples/pylintrc) only show the default min-similarity-lines=4."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The pylint default pylintrc file disables duplicate-code by default in its [MESSAGES CONTROL] section, but the issuing of R0801 runs only when the option-driven SimilarChecker is invoked."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard was added only to Similar.run(); run() is invoked on the standalone path (module-level Run() calls sim.run()). SimilarChecker.close() bypasses run() and calls self._compute_sims() directly, so a pylint run with min_similarity_lines=0 is not short-circuited by this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "With min_lines == 0 the pre-fix run() would still produce output: _compute_sims() returns no duplicate entries (empty hash window) and _display_sims() would print only the 'TOTAL ...' summary report."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [req1]: The target requirement concerns Similar.run() short-circuiting so that when min_lines == 0 no similarity computation or stdout report (no dumps, no TOTAL summary line) is produced, while positive min_lines still works.\n\nI examined the oracle test suite. The only test module that exercises the standalone `Similar.run()` API (via `similar.Run([...])` with stdout capture) is tests/checkers/unittest_similar.py. I read that file fully twice. Its entire content is labelled [VISIBLE], meaning every assertion it contains was already visible to the repair system and thus cannot serve as a witness for any hidden requirement. Moreover, that file contains only tests for ignore-comments/docstrings/imports/signatures, multiline imports, empty functions, and help/no-args/get_map_data; it has NO test setting min-similarity-lines (min_lines) to 0.\n\nNotably, the file does not even contain the test that the harness lists as currently failing against the buggy program (`test_set_duplicate_lines_to_zero`), and there is no [HIDDEN] content anywhere I could reach that asserts the min_lines==0 no-output behavior. Other places R0801/duplicate-code is exercised run through pylint's SimilarChecker.close() / functional framework, which (per the implementation notes) bypasses Similar.run() entirely and so would not witness this specific run()-guard behavior.\n\nSince all relevant oracle assertions are [VISIBLE] and no [HIDDEN] test exists that genuinely asserts Similar.run() producing no output when min_lines==0, the real oracle contains no witness for this requirement. I found no genuine match, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [req1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[req1] (Similar.run): Calling Similar.run() on an instance whose min_lines equals 0 returns immediately and does no similarity computation and produces no similarity report output on stdout (neither computed duplicates nor the TOTAL-lines summary line). Positive min_lines values still compute and display the report as before. — not entailed by S_vis (vis-1 (and its underlying issue) pins down that setting min-similarity-lines to 0 must disable the duplicate-code check / not emit R0801 messages, which partially overlaps with 'no computed duplicates when min_lines==0'. However, it says nothing about Similar.run() returning immediately or suppressing the stdout TOTAL-lines summary report, which are implementation-specific commitments req1 makes; so the exact behavior is not fully pinned down.); confirmed by a synthesized witness: The target requirement is that Similar.run() on an instance whose min_lines==0 returns immediately, performing no similarity computation and producing no stdout report (neither duplicate dumps nor the TOTAL summary line). The gold code adds `if self.min_lines == 0: return` at the top of run(). My witness constructs a Similar(min_lines=0), appends two identical in-memory streams, calls run() under redirect_stdout, and asserts stdout is empty.\n\nExecution confirms it: gold prints nothing (PASSED, because the guard short-circuits before _display_sims), while buggy still executes _display_sims(_compute_sims()) and emits the 'TOTAL lines=10 duplicates=0 percent=0.00' summary line (FAILED with the AssertionError shown). I checked the visible test file tests/checkers/unittest_similar.py — it contains only default/positive min-similarity-lines and ignore-* scenarios (comments, docstrings, imports, signatures, help/no-args, get_map_data) and never sets min_lines to 0, so no visible test pins down this no-output-at-zero behavior; the candidate is a genuine hidden-fact witness rather than a reworded visible assertion.",
+    "confidence": "Medium"
+  }
+}

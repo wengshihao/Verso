@@ -1,0 +1,178 @@
+{
+  "task_id": "django__django-15969",
+  "status": "ok",
+  "duration_seconds": 494.86161295895,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15969",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "When deleting the Parent table produces a per-reference SET_NULL/nullify batch, the generated UPDATE that sets the referring rows' FK column to NULL must be keyed on the relation to the object(s) being deleted rather than on the collected set of per-referral primary keys, so that the cost/complexity of that UPDATE does not grow linearly with the number of referencing children (the reporter describes wanting e.g. WHERE parent_id = the deleted parent's value rather than an IN(...) over all child ids).",
+        "subject": "django/db/models/deletion.py Collector field-update execution (SET_NULL / nullable-CASCADE / SET / SET_DEFAULT scheduled updates, currently via UpdateQuery.update_batch on pk lists)",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"UPDATE \"children\" SET \"parent_id\" = NULL WHERE \"children\"\"id\" IN ('child1', 'child2', 'child3', ..., 'child30000');\" ... \"I would have expected the update condition to simply be WHERE \"children\"\"parent_id\" = 'parent123', but for some reason it isn't.\" ... title \"Performance issues with `on_delete=models.SET_NULL` on large tables\", each Parent may have \"roughly 30k\" children and the \"SQL queries simply timeout\"."
+      },
+      {
+        "id": "S2",
+        "statement": "Preserve the correct row-selection invariant of SET_NULL (and nullable-CASCADE/SET_DEFAULT field updates) during deletion: after deleting a referenced object, only the rows that actually became orphaned by that deletion have their FK set to NULL — rows still referencing a different, non-deleted object must be left untouched.",
+        "subject": "django/db/models/deletion.py on_delete field-update handlers (SET_NULL, nullable CASCADE branch, SET_DEFAULT)",
+        "hunk_ids": [],
+        "cited_from": "tests/delete/tests.py test_foreign_key_delete_nullifies_correct_columns: \"Deleting an instance of the target model (contact1) nullifies the correct fields of Researcher.\" ... assertIsNone(researcher1.primary_contact); \"self.assertEqual(researcher2.primary_contact, contact2)\"; \"self.assertIsNone(researcher2.secondary_contact)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "When cascade-deleting objects whose reverse relations are handled by a lazy field-setting on_delete handler (SET_NULL, SET_DEFAULT, or SET with a constant/callable value), the collector signals those handlers with their unevaluated related QuerySets; consequently, in Collector.delete the resulting column updates are executed eagerly as bulk QuerySet UPDATEs (one UPDATE issuing all scheduled updates sharing that field/value, WHERE bound by the source rows being deleted) rather than as a query that first loads every affected child and then runs UPDATE ... WHERE pk IN (explicit list of every affected child pk). Externally this means the number and bound-parameter size of the UPDATE statements used to null/set the child column is bounded by the number of distinct collector update batches, not by the total number of child rows being affected.",
+        "subject": "django/db/models/deletion.Collector.delete (cascade SET_NULL/SET_DEFAULT/SET field updates)",
+        "hunk_ids": [
+          "H1",
+          "H2",
+          "H3",
+          "H4",
+          "H5",
+          "H6",
+          "H7"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "For an on_delete handler carrying the lazy marker (SET_NULL, SET_DEFAULT, or SET), the handler is invoked during collection even when its related-rows queryset would evaluate to empty; previously such handlers were only invoked when the related queryset was already non-empty/realized.",
+        "subject": "django/db/models/deletion.Collector.collect (lazy on_delete handler dispatch)",
+        "hunk_ids": [
+          "H1",
+          "H2",
+          "H5",
+          "H6"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-3",
+        "statement": "For a lazy SET(value) whose argument is callable, the value() callable that produces the assigned value is executed during Collector.delete for every scheduled related-rows collection group (including groups that match no rows), rather than only for groups with realized child rows; this is the externally visible side of making the SET handler unconditional.",
+        "subject": "django/db/models/deletion SET (callable arg) value-evaluation timing",
+        "hunk_ids": [
+          "H1",
+          "H6"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-4",
+        "statement": "For scheduled field updates whose target rows were materialized rather than kept as unevaluated QuerySets (e.g. rows already realized by a non-lazy cascade branch), Collector.delete still clears/sets the column by issuing a single SQL UPDATE batched over that model's columns; duplicate target rows produced by multiple scheduled groups are collapsed so each affected DB primary key appears at most once in the pk-based update.",
+        "subject": "django/db/models/deletion.Collector.delete (materialized field-update path)",
+        "hunk_ids": [
+          "H7"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "S1's cited issue explicitly describes the desired update being keyed on the deleted parent's relation (WHERE parent_id = value) rather than an IN list of every affected child pk, so UPDATE size/count is bounded by distinct per-reference batches rather than total child rows — which is exactly S_IMPL-1's externally visible claim. S2 reinforces correct row selection for the nullify path."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Neither visible entry addresses when lazy on_delete handlers are dispatched during collection, nor any behavior for empty (unevaluated) related querysets. S1 concerns the WHERE-keying of the generated UPDATE and S2 concerns which rows get nullified; neither would lead to invoking handlers for empty querysets."
+      },
+      {
+        "requirement_id": "S_IMPL-3",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "The visible evidence contains nothing about evaluation timing of callable SET value arguments or about executing them during Collector.delete for empty groups. This is an implementation-level commitment not inferable from the issue or test."
+      },
+      {
+        "requirement_id": "S_IMPL-4",
+        "entailed": "false",
+        "checked_ids": [
+          "S1",
+          "S2"
+        ],
+        "rationale": "Neither visible entry describes the materialized-rows path, a single batch UPDATE over a model's columns, nor deduplication so each DB pk appears once in a pk-based update. S_IMPL-4 concerns unaffected implementation detail beyond what the issue supports."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_lazy_markers",
+      "test_source": "import django\nfrom django.conf import settings\n\n\ndef test_lazy_markers():\n    if not settings.configured:\n        settings.configure(DEBUG=True, DATABASES={}, INSTALLED_APPS=[])\n    django.setup()\n    from django.db.models import deletion\n    assert getattr(deletion.SET_NULL, \"lazy_sub_objs\", False) is True\n    assert getattr(deletion.SET_DEFAULT, \"lazy_sub_objs\", False) is True\n    assert getattr(deletion.SET(0), \"lazy_sub_objs\", False) is True\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: SET_NULL.lazy_sub_objs lacking in buggy)",
+      "explanation": "S_IMPL-2 is precisely the introduction of the lazy on_delete dispatch: the implementation adds a `lazy_sub_objs = True` marker to the SET_NULL and SET_DEFAULT module-level handler functions and to the per-handler closure produced by models.SET (gold hunks H1/H2), and collector.collect tests `getattr(on_delete, \"lazy_sub_objs\", False)` to invoke such handlers during collection even when the related-rows queryset (sub_objs) would evaluate to empty (gold hunk H6). The buggy pre-fix source lacks all three marker assignments, so in the buggy version these handlers are only reachable via the old `if sub_objs:` gate.\n\nThe witness exercises exactly that S_IMPL-2 change: after configuring a bare Django settings module and running django.setup(), it imports Collectors' deletion handlers and asserts that the SET_NULL and SET_DEFAULT module functions as well as the handler returned by `SET(0)` carry `lazy_sub_objs == True`. This is the marker on which the empty-queryset invocation in collect depends; the assertion is not derivable from any visible test-material (S1/S2 already failed to discriminate) and the earlier Oracle Search found no existing regression test touching this, so it is a genuinely novel hidden assertion, not a rewrite of visible content.\n\nExecution-confirmed discriminative strength: run against the gold (fixed) program the test PASSES; run against the buggy (pre-fix) program the identical source FAILS with `AssertionError: assert False is True` on `getattr(deletion.SET_NULL, 'lazy_sub_objs', False)`, because none of the three handlers had been marked lazy in the buggy revision. Thus a golden repair implementing this requirement necessarily adds the marker that makes the assertion hold, while the broken build does not."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The repo is Django itself; the cascade/on_delete deletion logic lives in django/db/models/deletion.py (Collector.collect schedules per-relation sub_objs; handlers SET_NULL/SET/SET_DEFAULT and the nullable branch of CASCADE all call collector.add_field_update)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Field updates are executed in Collector.delete() by UpdateQuery.update_batch([obj.pk for obj in instances], ...) in subqueries.py, which filters WHERE pk IN pk_list — this is the mechanism behind the issue's observed UPDATE ... WHERE id IN (30k child pks)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "related_objects() (deletion.py) builds each sub_objs QuerySet as model shown by collector via related field __in lookup over the being-deleted batch, i.e. the discovered children are fetched by the FK of the deleted parents before being re-keyed by their own pks for the null update."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter's example uses nullable FK with on_delete=SET_NULL on the child ('children' table with children.parent_id); companion behavior in the same add_field_update path applies to SET, SET_DEFAULT, and nullable CASCADE."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No developer patch or added regression test is visible in the repository, so there is no exact expected new SQL literal or query-count assertion directly available; the expected behavior is grounded in the issue's stated expectation and the existing correctness invariant above. Existing correctness tests live in tests/delete/tests.py and tests/delete_regress/tests.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests run under the delete/delete_regress apps with CollectionCollector used for model-instance deletions (non-fast-delete path)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The overall diff targets the Django Collector in django/db/models/deletion.py; hunks H0 (imports models/reduce/or_) and H8 are supporting only and imply no additional independently-testable behavior beyond the field-update execution changes described in the requirements."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "lazy_sub_objs is an internal marker attribute newly attached to the SET_NULL and SET_DEFAULT module functions and to the closure returned by SET; it is what lets the dispatch in collect() invoke those handlers unconditionally with unevaluated QuerySets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "field_updates internal structure changed from {model: {(field, value): {instances}}} to {(field, value): [added objs list]}; add_field_update no longer short-circuits on empty objs and appends each objs argument (queryset or container) verbatim without set-materialization."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H8 removed the earlier post-delete() in-memory pass that set field.attname on already-fetched (materialized) field-updated model instances; only the PK-nulling pass over self.data instances remains, because lazy updates never load their target objects into the collector."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Notes from earlier stages indicate no new regression test is present in this repo snapshot; intended expectations from the issue are grounded in the SET_NULL/SET_DEFAULT/SET and nullable-CASCADE behavior of the existing delete tests."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-2]: I investigated the oracle's deletion-related test suites for any assertion that witnesses the S_IMPL-2 behavior (SET_NULL/SET_DEFAULT/SET lazy on_delete handlers being invoked during collection even when the related-rows queryset evaluates empty; previously only invoked when the queryset was non-empty/realized).\n\nFiles checked:\n- tests/delete/tests.py — VISIBLE. OnDeleteTests/DeletionTests/FastDeleteTests contain SET_NULL/SET_DEFAULT/SET tests (test_setnull, test_setdefault, test_setnull_from_parent, test_instance_update, etc.), but every one of these exercises the case where referencing rows DO exist (queryset non-empty), so they pass identically against buggy and gold and cannot distinguish the new empty-queryset dispatch behavior anyway. Also VISIBLE content can never be a witness.\n- tests/delete/models.py — HIDDEN but contains only model definitions (no behavioral assertion), so it can't serve as an enforcement test.\n- tests/delete_regress/tests.py — VISIBLE. Regression tests co-located with deletion code but assert cascade/signal/ordering/nullification behaviors; none assert the empty-queryset lazy-handler invocation.\n- tests/null_fk/tests.py — VISIBLE; nullable-FK SELECT/query regressions, none about empty-queryset COLLECTOR dispatch.\n\nThere is no recorded test failing against the buggy program, and the only assertion-bearing test files relevant to this requirement are all [VISIBLE] (their content is what a repair system already saw). No [HIDDEN] file contains an assertion that enforces the S_IMPL-2 behavior (models files are hidden but carry no tests). Since a Witness must rest on a hidden assertion that fails against buggy and passes against gold, and the oracle contains no such test, nothing qualifies as a witness for this requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-2] (django/db/models/deletion.Collector.collect (lazy on_delete handler dispatch)): For an on_delete handler carrying the lazy marker (SET_NULL, SET_DEFAULT, or SET), the handler is invoked during collection even when its related-rows queryset would evaluate to empty; previously such handlers were only invoked when the related queryset was already non-empty/realized. — not entailed by S_vis (Neither visible entry addresses when lazy on_delete handlers are dispatched during collection, nor any behavior for empty (unevaluated) related querysets. S1 concerns the WHERE-keying of the generated UPDATE and S2 concerns which rows get nullified; neither would lead to invoking handlers for empty querysets.); confirmed by a synthesized witness: S_IMPL-2 is precisely the introduction of the lazy on_delete dispatch: the implementation adds a `lazy_sub_objs = True` marker to the SET_NULL and SET_DEFAULT module-level handler functions and to the per-handler closure produced by models.SET (gold hunks H1/H2), and collector.collect tests `getattr(on_delete, \"lazy_sub_objs\", False)` to invoke such handlers during collection even when the related-rows queryset (sub_objs) would evaluate to empty (gold hunk H6). The buggy pre-fix source lacks all three marker assignments, so in the buggy version these handlers are only reachable via the old `if sub_objs:` gate.\n\nThe witness exercises exactly that S_IMPL-2 change: after configuring a bare Django settings module and running django.setup(), it imports Collectors' deletion handlers and asserts that the SET_NULL and SET_DEFAULT module functions as well as the handler returned by `SET(0)` carry `lazy_sub_objs == True`. This is the marker on which the empty-queryset invocation in collect depends; the assertion is not derivable from any visible test-material (S1/S2 already failed to discriminate) and the earlier Oracle Search found no existing regression test touching this, so it is a genuinely novel hidden assertion, not a rewrite of visible content.\n\nExecution-confirmed discriminative strength: run against the gold (fixed) program the test PASSES; run against the buggy (pre-fix) program the identical source FAILS with `AssertionError: assert False is True` on `getattr(deletion.SET_NULL, 'lazy_sub_objs', False)`, because none of the three handlers had been marked lazy in the buggy revision. Thus a golden repair implementing this requirement necessarily adds the marker that makes the assertion hold, while the broken build does not.",
+    "confidence": "Medium"
+  }
+}

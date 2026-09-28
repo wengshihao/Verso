@@ -1,0 +1,148 @@
+{
+  "task_id": "JacksonDatabind-50",
+  "status": "ok",
+  "duration_seconds": 206.52847196999937,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-50",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "Deserializing (then re-serializing) an object graph in which a Parent type uses @JsonIdentityInfo(generator = IntSequenceGenerator) with '@id' property and references to it appear (a) in a sorted 'parents' map value, and (b) as @JsonIdentityReference(alwaysAsId=true) 'favoriteChild'/'parent' scalar fields and as elements of an @JsonIdentityReference(alwaysAsId=true) 'parentAsList' list — a graph containing a cycle between a Parent's 'children' map and those Child fields pointing back at the Parent — must yield re-serialized JSON that is structurally equal to the original JSON, and must not fail during the deserialization.",
+        "subject": "ObjectMapper deserialize of cyclic @JsonIdentityInfo object graph",
+        "hunk_ids": [],
+        "cited_from": "`testObjectIds1261()`: after `mapper.writeValueAsString(initialAnswer)`, `mapper.readTree(initialAnswerString)`, `mapper.readValue(initialAnswerString, Answer.class)`, and `mapper.writeValueAsString(deserializedAnswer)`, the code asserts tree equality: \"if (!tree.equals(newTree)) { fail(\"Original and recovered Json are different. Recovered = \\n\" + reserializedAnswerString + \"\\n\"); }\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "When the object that is expressed as an id is encountered as a field of a bean (as opposed to being contained within a collection or map), deserialization with @JsonIdentityInfo object-identity resolution must work — including for references that only close a cycle (not a true forward reference) — rather than breaking as it does when the same reference sits in a List or map element.",
+        "subject": "Bean deserialization of an object-id reference appearing as a scalar/object field with @JsonIdentityReference(alwaysAsId=true)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"1. When the object expressed as an id is contained within a collection or map (List in this example), deserialization works correctly. When it is a field of an object, deserialization is broken.\" ... \"2. This particular example doesn't have forward references, but it does have cycles.\" (test model: Child declares `@JsonIdentityReference(alwaysAsId = true) public Parent parent;` as a field, while `public List<Parent> parentAsList;` is a list, and only the field case is broken)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "BeanDeserializer._deserializeUsingPropertyBased no longer lets an UnresolvedForwardReference (raised while buffering/deserializing a regular, non-creator, non-object-id bean property value) propagate as a failure: instead of aborting, it continues consuming and processing the remaining fields of the current JSON object while recording the unresolved reference.",
+        "subject": "BeanDeserializer._deserializeUsingPropertyBased(JsonParser p, DeserializationContext ctxt) — resolution of forward object-id references during property-based-creator deserialization",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "During property-based (non-default @JsonCreator) deserialization, once the bean instance has been built from the buffered parameters, any forward object-id reference that was recorded on that bean is bound to that specific constructed instance before the deserialization step concludes (so the pending reference's target bean is set).",
+        "subject": "BeanDeserializer._deserializeUsingPropertyBased — post-construction binding of recorded forward references to the built bean",
+        "hunk_ids": [
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S3",
+        "statement": "When a forward object-id reference that arose on a regular property of a property-based-creator bean is subsequently resolved, the resolved referenced value is written into exactly that bean property (the property whose value originally raised the unresolved reference), on the already-constructed referencing bean instance — so mutual back-references between objects resolved via @JsonIdentityInfo point at the actual other instances rather than being left null or throwing.",
+        "subject": "BeanDeserializer.BeanReferring.handleResolvedForwardReference(Object id, Object value) / BeanDeserializer.handleUnresolvedReference — final `_prop.set` of the resolved value onto the referencing bean",
+        "hunk_ids": [
+          "H1",
+          "H2",
+          "H3",
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "S1 specifies an internal behavior inside BeanDeserializer._deserializeUsingPropertyBased on the property-based-creator path: an UnresolvedForwardReference raised on a regular property value is not propagated but causes the code to keep consuming remaining fields while recording it. Neither S_vis entry mentions property-based creators/@JsonCreator, buffered creator parameters, UnresolvedForwardReference propagation, or the continuation-and-recording mechanism; REQ-2's own example explicitly 'doesn't have forward references.' The generic 'must not fail' outcome in REQ-1 doesn't pin this mechanism."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "S2 specifies the precise timing of binding a recorded forward reference to the constructed bean after buffered creator parameters are built in a non-default @JsonCreator path. No S_vis entry establishes that the scenario even involves property-based-creator construction, buffered parameters, or forward references, so this specific internal binding behavior is not derivable from the visible info."
+      },
+      {
+        "requirement_id": "S3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "S3's core outcome — mutual back-references resolved via @JsonIdentityInfo must point at the actual other instances rather than being left null or throwing — is substantially pinned by REQ-1's requirement that re-serialized JSON be structurally equal to the original and by REQ-2's that field-vs-collection resolution work. However, S3's mechanism details (resolution occurring on the property-based-creator referencing bean via the specific property and _prop.set) are not visible, so full entailment of the described behavior remains genuinely ambiguous."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testForwardRefs",
+      "test_source": "    static class AnswerW {\n       public java.util.SortedMap<String, ParentW> parents;\n       public AnswerW() { parents = new java.util.TreeMap<String, ParentW>(); }\n    }\n\n    @com.fasterxml.jackson.annotation.JsonIdentityInfo(generator = com.fasterxml.jackson.annotation.ObjectIdGenerators.IntSequenceGenerator.class, property = \"@id\")\n    static class ParentW {\n       public java.util.Map<String, ChildW> children;\n       @com.fasterxml.jackson.annotation.JsonIdentityReference(alwaysAsId = true)\n       public ChildW favoriteChild;\n       public String name;\n       protected ParentW() { }\n       public ParentW(String name, boolean ignored) {\n           children = new java.util.TreeMap<String, ChildW>();\n           this.name = name;\n       }\n    }\n\n    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)\n    @com.fasterxml.jackson.annotation.JsonIdentityInfo(generator = com.fasterxml.jackson.annotation.ObjectIdGenerators.IntSequenceGenerator.class, property = \"@id\")\n    static class ChildW {\n        public String name;\n        @com.fasterxml.jackson.annotation.JsonIdentityReference(alwaysAsId = true)\n        public ParentW parent;\n        @com.fasterxml.jackson.annotation.JsonIdentityReference(alwaysAsId = true)\n        public java.util.List<ParentW> parentAsList;\n        public String someNullProperty;\n        protected ChildW() { }\n        @com.fasterxml.jackson.annotation.JsonCreator\n        public ChildW(@com.fasterxml.jackson.annotation.JsonProperty(\"name\") String name,\n              @com.fasterxml.jackson.annotation.JsonProperty(\"someNullProperty\") String someNullProperty) {\n            this.name = name;\n            this.someNullProperty = someNullProperty;\n        }\n        public ChildW(String n) { name = n; }\n    }\n\n    private AnswerW createInitialAnswerW() {\n      AnswerW answer = new AnswerW();\n      String child1Name = \"child1\";\n      String child2Name = \"child2\";\n      String parent1Name = \"parent1\";\n      String parent2Name = \"parent2\";\n      ParentW parent1 = new ParentW(parent1Name, false);\n      answer.parents.put(parent1Name, parent1);\n      ChildW child1 = new ChildW(child1Name);\n      child1.parent = parent1;\n      child1.parentAsList = java.util.Collections.singletonList(parent1);\n      ChildW child2 = new ChildW(child2Name);\n      ParentW parent2 = new ParentW(parent2Name, false);\n      child2.parent = parent2;\n      child2.parentAsList = java.util.Collections.singletonList(parent2);\n      parent1.children.put(child1Name, child1);\n      parent1.children.put(child2Name, child2);\n      answer.parents.put(parent2Name, parent2);\n      return answer;\n   }\n\n    @Test\n    public void testForwardRefs() throws Exception {\n         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n         mapper.enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);\n         mapper.enable(com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);\n\n         AnswerW initialAnswer = createInitialAnswerW();\n         String initialAnswerString = mapper.writeValueAsString(initialAnswer);\n         com.fasterxml.jackson.databind.JsonNode tree = mapper.readTree(initialAnswerString);\n         AnswerW deserializedAnswer = mapper.readValue(initialAnswerString, AnswerW.class);\n         String reserializedAnswerString = mapper.writeValueAsString(deserializedAnswer);\n         com.fasterxml.jackson.databind.JsonNode newTree = mapper.readTree(reserializedAnswerString);\n         if (!tree.equals(newTree)) {\n             fail(\"Original and recovered Json are different. Recovered = \\n\" + reserializedAnswerString + \"\\n\");\n         }\n   }",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (UnresolvedForwardReference / exception during BeanDeserializer.deserialize while binding the Child via property-based @JsonCreator in the children map — the exact S1 forward-ref-during-creator path)",
+      "explanation": "The oracle file ObjectWithCreator1261Test (labeled [HIDDEN]) contains testObjectIds1261, which directly matches requirement S1. The scenario: an Answer holds a sorted map of Parent(@JsonIdentityInfo); each Parent's children map holds Child instances that are deserialized through a property-based @JsonCreator(@JsonProperty name/someNullProperty) combined with @JsonIdentityReference(alwaysAsId) parent/parentAsList forward references that point back to the Parent currently being constructed. When the Child (creator path, via BeanDeserializer._deserializeUsingPropertyBased) buffers these regular non-creator reference-valued properties, the forward reference to the not-yet-resolved parent is encountered. On the buggy program the exception (UnresolvedForwardReference, visible in the failure stack as a throw inside BeanDeserializer through MapDeserializer._readAndBindStringKeyMap) propagates and aborts, so the roundtrip fails; on the gold program the fix records the unresolved reference and continues, completing the roundtrip so the trees compare equal and the assertion passes. This is precisely the behavior S1 commits to: _deserializeUsingPropertyBased must no longer let an UnresolvedForwardReference raised while buffering a regular non-creator property escape, continuing to consume remaining fields while recording the unresolved reference. The assertion (equality of original vs recovered/deserialized JSON) originates entirely from [HIDDEN] content and is genuinely about the S1 behavior, not co-located code. I ran the extracted standalone method against both gold (PASSED) and buggy (FAILED), confirming it passes post-fix and fails pre-fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The Child class (in ObjectWithCreator1261Test) combines a property-based `@JsonCreator` constructor (`@JsonCreator public Child(@JsonProperty(\"name\") String name, @JsonProperty(\"someNullProperty\") String someNullProperty)`) together with @JsonIdentityInfo, and the bug manifests in this property-based-creator path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A source comment in BeanDeserializer._deserializeUsingPropertyBased directly references the bug: \"14-Jun-2016, tatu: As per [databind#1261], looks like we need additional handling of forward references here. Not exactly sure why existing facilities did not cover, but this does appear to solve the problem\"."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test lives in the jackson-databind package under src/test/java/com/fasterxml/jackson/databind/objectid/ and extends BaseMapTest."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Parent is marked `@JsonIdentityInfo` with IntSequenceGenerator; Child additionally appears inside Parent.children map; parent1 is referenced by child1/child2, producing a cycle between parent1.children (containing child1/child2) and childN.parent/parentAsList (pointing back to parent1)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Parent exposes a protected no-arg constructor plus `public Parent(String name, boolean ignored)`; note the (name, String) 3-arg Child convenience constructor is not the @JsonCreator one."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only one test file is present; the attached external zips/outputs referenced in the issue are not part of the visible repository, so requirements are grounded in the test and the issue prose alone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch targets JacksonDatabind issue #1261: deserialization of a POJO whose (property-based @JsonCreator) creator path buffers a regular property whose value contains a forward object-id reference to an object defined elsewhere in the same document."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "New code: private BeanDeserializer.handleUnresolvedReference(...), local List<BeanReferring> referrings in _deserializeUsingPropertyBased, and a new package-private static nested BeanReferring extends ReadableObjectId.Referring that holds a SettableBeanProperty and its handleResolvedForwardReference does _prop.set(_bean, value)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The try/catch added in H2 wraps only the call to buffer.bufferProperty for a regular (non-creator, non-object-id) property inside the FIELD_NAME loop of _deserializeUsingPropertyBased."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 is a no-behavior import addition (referring to ReadableObjectId.Referring) needed for the new inner static class in H5."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (BeanDeserializer._deserializeUsingPropertyBased(JsonParser p, DeserializationContext ctxt) — resolution of forward object-id references during property-based-creator deserialization): BeanDeserializer._deserializeUsingPropertyBased no longer lets an UnresolvedForwardReference (raised while buffering/deserializing a regular, non-creator, non-object-id bean property value) propagate as a failure: instead of aborting, it continues consuming and processing the remaining fields of the current JSON object while recording the unresolved reference. — not entailed by S_vis (S1 specifies an internal behavior inside BeanDeserializer._deserializeUsingPropertyBased on the property-based-creator path: an UnresolvedForwardReference raised on a regular property value is not propagated but causes the code to keep consuming remaining fields while recording it. Neither S_vis entry mentions property-based creators/@JsonCreator, buffered creator parameters, UnresolvedForwardReference propagation, or the continuation-and-recording mechanism; REQ-2's own example explicitly 'doesn't have forward references.' The generic 'must not fail' outcome in REQ-1 doesn't pin this mechanism.); confirmed by a oracle witness: The oracle file ObjectWithCreator1261Test (labeled [HIDDEN]) contains testObjectIds1261, which directly matches requirement S1. The scenario: an Answer holds a sorted map of Parent(@JsonIdentityInfo); each Parent's children map holds Child instances that are deserialized through a property-based @JsonCreator(@JsonProperty name/someNullProperty) combined with @JsonIdentityReference(alwaysAsId) parent/parentAsList forward references that point back to the Parent currently being constructed. When the Child (creator path, via BeanDeserializer._deserializeUsingPropertyBased) buffers these regular non-creator reference-valued properties, the forward reference to the not-yet-resolved parent is encountered. On the buggy program the exception (UnresolvedForwardReference, visible in the failure stack as a throw inside BeanDeserializer through MapDeserializer._readAndBindStringKeyMap) propagates and aborts, so the roundtrip fails; on the gold program the fix records the unresolved reference and continues, completing the roundtrip so the trees compare equal and the assertion passes. This is precisely the behavior S1 commits to: _deserializeUsingPropertyBased must no longer let an UnresolvedForwardReference raised while buffering a regular non-creator property escape, continuing to consume remaining fields while recording the unresolved reference. The assertion (equality of original vs recovered/deserialized JSON) originates entirely from [HIDDEN] content and is genuinely about the S1 behavior, not co-located code. I ran the extracted standalone method against both gold (PASSED) and buggy (FAILED), confirming it passes post-fix and fails pre-fix.",
+    "confidence": "High"
+  }
+}

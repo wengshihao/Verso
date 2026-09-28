@@ -1,0 +1,123 @@
+{
+  "task_id": "django__django-11605",
+  "status": "ok",
+  "duration_seconds": 280.3482770000119,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11605",
+    "s_vis": [
+      {
+        "id": "vis-1",
+        "statement": "Calling .filter() with a filter name that resolves directly to an annotated Window expression (the expression used on the left-hand side / leading name of the filter) raises NotSupportedError with the message 'Window is disallowed in the filter clause' at query build time.",
+        "subject": "django.db.models.sql.query.Query.build_filter (filter-clause window-expression disallowal)",
+        "hunk_ids": [],
+        "cited_from": "tests/expressions_window/tests.py test_invalid_filter: msg = 'Window is disallowed in the filter clause'; with self.assertRaisesMessage(NotSupportedError, msg): Employee.objects.annotate(dense_rank=Window(expression=DenseRank())).filter(dense_rank__gte=1)  (also the issue report's already-working example: \"# raises NotSupportedError\\nEmployee.objects.annotate(prev_grade=Window(expression=Lag('grade'))).filter(prev_grade=F('grade'));  Django currently only checks getattr(reffed_expression, 'filterable', True) on the resolved left-hand expression."
+      },
+      {
+        "id": "vis-2",
+        "statement": "When a filter that is being applied on a real (filterable) field has, on the right-hand side of the comparison, an F()/expression that resolves to an annotated Window expression, the query must raise a descriptive NotSupportedError at construction rather than silently reaching the database backend and failing there.",
+        "subject": "django.db.models.sql.query.Query.build_filter (filter RHS referencing a Window annotation)",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"# Do not raise anything, fail on database backend once executed.\\nEmployee.objects.annotate(prev_grade=Window(expression=Lag('grade'))).filter(grade=F('prev_grade'))\" together with the report's diagnosis \"neither right side of the expression nor combined expressions are checked.\""
+      },
+      {
+        "id": "vis-3",
+        "statement": "When a filter condition compares an annotated expression that is itself built from another expression referencing a Window annotation (e.g. an annotation defined as F('window_annotation') - Value(1)), the query must raise a descriptive NotSupportedError at construction rather than silently reaching the database backend and failing there.",
+        "subject": "django.db.models.sql.query.Query.build_filter (Window nested inside a combined/derived annotation used in a filter)",
+        "hunk_ids": [],
+        "cited_from": "Issue description (third example): \"Employee.objects.annotate(prev_grade=Window(expression=Lag('grade')), dec_grade=F('prev_grade') - Value(1)).filter(dec_grade=F('grade'))\" — labeled \"Do not raise anything, fail on database backend once executed\", confirming the shallow check that does \"not ... check combined expressions\" must be deepened."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When building a filter, if the resolved filter-LHS expression (the reffed_expression returned by solve_lookup_type, e.g. an annotation referenced in the filter's field-name) is itself non-filterable OR any of its source subexpressions, transitively via get_source_expressions(), is non-filterable, Query raises NotSupportedError with message '<ClassName> is disallowed in the filter clause.' where <ClassName> is the __name__ of the offending expression. (Previously only a non-filterable top-level LHS was rejected; a Window nested inside an annotation expression used on the LHS is now also rejected.)",
+        "subject": "Query.build_filter filter-LHS (reffed_expression) filterability",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When building a filter, after resolving the filter's RHS value expression, if that resolved value (or any of its source subexpressions, transitively via get_source_expressions()) is non-filterable, Query raises NotSupportedError with message '<ClassName> is disallowed in the filter clause.' naming the offending expression's class. This newly rejects cases such as grade=F('prev_grade') where the RHS F()/annotation resolves to a non-filterable expression (e.g. a Window), and non-filterable expressions nested inside the RHS expression.",
+        "subject": "Query.build_filter filter-RHS resolved value filterability",
+        "hunk_ids": [
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "vis-1",
+          "vis-3",
+          "vis-2"
+        ],
+        "rationale": "vis-1 pins the LHS-direct case (a Window annotation used as the filter's field-name raises 'Window is disallowed in the filter clause', contrasted with the old shallow reffed_expression check), and vis-3 pins the transitive nested-LHS case (dec_grade=F('prev_grade')-Value(1) filtered on LHS, whose source subexpressions contain a Window, must raise). Together they cover R1's direct + transitive source-expression LHS rejection with the class-named message."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "vis-2",
+          "vis-1",
+          "vis-3"
+        ],
+        "rationale": "vis-2's citation directly shows filter(grade=F('prev_grade')) where the RHS F() resolves to a Window annotation, which must raise NotSupportedError rather than fail at the backend — matching R2's core 'grade=F('prev_grade')' rejection; its diagnosis of 'combined expressions are not checked' is consistent with R2's nested-source behavior. The LHS-only examples (vis-1, vis-3) were ruled out as not directly RHS evidence but are not contradictory."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The window-expression-in-filter disallowal lives in django/db/models/sql/query.py in Query.build_filter(): it raises NotSupportedError only when the resolved filter LHS expression (reffed_expression) has filterable=False (e.g. a Window annotation used directly as the filtered name). Window (in django/db/models/expressions.py) sets filterable=False and contains_over_clause=True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The existing regression test tests/expressions_window/tests.py (WindowFunctionTests.test_invalid_filter) locks the direct-LHS behavior: Employee.objects.annotate(dense_rank=Window(expression=DenseRank())).filter(dense_rank__gte=1) must raise NotSupportedError('Window is disallowed in the filter clause')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue states the direct-LHS case already raises; the bug is that a Window referenced on the RHS of a filter comparison (grade=F('prev_grade')) or nested inside another annotation used in a filter (dec_grade=F('prev_grade') - Value(1) then dec_grade=F('grade')) escapes the shallow filterable check and instead fails on the DB backend."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Should-run-under-over-clause backend (window tests are @skipUnlessDBFeature('supports_over_clause'))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Query.check_filterable treats an expression whose 'filterable' attribute is merely absent as filterable because getattr's default is the truthy string 'True' (not boolean True)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes the 'filterable = True' class attribute from F (expressions.py); because the check's default is already truthy this does not change whether plain F field references are rejected, but it means F no longer declares a filterable attribute."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two checks are applied in Query.build_filter only (shared code path for all WHERE/filter clauses via add_q), not in e.g. ordering/annotation resolution."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new checks apply regardless of whether the filter is via an annotation LHS (reffed_expression branch) or a plain model-field LHS, since H2 runs before the 'if reffed_expression:' branch and H3 runs after resolve_lookup_value."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

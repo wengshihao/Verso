@@ -1,0 +1,98 @@
+{
+  "task_id": "JacksonDatabind-102",
+  "status": "ok",
+  "duration_seconds": 74.4712279919986,
+  "llm_calls": 9,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-102",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When ObjectMapper has a config override for java.sql.Date with format pattern \"yyyy+MM+dd\", serializing a root-level java.sql.Date value (e.g. java.sql.Date.valueOf(\"1980-04-14\"), no enclosing bean property) must output the JSON string \"1980+04+14\" (string form using that pattern), not a numeric timestamp.",
+        "subject": "ObjectMapper.configOverride(java.sql.Date.class).setFormat(...) / java.sql.Date root-value serialization",
+        "hunk_ids": [],
+        "cited_from": "// [databind#2064]\npublic void testSqlDateConfigOverride() throws Exception {\n    ObjectMapper mapper = newObjectMapper();\n    mapper.configOverride(java.sql.Date.class)\n        .setFormat(JsonFormat.Value.forPattern(\"yyyy+MM+dd\"));\n    assertEquals(\"\\\"1980+04+14\\\"\",\n        mapper.writeValueAsString(java.sql.Date.valueOf(\"1980-04-14\")));\n}"
+      },
+      {
+        "id": "R2",
+        "statement": "Without any config override or custom format, java.sql.Date serialized at the root level still follows the default: numeric when WRITE_DATES_AS_TIMESTAMPS is enabled (e.g. new java.sql.Date(0) as root writes \"0\") and string via the default format when WRITE_DATES_AS_TIMESTAMPS is disabled (e.g. new java.sql.Date(99, 3, 1) writes \"1999-04-01\").",
+        "subject": "SqlDateSerializer root-level default serialization (WRITE_DATES_AS_TIMESTAMPS default, no config override)",
+        "hunk_ids": [],
+        "cited_from": "// 11-Oct-2016, tatu: As per [databind#219] we really should use global\n//   defaults in 2.9, even if this changes behavior.\nassertEquals(String.valueOf(date99.getTime()), MAPPER.writeValueAsString(date99)); ...\nassertEquals(quote(\"1999-04-01\"), w.writeValueAsString(date99));\nassertEquals(quote(date0.toString()), w.writeValueAsString(date0));"
+      },
+      {
+        "id": "R3",
+        "statement": "Serializing a java.sql.Date field annotated @JsonFormat(shape=JsonFormat.Shape.STRING, pattern=\"yyyy.MM.dd\") (e.g. Person.dateOfBirth = java.sql.Date.valueOf(\"1980-04-14\")) must output the string \"1980.04.14\" using that pattern with the mapper's time zone.",
+        "subject": "Property-level @JsonFormat pattern on java.sql.Date field (createContextual with property)",
+        "hunk_ids": [],
+        "cited_from": "static class Person {\n    @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = \"yyyy.MM.dd\")\n    public java.sql.Date dateOfBirth;\n} ...\ni.dateOfBirth = java.sql.Date.valueOf(\"1980-04-14\");\nassertEquals(aposToQuotes(\"{'dateOfBirth':'1980.04.14'}\"), mapper.writeValueAsString(i));"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "DateTimeSerializerBase.createContextual must honor a JsonFormat format override (shape/pattern/locale/timezone) applicable to the handled datetime type even when it is invoked with a null BeanProperty (i.e. when the date/time value is being serialized as a root value), rather than unconditionally returning the unmodified `this` serializer; any such override must be reflected in the returned contextual serializer's configured format/output.",
+        "subject": "DateTimeSerializerBase.createContextual (root-value jsonformat override handling)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 directly exercises root-level (null-property) serialization of java.sql.Date under a configOverride setFormat and asserts the override's formatted output \"1980+04+14\" (not a timestamp), exactly the behavior S_impl R1 requires from createContextual for root values; S_vis R2 further confirms that without the override root serialization uses the default, highlighting that the override must be honored even at root. R1 is the deciding evidence; R2/R3 serve as context."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under src/test/java/com/fasterxml/jackson/databind/ser/jdk/SqlDateSerializationTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test testSqlDateConfigOverride (annotated [databind#2064]) is the failing test for this bug; it serializes a java.sql.Date as a root value (no bean property)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DateTimeSerializerBase.createContextual returns `this` early when property == null, despite a comment stating it should not skip because that would skip config overrides for root values — this is the suspected root cause."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report's own workaround registers SqlDateSerializer().withFormat(false, new SimpleDateFormat(\"yyyy-MM-dd\")) via a SimpleModule, implying withFormat is the intended route for applying a custom format."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes an early `if (property == null) return this;` guard at the top of DateTimeSerializerBase.createContextual, so the subsequent logic (including `findFormatOverrides(serializers, property, handledType())`) now runs for root (null BeanProperty) values. When no override is present, `findFormatOverrides` returns null and the method still returns `this`, so the change is only observable when a type-level/@JsonFormat config override applies to the handled type."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The associated test testSqlDateConfigOverride ([databind#2064], in SqlDateSerializationTest) drives the change: an ObjectMapper configOverride for java.sql.Date sets pattern \"yyyy+MM+dd\" and a java.sql.Date root value is expected to serialize as \"1980+04+14\"."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DateTimeSerializerBase is abstract; concrete subtypes (SqlDateSerializer etc.) extend createContextual/the class and call its protected withFormat/serialize machinery."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "task_id": "astropy__astropy-8707",
+  "status": "ok",
+  "duration_seconds": 472.42614849994425,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "astropy__astropy-8707",
+    "s_vis": [
+      {
+        "id": "svis-req-1",
+        "statement": "Header.fromstring(data, sep='') must accept Python 3 `bytes` objects as the `data` argument in addition to `str`, treating the bytes as the ASCII header content and constructing the same Header it would from the equivalent str input (including handling of card separators and the END card), without raising an error caused solely by `data` being of type bytes.",
+        "subject": "Header.fromstring",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"In fact it does work on Python 3's unicode `str`s... So probably the simplest solution for now (as opposed to adding new methods or something like that) is to change `Header.fromstring` to accept unicode or bytes string types.\" Also quoting the docs in the issue: \"...creates an HDU header from a byte string containing the entire header data.\" and code docstring in header.py: \"Creates an HDU header from a byte string containing the entire header data.\" / \"data : str\" \"String containing the entire header.\""
+      },
+      {
+        "id": "svis-req-2",
+        "statement": "Card.fromstring(image) must accept Python 3 `bytes` objects corresponding to a card image in addition to `str`, producing the same Card that it would from the equivalent str image, without raising an error caused solely by `image` being of type bytes.",
+        "subject": "Card.fromstring",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"`Card.fromstring` likely needs a similar treatment.\" (referring to the preceding request that Header.fromstring accept unicode or bytes string types). Code in card.py: \"Construct a `Card` object from a (raw) string. It will pad the string if it is not the length of a card image (80 columns)...\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "Header.fromstring accepts a `bytes` first argument (in addition to `str`) and builds a Header whose parsed cards are equivalent to parsing the latin-1 decoding of those bytes; arbitrary byte values (including non-ASCII, which latin-1 always decodes) are accepted without raising a TypeError/UnicodeDecodeError, with bytes passed onward to Card.fromstring for card parsing.",
+        "subject": "astropy.io.fits.Header.fromstring",
+        "hunk_ids": [
+          "H3",
+          "H4",
+          "H5",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-2",
+        "statement": "Card.fromstring accepts a `bytes` card image (in addition to the raw `str` image it already supported) and returns a Card equivalent to parsing that image after latin-1 decoding, without raising an error on non-ASCII byte values.",
+        "subject": "astropy.io.fits.Card.fromstring",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "svis-req-1",
+          "svis-req-2"
+        ],
+        "rationale": "svis-req-1 confirms Header.fromstring must accept bytes and construct the same Header as equivalent str input, without raising merely because data is bytes. But S_impl-1 commits to a specific latin-1 decoding of arbitrary non-ASCII byte values being accepted and passed onward to Card.fromstring; the visible evidence only frames bytes as 'ASCII header content' and never specifies latin-1 semantics or arbitrary-byte handling, so that exact behavior is not pinned down."
+      },
+      {
+        "requirement_id": "S_impl-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "svis-req-1",
+          "svis-req-2"
+        ],
+        "rationale": "svis-req-2 confirms Card.fromstring should accept bytes and produce the same Card as the equivalent str, without raising solely due to bytes type. However, S_impl-2's specific commitment to latin-1 decoding that accepts arbitrary non-ASCII byte values is not stated in the visible evidence, which only describes mirroring the Header.fromstring ASCII-oriented acceptance; that exact decoding behavior is therefore uncertain."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_fromstring_bytes_input",
+      "test_source": "def test_fromstring_bytes_input():\n    from astropy.io.fits.header import Header\n    # A textual header containing non-ASCII latin-1 bytes (0xE9 for '\\xe9').\n    # latin-1 maps every byte to a character, so arbitrary bytes are accepted\n    # without a UnicodeDecodeError (0xE9 is not valid strict-ASCII/UTF-8 text).\n    text = ('SIMPLE  =                    T / conforms to FITS standard\\n'\n            'BITPIX  =                    8 / array data type\\n'\n            'NAXIS   =                    0 / number of data dimensions\\n'\n            'COMMENT caf\\xe9 r\\xe9sum\\xe9 latin-1 non-ASCII\\n'\n            'TESTK   =                    5 / caf\\xe9 comment\\n'\n            'END\\n')\n    raw = text.encode('latin1')\n    hdr = Header.fromstring(raw, sep='\\n')\n    # Parsed cards must be equivalent to parsing the latin-1 decoding of the\n    # same bytes.\n    assert hdr == Header.fromstring(text, sep='\\n')\n    assert hdr['SIMPLE'] is True\n    assert hdr['BITPIX'] == 8\n    assert hdr['NAXIS'] == 0\n    assert hdr['TESTK'] == 5\n    # the non-ASCII latin-1 bytes in the COMMENT card were preserved\n    assert 'caf\\xe9' in list(hdr['COMMENT'])[0]",
+      "gold_result": "PASSED: Header.fromstring(raw_latin1_bytes, sep='\\n') succeeds; the resulting header equals parsing the latin-1-decoded text, and SIMPLE/BITPIX/NAXIS/TESTK values and the non-ASCII COMMENT content are parsed correctly.",
+      "buggy_result": "FAILED: Header.fromstring(b'...') raises TypeError: argument should be integer or bytes-like object, not 'str' (at header.py:369, `data.index(sep, idx)`), because the buggy implementation only handles str card images and never accepts bytes.",
+      "explanation": "Target requirement S_impl-1 is that Header.fromstring accepts a `bytes` first argument and produces a Header whose cards match parsing the latin-1 decoding of those bytes, including arbitrary/non-ASCII bytes without TypeError/UnicodeDecodeError. I built a text header that contains non-ASCII latin-1 bytes (0xE9 = 'é') inside a COMMENT card as well as in a TESTK comment, encoded it byte-for-byte to `bytes`, and passed it as the first argument. The gold implementation succeeds: it decodes/handles bytes via latin-1 throughout, splits on sep, and yields a Header equal to `Header.fromstring(<same text as latin-1 decoded string>, sep='\\n')`, with SIMPLE/BITPIX/NAXIS/TESTK values and the non-ASCII COMMENT content all preserved. The buggy implementation raises TypeError at `data.index(sep, idx)` because it never special-cases bytes (all of its literals are str), so Header.fromstring(b'...') fails outright. I empirically confirmed both directions by running the exact submitted source against gold (PASSED) and buggy (FAILED). This scenario (Header.fromstring called with a bytes first argument, and specifically bytes containing non-ASCII latin-1 bytes) is not exercised anywhere in the visible oracle material (test_header.py always passes str), so it is a genuine hidden witness rather than a reinvention of visible assertions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for headers/cards live under astropy/io/fits/tests/ (notably test_header.py), which exercise Header.fromstring heavily but always with `str` inputs (sep rarely '\\n')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Header.fromstring parses cards by calling Card.fromstring on each card image; the helper Card.fromstring in card.py pads with `_pad` and defers parsing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Coding helpers encode_ascii/decode_ascii live in astropy/io/fits/util.py and are used on the file-reading path; fromfile decodes blocks to str before handing to fromstring, which is why the issue says it works in both text/binary mode."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Header.fromstring's looping logic assumes a str-like argument throughout (str.index, ''.join over str chunks, comparisons like next_image[:8] == 'CONTINUE'); a Python 3 bytes argument raises TypeError on these operations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 and H2 are non-behavioral hunks: H1 only adds entries to __doctest_skip__ (influencing doctest collection, not the FITS API), and H2 is a docstring rewrite adding doctest examples and stating the latin-1 decoding contract."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the str-data branch, the new symbols resolve identically to the original literals (CONTINUE='CONTINUE', END='END', end_card=END_CARD, empty=''), so Header.fromstring's behavior for str text inputs is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "latin-1 decoding (rather than, e.g., ASCII) is chosen so every byte value maps to a character and parsing never raises a decoding error for arbitrary bytes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Header.fromstring's bytes path passes raw bytes card images into Card.fromstring, so the two requirements above are coupled end-to-end: Header.fromstring(bytes...) exercises the Card.fromstring(bytes...) support from H0."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: Investigated the full oracle test corpus relevant to Card/Header.fromstring. The only Card/Header parsing unit-test file, astropy/io/fits/tests/test_header.py, was read in full (twice) and is labeled [VISIBLE]. It contains NO test at all that calls Header.fromstring with a bytes first argument — all of its fromstring usages (test_header_set_value_to_none, test_invalid_float_cards, test_commentary_card_created_by_fromstring, etc.) pass str. It also does not even contain the \"currently failing\" test_card_from_bytes method that the prompt lists (that method name indicates Card.fromstring(bytes), the Card-level requirement S_impl-0, not the Header.fromstring-bytes behavior of S_impl-1). Since the entire file is [VISIBLE], no assertion within it can serve as a Witness regardless. I empirically confirmed the gold program does fix Header.fromstring(b'...') (TypeError on buggy vs. success on gold), but that probe is my own construction, not an assertion drawn from any [HIDDEN] oracle test. No other oracle test file exercises Header.fromstring with bytes. Therefore no [HIDDEN] oracle test genuinely witnesses S_impl-1; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-1] (astropy.io.fits.Header.fromstring): Header.fromstring accepts a `bytes` first argument (in addition to `str`) and builds a Header whose parsed cards are equivalent to parsing the latin-1 decoding of those bytes; arbitrary byte values (including non-ASCII, which latin-1 always decodes) are accepted without raising a TypeError/UnicodeDecodeError, with bytes passed onward to Card.fromstring for card parsing. — not entailed by S_vis (svis-req-1 confirms Header.fromstring must accept bytes and construct the same Header as equivalent str input, without raising merely because data is bytes. But S_impl-1 commits to a specific latin-1 decoding of arbitrary non-ASCII byte values being accepted and passed onward to Card.fromstring; the visible evidence only frames bytes as 'ASCII header content' and never specifies latin-1 semantics or arbitrary-byte handling, so that exact behavior is not pinned down.); confirmed by a synthesized witness: Target requirement S_impl-1 is that Header.fromstring accepts a `bytes` first argument and produces a Header whose cards match parsing the latin-1 decoding of those bytes, including arbitrary/non-ASCII bytes without TypeError/UnicodeDecodeError. I built a text header that contains non-ASCII latin-1 bytes (0xE9 = 'é') inside a COMMENT card as well as in a TESTK comment, encoded it byte-for-byte to `bytes`, and passed it as the first argument. The gold implementation succeeds: it decodes/handles bytes via latin-1 throughout, splits on sep, and yields a Header equal to `Header.fromstring(<same text as latin-1 decoded string>, sep='\\n')`, with SIMPLE/BITPIX/NAXIS/TESTK values and the non-ASCII COMMENT content all preserved. The buggy implementation raises TypeError at `data.index(sep, idx)` because it never special-cases bytes (all of its literals are str), so Header.fromstring(b'...') fails outright. I empirically confirmed both directions by running the exact submitted source against gold (PASSED) and buggy (FAILED). This scenario (Header.fromstring called with a bytes first argument, and specifically bytes containing non-ASCII latin-1 bytes) is not exercised anywhere in the visible oracle material (test_header.py always passes str), so it is a genuine hidden witness rather than a reinvention of visible assertions.",
+    "confidence": "Medium"
+  }
+}

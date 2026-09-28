@@ -1,0 +1,138 @@
+{
+  "task_id": "django__django-15957",
+  "status": "ok",
+  "duration_seconds": 428.6794183329912,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15957",
+    "s_vis": [
+      {
+        "id": "REQ1",
+        "statement": "Passing a sliced queryset as the `queryset` argument of a `Prefetch` used with `prefetch_related()` must not raise; the evaluation must succeed and populate each parent instance's `to_attr` attribute with the (sliced) set of related objects instead of raising the 'Cannot filter a query once a slice has been taken.' error.",
+        "subject": "Prefetch (django.db.models.query.Prefetch) queryset with pre_related/prefetch_related reverse m2o relation and to_attr",
+        "hunk_ids": [],
+        "cited_from": "Issue body: \"Category.objects.prefetch_related(Prefetch(\n\t'post_set',\n\tqueryset=Post.objects.all()[:3],\n\tto_attr='example_posts',\n))\"; \"the following code results in AssertionError: Cannot filter a query once a slice has been taken.\" (In django/db/models/query.py, QuerySet._filter_or_exclude raises TypeError with text \"Cannot filter a query once a slice has been taken.\", triggered because the various get_prefetch_queryset() implementations — e.g. django/db/models/fields/related_descriptors.py ReverseManyToOneDescriptor manager get_prefetch_queryset calling `queryset.filter(**query)` — apply a filter to the user-supplied custom queryset, which fails when that queryset is already sliced.)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ_1",
+        "statement": "When prefetching over a reverse many-to-one related manager (e.g. related_name FK reverse set) with a prefetch queryset that has had a slice applied (offset and/or limit set, query.is_sliced is True), get_prefetch_queryset no longer raises an error for filtering an already-sliced query; instead the offset/limit is preserved in the returned prefetched result set by retaining, per related-field partition, the rows whose ordered position falls within the slice.",
+        "subject": "create_reverse_many_to_one_manager.RelatedManager.get_prefetch_queryset",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ_2",
+        "statement": "When prefetching over a many-to-many related manager (forward or reverse M2M) with a prefetch queryset that has had a slice applied (offset and/or limit set, query.is_sliced is True), get_prefetch_queryset no longer raises an error for filtering an already-sliced query; instead the offset/limit is preserved in the returned prefetched result set by retaining, per related-field partition, the rows whose ordered position falls within the slice.",
+        "subject": "create_forward_many_to_many_manager.ManyRelatedManager.get_prefetch_queryset",
+        "hunk_ids": [
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ_3",
+        "statement": "For a prefetch queryset that has no slice applied (is_sliced is False), _filter_prefetch_queryset applies exactly the existing isinstance membership filter (field__in over the given instances) on the queryset and returns it without altering any slice state.",
+        "subject": "related_descriptors._filter_prefetch_queryset",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ_1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ1"
+        ],
+        "rationale": "REQ1 directly pins this behavior for the reverse many-to-one path ('post_set' / ReverseManyToOneDescriptor): a sliced Prefetch queryset must not raise 'Cannot filter a query once a slice has been taken.' and must populate to_attr with the sliced set, which is exactly that the offset/limit is preserved in the prefetched result."
+      },
+      {
+        "requirement_id": "REQ_2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ1"
+        ],
+        "rationale": "The visible issue names the reverse many-to-one case specifically and only mentions 'the various get_prefetch_queryset() implementations' generically (giving ReverseManyToOneDescriptor as the example), without any demonstration that forward/reverse M2M managers must retain offset/limit. It is ambiguous whether the visible evidence would lead a repair system to pin the M2M behavior."
+      },
+      {
+        "requirement_id": "REQ_3",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ1"
+        ],
+        "rationale": "REQ1 is entirely about the sliced-queryset case in reverse m2o prefetching; it says nothing about the unsliced path in _filter_prefetch_queryset or about preserving the isinstance membership filter as a no-op when is_sliced is False."
+      }
+    ],
+    "target_requirement_id": "REQ_3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "REQ_3 describes the *non-sliced* branch of the new module-private helper _filter_prefetch_queryset introduced by this patch: when queryset.query.is_sliced is False, build exactly the pre-existing \"field_name__in: instances\" membership filter and return queryset.filter(predicate) without touching any slice/low/high-mark state.\n\nIndependent code comparison of the gold and buggy revisions (django/db/models/fields/related_descriptors.py, plus the calling get_prefetch_queryset methods of the reverse many-to-one RelatedManager and forward many-to-many ManyRelatedManager) shows this branch is a pure behavioral no-op refactor:\n\n- Buggy reverse-m2o get_prefetch_queryset did  `query={\"%s__in\"%self.field.name: instances}; queryset=queryset.filter(**query)`;\n  gold does `queryset = _filter_prefetch_queryset(queryset, self.field.name, instances)` which, since is_sliced is False, expands to exactly `queryset.filter(Q(**{self.field.name+'__in': instances}))`.\n- Buggy m2m get_prefetch_queryset did  `queryset._next_is_sticky().filter(**query)`;\n  gold does `_filter_prefetch_queryset(queryset._next_is_sticky(), ...)` which in the non-sliced case is the same `.filter(...)` on the sticky queryset.\n\nIn the non-sliced path neither implementation clears limits, nor reads low/high marks, nor adds any window predicate, and both apply the identical membership (isinstance) predicate. Consequently gold and buggy produce byte-identical observable results (same SQL, same returned instance sets) for any prefetch on a non-sliced queryset — there is no PASS(gold)/FAIL(buggy) differential signal that corresponds to this requirement. The entire behavior-changing portion of the fix lives in the sliced (is_sliced True) branch (window/clear_limits etc.), which is a different requirement; REQ_3 intentionally scopes only the non-sliced fallback that both revisions already satisfy.\n\nI attempted to first establish a runnable end-to-end scenario (non-sliced reverse-m2o/m2m prefetch with Author/Book models in tests/prefetch_related), but the CSC harness compiles the candidate as a standalone module in /tmp and could not import the repository's Django test models (`import prefetch_related.models -> ModuleNotFoundError`), so no model-backed run could be performed in this runner; regardless, the behavioral argument above shows any such run would pass on both gold and buggy identically. I therefore report found=false: REQ_3 is not individually witness-able because its pre/post observable behavior is identical."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Prefetch-related tests live in tests/prefetch_related/ (tests.py, test_prefetch_related_objects.py, models.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible repo is the pre-fix (buggy) Django state for django__django-15957."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Prefetch machinery: django/db/models/query.py defines class Prefetch and prefetch_one_level(); prefetch filters are actually applied inside the delegate's get_prefetch_queryset(instances, lookup.get_current_queryset(level)) by calling queryset.filter(**query) on the custom queryset (see ForwardManyToOneDescriptor.get_prefetch_queryset, ReverseOneToOneDescriptor.get_prefetch_queryset, and the dynamically built RelatedManager/ManyRelatedManager.get_prefetch_queryset in django/db/models/fields/related_descriptors.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A slicing-aware deferral mechanism exists: managers set queryset._defer_next_filter = True before .filter() in their get_queryset/_apply_rel_filters paths, and QuerySet._filter_or_exclude then stores the Q to be applied lazily when .query is next accessed, bypassing the is_sliced guard. The prefetch get_prefetch_queryset entry points for a *custom (sliced)* queryset do run filter() eagerly, which is where the raised error originates."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's example models (Category/Post) are illustrative; they are not defined in this repo's prefetch_related test models."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch introduces a single module-private helper _filter_prefetch_queryset(queryset, field_name, instances) in django/db/models/fields/related_descriptors.py that both prefetch paths now call; it is shared by the reverse many-to-one (H2) and many-to-many (H3) managers."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H3 retains the pre-existing _next_is_sticky() call by passing the sticky queryset into _filter_prefetch_queryset, while H2 (reverse manager) does not use _next_is_sticky."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ForwardManyToOneDescriptor.get_prefetch_queryset and ReverseOneToOneDescriptor.get_prefetch_queryset (which also filter() their prefetch queruset) were NOT modified to use the new slicing-aware helper."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The active database for order resolution is chosen as queryset._db or DEFAULT_DB_ALIAS when compiling the query's order_by inside the helper."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Within the helper, a limit without high_mark (e.g. offset-only slicing) adds only the GreaterThan window predicate; slicing with a high_mark adds an additional LessThanOrEqual predicate, and the queryset's low/high limits are cleared (clear_limits) before filtering."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ_3]: REQ_3 describes the NON-sliced branch of the new module-private helper _filter_prefetch_queryset: when the prefetch queryset has is_sliced=False, apply exactly the pre-existing isinstance membership filter (field__in over instances) and return without touching slice state. Investigation of the oracle (full test suite) shows:\n\n1. No test is recorded as failing against the buggy program. A Witness must pass on gold and fail on buggy; REQ_3 concerns only the non-sliced fallback path, which preserves behavior that the buggy code already produced via its inline .filter(**query) path. The fix (and the entire slicing-aware deferral machinery motivating _filter_prefetch_queryset) lives in the SLICED branch, so for the non-sliced case gold and buggy produce identical observable results — there is no differential signal to witness.\n\n2. Every prefetch-related test file with assertions in the canonical oracle location (tests/prefetch_related/tests.py, test_prefetch_related_objects.py, test_uuid.py) is labeled [VISIBLE], which categorically disqualifies their assertions from serving as a Witness (only [HIDDEN] content may be used). The lone [HIDDEN] prefetch file, tests/prefetch_related/models.py, contains only model definitions and has no test assertions. I checked the adjacent known_related_objects tests too; they exercise a different concern and are VISIBLE.\n\nCould not find/built any [HIDDEN] assertion that genuinely and differentially enforces REQ_3's non-sliced membership-filtering behavior against this patch, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ_3]: REQ_3 describes the *non-sliced* branch of the new module-private helper _filter_prefetch_queryset introduced by this patch: when queryset.query.is_sliced is False, build exactly the pre-existing \"field_name__in: instances\" membership filter and return queryset.filter(predicate) without touching any slice/low/high-mark state.\n\nIndependent code comparison of the gold and buggy revisions (django/db/models/fields/related_descriptors.py, plus the calling get_prefetch_queryset methods of the reverse many-to-one RelatedManager and forward many-to-many ManyRelatedManager) shows this branch is a pure behavioral no-op refactor:\n\n- Buggy reverse-m2o get_prefetch_queryset did  `query={\"%s__in\"%self.field.name: instances}; queryset=queryset.filter(**query)`;\n  gold does `queryset = _filter_prefetch_queryset(queryset, self.field.name, instances)` which, since is_sliced is False, expands to exactly `queryset.filter(Q(**{self.field.name+'__in': instances}))`.\n- Buggy m2m get_prefetch_queryset did  `queryset._next_is_sticky().filter(**query)`;\n  gold does `_filter_prefetch_queryset(queryset._next_is_sticky(), ...)` which in the non-sliced case is the same `.filter(...)` on the sticky queryset.\n\nIn the non-sliced path neither implementation clears limits, nor reads low/high marks, nor adds any window predicate, and both apply the identical membership (isinstance) predicate. Consequently gold and buggy produce byte-identical observable results (same SQL, same returned instance sets) for any prefetch on a non-sliced queryset — there is no PASS(gold)/FAIL(buggy) differential signal that corresponds to this requirement. The entire behavior-changing portion of the fix lives in the sliced (is_sliced True) branch (window/clear_limits etc.), which is a different requirement; REQ_3 intentionally scopes only the non-sliced fallback that both revisions already satisfy.\n\nI attempted to first establish a runnable end-to-end scenario (non-sliced reverse-m2o/m2m prefetch with Author/Book models in tests/prefetch_related), but the CSC harness compiles the candidate as a standalone module in /tmp and could not import the repository's Django test models (`import prefetch_related.models -> ModuleNotFoundError`), so no model-backed run could be performed in this runner; regardless, the behavioral argument above shows any such run would pass on both gold and buggy identically. I therefore report found=false: REQ_3 is not individually witness-able because its pre/post observable behavior is identical."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ_3] (related_descriptors._filter_prefetch_queryset) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: REQ_3 describes the *non-sliced* branch of the new module-private helper _filter_prefetch_queryset introduced by this patch: when queryset.query.is_sliced is False, build exactly the pre-existing \"field_name__in: instances\" membership filter and return queryset.filter(predicate) without touching any slice/low/high-mark state.\n\nIndependent code comparison of the gold and buggy revisions (django/db/models/fields/related_descriptors.py, plus the calling get_prefetch_queryset methods of the reverse many-to-one RelatedManager and forward many-to-many ManyRelatedManager) shows this branch is a pure behavioral no-op refactor:\n\n- Buggy reverse-m2o get_prefetch_queryset did  `query={\"%s__in\"%self.field.name: instances}; queryset=queryset.filter(**query)`;\n  gold does `queryset = _filter_prefetch_queryset(queryset, self.field.name, instances)` which, since is_sliced is False, expands to exactly `queryset.filter(Q(**{self.field.name+'__in': instances}))`.\n- Buggy m2m get_prefetch_queryset did  `queryset._next_is_sticky().filter(**query)`;\n  gold does `_filter_prefetch_queryset(queryset._next_is_sticky(), ...)` which in the non-sliced case is the same `.filter(...)` on the sticky queryset.\n\nIn the non-sliced path neither implementation clears limits, nor reads low/high marks, nor adds any window predicate, and both apply the identical membership (isinstance) predicate. Consequently gold and buggy produce byte-identical observable results (same SQL, same returned instance sets) for any prefetch on a non-sliced queryset — there is no PASS(gold)/FAIL(buggy) differential signal that corresponds to this requirement. The entire behavior-changing portion of the fix lives in the sliced (is_sliced True) branch (window/clear_limits etc.), which is a different requirement; REQ_3 intentionally scopes only the non-sliced fallback that both revisions already satisfy.\n\nI attempted to first establish a runnable end-to-end scenario (non-sliced reverse-m2o/m2m prefetch with Author/Book models in tests/prefetch_related), but the CSC harness compiles the candidate as a standalone module in /tmp and could not import the repository's Django test models (`import prefetch_related.models -> ModuleNotFoundError`), so no model-backed run could be performed in this runner; regardless, the behavioral argument above shows any such run would pass on both gold and buggy identically. I therefore report found=false: REQ_3 is not individually witness-able because its pre/post observable behavior is identical.",
+    "confidence": "Medium"
+  }
+}

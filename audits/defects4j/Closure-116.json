@@ -1,0 +1,102 @@
+{
+  "task_id": "Closure-116",
+  "status": "ok",
+  "duration_seconds": 119.09574576299997,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "Closure-116",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "In DIRECT (return-value) inlining mode, canInlineReferenceToFunction must return CanInlineResult.NO for a call whose corresponding parameter is used in the function body where the function's own code contains a side effect that can alter the value the call argument aliases — even when that parameter is textually referenced only once. Concretely: it must refuse to directly inline `function foo(a){return modifiyX() + a;} foo(x);` (the body's call to modifiyX may mutate x before the single `a` reference) and `function foo(a){return (x.prop = 2),a;} foo(x.prop);` (the body assigns x.prop, the very value the argument reads).",
+        "subject": "FunctionInjector.canInlineReferenceToFunction (InliningMode.DIRECT)",
+        "hunk_ids": [],
+        "cited_from": "FunctionInjectorTest.testIssue1101a: helperCanInlineReferenceToFunction(CanInlineResult.NO, \"function foo(a){return modifiyX() + a;} foo(x);\", \"foo\", INLINE_DIRECT);    and   testIssue1101b: helperCanInlineReferenceToFunction(CanInlineResult.NO, \"function foo(a){return (x.prop = 2),a;} foo(x.prop);\", \"foo\", INLINE_DIRECT);"
+      },
+      {
+        "id": "R2",
+        "statement": "When a single-call-expression function whose body both calls a possibly side-effecting function (foo(obj)) and then references its parameter (saved) is block-inlined, the argument value (`obj[\"prop\"]`) that may be invalidated by that side-effecting call must be captured into an aliasing temporary variable ahead of and independent of the inlined body, so the reference reads the pre-call value. Concretely the call `(function (saved) { return foo(obj) + saved; })(obj[\"prop\"])` inside a var declaration must be rewritten to first hoist `obj[\"prop\"]` into a `saved$$inline_*` temp and then execute `foo(obj)` against the captured temp.",
+        "subject": "FunctionInjector inline (BLOCK mode argument aliasing)",
+        "hunk_ids": [],
+        "cited_from": "InlineFunctionsTest.testIssue1101: test(\"var x = (function (saved) {\" + \"    return foo(obj) + saved;\" + \"  })(obj[\\\"prop\\\"]);\", \"var x;\" + \"{\" + \"  var saved$$inline_0=obj[\\\"prop\\\"];x=foo(obj)+saved$$inline_0\" + \"}\");"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In DIRECT inlining mode, when the function to inline has a body that is a single 'return <expr>' statement whose returned expression may have side effects, FunctionInjector refuses to inline (canInlineReferenceToFunction returns CanInlineResult.NO) if any formal parameter is supplied a call-site argument expression that can be side-effected (e.g. a reference to a non-constant name 'x', or a property access 'x.prop'), regardless of how many times that parameter is referenced in the body.",
+        "subject": "FunctionInjector.canInlineReferenceToFunction(...) with InliningMode.DIRECT (via canInlineReferenceDirectly)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 (from testIssue1101a/1101b, cited verbatim) pins down DIRECT-mode refusal of inline when the body's single 'return' expression has a side-effecting operation that can alter an argument that is a data reference, concretely covering both a non-constant name argument ('foo(x)' with body 'modifiyX() + a') and a property-access argument ('foo(x.prop)' with body '(x.prop=2), a'), and explicitly states this applies even when the parameter is referenced only once, which subsumes S_impl's 'regardless of how many times' clause. The two independently extracted requirements describe the identical named test behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug (Closure-116 / google-code issue 1101) is exercised by regression tests named testIssue1101 (InlineFunctionsTest), testIssue1101a and testIssue1101b (FunctionInjectorTest)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The affected code is FunctionInjector.java: the DIRECT-mode decision path is canInlineReferenceToFunction -> canInlineReferenceDirectly; the existing mutable-argument guard there only refuses when a mutable argument is referenced more than once (name-reference-count > 1), which is why the a/b cases (parameter referenced exactly once) slip through and must be newly excluded."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "InlineFunctionsTest drives InlineFunctions (a compiler pass wrapping FunctionInjector); FunctionInjectorTest drives FunctionInjector directly with helpers that parse a snippet, find the named function, and exercise canInlineReferenceToFunction/inline."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "FunctionInjectorTest.helperCanInlineReferenceToFunction passes unsafe = FunctionArgumentInjector.findModifiedParameters(fnNode) as the names-to-alias set, referencesThis=NodeUtil.referencesThis, containsFunctions=NodeUtil.containsFunction(block)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "InliningMode enum: DIRECT = replace the call expression; BLOCK = replace the call expression with a block of statements (looser function constraints, stricter call site)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new guard in canInlineReferenceDirectly applies only to call arguments that are paired with a named formal parameter (the check sits in the 'if (fnParam != null && cArg != null)' block); extra arguments without a matching parameter are still governed only by the pre-existing per-argument mayHaveSideEffects check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The refusal is conditional on both (a) the function's returned expression having side effects and (b) the argument being canBeSideEffected (NodeUtil.canBeSideEffected = true for non-constant NAME, GETPROP/GETELEM, CALL/NEW). Functions whose returned expression is side-effect-free (pure, e.g. 'return true' or 'return a') are unaffected by the new guard and keep their prior inline decision."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "hasSideEffects stays false for empty-function bodies and for non-return single statements (which in direct mode are not 'direct-call-node-replacement-possible' anyway); it is only used inside the H1 guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Regression tests that exercise this guard are testIssue1101a ('function foo(a){return modifiyX() + a;} foo(x);') and testIssue1101b ('function foo(a){return (x.prop = 2),a;} foo(x.prop);'), both in FunctionInjectorTest, which drive canInlineReferenceToFunction in InliningMode.DIRECT and assert CanInlineResult.NO."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "canInlineReferenceDirectly is only reached for DIRECT mode after isDirectCallNodeReplacementPossible confirms an empty body or a single return-with-expression body, so the block.hasChildren()/block.hasOneChild()/stmt.isReturn() structure in the block is guaranteed by that prior gate."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

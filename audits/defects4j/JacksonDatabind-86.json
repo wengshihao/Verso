@@ -1,0 +1,106 @@
+{
+  "task_id": "JacksonDatabind-86",
+  "status": "ok",
+  "duration_seconds": 167.02729240999906,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-86",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When Base (which implements IFace<Sub>) is constructed via the TypeFactory before Sub (which extends Base), the resulting Sub-type's superclass chain must be fully resolvable: calling getSuperClass() on the Sub type and then getSuperClass() on that result must return a non-null value (not yield an unresolved/NPE-ed recursive type), where the sub type's immediate superclass type is a ResolvedRecursiveType.",
+        "subject": "TypeFactory.constructType / ResolvedRecursiveType.getSelfReferencedType superclass resolution for JavaType Sub",
+        "hunk_ids": [],
+        "cited_from": "Test (RecursiveTypeTest.testSuperClassWithReferencedJavaType): \"// for [databind#1647]\nstatic interface IFace<T> {} ... static class Base implements IFace<Sub> { } ... static class Sub extends Base { } ... tf.constructType(Base.class); // must be constructed before sub to set the cache correctly\nJavaType subType = tf.constructType(Sub.class);\n// baseTypeFromSub should be a ResolvedRecursiveType in this test\nJavaType baseTypeFromSub = subType.getSuperClass();\nassertNotNull(baseTypeFromSub.getSuperClass());\""
+      },
+      {
+        "id": "R2",
+        "statement": "When Base (with an int property 'base', implementing IFace<Sub>) is constructed via the TypeFactory before Sub (extending Base, with an int property 'sub'), serializing an instance of Sub with the ObjectMapper must include the inherited base-class properties and produce exactly the JSON {\"base\":1,\"sub\":2}.",
+        "subject": "ObjectMapper serialization / JavaType supertype resolution for Sub (databind#1647)",
+        "hunk_ids": [],
+        "cited_from": "Test (TestTypeFactoryWithRecursiveTypes.testBasePropertiesIncludedWhenSerializingSubWhenSubTypeLoadedAfterBaseType): \"static class Base implements IFace<Sub> { @JsonProperty int base = 1; } static class Sub extends Base { @JsonProperty int sub = 2; } ... tf.constructType(Base.class);\ntf.constructType(Sub.class);\nSub sub = new Sub();\nString serialized = objectMapper().writeValueAsString(sub);\nassertEquals(\"{\\\"base\\\":1,\\\"sub\\\":2}\", serialized);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl_1",
+        "statement": "For a ResolvedRecursiveType whose self-reference has been resolved (setReference called), getSuperClass() returns the super class reported by the referenced type (i.e. the getSuperClass() of _referencedType), rather than returning null.",
+        "subject": "com.fasterxml.jackson.databind.type.ResolvedRecursiveType#getSuperClass",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl_1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1's test confirms that after resolving recursive types via TypeFactory, getSuperClass() on a ResolvedRecursiveType must return a non-null superclass (assertNotNull on the second-level resolution), matching the 'rather than returning null' aspect. However, neither the test assertions nor R2's serialization output literally pin down the exact delegation mechanism claimed — that getSuperClass() must return _referencedType.getSuperClass() specifically — so the precise behavior is implied but not conclusively established."
+      }
+    ],
+    "target_requirement_id": "S_impl_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    class Sup {}\n    class Chi extends Sup {}\n    com.fasterxml.jackson.databind.type.TypeFactory tf = com.fasterxml.jackson.databind.type.TypeFactory.defaultInstance();\n    com.fasterxml.jackson.databind.JavaType referenced = tf.constructType(Chi.class);\n    com.fasterxml.jackson.databind.type.ResolvedRecursiveType rr = new com.fasterxml.jackson.databind.type.ResolvedRecursiveType(Chi.class, referenced.getBindings());\n    rr.setReference(referenced);\n    com.fasterxml.jackson.databind.JavaType exp = referenced.getSuperClass();\n    assertNotNull(exp);\n    assertEquals(exp, rr.getSuperClass());\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: expected:<[simple type, class VersoWitnessCandidate$1Sup]> but was:<null>)",
+      "explanation": "The target requirement S_impl_1 is the override of ResolvedRecursiveType.getSuperClass(): when the self-reference has been resolved via setReference(), getSuperClass() must return the referenced type's getSuperClass() (i.e. `_referencedType.getSuperClass()`), not null. My witness constructs a ResolvedRecursiveType wrapping a NON-recursive ordinary hierarchy (Chi extends Sup), resolves its self-reference via setReference() to the Chi JavaType obtained from TypeFactory, and asserts that rr.getSuperClass() equals referenced.getSuperClass() (a non-null `Sup` simple type). On the gold (fixed) program the override delegates to _referencedType.getSuperClass() so the assertion passes; on the buggy program the override is absent so getSuperClass() falls through to TypeBase's `_superClass` field, which the ResolvedRecursiveType constructor always seeds as null, hence it returns null and the assertEquals fails. These results were execution-confirmed via run_test against both revisions, so the test is a genuine PASS-gold/FAIL-buggy discriminator. Crucially this scenario is distinct from the [VISIBLE] #1647 Base/Sub/IFace cache-ordering tests: it introduces its own classes (Sup/Chi) with no self-referential cycle at all and directly drives ResolvedRecursiveType by hand, so it is not a re-wording of an already-visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible source is limited to the databind/type package plus test scaffolding; the mainstream serialization/deserialization and TypeFactory sources are not present in the visible tree, so S_vis must be inferred from the two #1647 tests plus the ResolvedRecursiveType/TypeBase source."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The databind#1647 scenario is a self-referential type cycle: Base implements IFace<Sub> while Sub extends Base, so resolving Sub's (or Base's) type involves a recursive type that points back through the hierarchy; both #1647 tests deliberately construct Base.class BEFORE Sub.class so the type cache is primed in that order."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "RecursiveTypeTest and TestTypeFactoryWithRecursiveTypes each declare their own private IFace/Base/Sub trio for issue #1647 (identical shape, different packages: default-package inner static classes vs nested in the test class)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "RecursiveTypeTest holds other behaviors for unrelated issues (#1301 testRecursiveType/testJavaTypeToString, #938 testRecursivePair, HashTree/DataDefinition/ImmutablePair) which are not part of the #1647 fix scope."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ResolvedRecursiveType.setReference throws IllegalStateException if called twice ('Trying to re-set self reference'); getSelfReferencedType() returns the reference. Its toString() for a resolved-but-cyclic reference appends only the raw class name per databind#1301."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ResolvedRecursiveType.from subclass TypeBase; TypeBase.serialize writes toCanonical() and TypeBase.buildCanonicalName returns _class.getName() (so a canonical form of a recursive type is available)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The two #1647 tests exercise the same underlying recursive-resolution scenario but assert distinct observable properties (type-graph navigability via getSuperClass() vs serialized JSON containing inherited properties), so they are kept as separate requirements."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new override only changes behavior when _referencedType has been resolved (non-null, i.e. setReference called). For an unresolved ResolvedRecursiveType the patch explicitly falls back to super.getSuperClass() (TypeBase), which returns the (null) _superClass field that ResolvedRecursiveType's constructor passes as null; that unresolved behavior is unchanged from the pre-patch state."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The override of getSuperClass() enables traversing up the type hierarchy through a self-referential (recursive) type, which is what lets the referencing type graph be navigated to reach the actual base class for databind#1647. Related methods getSelfReferencedType/getGenericSignature/getErasedSignature already traversed through _referencedType before this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl_1]: The target requirement S_impl_1 concerns a very specific, narrow behavioral contract: ResolvedRecursiveType.getSuperClass() must, when the self-reference has been resolved via setReference, return the super class reported by its _referencedType instead of null. This is precisely the behavior introduced/guaranteed by the new override of getSuperClass() in ResolvedRecursiveType.\n\nThe only oracle tests that exercise this scenario are the two failing test methods:\n1. RecursiveTypeTest#testSuperClassWithReferencedJavaType — this test directly builds the #1647 Base/Sub/IFace fixture (construct Base before Sub to prime the cache) and asserts that baseTypeFromSub = subType.getSuperClass() followed by baseTypeFromSub.getSuperClass() is non-null. That is essentially the exact contract of S_impl_1.\n2. TestTypeFactoryWithRecursiveTypes#testBasePropertiesIncludedWhenSerializingSubWhenSubTypeLoadedAfterBaseType — asserts JSON serialization output includes inherited base property; per the task notebook this is a distinct observable property kept as a separate requirement, not the getSuperClass() contract itself.\n\nBoth of these files are labeled [VISIBLE] by read_test_file, meaning their content is byte-for-byte part of what a repair system already saw in the visible tree. A witness may only rest on [HIDDEN] assertions, and an assertion drawn from [VISIBLE] content can never serve as a witness even if it matches r exactly. testSuperClassWithReferencedJavaType is the strongest match for S_impl_1 but is [VISIBLE], so it cannot qualify.\n\nI scanned the rest of the oracle (all type-package test files and the most plausible related houses for recursive type handling: locality, generics/bound resolution, jsontype via reference type, deprecated construct tests, canonical-name tests) and found no [HIDDEN] test that constructs a resolved ResolvedRecursiveType and asserts non-null superclass traversal behavior. The remaining type-package tests either don't touch self-referential recursive base/super-class edges or only assert map/list/array/field-type properties unrelated to ResolvedRecursiveType.getSuperClass.\n\nConclusion: no [HIDDEN] oracle assertion genuinely tests S_impl_1; the only genuine test of that contract lives in [VISIBLE] content which by rule cannot serve as a Witness. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl_1] (com.fasterxml.jackson.databind.type.ResolvedRecursiveType#getSuperClass): For a ResolvedRecursiveType whose self-reference has been resolved (setReference called), getSuperClass() returns the super class reported by the referenced type (i.e. the getSuperClass() of _referencedType), rather than returning null. — not entailed by S_vis (R1's test confirms that after resolving recursive types via TypeFactory, getSuperClass() on a ResolvedRecursiveType must return a non-null superclass (assertNotNull on the second-level resolution), matching the 'rather than returning null' aspect. However, neither the test assertions nor R2's serialization output literally pin down the exact delegation mechanism claimed — that getSuperClass() must return _referencedType.getSuperClass() specifically — so the precise behavior is implied but not conclusively established.); confirmed by a synthesized witness: The target requirement S_impl_1 is the override of ResolvedRecursiveType.getSuperClass(): when the self-reference has been resolved via setReference(), getSuperClass() must return the referenced type's getSuperClass() (i.e. `_referencedType.getSuperClass()`), not null. My witness constructs a ResolvedRecursiveType wrapping a NON-recursive ordinary hierarchy (Chi extends Sup), resolves its self-reference via setReference() to the Chi JavaType obtained from TypeFactory, and asserts that rr.getSuperClass() equals referenced.getSuperClass() (a non-null `Sup` simple type). On the gold (fixed) program the override delegates to _referencedType.getSuperClass() so the assertion passes; on the buggy program the override is absent so getSuperClass() falls through to TypeBase's `_superClass` field, which the ResolvedRecursiveType constructor always seeds as null, hence it returns null and the assertEquals fails. These results were execution-confirmed via run_test against both revisions, so the test is a genuine PASS-gold/FAIL-buggy discriminator. Crucially this scenario is distinct from the [VISIBLE] #1647 Base/Sub/IFace cache-ordering tests: it introduces its own classes (Sup/Chi) with no self-referential cycle at all and directly drives ResolvedRecursiveType by hand, so it is not a re-wording of an already-visible assertion.",
+    "confidence": "Medium"
+  }
+}

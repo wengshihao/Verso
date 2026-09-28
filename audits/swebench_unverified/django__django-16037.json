@@ -1,0 +1,133 @@
+{
+  "task_id": "django__django-16037",
+  "status": "ok",
+  "duration_seconds": 903.42596112506,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16037",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a QuerySet queries a model (e.g. Post) annotated with an aggregation such as Count('liked_by') and also carries correlated Exists(...) subquery annotations whose internal subqueries reference OuterRef columns (options here being annotations built over OuterRef('id') and OuterRef('user__id'), like is_following/is_owner/liked_by_user), the GROUP BY (or related subselect) produced by Django must not expand those subquery annotations into every column of the subquery's internal query. Evaluating such a queryset (including via .exists(), a __in filter, or listing results) must not fail with SQLite error \"sub-select returns 13 columns - expected 1\" or Postgres error \"subquery must return only one column\".",
+        "subject": "django.db.models.expressions.Subquery.get_group_by_cols / Exists-in-aggregate GROUP BY compilation",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'django.db.utils.OperationalError: sub-select returns 13 columns - expected 1' ... psycopg2.errors.SyntaxError: subquery must return only one column LINE 1: ...iked_by\".\"post_id\") GROUP BY \"network_post\".\"id\", (SELECT U0...' and report model: '.annotate(likes=Count(\"liked_by\")) # Doesn't work on 4.1'. Code: expressions.py class Subquery: 'def get_group_by_cols(self, alias=None):\n        # If this expression is referenced by an alias for an explicit GROUP BY\n        # through values() a reference to this expression and not the\n        # underlying .query must be returned to ensure external column\n        # references are not grouped against as well.\n        if alias:\n            return [Ref(alias, self)]\n        return self.query.get_group_by_cols()'"
+      },
+      {
+        "id": "R2",
+        "statement": "A manager chain that annotates each row with Exists subqueries referencing the row (e.g. Exists matching the request user's liked_posts/following to the post row and its user) before/after computing an aggregate annotation Count('liked_by'), ordered by a descending datetime, must still evaluate the per-row Count to the number of related 'liked_by' rows for that row, i.e. the combined annotation must return semantics equivalent to what the same code returned in Django 4.0.7 (the reported regression appeared in 4.1.x).",
+        "subject": "QuerySet.annotate() ordering / Count-over-reverse-relation semantics preserved under combined subquery+pagination annotations",
+        "hunk_ids": [],
+        "cited_from": "Issue: 'I updated one app from 4.0 to 4.1.1 and found a issue with one annotation using Count.' ... 'The same app works with 4.0.7.' and 'The exception is raised by annotate(likes=Count(\"liked_by\")) in method fetch_all_posts.'; example manager builds '.order_by(\"-publication_date\").annotate(is_following=is_following).annotate(is_owner=is_owner).annotate(likes=Count(\"liked_by\")) # Doesn't work on 4.1 .annotate(liked_by_user=liked_by_user)'"
+      },
+      {
+        "id": "R3",
+        "statement": "A PostManager result built as in fetch_all_posts must be usable as an inner/correlated queryset — e.g. fetch_following_posts applies '.filter(user__in=request_user.following.all())' to it, and the issue traceback shows the failure surface is evaluating this type of annotated result — without invalid SQL being emitted for any subselect that contractually must return exactly one column.",
+        "subject": "QuerySet use as a correlated inner query (filter user__in / __in / Exists subquery) for annotated Querysets with Count",
+        "hunk_ids": [],
+        "cited_from": "Issue fetcher: 'def fetch_following_posts(self, request_user: User) -> QuerySet[Post]:\n        return self.fetch_all_posts(request_user).filter(\n            user__in=request_user.following.all()\n        )' with traceback entering at 'File \".../django/db/models/query.py\", line 1225, in exists\\n\treturn self.query.has_results(using=self.db)' then raising 'sqlite3.OperationalError: sub-select returns 13 columns - expected 1' / 'psycopg2.errors.SyntaxError: subquery must return only one column'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a queryset is annotated with an Exists() subquery expression and some other annotation forces the query to introduce a GROUP BY clause (e.g. an aggregate annotation), the resulting query compiles and executes successfully rather than raising a database error such as 'subquery must return only one column'/'sub-select returns N columns - expected 1'; the Exists' correlated subquery contributes only its single boolean value to the grouped query, and each returned row carries its own correctly-evaluated value for that annotation.",
+        "subject": "Exists / QuerySet.annotate with aggregation (expression grouping)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During GROUP BY clause generation (SQLCompiler.get_group_by), a candidate GROUP BY expression whose SQL compilation raises EmptyResultSet is omitted from the GROUP BY clause and does not cause the query to be aborted with that exception; the remaining valid GROUP BY columns are still emitted.",
+        "subject": "SQLCompiler.get_group_by",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 directly describes the identical scenario (Exists/Subquery annotations plus a Count aggregate forcing GROUP BY) and explicitly requires it to compile/evaluate without the 'subquery must return only one column'/'sub-select returns N columns' errors, with subquery annotations not spuriously expanding; S_vis R2 confirms the per-row annotation value must match Django 4.0.7 semantics, and R1's citation shows the visible Subquery.get_group_by_cols code. This pins down R1's compile-success and single-boolean/per-row-correctness behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the S_vis entries mention EmptyResultSet, SQLCompiler.get_group_by, or any omission of a candidate whose compilation raises EmptyResultSet — they only describe the observable DB-error symptom and the external Subquery-level behavior. S_vis does not lead to this specific internal GROUP BY omission mechanism."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This benchmark is the full Django 4.1-dev source tree itself; the models shown in the report (PostManager, Post, User.liked_posts, Comment, request_data/fetch_all_posts/fetch_following_posts) are the reporter's own app code and do NOT exist under tests/ or django/; a repair's regression tests will need to be written against Django's own test models (e.g. in tests/annotations)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The likely fault location visible in source: django/db/models/expressions.py — Subquery/Exists don't define their own collapse to the single correlated column; Subquery.get_group_by_cols() returns self.query.get_group_by_cols() (full internal column set) rather than a single value, so placing such an annotation in a query that introduces GROUP BY (from a Count aggregation) emits a multi-column subselect. ResolvedOuterRef.get_group_by_cols() returns [] (empty)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing relevant tests in tests/annotations/tests.py: test_annotate_exists, test_full_expression_annotation_with_aggregation, test_annotation_exists_aggregate_values_chaining; models for these tests are in tests/annotations/models.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The DB vendor errors appear in the report: sqlite3 'OperationalError: sub-select returns 13 columns - expected 1' and psycopg2 'SyntaxError: subquery must return only one column'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/releases present in-tree do not yet document a fix for this regressions (4.1.2 release notes present only list a PostgreSQL ExclusionConstraint migration fix)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Exists inherits from Subquery; before this patch Exists had no get_group_by_cols override, so it fell back to Subquery.get_group_by_cols, which with alias=None returns self.query.get_group_by_cols() (the full internal column set of the correlated subquery). The added override, for alias=None, instead returns [self] (the single Exists expression as one grouping column)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The newly added Exists.get_group_by_cols preserves, for the alias != None path (grouping by an explicit aliased reference via values()/annotate alias), the inherited Subquery behavior returning [Ref(alias, self)] by delegating to super().get_group_by_cols(alias)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ResolvedOuterRef.get_group_by_cols returns [] (empty) and Col.get_group_by_cols returns [self]; these are pre-existing helpers relied upon by the grouping machinery."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The EmptyResultSet skip in SQLCompiler.get_group_by (H1) complements H0: an Exists whose compile raises EmptyResultSet (e.g. referring to an empty correlated subquery) would otherwise propagate out of get_group_by and abort SQL generation."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Investigated whether the real Django test oracle contains a [HIDDEN] test that genuinely witnesses R2 (SQLCompiler.get_group_by skipping a candidate GROUP BY expression whose compilation raises EmptyResultSet, while still emitting the remaining valid GROUP BY columns).\n\nScope checked: tests/annotations/tests.py, tests/aggregation/tests.py, tests/expressions/tests.py, tests/queries/test_query.py, tests/queries/test_sqlcompiler.py and the corresponding supporting model/__init__ files.\n\nFindings:\n1) No test is recorded as currently failing against the buggy program, and no dedicated R2 regression test exists in this pre-fix snapshot (per the earlier extracts, 4.1-dev release notes still do not document this fix, i.e. it hasn't landed upstream yet). The reporter's own app models are absent from the tree, so the reporter app scenario is untouched by the oracle.\n2) The closest existing tests (annotations' test_annotation_exists_aggregate_values_chaining, test_aggregate_over_full_expression_annotation; aggregations' test_exists_none_with_aggregate, test_exists_extra_where_with_aggregate, test_group_by_exists_annotation, test_aggregation_exists_annotation and the many subquery-group-by tests; expressions' Exists/empty-exists tests) all concern the Exists single-column GROUP BY collapse (H0) or other GROUP BY/subquery behavior. None of them asserts the R2 behavior: that a candidate GROUP BY expression raising EmptyResultSet during SQL compilation is dropped from the GROUP BY clause while the other valid columns are still emitted.\n3) Even for those that come close, the content-based visibility labels are dispositive: the test method/assertion content in every test file I could locate is [VISIBLE], whereas the only confirmed [HIDDEN] files are model definitions and package __init__ scaffolds (annotations/models.py, annotations/__init__.py, expressions/models.py, aggregation/__init__.py). A Witness must rest on a [HIDDEN] assertion, and no hidden test method asserting R2 was found.\n\nConclusion: the pre-existing oracle does not contain a test that witnesses R2, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: gave up after exhausting its exploration budget without concluding (22 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (SQLCompiler.get_group_by) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

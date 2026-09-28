@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-11087",
+  "status": "ok",
+  "duration_seconds": 471.9410011250293,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11087",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When .delete() (Model.delete() or QuerySet.delete()) must fetch related rows whose deletion it is cascading (the rows Django has to read to decide what else to delete before running the actual DELETEs), each such SELECT must be restricted to only the columns actually required for that deletion decision (the rows' primary key and the relation/foreign-key fields Django needs to drive further cascade discovery and to delete), and must not select other model columns. In particular, when a model that is collected for cascade-deletion has a non-PK text column (e.g. text_log_error.line) holding bytes that cannot be decoded in the database connection's charset, Django must still be able to perform the delete without selecting/decoding that column and without raising a UnicodeDecodeError on it.",
+        "subject": "django.db.models.QuerySet.delete / django.db.models.deletion.Collector collect() cascade related-object fetching",
+        "hunk_ids": [],
+        "cited_from": "From the issue's own enumerated issue (2): \"the UnicodeDecodeError is occurring for a field (text_log_error.line) that is not actually needed for the .delete() (it's not a primary key etc), so Django shouldn't be fetching that field regardless when making the text_log_error SELECT query\"; \"Fixing issue (2) would presumably also improve .delete() performance.\"; and the Django debug log reproduced in the report shows the full-field related SELECT issued by the collect phase: \"SELECT text_log_error.id, text_log_error.step_id, text_log_error.line, text_log_error.line_number FROM text_log_error WHERE text_log_error.step_id IN (544935727); args=(544935727,)\"; Expected: \"That the cycle_data management command succeeds, like it did under Python 2.\""
+      },
+      {
+        "id": "R2",
+        "statement": "Running a .delete() whose cascade traverse reaches and collects rows of a model that owns an unrelated (non-key, non-relation) character column must not emit SELECTs that pull the full row including that column; the SELECTs should carry only the fields needed so an undecodable value in such an unused text column cannot abort the deletion.",
+        "subject": "django.db.models.deletion.Collector.collect() / related model field selection during delete",
+        "hunk_ids": [],
+        "cited_from": "Issue (reporting two problems, the second being the load-bearing one): \"There appear to be two issues here: ... (2) the UnicodeDecodeError is occurring for a field (text_log_error.line) that is not actually needed for the .delete() (it's not a primary key etc), so Django shouldn't be fetching that field regardless when making the text_log_error SELECT query\", with the traceback ending \"UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed in position 78: invalid continuation byte\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "When Collector.collect handles a batch of related objects of a model that cannot be fast-deleted (its on_delete handler must run) and that batch must be fetched from the database, the ORM issues the sub-object SELECT with `.only()` restricting the loaded columns to the referencing foreign-key attnames of that related model's deletion-candidate relations, so that non-referencing columns (e.g. large text/blob fields) are deferred — provided the related model has no pre_delete/post_delete signal receiver AND the sub-objects queryset is not using select_related; if either the related model does have such a signal receiver or the related queryset uses select_related, the sub-objects queryset is left unrestricted (full-column fetch) instead.",
+        "subject": "Collector.collect / Collector.related_objects cascade delete query",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "When cascading a delete onto a related model that has a pre_delete or post_delete signal receiver, those receivers still receive fully-populated (non-deferred) sub-object instances, because field deferring is skipped for such a related model.",
+        "subject": "delete signal receivers during cascade (Collector.collect)",
+        "hunk_ids": [
+          "H1",
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S3",
+        "statement": "Collector.can_fast_delete now blocks fast deletion based on signals only when the model has a pre_delete or post_delete receiver; the presence of an m2m_changed receiver on the model (with no pre_delete/post_delete receiver) no longer causes can_fast_delete to return False, whereas it did before.",
+        "subject": "Collector.can_fast_delete signal eligibility",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 motivate the general goal of not fetching unneeded (undecodable) non-key text columns during cascade-delete SELECTs, which broadly supports deferring such fields. However S1 pins specific implementation details absent from S_vis: the `.only()` restricted to referencing FK attnames of deletion-candidate relations, and the carve-outs for signal receivers and select_related — none of which the visible issue specifies. S_vis cannot pin down those exact conditions."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 say nothing about pre_delete/post_delete signal receivers receiving fully-populated sub-object instances or about deferring being skipped for signal-bearing models. This behavior is entirely invisible in the available evidence."
+      },
+      {
+        "requirement_id": "S3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis contains no information about Collector.can_fast_delete, m2m_changed receivers, or which receiver types block fast deletion. This requirement is wholly unrelated to and unsupported by the visible evidence about undecodable text columns."
+      }
+    ],
+    "target_requirement_id": "S2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "After investigating, no genuine witness exists that PASSES on gold and FAILS on buggy while genuinely corresponding to requirement S2.\n\nReasoning:\n1) Semantic analysis of the gold vs buggy deltas (django/db/models/deletion.py): In the buggy (pre-fix) snapshot, Collector.collect applies NO field restriction in the cascade path — `sub_objs = self.related_objects(...)` always runs a full-column SELECT and `field.remote_field.on_delete(...)` is called with the fully-populated queryset. In the gold (fixed) snapshot, an `.only(...)`-based deferral is applied to the cascade sub-query, but ONLY when `self._has_signal_listeners(related_model)` is False (i.e. when the cascaded-to related model has no pre_delete/post_delete receivers).\n\n2) S2 is exactly the statement that when the cascaded related model DOES have pre/post_delete signal receivers, deferral is skipped so those receivers receive fully-populated (non-deferred) instances. That precise outcome is true in BOTH programs:\n   - gold: the receiver-listener guard skips the deferral, full instance delivered (PASS);\n   - buggy: deferral does not exist at all, so full instance is always delivered (also PASS).\n   Hence any assertion that literally encodes S2 (receiver gets a non-deferred, fully-populated instance when listeners are registered) passes against the buggy program too and can never satisfy the required \"FAILS on buggy\" condition.\n\n3) The only observable that genuinely discriminates gold from buggy is the converse case — a cascaded related model WITHOUT signal listeners, for which gold now defers to referenced fields while buggy does not. That delta is an R1/R2-style field-scoping observable, not the S2 receiver-facing guarantee, and the earlier S_vis stage already recorded R1 and R2 as insufficient for S2.\n\n4) Execution checks via run_test confirmed the harness context: the candidate is compiled as a standalone pytest file in /tmp without the repo's tests tree on sys.path, so the repo's own model definitions (delete/delete_regress/defer/apps) are not importable and no DB-backed cascade scenario on that schema can even be constructed. In any case, empirically a direct S2-style receiver probe that I tried compiles/runs as an ordinary assertion and would (consistent with the above argument) pass against both buggy and gold since neither program ever hands the receiver a deferred object for a listener-bearing model.\n\nConclusion: there is no [HIDDEN] assertion that passes on gold and fails on buggy while genuinely testing the S2 receiver/deferral-skip guarantee; the guarantee already holds in the buggy program. Nothing qualifies as a witness, so found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repository is django (pre-fix state for ticket django__django-11087); the delete-related machinery lives in django/db/models/deletion.py (Collector.collect, Collector.related_objects) and django/db/models/query.py (QuerySet.delete), backed by column selection in django/db/models/sql/query.py and django/db/models/sql/compiler.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In this snapshot, Collector.related_objects() fetches cascade sub-objects via `related.related_model._base_manager.using(self.using).filter(**{'%s__in' % related.field.name: objs})` with no field restriction, so every related SELECT pulls all model columns; the bug report reproduces exactly such full-field SELECTs against failure_line / job / job_log / text_log_step / text_log_error during a Job .delete()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "R1 and R2 state the same underlying required behavior at two granularities (the fix's field-scoping mechanism and the observable outcome); they are intentionally near-identical witnesses, not independent requirements."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue also floats an alternative/complementary idea (fix 1): making mysqlclient's use_unicode behavior consistent across Python versions and having the ORM do Unicode conversion itself. This targets the third-party driver layer rather than Django's delete code and is phrased by the reporter as a suggestion ('This seems like something the Django ORM should try to protect against'), so it is recorded here as context rather than a firm requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The tree's delete tests (tests/delete, tests/delete_regress) currently assert query counts and deletion outcomes but contain no test encoding the 'fetch only required columns' behavior; the visible support for this requirement comes from the issue report itself, which quotes the offending generated SQL."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new private helper Collector._has_signal_listeners(model) checks only pre_delete and post_delete listeners, deliberately omitting m2m_changed; reusing it in can_fast_delete (H2) therefore also drops the old m2m_changed guard from fast-delete eligibility. m2m_changed is irrelevant to per-row delete signals and to N-N (not deletion-candidate) relations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The deferral expression subset's 'select_related' guard is normally unreachable via the default Collector.related_objects (which returns a plain filter queryset); the added comment notes it only matters when Collector.related_objects is overridden."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0's itertools.chain import and H1's helper exist to support H3's chain.from_iterable-based gathering of referenced foreign-key attnames."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "referenced_fields is built from rel.field.foreign_related_fields of get_candidate_relations_to_delete on the related model._meta (the relations that can themselves trigger further cascade/collect work)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S2]: Requirement [S2] is that when Collector.collect crisply cascades a delete onto a related model that has pre_delete/post_delete signal listeners, deferring is skipped for that related model so those receivers still see fully-populated (non-deferred) sub-object instances.\n\nI investigated every oracle test domain that could possibly encode this behavior, since a Collector.collect cascade of exactly this kind can only be exercised through the deletion test suites. I read tests/delete/models.py + tests.py, tests/delete_regress/models.py + tests.py, tests/defer/tests.py, tests/defer_regress/tests.py, tests/signals/models.py + tests.py, and tests/save_delete_hooks/models.py + tests.py.\n\nReasons nothing qualifies as a witness:\n1) Content visibility. All the test files that live in the deletion/defer/signals domain are labeled [VISIBLE] (only the accompanying models.py files are [HIDDEN], and those contain no assertions). A witness may only rest on [HIDDEN] assertion content; every existing test that touches pre_delete/post_delete and cascade deletion is drawn from [VISIBLE] content (e.g. OnDeleteTests.test_do_nothing, DeletionTests.test_deletion_order, test_relational_post_delete_signals_happen_before_parent_object, DeferDeletionSignalsTests). Even if one matched S2 it could not be submitted.\n2) Behavioral direction. Per the S_vis extractor, the buggy Collector.related_objects() performs cascade fetches with NO field restriction — every related SELECT pulls all model columns. Under that buggy program, a cascade-deleted related model's signal receivers would already receive fully-populated (non-deferred) instances, i.e. the exact outcome S2 describes would hold in the buggy program too. A test asserting S2 would PASS against buggy, so it cannot satisfy the required \"fails against the buggy program\" condition regardless of what it checks. (The delta introduced by the patch is the field-scoping deferral mechanism itself, which is an R1/R2-style observable and, per the notebook, has no test encoding it in the visible tree.)\n\nAccordingly, no genuine [HIDDEN] oracle test exists that passes on gold and fails on buggy while genuinely testing the S2 signal-receiver/deferral-skip behavior. Nothing qualifies as a witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S2]: After investigating, no genuine witness exists that PASSES on gold and FAILS on buggy while genuinely corresponding to requirement S2.\n\nReasoning:\n1) Semantic analysis of the gold vs buggy deltas (django/db/models/deletion.py): In the buggy (pre-fix) snapshot, Collector.collect applies NO field restriction in the cascade path — `sub_objs = self.related_objects(...)` always runs a full-column SELECT and `field.remote_field.on_delete(...)` is called with the fully-populated queryset. In the gold (fixed) snapshot, an `.only(...)`-based deferral is applied to the cascade sub-query, but ONLY when `self._has_signal_listeners(related_model)` is False (i.e. when the cascaded-to related model has no pre_delete/post_delete receivers).\n\n2) S2 is exactly the statement that when the cascaded related model DOES have pre/post_delete signal receivers, deferral is skipped so those receivers receive fully-populated (non-deferred) instances. That precise outcome is true in BOTH programs:\n   - gold: the receiver-listener guard skips the deferral, full instance delivered (PASS);\n   - buggy: deferral does not exist at all, so full instance is always delivered (also PASS).\n   Hence any assertion that literally encodes S2 (receiver gets a non-deferred, fully-populated instance when listeners are registered) passes against the buggy program too and can never satisfy the required \"FAILS on buggy\" condition.\n\n3) The only observable that genuinely discriminates gold from buggy is the converse case — a cascaded related model WITHOUT signal listeners, for which gold now defers to referenced fields while buggy does not. That delta is an R1/R2-style field-scoping observable, not the S2 receiver-facing guarantee, and the earlier S_vis stage already recorded R1 and R2 as insufficient for S2.\n\n4) Execution checks via run_test confirmed the harness context: the candidate is compiled as a standalone pytest file in /tmp without the repo's tests tree on sys.path, so the repo's own model definitions (delete/delete_regress/defer/apps) are not importable and no DB-backed cascade scenario on that schema can even be constructed. In any case, empirically a direct S2-style receiver probe that I tried compiles/runs as an ordinary assertion and would (consistent with the above argument) pass against both buggy and gold since neither program ever hands the receiver a deferred object for a listener-bearing model.\n\nConclusion: there is no [HIDDEN] assertion that passes on gold and fails on buggy while genuinely testing the S2 receiver/deferral-skip guarantee; the guarantee already holds in the buggy program. Nothing qualifies as a witness, so found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S2] (delete signal receivers during cascade (Collector.collect)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: After investigating, no genuine witness exists that PASSES on gold and FAILS on buggy while genuinely corresponding to requirement S2.\n\nReasoning:\n1) Semantic analysis of the gold vs buggy deltas (django/db/models/deletion.py): In the buggy (pre-fix) snapshot, Collector.collect applies NO field restriction in the cascade path — `sub_objs = self.related_objects(...)` always runs a full-column SELECT and `field.remote_field.on_delete(...)` is called with the fully-populated queryset. In the gold (fixed) snapshot, an `.only(...)`-based deferral is applied to the cascade sub-query, but ONLY when `self._has_signal_listeners(related_model)` is False (i.e. when the cascaded-to related model has no pre_delete/post_delete receivers).\n\n2) S2 is exactly the statement that when the cascaded related model DOES have pre/post_delete signal receivers, deferral is skipped so those receivers receive fully-populated (non-deferred) instances. That precise outcome is true in BOTH programs:\n   - gold: the receiver-listener guard skips the deferral, full instance delivered (PASS);\n   - buggy: deferral does not exist at all, so full instance is always delivered (also PASS).\n   Hence any assertion that literally encodes S2 (receiver gets a non-deferred, fully-populated instance when listeners are registered) passes against the buggy program too and can never satisfy the required \"FAILS on buggy\" condition.\n\n3) The only observable that genuinely discriminates gold from buggy is the converse case — a cascaded related model WITHOUT signal listeners, for which gold now defers to referenced fields while buggy does not. That delta is an R1/R2-style field-scoping observable, not the S2 receiver-facing guarantee, and the earlier S_vis stage already recorded R1 and R2 as insufficient for S2.\n\n4) Execution checks via run_test confirmed the harness context: the candidate is compiled as a standalone pytest file in /tmp without the repo's tests tree on sys.path, so the repo's own model definitions (delete/delete_regress/defer/apps) are not importable and no DB-backed cascade scenario on that schema can even be constructed. In any case, empirically a direct S2-style receiver probe that I tried compiles/runs as an ordinary assertion and would (consistent with the above argument) pass against both buggy and gold since neither program ever hands the receiver a deferred object for a listener-bearing model.\n\nConclusion: there is no [HIDDEN] assertion that passes on gold and fails on buggy while genuinely testing the S2 receiver/deferral-skip guarantee; the guarantee already holds in the buggy program. Nothing qualifies as a witness, so found=false.",
+    "confidence": "Medium"
+  }
+}

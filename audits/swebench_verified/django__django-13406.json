@@ -1,0 +1,98 @@
+{
+  "task_id": "django__django-13406",
+  "status": "ok",
+  "duration_seconds": 133.35371766693424,
+  "llm_calls": 10,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13406",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A queryset built as Toy.objects.values('material').annotate(total_price=Sum('price')) evaluates to a list of dict rows (each element is a dict) that GROUP BY material, each row carrying the summed price per material, so the type of its first element is dict.",
+        "subject": "QuerySet.values().annotate() aggregation semantics",
+        "hunk_ids": [],
+        "cited_from": "\"Normally, the result of the query is and should be a list of dicts\" (issue report); reproduction `prices = Toy.objects.values('material').annotate(total_price=Sum('price'))` ... `print(type(prices[0]))` \"The type of prices[0] is reported as 'dict', which is ok\". Context model: class Toy with fields name, material, price."
+      },
+      {
+        "id": "R2",
+        "statement": "When the .query of a values()/values_list() queryset (e.g. values('material').annotate(total_price=Sum('price'))) is pickled and then unpickled and reattached to a fresh base-model queryset (e.g. Toy.objects.all(); prices2.query = pickle.loads(pickle.dumps(prices.query))), re-evaluating that queryset must reproduce the intended per-group dict results rather than returning model instances whose internal state is misaligned.",
+        "subject": "Query pickling/unpickling round-trip for values-typed query",
+        "hunk_ids": [],
+        "cited_from": "\"prices2 = Toy.objects.all() ... prices2.query = pickle.loads(pickle.dumps(prices.query))\" ... \"The type of prices[0] is reported as 'dict', which is ok, the type of prices2[0] is reported as '<class \"models.Toy\">', which is wrong.\" and \"From my point of view it seems as though Django retrieves the correct data from the database, but instead of returning them as a dict, it tries to create model instances from them, which does not work as the data has wrong structure.\""
+      },
+      {
+        "id": "R3",
+        "statement": "Re-evaluating a restored values()+annotate() query over a base-model queryset (performs print(repr(<queryset>)) / accessing its rows) must not raise 'AttributeError: 'NoneType' object has no attribute 'attname'' and must not produce instances whose primary-key attribute access (e.g. .id) fails; results must be usable dict rows as intended.",
+        "subject": "Query re-evaluation after pickle must not crash on attribute access",
+        "hunk_ids": [],
+        "cited_from": "traceback in issue: \"AttributeError: 'NoneType' object has no attribute 'attname'\" arising at query_utils.py __get__:_check_parent_chain (query.py line 253 __repr__ -> base.py __str__ __repr__ _get_pk_val) — described as: \"the type of prices2[0] is reported as ... which is wrong. The code then crashes when trying to print the evaluated queryset\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R0",
+        "statement": "When a QuerySet's query property is assigned a Query object whose values_select is non-empty, the QuerySet is reconfigured so that evaluating/iterating it yields one dict per row (the values() / ValuesIterable output shape) rather than model instances.",
+        "subject": "QuerySet.query setter (django/db/models/query.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R0",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "R2 and R3 directly describe assigning a values()-type (values_select non-empty) Query object to .query after a pickle/unpickle round-trip and state the intended result must be dict rows rather than stray/model-instance iteration (which misaligns and crashes); R1 establishes that values('material').annotate() normally yields one dict per row. Together these pin down the exact behavioral defect R0 fixes (query-set on a values query must re-render as per-row dicts) and the trigger condition (non-empty values_select)."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The ORM's values()/values_list() behavior is carried by QuerySet-owned state (values_select/select on the sql.Query, plus the QuerySet._iterable_class like ValuesIterable/ValuesListIterable in django/db/models/query.py), so pickling only qs.query strips the dict-producing iterable knowledge."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for queryset/query pickling live in tests/queryset_pickle/ (tests.py, models.py); no regression test for this exact values()+annotate query-pickle scenario is present in the visible snapshot."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant sources read: django/db/models/query.py (QuerySet.values/_values/values_list, iterable classes, __getstate__/__setstate__ still whole-queryset), django/db/models/sql/query.py (Query.set_values etc.), and the queryset_pickle test suite."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Value/annotation select ordering used by ValuesIterable is extra_select, values_select, annotation_select."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The hunk adds logic to the QuerySet.query property setter: it sets self._iterable_class = ValuesIterable when value.values_select is truthy, then stores _query. Observable effect concerns cases where a query object (carrying values_select from a earlier .values() call) is assigned onto a QuerySet, e.g. reconstruction paths where only the query (not the whole QuerySet _iterable_class/_fields) is carried over."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The setter only forces ValuesIterable (dict-producing); it does not discriminate whether the source of values_select was .values() vs .values_list(). It also never resets the iterable class when assigning a query without values_select."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ValuesIterable maps each row to a dict keyed by names ordered as extra_select + values_select + annotation_select."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

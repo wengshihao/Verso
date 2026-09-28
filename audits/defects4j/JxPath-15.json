@@ -1,0 +1,120 @@
+{
+  "task_id": "JxPath-15",
+  "status": "ok",
+  "duration_seconds": 382.6020346740006,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "JxPath-15",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a source document '<MAIN><A>avalue</A><B>bvalue</B></MAIN>', evaluating the XPath expression string(/MAIN/B | /MAIN/A) must return \"avalue\" (the string-value of the node first in document order, since A precedes B), not \"bvalue\".",
+        "subject": "CoreOperationUnion / union node-set ordering consumed by the string() function",
+        "hunk_ids": [],
+        "cited_from": "Source document: use <MAIN><A>avalue</A><B>bvalue</B></MAIN> ... Following XPath calculated incorrectly: string(/MAIN/B | /MAIN/A) ... Expected result: \"avalue\" ... Actual value: \"bvalue\" ... Reason: sorting of result nodes is missing from CoreOperationUnion"
+      },
+      {
+        "id": "R2",
+        "statement": "Evaluating a value-producing union expression must yield the same result regardless of the order in which its operands are written, i.e. the value obtained from '<a | b>' equals that from '<b | a>' when both resolve to a document-order-first semantics.",
+        "subject": "UnionContext / union expression value evaluation",
+        "hunk_ids": [],
+        "cited_from": "assertXPathValue(context, \"/vendor[1]/contact[1] | /vendor[1]/contact[4]\", \"John\"); assertXPathValue(context, \"/vendor[1]/contact[4] | /vendor[1]/contact[1]\", \"John\");"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When building its result node set, UnionContext.setPosition collects the pointers from all operand contexts and returns (adds to the underlying node set) them in ascending document order, regardless of the order in which the operand contexts appear or are enumerated.",
+        "subject": "UnionContext.setPosition / JXPath union expression result ordering",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The result node set of a union expression contains each matching node/pointer at most once: duplicate pointers contributed by overlapping operand result sets are deduplicated before being returned.",
+        "subject": "UnionContext.setPosition / union result set contents",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's citation explicitly states 'sorting of result nodes is missing from CoreOperationUnion' and demands string(/MAIN/B|/MAIN/A) = 'avalue', i.e. union results ordered in ascending document order regardless of operand order; S_vis R2 reinforces order-independent document-first semantics. This pins the exact document-order aggregation behavior S_impl R1 commits to."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Visible tests (A/B nodes; contact[1]/contact[4]) use non-overlapping operands, so no scenario demonstrates deduplication of duplicate pointers from overlapping result sets. Doc-order union results imply node-set semantics with unique members, but the visible evidence never directly exercises or confirms overlap dedup, so entailment is uncertain."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R2 (union result-set dedup of overlapping operands) is NOT genuinely witnessable because the fix changed only ordering, not the dedup predicate.\n\nDiff: buggy builds `pointers` and, inside the same `if (!pointers.contains(ptr))` guard, adds ptr BOTH to `pointers` and directly to `nodeSet` in operand-array traversal order. Gold instead collects only into the local `pointers` list (same dedup guard), then calls sortPointers(pointers) and only afterwards adds each pointer to the BasicNodeSet. The membership test / when each distinct pointer is recorded (`pointers.contains` before `pointers.add`) is byte-for-byte identical in both programs. Therefore deduplication of overlapping operand node-sets behaves identically; the only semantic change between the revisions is DOCUMENT ORDER of the returned pointers (that is requirement R1, which the prior S_vis/R-oracle stage already declared insufficient since the visible/hidden oracle enforces nothing beyond an ordering property no hidden test asserts).\n\nI confirmed empirically with a strongly-overlapping JDOM union: operand A = `/vendor/location` (3 nodes), operand B = `/vendor/location/address/..` (same 3 location nodes via parent axis). A correct dedup gives union count 3 (= |A|, not |A|+|B|=6). The probe that asserts count of `/vendor/location | /vendor/location/address/..` equals Double(3) PASSED on BOTH the gold build AND the buggy build. Since both pre- and post-fix code paths deduplicate identically, no input to UnionContext can distinguish gold from buggy on dedup semantics — a genuine R2 witness (pass-gold / fail-buggy) is impossible.\n\nConsequently I also confirm the Oracle Search Agent's earlier found=false verdict. A discriminating Witness would have to target ordering (R1), not duplicate-elimination (R2)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only 7 java source files are visible to a repair system; CoreOperationUnion itself is NOT among them (only UnionContext, NodeSetContext, EvalContext and the DOM/JDOM/XML tests and JXPathTestCase helpers). The Vendor.xml test-resource referenced by the test suite is also not visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "UnionContext extends NodeSetContext and its getDocumentOrder() returns 1 (ascending) when contexts.length > 1, yet its overridden setPosition() populates a BasicNodeSet by iterating the operand contexts in array order without calling any sort — the ordering the issue says is missing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "EvalContext.constructIterator()/sortPointers() already sort collected pointers by document order when getDocumentOrder()!=0, but that path is bypassed by UnionContext.setPosition()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "XMLModelTestCase.testUnion (shared by DOMModelTest and JDOMModelTest via inheritance) asserts union value equality in both operand orders but uses two contacts whose values both happen to be \"John\", so it does not actually discriminate document order."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "UnionContext extends NodeSetContext and inherits the protected sortPointers(List) method from EvalContext, which sorts ascending when getDocumentOrder()==1, descending when -1, and is a no-op for 0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "UnionContext.getDocumentOrder() returns 1 when contexts.length > 1 and otherwise delegates to the super implementation; the patch does not change getDocumentOrder of isChildOrderingRequired."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The ordering of the union node set is driven by calling sortPointers on a locally collected, deduplicated pointer list before adding the pointers to the BasicNodeSet, so the ordering is guaranteed ascending only when getDocumentOrder()==1 (more than one operand)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds imports (java.util.Iterator and org.apache.commons.jxpath.Pointer) needed by the new code in H1; it introduces no behavioral change by itself."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I audited every oracle test file (all 21 listed). No [HIDDEN] oracle test genuinely asserts R2 (dedup of overlapping union operands: a union node-set containing each matching node/pointer at most once).\n\nFailing tests encountered: DOMModelTest.testUnion and JDOMModelTest.testUnion. Both simply inherit XMLModelTestCase.testUnion, whose content is [VISIBLE] and reads:\n  assertXPathValue(context, \"/vendor[1]/contact[1] | /vendor[1]/contact[4]\", \"John\");\n  assertXPathValue(context, \"/vendor[1]/contact[4] | /vendor[1]/contact[1]\", \"John\");\nThe two operands are DISJOINT contact nodes (contact[1] vs contact[4]) that both string-value to \"John\". There is no overlapping-operation i.e. no operand result-set contributes the same node twice, so no dedup can be observed; the single-value assertion would not change regardless of dedup. Hence even ignoring that its content is [VISIBLE] (which alone disqualifies it as a witness), it does not genuinely test R2.\n\nThe only [HIDDEN] files with union expressions also do not test overlapping-operand dedup:\n- VariableTest.testUnionOfVariableAndNode: unions scalar $a with XML/bean node paths ($a | /document/vendor/location, $a | /list) whose operand results are disjoint; asserts counts 3 and 7; it is not among the failing tests (passes on the buggy build) so it is not regulated by this dedup fix.\n- CoreFunctionTest.testExtendedKeyFunction: unions string-literal args for key() and explicitly expects DUPLICATES (list(\"53\",\"64\",\"53\",\"64\")) — enforcing the opposite (non-dedup) on that path, not a node-set dedup assertion.\n- JXPathCompiledExpressionTest.testCoreOperationUnion and StressTest operate at parse/thread level only; no runtime node-set dedup assertion.\nNo oracle test constructs a union whose two node-set operands overlap and then asserts the node appears exactly once. Therefore the oracle already contains no witness for R2 (the only things touching union are either [VISIBLE] non-dedup tests or [HIDDEN] disjoint-operand tests). found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target R2 (union result-set dedup of overlapping operands) is NOT genuinely witnessable because the fix changed only ordering, not the dedup predicate.\n\nDiff: buggy builds `pointers` and, inside the same `if (!pointers.contains(ptr))` guard, adds ptr BOTH to `pointers` and directly to `nodeSet` in operand-array traversal order. Gold instead collects only into the local `pointers` list (same dedup guard), then calls sortPointers(pointers) and only afterwards adds each pointer to the BasicNodeSet. The membership test / when each distinct pointer is recorded (`pointers.contains` before `pointers.add`) is byte-for-byte identical in both programs. Therefore deduplication of overlapping operand node-sets behaves identically; the only semantic change between the revisions is DOCUMENT ORDER of the returned pointers (that is requirement R1, which the prior S_vis/R-oracle stage already declared insufficient since the visible/hidden oracle enforces nothing beyond an ordering property no hidden test asserts).\n\nI confirmed empirically with a strongly-overlapping JDOM union: operand A = `/vendor/location` (3 nodes), operand B = `/vendor/location/address/..` (same 3 location nodes via parent axis). A correct dedup gives union count 3 (= |A|, not |A|+|B|=6). The probe that asserts count of `/vendor/location | /vendor/location/address/..` equals Double(3) PASSED on BOTH the gold build AND the buggy build. Since both pre- and post-fix code paths deduplicate identically, no input to UnionContext can distinguish gold from buggy on dedup semantics — a genuine R2 witness (pass-gold / fail-buggy) is impossible.\n\nConsequently I also confirm the Oracle Search Agent's earlier found=false verdict. A discriminating Witness would have to target ordering (R1), not duplicate-elimination (R2)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (UnionContext.setPosition / union result set contents) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R2 (union result-set dedup of overlapping operands) is NOT genuinely witnessable because the fix changed only ordering, not the dedup predicate.\n\nDiff: buggy builds `pointers` and, inside the same `if (!pointers.contains(ptr))` guard, adds ptr BOTH to `pointers` and directly to `nodeSet` in operand-array traversal order. Gold instead collects only into the local `pointers` list (same dedup guard), then calls sortPointers(pointers) and only afterwards adds each pointer to the BasicNodeSet. The membership test / when each distinct pointer is recorded (`pointers.contains` before `pointers.add`) is byte-for-byte identical in both programs. Therefore deduplication of overlapping operand node-sets behaves identically; the only semantic change between the revisions is DOCUMENT ORDER of the returned pointers (that is requirement R1, which the prior S_vis/R-oracle stage already declared insufficient since the visible/hidden oracle enforces nothing beyond an ordering property no hidden test asserts).\n\nI confirmed empirically with a strongly-overlapping JDOM union: operand A = `/vendor/location` (3 nodes), operand B = `/vendor/location/address/..` (same 3 location nodes via parent axis). A correct dedup gives union count 3 (= |A|, not |A|+|B|=6). The probe that asserts count of `/vendor/location | /vendor/location/address/..` equals Double(3) PASSED on BOTH the gold build AND the buggy build. Since both pre- and post-fix code paths deduplicate identically, no input to UnionContext can distinguish gold from buggy on dedup semantics — a genuine R2 witness (pass-gold / fail-buggy) is impossible.\n\nConsequently I also confirm the Oracle Search Agent's earlier found=false verdict. A discriminating Witness would have to target ordering (R1), not duplicate-elimination (R2).",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "task_id": "scikit-learn__scikit-learn-13328",
+  "status": "ok",
+  "duration_seconds": 168.5965100839967,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-13328",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "HuberRegressor(X, y).fit() must not raise a TypeError (or any error) when X is supplied as a numpy boolean-typed array; the boolean input must be converted to float (as LinearRegression does), so that fitting on a boolean X such as X > 0 succeeds just as fitting on the equivalent float array np.asarray(X_bool, dtype=float) does.",
+        "subject": "HuberRegressor.fit",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"TypeError when supplying a boolean X to HuberRegressor fit\"; Steps/Code: \"huber = HuberRegressor().fit(X_bool, y)\" with \"X_bool = X > 0\" where \"# Fails (!)\" — and Expected Results: \"No error is thrown when `dtype` of `X` is `bool` (second line of code in the snipped above, `.fit(X_bool, y)`)  Boolean array is expected to be converted to `float` by `HuberRegressor.fit` as it is done by, say `LinearRegression`.\" Actual Results trace ends at sklearn/linear_model/huber.py in _huber_loss_and_gradient: \"X_non_outliers = -axis0_safe_slice(X, ~outliers_mask, n_non_outliers)\" -> \"TypeError: The numpy boolean negative, the `-` operator, is not supported, use the `~` operator or the logical_not function instead.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "HuberRegressor.fit accepts an input feature matrix X whose dtype is non-float (e.g. integer or boolean/categorical data stored as bool), casting it internally to a floating-point dtype and fitting successfully, so that calling fit does not raise a TypeError originating from numpy operations on the non-float array and the resulting model behaves equivalently to one fit on the same data converted to float64/float32.",
+        "subject": "HuberRegressor.fit / sklearn.linear_model.HuberRegressor.fit (X input dtype tolerance)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins down HuberRegressor.fit accepting boolean-typed X (the numpy boolean-negative TypeError) and casting it to float to match a float64 fit, exactly covering the boolean portion of S_impl. However S_impl broadens the commitment to also cover integer/categorical input and float32 equivalence, which the visible evidence (strictly boolean → float64) never demonstrates, so the full requirement is only partially pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_huber_bool_X_matches_float_X",
+      "test_source": "import numpy as np\nfrom sklearn.linear_model import HuberRegressor\n\ndef test_huber_bool_X_matches_float_X():\n    # A boolean feature matrix must be accepted (cast internally to float)\n    # and yield the same model as fitting on the identical data as float64.\n    X = np.array([[1, 0], [0, 1], [1, 1], [0, 0]], dtype=bool)\n    y = np.array([1.5, -0.5, 2.0, 0.1])\n    huber_bool = HuberRegressor(alpha=0.0, epsilon=1.0, max_iter=100)\n    huber_bool.fit(X, y)\n    huber_float = HuberRegressor(alpha=0.0, epsilon=1.0, max_iter=100)\n    huber_float.fit(X.astype(np.float64), y)\n    np.testing.assert_almost_equal(huber_bool.coef_, huber_float.coef_)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — TypeError at sklearn/linear_model/huber.py:93 (\"The numpy boolean negative, the `-` operator, is not supported, use the `~` operator...\") triggered while fitting on boolean X because buggy check_X_y lacks dtype=[np.float64,np.float32].",
+      "explanation": "R1 states HuberRegressor.fit must accept a non-float (e.g. boolean) feature matrix X, casting it internally to a float dtype, and fit successfully in a way equivalent to fitting on the float64/float32 version of that data (rather than raising a TypeError from numpy bool ops). The gold hunk adds dtype=[np.float64, np.float32] to the check_X_y call in HuberRegressor.fit, which casts the boolean X to float64 upstream; the buggy version omits that, so the still-boolean X reaches _huber_loss_and_gradient where `-axis0_safe_slice(...)` hits numpy's boolean-negation TypeError.\n\nThe candidate test fits HuberRegressor on a 4x2 boolean X and asserts its coef_ equal those obtained from fitting on the same data converted to float64 (a direct behavioral encoding of R1). Empirically confirmed via run_test: on buggy it FAILS (TypeError at huber.py:93, boolean negative not supported); on gold it PASSES with matching coefficients. I checked visible surface: sklearn/linear_model/tests/test_huber.py (the only oracle file covering HuberRegressor.fit reachable through the read tools) contains no boolean/non-float X case — it only covers gradient correctness, sample weights, sparse parity, scaling invariance, warm start, and LR/SGD/Ridge parity — so no visible assertion pins down this boolean-input behavior, and this test genuinely discriminates the hidden fix without merely restating something already visible. (Note: the target repo is sklearn/Python, so the framework's harness collects the standalone test as a pytest function; source was run byte-for-byte against both programs.)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible source sklearn/linear_model/huber.py HuberRegressor.fit validates X with check_X_y(X, y, copy=False, accept_sparse=['csr'], y_numeric=True), which preserves the boolean dtype (check_X_y/check_array only cast when dtype='numeric' means object dtype), and then passes the still-boolean X directly into optimize.fmin_l_bfgs_b and _huber_loss_and_gradient, where the line `X_non_outliers = -axis0_safe_slice(X, ~outliers_mask, n_non_outliers)` triggers numpy's bool-negation TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "By contrast, LinearRegression.fit (sklearn/linear_model/base.py) routes X through _preprocess_data which calls check_array(X, dtype=FLOAT_DTYPES), casting boolean X to float — the reference behavior the issue cites."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Current visible test file sklearn/linear_model/tests/test_huber.py does not yet contain a regression case for boolean X; it covers gradient correctness, sample weighting, sparse input parity, scaling invariance, warm start, and parity with LinearRegression/SGDRegressor/Ridge."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "axis0_safe_slice is imported from sklearn.utils (utils/__init__.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single developer-patch hunk is in sklearn/linear_model/huber.py, inside HuberRegressor.fit, on the check_X_y validation call."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change adds dtype=[np.float64, np.float32] to check_X_y; prior to this X kept its native dtype because check_X_y only casts object-dtype arrays otherwise."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Downstream in fit, X is passed to optimize.fmin_l_bfgs_b and _huber_loss_and_gradient where boolean arrays break on operations such as -axis0_safe_slice(X, ~outliers_mask, ...)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real oracle contains a hidden test witnessing R1 (HuberRegressor.fit accepting a bool/non-float X and behaving like the float-fit version). The prompt lists sklearn/linear_model/tests/test_huber.py::test_huber_bool as a test currently failing against the buggy program, so my first action was to read that file. The read shows that the whole test_huber.py file is [VISIBLE] content, and that visible file contains NO boolean-input regression case at all — it only covers gradient correctness, max_iter, sample weights, sparse parity, scaling invariance, SGD/Ridge parity, warm start, and R2-better-than-Ridge. There is no assertion anywhere in the readable content about passing a bool (or otherwise non-float) X into HuberRegressor.fit, so there is no [VISIBLE] and — crucially — no [HIDDEN] assertion I can actually source through the read tools for this specific requirement. list_test_files surfaced no separate hidden Huber-regression test file either.\n\nI did independently confirm that R1 is a genuine behavioral gap: a reconstructed test that fits HuberRegressor on a boolean X (random 0/1 ints cast to bool) and compares coefs to a fit on the same data converted to float64 FAILS against the buggy program (TypeError: numpy boolean negative ... at huber.py:93) and PASSES against the gold program. This proves the requirement is real and enforceable, but the test I devised is my own construction and is not derived from any [HIDDEN] oracle assertion text that I was able to read. Per the audit rule that a Witness may only rest on [HIDDEN] content (since anything [VISIBLE] was already seen by a repair system), and given that the only oracle test file covering HuberRegressor.fit that I can inspect is fully [VISIBLE] and contains no boolean-X assertion, I cannot honestly claim a genuine accessible [HIDDEN] witness for R1. Hence found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (HuberRegressor.fit / sklearn.linear_model.HuberRegressor.fit (X input dtype tolerance)): HuberRegressor.fit accepts an input feature matrix X whose dtype is non-float (e.g. integer or boolean/categorical data stored as bool), casting it internally to a floating-point dtype and fitting successfully, so that calling fit does not raise a TypeError originating from numpy operations on the non-float array and the resulting model behaves equivalently to one fit on the same data converted to float64/float32. — not entailed by S_vis (S_vis pins down HuberRegressor.fit accepting boolean-typed X (the numpy boolean-negative TypeError) and casting it to float to match a float64 fit, exactly covering the boolean portion of S_impl. However S_impl broadens the commitment to also cover integer/categorical input and float32 equivalence, which the visible evidence (strictly boolean → float64) never demonstrates, so the full requirement is only partially pinned down.); confirmed by a synthesized witness: R1 states HuberRegressor.fit must accept a non-float (e.g. boolean) feature matrix X, casting it internally to a float dtype, and fit successfully in a way equivalent to fitting on the float64/float32 version of that data (rather than raising a TypeError from numpy bool ops). The gold hunk adds dtype=[np.float64, np.float32] to the check_X_y call in HuberRegressor.fit, which casts the boolean X to float64 upstream; the buggy version omits that, so the still-boolean X reaches _huber_loss_and_gradient where `-axis0_safe_slice(...)` hits numpy's boolean-negation TypeError.\n\nThe candidate test fits HuberRegressor on a 4x2 boolean X and asserts its coef_ equal those obtained from fitting on the same data converted to float64 (a direct behavioral encoding of R1). Empirically confirmed via run_test: on buggy it FAILS (TypeError at huber.py:93, boolean negative not supported); on gold it PASSES with matching coefficients. I checked visible surface: sklearn/linear_model/tests/test_huber.py (the only oracle file covering HuberRegressor.fit reachable through the read tools) contains no boolean/non-float X case — it only covers gradient correctness, sample weights, sparse parity, scaling invariance, warm start, and LR/SGD/Ridge parity — so no visible assertion pins down this boolean-input behavior, and this test genuinely discriminates the hidden fix without merely restating something already visible. (Note: the target repo is sklearn/Python, so the framework's harness collects the standalone test as a pytest function; source was run byte-for-byte against both programs.)",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "task_id": "Closure-131",
+  "status": "ok",
+  "duration_seconds": 186.06806870899982,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "Closure-131",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A string that is a non-empty sequence consisting only of valid ASCII identifier characters and that neither begins with a digit nor contains spaces or punctuation may be treated as a plain (dotted-access) JS property name, so that member expressions on it are converted to dotted form: \"p\"->p, \"_p_\"->_p_, \"_\"->_, \"$\"->$, \"AA\"->a.AA.",
+        "subject": "TokenStream.isJSIdentifier / property-name safe-to-unquote decision",
+        "hunk_ids": [],
+        "cited_from": "ConvertToDottedPropertiesTest.testConvert: test(\"a['p']\", \"a.p\"); test(\"a['_p_']\", \"a._p_\"); test(\"a['_']\", \"a._\"); test(\"a['$']\", \"a.$\"); test(\"a['\\u0041A']\", \"a.AA\"); // \"ASCII in Unicode is safe.\""
+      },
+      {
+        "id": "R2",
+        "statement": "A string is NOT treated as a usable plain JS property name (must remain bracketed) when it is empty, contains a space or punctuation (. , ; :), begins with a digit ('0'), contains a control character such as 'A\\u0004', or contains a non-ASCII (in these cases, non-simple-Latin) letter character such as '\\u1d17A' or '\\u00d1StuffAfter'; e.g. a['\\u00d1StuffAfter'] must remain a['\\u00d1StuffAfter'].",
+        "subject": "TokenStream.isJSIdentifier / property-name safe-to-unquote decision",
+        "hunk_ids": [],
+        "cited_from": "ConvertToDottedPropertiesTest.testDoNotConvert: testSame(\"a['']\"); testSame(\"a[' ']\"); testSame(\"a['.']\"); testSame(\"a['0']\"); testSame(\"a['A\\u0004']\"); // \"Ignorable control characters are ok in Java identifiers, but not in JS.\"; and \"Latin capital N with tilde - nice if we handled it, but for now let's only allow simple Latin (aka ASCII) to be converted.\" test(\"a['\\u00d1StuffAfter']\", \"a['\\u00d1StuffAfter']\"); test(\"a['\\u1d17A']\", \"a['\\u1d17A']\");"
+      },
+      {
+        "id": "R3",
+        "statement": "JavaScript keyword tokens (e.g. 'default') are NOT valid plain property names, so a member expression on such a name must remain in bracketed form (not become dotted), and a quoted object-literal property whose key is not convertible must stay quoted.",
+        "subject": "TokenStream.isKeyword / reserved-word handling",
+        "hunk_ids": [],
+        "cited_from": "ConvertToDottedPropertiesTest.testDoNotConvert: testSame(\"a['default']\"); and testQuotedProps: testSame(\"({'':0})\"); testSame(\"({'1.0':0})\"); testSame(\"({'\\u1d17A':0})\"); testSame(\"({'a\\u0004b':0})\");"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "TokenStream.isJSIdentifier(String s) returns false for any non-null input string that contains at least one character c for which Character.isIdentifierIgnorable(c) returns true, regardless of whether that character is the first character of the string or appears later.",
+        "subject": "com.google.javascript.rhino.TokenStream.isJSIdentifier(String)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis shows that embedded ignorable/control characters such as '\\u0004' disqualify a string from being treated as a JS identifier ('A\\u0004' stays bracketed), which is behaviorally consistent with the claimed isIdentifierIgnorable check. However, the S_vis evidence never names Character.isIdentifierIgnorable as the disqualifying mechanism (it is folded under a generic 'control character' category), and all visible examples place ignorable characters at later/middle positions rather than the first, so the patch-emphasized 'regardless of whether first or later' position independence is not pinned down by visible info."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "ignorableCharactersRejected",
+      "test_source": "@Test\npublic void ignorableCharactersRejected() {\n  // ignorable char after the first character (matches oracle 'A\\u0004' and 'a\\u0004b')\n  assertFalse(com.google.javascript.rhino.TokenStream.isJSIdentifier(\"A\\u0004\"));\n  assertFalse(com.google.javascript.rhino.TokenStream.isJSIdentifier(\"a\\u0004b\"));\n  // ignorable char as the first character\n  assertFalse(com.google.javascript.rhino.TokenStream.isJSIdentifier(\"\\u0004\"));\n  assertFalse(com.google.javascript.rhino.TokenStream.isJSIdentifier(\"\\u0004A\"));\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: first assertion A\\u0004 still accepted as JS identifier on buggy)",
+      "explanation": "The [HIDDEN] oracle file test/com/google/javascript/jscomp/ConvertToDottedPropertiesTest.java (whose testQuotedProps and testDoNotConvert are the tests that currently fail against the buggy program) contains ignorable-control-character assertions that depend on exactly the behavior R1 requires of TokenStream.isJSIdentifier. Specifically: testDoNotConvert has `testSame(\"a['A\\\\u0004']\")` with the code comment \"Ignorable control characters are ok in Java identifiers, but not in JS\", and testQuotedProps has `testSame(\"({'a\\\\u0004b':0})\")`. Both place the ignorable character (\\\\u0004) in a NON-first position; the ConvertToDottedProperties pass will only decline to convert these to dotted form if TokenStream.isJSIdentifier returns false, i.e. precisely when the string contains an ignorable Character.isIdentifierIgnorable char even when it appears after the first character. The fix's only behavioral change (adding the isIdentifierIgnorable check into both the first-char guard and the subsequent-char loop guard) is exactly what makes these pass tests pass, so these oracle assertions genuinely test R1. Because the oracle pass tests are CompilerTestCase-based and cannot be compiled as standalone JUnit4 in this harness (they reference the testSame/test framework), I reproduced the SAME ignorable-character contract directly at the method level that R1 states, drawing on the ignorable cases from the [HIDDEN] file. Confirmed by execution: isJSIdentifier(\"A\\\\u0004\")/(\"a\\\\u0004b\") and the first-position variants all return false on gold (PASSED) while the A\\\\u0004-style case returns true on the buggy build (FAILED), matching the gold/buggy split observed for the oracle's testQuotedProps/testDoNotConvert."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible issue text is only a fallback citation ('Could not automatically fetch the original bug report text...') naming com.google.javascript.rhino.TokenStream as the file the fix touches; no concrete bug description is present in the visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The only tests shipped with this task (test/com/google/javascript/jscomp/*) exercise the ConvertToDottedProperties pass, whose own source (ConvertToDottedProperties.java) is NOT in the visible listing, so the exact call path from that pass into TokenStream.isJSIdentifier/isKeyword is not directly visible but is implied by test comments referencing Java vs. JS identifier rules."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TokenStream.java (the file named by the issue) exposes two static methods: isKeyword(String) and isJSIdentifier(String); isJSIdentifier currently delegates to Character.isJavaIdentifierStart/isJavaIdentifierPart, which the test comments flag as over-permissive for JS (it accepts non-ASCII letters/control chars that JS forbids)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The repository snapshot shown appears to be the pre-fix, buggy state, so the visible tests above presumably do not yet pass and are not deterministically linked to the (unknown) hidden regression test for this bug."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only alters isJSIdentifier; isKeyword is unchanged by this fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold implementation short-circuits the ignorable check into both guards of isJSIdentifier (first-character guard and per-subsequent-character loop guard); because Java treats certain control/format characters as ignorable but still identifier-valid via isJavaIdentifierStart/isJavaIdentifierPart, the added isIdentifierIgnorable check is the only behavioral difference versus the buggy version."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The empty-string guard and the Java-identifier validity checks are unchanged by the patch; the patch therefore does not alter the behavior of isJSIdentifier for inputs free of ignorable characters."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (com.google.javascript.rhino.TokenStream.isJSIdentifier(String)): TokenStream.isJSIdentifier(String s) returns false for any non-null input string that contains at least one character c for which Character.isIdentifierIgnorable(c) returns true, regardless of whether that character is the first character of the string or appears later. — not entailed by S_vis (S_vis shows that embedded ignorable/control characters such as '\\u0004' disqualify a string from being treated as a JS identifier ('A\\u0004' stays bracketed), which is behaviorally consistent with the claimed isIdentifierIgnorable check. However, the S_vis evidence never names Character.isIdentifierIgnorable as the disqualifying mechanism (it is folded under a generic 'control character' category), and all visible examples place ignorable characters at later/middle positions rather than the first, so the patch-emphasized 'regardless of whether first or later' position independence is not pinned down by visible info.); confirmed by a oracle witness: The [HIDDEN] oracle file test/com/google/javascript/jscomp/ConvertToDottedPropertiesTest.java (whose testQuotedProps and testDoNotConvert are the tests that currently fail against the buggy program) contains ignorable-control-character assertions that depend on exactly the behavior R1 requires of TokenStream.isJSIdentifier. Specifically: testDoNotConvert has `testSame(\"a['A\\\\u0004']\")` with the code comment \"Ignorable control characters are ok in Java identifiers, but not in JS\", and testQuotedProps has `testSame(\"({'a\\\\u0004b':0})\")`. Both place the ignorable character (\\\\u0004) in a NON-first position; the ConvertToDottedProperties pass will only decline to convert these to dotted form if TokenStream.isJSIdentifier returns false, i.e. precisely when the string contains an ignorable Character.isIdentifierIgnorable char even when it appears after the first character. The fix's only behavioral change (adding the isIdentifierIgnorable check into both the first-char guard and the subsequent-char loop guard) is exactly what makes these pass tests pass, so these oracle assertions genuinely test R1. Because the oracle pass tests are CompilerTestCase-based and cannot be compiled as standalone JUnit4 in this harness (they reference the testSame/test framework), I reproduced the SAME ignorable-character contract directly at the method level that R1 states, drawing on the ignorable cases from the [HIDDEN] file. Confirmed by execution: isJSIdentifier(\"A\\\\u0004\")/(\"a\\\\u0004b\") and the first-position variants all return false on gold (PASSED) while the A\\\\u0004-style case returns true on the buggy build (FAILED), matching the gold/buggy split observed for the oracle's testQuotedProps/testDoNotConvert.",
+    "confidence": "High"
+  }
+}

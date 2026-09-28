@@ -1,0 +1,106 @@
+{
+  "task_id": "django__django-15695",
+  "status": "ok",
+  "duration_seconds": 805.2232485420536,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15695",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "After a RenameIndex operation that renames an unnamed/auto-generated index (constructed with old_fields such as ('weight','pink')) has been applied forwards (renaming the DB index to new_pony_test_idx) and then the same operation has been run backwards (which for an unnamed index is a zero-query no-op leaving the index still named new_pony_test_idx), re-applying database_forwards must not raise — specifically must not crash with PostgreSQL's `relation \"new_pony_test_idx\" already exists` — and must leave an index named \"new_pony_test_idx\" present on the table.",
+        "subject": "RenameIndex.database_forwards (django/db/migrations/operations/models.py, IndexOperation)",
+        "hunk_ids": [],
+        "cited_from": "Issue snippet added to tests/migrations/test_operations.py: \"# Re-apply renaming.\\n        with connection.schema_editor() as editor:\\n            operation.database_forwards(app_label, editor, project_state, new_state)\\n        self.assertIndexNameExists(table_name, \"new_pony_test_idx\")\\n        # Deconstruction.\"... Crash reproduced on PostgreSQL: \"django.db.utils.ProgrammingError: relation \"new_pony_test_idx\" already exists\""
+      },
+      {
+        "id": "R2",
+        "statement": "Moving backwards through a RenameIndex that renamed (via old_fields) an unnamed auto-generated index originally arising from a Meta.unique_together must restore that index's old auto-generated name rather than leaving it under the new name, so that re-applying the RenameIndex forwards afterwards succeeds instead of crashing.",
+        "subject": "RenameIndex backward direction for unnamed unique_together index",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"RenameIndex() should restore the old auto-generated name when an unnamed index for unique_together is moving backward. Now re-applying RenameIndex() crashes. For example: tests/migrations/test_operations.py ... crashes on PostgreSQL: django.db.utils.ProgrammingError: relation \"new_pony_test_idx\" already exists\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When RenameIndex.database_forwards resolves the pre-renaming (from-state / actually-present) index and that index's name already equals self.new_name — i.e. the operation is a no-op because nothing would change — it performs no database schema change (does not call schema_editor.rename_index, and does not require the to_state index lookup) and returns normally, rather than attempting to rename an index to a name it already carries (which previously triggered a duplicate-relation error on re-application of an unnamed-index rename after its no-op backward step).",
+        "subject": "RenameIndex.database_forwards (django/db/migrations/operations/models.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 does capture the exact scenario (re-applying database_forwards after the no-op backward step leaves the index named new_pony_test_idx) and the required outcome (no crash, index preserved). However, it states the postcondition of the fix, not its specific mechanism: S_impl R1 requires the precise branch where database_forwards resolves the pre-renaming index, detects its name already equals self.new_name, and accordingly skips rename_index and the to_state lookup. S_vis never spells out that name-equality guard or the skipped to_state lookup, so a repair could meet S_vis via a different implementation (e.g. error swallowing), making full entailment uncertain."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_witness_no_rename_on_reapply",
+      "test_source": "def test_witness_no_rename_on_reapply():\n    import django\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            SECRET_KEY=\"x\",\n            INSTALLED_APPS=[],\n            DATABASES={\n                \"default\": {\n                    \"ENGINE\": \"django.db.backends.sqlite3\",\n                    \"NAME\": \":memory:\",\n                }\n            },\n            DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n            MIGRATION_MODULES={},\n        )\n    django.setup()\n    from django.db import connection, migrations, models as dmodels\n    from django.db.migrations.state import ProjectState\n\n    app_label = \"test_rnw\"\n    project_state = ProjectState()\n    create = migrations.CreateModel(\n        \"Pony\",\n        [\n            (\"id\", dmodels.AutoField(primary_key=True)),\n            (\"pink\", dmodels.IntegerField(default=3)),\n            (\"weight\", dmodels.FloatField()),\n        ],\n        options={\"index_together\": [[\"weight\", \"pink\"]]},\n    )\n    new_state = project_state.clone()\n    create.state_forwards(app_label, new_state)\n    with connection.schema_editor() as editor:\n        create.database_forwards(app_label, editor, project_state, new_state)\n    project_state = new_state\n\n    op = migrations.RenameIndex(\n        \"Pony\", new_name=\"new_pony_test_idx\", old_fields=(\"weight\", \"pink\")\n    )\n    new_state = project_state.clone()\n    op.state_forwards(app_label, new_state)\n    # First forward renames the database index to new_pony_test_idx.\n    with connection.schema_editor() as editor:\n        op.database_forwards(app_label, editor, project_state, new_state)\n    # No-op backwards leaves the database index under new_pony_test_idx.\n    with connection.schema_editor() as editor:\n        op.database_backwards(app_label, editor, new_state, project_state)\n\n    # Lock the editor so a real `rename_index` to an identical name would be\n    # detected: a no-op re-application must not perform any schema change.\n    def _forbidden(*a, **k):\n        raise RuntimeError(\"rename_index was called on a no-op re-apply\")\n\n    with connection.schema_editor() as editor:\n        editor.rename_index = _forbidden\n        op.database_forwards(app_label, editor, project_state, new_state)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (RuntimeError: rename_index was called on a no-op re-apply)",
+      "explanation": "R1 states that RenameIndex.database_forwards, when re-applying an unnamed-index (old_fields) rename whose actually-present DB index already carries self.new_name (the state after an initial forward plus the documented no-op backward), must act as a no-op: it must not reach schema_editor.rename_index (nor need the to_state index lookup).\n\nThe test builds a real sqlite schema for a Pony model whose options declare index_together=(weight, pink), reproduces the exact forward/backward-forward lifecycle, and then re-runs database_forwards while replacing editor.rename_index with a stub that raises iff it is invoked. On the buggy (pre-fix) code the early-return guard is absent, so the re-application resolves the matching DB constraint (new_pony_test_idx), that old_index.name equals self.new_name, and proceeds to call schema_editor.rename_index — which the stub detects and the test fails. On the fixed code the added `if old_index.name == self.new_name: return` short-circuits before the to_state lookup / rename_index call, so the test passes.\n\nThis was byte-for-byte executed against the buggy revision (FAILED with the RuntimeError from the rename stub) and against the gold revision (PASSED). The behavior is not pinned down anywhere in the visible oracle (the visible test_rename_index_unnamed_index performs only a single forward plus the no-op backward and never re-applies the forward, so it cannot observe the no-op re-application guard); the re-apply-plus-stub detection is genuinely novel."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source: django/db/migrations/operations/models.py defines RenameIndex (IndexOperation). Its state_forwards with old_fields does state.add_index(models.Index(fields=old_fields, name=new_name)) and removes the index_together model option; its database_backwards returns early as a no-op when self.old_fields is set ('# Backward operation with unnamed index is a no-op.') and only swaps old/new name for the old_name path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's diff targets tests/migrations/test_operations.py OperationTests: it inserts a '# Re-apply renaming.' forward call plus assertIndexNameExists after the existing block that asserts database_backwards runs with assertNumQueries(0) and leaves index 'new_pony_test_idx' (matching the unnamed-index RenameIndex test layout around the current test_rename_index_unnamed_index method). That existing method uses set_up_test_model(app_label, index_together=True) with operation = RenameIndex('Pony', new_name='new_pony_test_idx', old_fields=('weight','pink'))."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/migrations/test_base.py OperationTestBase.set_up_test_model: for the same Pony model, index_together=True sets options['index_together']=[['weight','pink']] while unique_together=True sets options['unique_together']=[['pink','weight']] — so the auto-generated DB index differs (plain index vs. unique constraint). The exact setup behind the added re-apply lines is not fully pinned by the visible diff alone; the issue prose describes the unique_together case."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Pre-fix re-apply trace (index_together unnamed case): after forward renames auto index to new_pony_test_idx and no-op backward leaves it under new_pony_test_idx, the next database_forwards computes matching_index_name = new_pony_test_idx (already exists) and old_index/new_index both resolve to new_pony_test_idx, causing the reported duplicate-relation error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test-file structure: OperationTests in tests/migrations/test_operations.py repeatedly calls operation.database_forwards/database_backwards directly under connection.schema_editor() and uses assertIndexNameExists/assertIndexNameNotExists helpers; deconstruction of RenameIndex is asserted with definition[0] == 'RenameIndex'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue snippet deconstruction appears right after the added re-apply block: 'definition = operation.deconstruct()' / 'self.assertEqual(definition[0], \"RenameIndex\")'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 inserts a guard that is reached after old_index resolution and applies to both RenameIndex code paths (old_fields-set, where old_index.name is the discovered DB constraint name; and old_name-set, where old_index is looked up in from_state by old_name), uniformly short-circuiting before the to_state 'new_index' lookup and schema_editor.rename_index call."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For old_fields (unnamed) renames, database_backwards is already a documented no-op, so a forward-backward-forward re-application leaves the DB index already under new_name, which is the scenario this guard makes safe."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "database_forwards still returns early (no-op) when allow_migrate_model is False, and still raises ValueError for a wrong number of matching indexes before this guard is reached in the old_fields path."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real pre-existing oracle already contains a test witnessing R1: that RenameIndex.database_forwards, when re-applying an unnamed-index (old_fields) rename whose resolved existing index name already equals self.new_name (the scenario after a forward + no-op backward has left the DB index under new_name), acts as a no-op (no schema_editor.rename_index and no duplicate-relation error).\n\nRelevant evidence gathered:\n1. tests/migrations/test_operations.py (the file where OperationTests exercise database_forwards/database_backwards for RenameIndex) is labeled [VISIBLE]. Its `test_rename_index_unnamed_index` performs one forward `database_forwards` (renames auto index to new_pony_test_idx), then the documented no-op backward with assertNumQueries(0), verifies the index still exists as new_pony_test_idx, and then stops at the deconstruction. It does NOT perform the second (re-application) forward call that would trigger R1's bug. So the current oracle test does not exercise the no-op re-apply behavior at all.\n2. The reporter's failing-test list records \"(none recorded)\" — no oracle test fails against the buggy program. Since a genuine Witness must fail against the buggy (pre-fix) program, an empty failing set indicates the oracle encodes nothing that R1's fix changes.\n3. The task notebook itself confirms the whole re-apply block ('# Re-apply renaming.' + re-forward call + assertIndexNameExists) is the NEW test material the developer's diff is expected to add to test_rename_index_unnamed_index; it is not present in the visible oracle file.\n4. I also checked tests/migrations/test_executor.py, tests/postgres_tests/test_operations.py, tests/postgres_tests/test_indexes.py, and tests/contenttypes_tests/test_operations.py (all labeled [VISIBLE]); none exercises the unnamed-index RenameIndex re-application no-op scenario.\n\nConsequently there is no oracle test (visible or hidden) whose assertion genuinely tests R1, and no candidate to run/confirm against gold & buggy. Even the only structurally closest method lacks the re-apply step and is [VISIBLE] content. Thus found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (RenameIndex.database_forwards (django/db/migrations/operations/models.py)): When RenameIndex.database_forwards resolves the pre-renaming (from-state / actually-present) index and that index's name already equals self.new_name — i.e. the operation is a no-op because nothing would change — it performs no database schema change (does not call schema_editor.rename_index, and does not require the to_state index lookup) and returns normally, rather than attempting to rename an index to a name it already carries (which previously triggered a duplicate-relation error on re-application of an unnamed-index rename after its no-op backward step). — not entailed by S_vis (S_vis R1 does capture the exact scenario (re-applying database_forwards after the no-op backward step leaves the index named new_pony_test_idx) and the required outcome (no crash, index preserved). However, it states the postcondition of the fix, not its specific mechanism: S_impl R1 requires the precise branch where database_forwards resolves the pre-renaming index, detects its name already equals self.new_name, and accordingly skips rename_index and the to_state lookup. S_vis never spells out that name-equality guard or the skipped to_state lookup, so a repair could meet S_vis via a different implementation (e.g. error swallowing), making full entailment uncertain.); confirmed by a synthesized witness: R1 states that RenameIndex.database_forwards, when re-applying an unnamed-index (old_fields) rename whose actually-present DB index already carries self.new_name (the state after an initial forward plus the documented no-op backward), must act as a no-op: it must not reach schema_editor.rename_index (nor need the to_state index lookup).\n\nThe test builds a real sqlite schema for a Pony model whose options declare index_together=(weight, pink), reproduces the exact forward/backward-forward lifecycle, and then re-runs database_forwards while replacing editor.rename_index with a stub that raises iff it is invoked. On the buggy (pre-fix) code the early-return guard is absent, so the re-application resolves the matching DB constraint (new_pony_test_idx), that old_index.name equals self.new_name, and proceeds to call schema_editor.rename_index — which the stub detects and the test fails. On the fixed code the added `if old_index.name == self.new_name: return` short-circuits before the to_state lookup / rename_index call, so the test passes.\n\nThis was byte-for-byte executed against the buggy revision (FAILED with the RuntimeError from the rename stub) and against the gold revision (PASSED). The behavior is not pinned down anywhere in the visible oracle (the visible test_rename_index_unnamed_index performs only a single forward plus the no-op backward and never re-applies the forward, so it cannot observe the no-op re-application guard); the re-apply-plus-stub detection is genuinely novel.",
+    "confidence": "Medium"
+  }
+}

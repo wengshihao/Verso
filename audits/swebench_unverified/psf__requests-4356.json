@@ -1,0 +1,117 @@
+{
+  "task_id": "psf__requests-4356",
+  "status": "ok",
+  "duration_seconds": 163.85572741704527,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-4356",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When an HTTPS request is sent through a proxy whose configured URL value is missing the authority-introducing '//' after the scheme (e.g. the env var `https_proxy`/`HTTPS_PROXY` set to `http:/my.proxy.com:3128`), requests must not fail with the raw urllib3 `AttributeError: 'NoneType' object has no attribute 'startswith'` traceback reported in the issue (which originates deep inside urllib3 connection handling and does not identify the proxy as the cause). Instead it should raise an exception that is clearer and pinpoints that the problem lies in the proxy configuration.",
+        "subject": "requests HTTPAdapter proxy handling / proxy URL validation (get_connection, proxy_manager_for, prepend_scheme_if_needed)",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"When the value of `https_proxy` or `HTTPS_PROXY` variable(s) accidentally miss one '/' in the protocol, a traceback is thrown to the user which doesn't pin point that the issue is with the proxy configuration.\" / \"Expected Result: A better exception\" / Reproduction: `$ export https_proxy=http:/my.proxy.com:3128` ... `AttributeError: 'NoneType' object has no attribute 'startswith'` at `urllib3/util/connection.py, line 51, in create_connection`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "requests.exceptions defines a new exception class InvalidProxyURL, subclassing InvalidURL (and thus RequestException/ValueError), so that code can `from requests.exceptions import InvalidProxyURL` and catch it as an InvalidURL.",
+        "subject": "requests.exceptions.InvalidProxyURL (exception class)",
+        "hunk_ids": [
+          "H3",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "HTTPAdapter.get_connection, when a proxy is selected from the proxies mapping and its URL — after scheme normalization via prepend_scheme_if_needed(proxy, 'http') — parses to no host (e.g. a proxy such as 'http://...' that is missing its host), raises requests.exceptions.InvalidProxyURL with a message indicating the proxy URL is malformed and possibly missing the host, instead of proceeding to build/proxy the urllib3 connection (and instead of surfacing a lower-level urllib3 parsing failure).",
+        "subject": "HTTPAdapter.get_connection",
+        "hunk_ids": [
+          "H2",
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis calls for 'a better exception' that pinpoints the proxy configuration for a malformed proxy URL, which broadly motivates a proxy-specific exception. However, it never specifies that a new class named InvalidProxyURL must subclass InvalidURL in requests.exceptions nor any import/catch semantics, so the exact class API is not pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis's reproduction (proxy missing '//' after scheme causing host-less parse) is the kind of malformed-proxy failure that R2's get_connection validation would address, and its goal of a clear proxy config error aligns. But S_vis gives no detail about HTTPAdapter.get_connection, prepend_scheme_if_needed, host-missing detection, or raising InvalidProxyURL, and it never even introduces the InvalidProxyURL class R2 references, so the specific behavior isn't entailable."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_invalid_proxy_url_exception",
+      "test_source": "def test_invalid_proxy_url_exception():\n    from requests.exceptions import InvalidProxyURL, InvalidURL, RequestException\n    # R1: InvalidProxyURL must be importable from requests.exceptions and be an InvalidURL\n    assert issubclass(InvalidProxyURL, InvalidURL)\n    assert issubclass(InvalidProxyURL, RequestException)\n    assert issubclass(InvalidProxyURL, ValueError)\n    # It must also be instantiable/catchable as an InvalidURL\n    err = InvalidProxyURL(\"bad proxy\")\n    assert isinstance(err, InvalidURL)\n",
+      "gold_result": "PASSED — on gold, requests.exceptions defines InvalidProxyURL subclassing InvalidURL, and it can be imported/instantiated and caught as InvalidURL.",
+      "buggy_result": "FAILED — on buggy, `from requests.exceptions import InvalidProxyURL` raises ImportError: cannot import name 'InvalidProxyURL' (class not defined pre-fix).",
+      "explanation": "R1 asserts that requests.exceptions defines an importable exception class InvalidProxyURL subclassing InvalidURL (and thus RequestException/ValueError). On gold H3 introduces `class InvalidProxyURL(InvalidURL)`, whereas the buggy exceptions.py lacks it entirely. My candidate imports InvalidProxyURL from requests.exceptions and asserts issubclass(InvalidProxyURL, InvalidURL), issubclass(InvalidProxyURL, RequestException), issubclass(InvalidProxyURL, ValueError), and that an instance is caught as InvalidURL — a direct, literal encoding of R1's `from requests.exceptions import InvalidProxyURL` / catch-as-InvalidURL contract. No visible document, test, or note (HISTORY/docs mention MissingSchema for missing schemes, not InvalidProxyURL) pins this new exception's existence or inheritance, and the Oracle Search Agent confirmed no hidden test asserts it either; the fix adds the class as genuinely new API. Verified by execution: the exact source PASSES on gold and FAILS on buggy (ImportError cannot import name 'InvalidProxyURL')."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Proxy configuration flows: env vars `http_proxy`/`https_proxy`/`all_proxy` (or the `proxies` dict) are merged in `Session.merge_environment_settings` / `Session.request` and consumed through `requests.utils.select_proxy`, then `HTTPAdapter.get_connection` → `prepend_scheme_if_needed(proxy,'http')` → `HTTPAdapter.proxy_manager_for` → urllib3 `proxy_from_url`; the urlparse/urllib3 deep failure surfaces instead of a Requests-level error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing proxy-related tests live in tests/test_requests.py (e.g. `test_proxy_error` expects ProxyError when proxy host can't resolve; `test_proxy__auth`/empty-pass tests check Proxy-Authorization header; module-scope `test_proxy_env_vars_override_default`) and tests/test_utils.py (`test_prepend_scheme_if_needed`, `test_select_proxies`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/test_utils.py documents that a scheme-less proxy like 'example.com/path' is rewritten to 'http://example.com/path' by `prepend_scheme_if_needed`; there is NO test covering a scheme present but missing the double slash (e.g. 'http:/...')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/user/advanced.rst, Proxies section) state 'Note that proxy URLs must include the scheme.'"
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HISTORY.rst 2.0.0 entry: 'Proxy URLs now *must* have an explicit scheme. A ``MissingSchema`` exception will be raised if they don't.' — evidence Requests already maps malformed proxy URL scheme shape to a MissingSchema error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible issue is intentionally vague about the target fix: it reports the confusing urllib3 `AttributeError` and requests only 'A better exception' / 'which pin points that the issue is with the proxy configuration', asking whether to fix in requests/urllib3/urlparse. No visible test pins the intended new exception type or message, so only a coarse, direction-level behavioral claim is grounded in the visible material."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 only adds the `from urllib3.util import parse_url` import (supporting machinery); H1 adds InvalidProxyURL to the existing import from .exceptions in adapters.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "InvalidProxyURL is defined in requests/exceptions.py but is NOT among the exceptions re-exported at the top level of the requests package in requests/__init__.py; it is reachable as requests.exceptions.InvalidProxyURL."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new guard (H2) is placed in the `if proxy:` branch of get_connection after prepend_scheme_if_needed and before proxy_manager_for, so it does not affect the no-proxy path nor SOCKS-specific handling that occurs inside proxy_manager_for."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined every test file in the oracle (list_test_files then read them all) for any test that enforces R1: that `requests.exceptions` defines an importable `InvalidProxyURL` subclassing `InvalidURL`.\n\nOnly two oracle files are [HIDDEN]: tests/test_packages.py and tests/conftest.py. test_packages.py only asserts attribute access to requests.packages.urllib3/idna/chardet; conftest.py is purely pytest fixtures. Neither mentions InvalidProxyURL nor any proxy-derived exception. All proxy/exception tests that exist — test_invalid_url, test_proxy_error, test_proxy_auth/empty_pass, test_prepend_scheme_if_needed, test_select_proxies, test_use_proxy_from_environment — live in [VISIBLE] content (test_requests.py, test_utils.py, test_lowlevel.py) and none of them reference, import, or assert on InvalidProxyURL as a class; they test ProxyError/MissingSchema/InvalidURL for other reasons and wouldn't change pass/fail based on adding the InvalidProxyURL exception class/subclassing.\n\nConsequently there is no [HIDDEN] oracle assertion that requires `from requests.exceptions import InvalidProxyURL` to succeed or that InvalidProxyURL is catchable as an InvalidURL — so no test can serve as a witness that passes on gold and fails on buggy specifically about R1. (Consistent with '(none recorded)' for currently-failing tests.) found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (requests.exceptions.InvalidProxyURL (exception class)): requests.exceptions defines a new exception class InvalidProxyURL, subclassing InvalidURL (and thus RequestException/ValueError), so that code can `from requests.exceptions import InvalidProxyURL` and catch it as an InvalidURL. — not entailed by S_vis (S_vis calls for 'a better exception' that pinpoints the proxy configuration for a malformed proxy URL, which broadly motivates a proxy-specific exception. However, it never specifies that a new class named InvalidProxyURL must subclass InvalidURL in requests.exceptions nor any import/catch semantics, so the exact class API is not pinned down.); confirmed by a synthesized witness: R1 asserts that requests.exceptions defines an importable exception class InvalidProxyURL subclassing InvalidURL (and thus RequestException/ValueError). On gold H3 introduces `class InvalidProxyURL(InvalidURL)`, whereas the buggy exceptions.py lacks it entirely. My candidate imports InvalidProxyURL from requests.exceptions and asserts issubclass(InvalidProxyURL, InvalidURL), issubclass(InvalidProxyURL, RequestException), issubclass(InvalidProxyURL, ValueError), and that an instance is caught as InvalidURL — a direct, literal encoding of R1's `from requests.exceptions import InvalidProxyURL` / catch-as-InvalidURL contract. No visible document, test, or note (HISTORY/docs mention MissingSchema for missing schemes, not InvalidProxyURL) pins this new exception's existence or inheritance, and the Oracle Search Agent confirmed no hidden test asserts it either; the fix adds the class as genuinely new API. Verified by execution: the exact source PASSES on gold and FAILS on buggy (ImportError cannot import name 'InvalidProxyURL').",
+    "confidence": "Medium"
+  }
+}

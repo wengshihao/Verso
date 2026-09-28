@@ -1,0 +1,98 @@
+{
+  "task_id": "sphinx-doc__sphinx-8269",
+  "status": "ok",
+  "duration_seconds": 249.74024016596377,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "sphinx-doc__sphinx-8269",
+    "s_vis": [
+      {
+        "id": "r1",
+        "statement": "When linkcheck_anchors is True and a checked URL carries an anchor fragment (#...), if the GET of the anchor-less URL (req_url) yields an HTTP error status (e.g. 404, 500), the linkcheck result must report that HTTP error as the broken reason (status 'broken' with the HTTPError message such as \"404 Client Error: Not Found for url: https://google.com/test.txt\") — the same outcome as when linkcheck_anchors is False — rather than reporting \"Anchor '<name>' not found\".",
+        "subject": "sphinx.builders.linkcheck.check_thread/check_uri (anchor-check branch)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The `linkcheck` command always reports that it was unable to find the anchor when [`linkcheck_anchors`] is `True`, even when the server replied with an error status code (e.g. 404, 500). ... While it is indeed unable to find the anchor, the real issue is that the server encountered an error.\" Issue expected output: \"Same as when `linkcheck_anchors=False`. (line   22) broken    https://google.com/test.txt#test - 404 Client Error: Not Found for url: https://google.com/test.txt\". Code path: \"if anchor and self.app.config.linkcheck_anchors: ... response = requests.get(req_url, stream=True, config=self.app.config, auth=auth_info, **kwargs); found = check_anchor(response, unquote(anchor)); if not found: raise Exception(__(\"Anchor '%s' not found\") % anchor)\" contrasted with the non-anchor branch which calls \"response.raise_for_status()\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When linkcheck checks a URL with a fragment anchor (anchor present, not ignored, and linkcheck_anchors enabled) and the streamed GET of the anchor's base URL (req_url) returns an HTTP error status, the URL is reported based on that HTTP error via the standard status handling (401 as 'working'/'- unauthorized', 503 as 'ignored' with the error, any other error status as 'broken' with the error) rather than being reported as 'Anchor ... not found' after scanning the error document body.",
+        "subject": "CheckExternalLinksBuilder.check_uri anchor branch",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "r1"
+        ],
+        "rationale": "S_vis r1 (and its cited issue report) pins down the central commit that when GET of the base URL yields an HTTP error, the result is reported via the HTTP error as in the linkcheck_anchors=False branch (broken with HTTPError for 404/500) rather than 'Anchor not found' after scanning the error body. However, R1 additionally specifies a fine-grained routing table (401→'working'/'- unauthorized', 503→'ignored' with the error), and S_vis's visible evidence only exemplifies the broken class (404/500) and never states the 401/503 special handling, so not every specifically-listed sub-behavior is pinned."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_anchor_http_error_status_reported",
+      "test_source": "import json\nimport requests\nfrom unittest import mock\n\n\ndef test_anchor_http_error_status_reported(tmp_path):\n    import sphinx.util.requests as surl\n    from sphinx.application import Sphinx\n\n    src = tmp_path / \"src\"\n    src.mkdir()\n    (src / \"conf.py\").write_text(\n        \"master_doc = 'index'\\n\"\n        \"source_suffix = '.txt'\\n\"\n        \"exclude_patterns = ['_build']\\n\"\n        \"linkcheck_anchors = True\\n\"\n        \"linkcheck_workers = 1\\n\"\n    )\n    # An anchor-bearing URL whose base (req_url) will be made to return HTTP 503\n    (src / \"index.txt\").write_text(\n        \"* `bad <https://example.invalid/page#missing>`_\"\n    )\n\n    uri = \"https://example.invalid/page#missing\"\n\n    class FakeErrResp:\n        status_code = 503\n        reason = \"Service Unavailable\"\n        url = \"https://example.invalid/page\"\n\n    class FakeResp:\n        url = FakeErrResp.url\n        history = []\n\n        def iter_content(self, chunk_size=None, decode_unicode=True):\n            # error document body contains no anchor -> buggy path wouldn't find it\n            return iter([])\n\n        def raise_for_status(self):\n            err = requests.exceptions.HTTPError(\n                \"503 Server Error: Service Unavailable for url: %s\" % self.url)\n            err.response = FakeErrResp()\n            raise err\n\n    def fake_get(url, **kwargs):\n        return FakeResp()\n\n    out = tmp_path / \"out\"\n    doctree = tmp_path / \"doctree\"\n    with mock.patch.object(surl, \"get\", side_effect=fake_get):\n        app = Sphinx(src, src, out, doctree, buildername=\"linkcheck\", freshenv=True)\n        app.builder.build_all()\n\n    # Gold: the HTTP 503 on the base URL must be reported as 'ignored' with the\n    # server error, NOT scanned and reported with an anchor error.\n    data = (out / \"output.json\").read_text()\n    rows = [json.loads(line) for line in data.splitlines()]\n    row = next(r for r in rows if r[\"uri\"] == uri)\n    print(\"status=\", row[\"status\"], \"info=\", row[\"info\"])\n    assert row[\"status\"] == \"ignored\", \"expected ignored; got %r %r\" % (row[\"status\"], row[\"info\"])\n    assert \"Anchor 'missing' not found\" not in row[\"info\"]",
+      "gold_result": "PASSED (running the exact source above with pytest against the gold checkout; the anchor-bearing URL whose base returns HTTP 503 is reported through the standard HTTPError handler as status 'ignored' with the 503 error, passing the assertions).",
+      "buggy_result": "FAILED (running the exact same source against the buggy checkout; without raise_for_status the builder scanned the empty error body and reported the URL as broken with info \"Anchor 'missing' not found\"; assertion row['status']=='ignored' failed with expected ignored got 'broken' \"Anchor 'missing' not found\").",
+      "explanation": "Requirement R1 says that in the anchor branch (anchor present, not ignored, linkcheck_anchors enabled) when the streamed GET of the anchor's base URL (req_url) returns an HTTP error status, the URL must be reported via the standard HTTP-error status handling (here 503 -> 'ignored' with the server error) rather than being scanned and reported as 'Anchor ... not found'. The gold fix adds response.raise_for_status() after that GET, so a 503 GET raises HTTPError and is caught by the pre-existing except HTTPError handler -> 'ignored'. The buggy code lacks raise_for_status, so it proceeds to check_anchor on the error body (which contains no matching anchor), raising the generic 'Anchor not found' and reporting 'broken'. The test is self-contained (pytest, run via the harness): it builds a minimal linkcheck project whose single external reference is an anchor-bearing URL, mocks sphinx.util.requests.get to return a fake 503 response (whose raise_for_status raises requests.exceptions.HTTPError with response.status_code=503), and asserts output.json records that URL as status 'ignored' whose info is NOT \"Anchor ... not found\". Confirmed by run_test: gold PASSED (status 'ignored'), buggy FAILED (status 'broken', info \"Anchor 'missing' not found\"). This anchors on R1-specific behavior (503 ignored status reporting for an HTTP-error base URL in the anchor branch), which is not asserted anywhere in the visible test file tests/test_build_linkcheck.py (its functions are test_defaults, test_defaults_json, test_anchors_ignored, test_auth, test_linkcheck_request_headers — none covers an HTTP-error req_url status in the anchor branch), so it is a genuine discriminating witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The anchor/error logic lives in the nested check_uri()/check_thread() of sphinx/builders/linkcheck.py; the anchor-check branch (invoked when a URL has '#' and linkcheck_anchors is True) does a streamed GET without raise_for_status, while the non-anchor branch does HEAD-then-GET with raise_for_status and catches HTTPError to report the server error."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note the code config link in the issue points at linkcheck_workers but the config actually governing anchor checking is linkcheck_anchors (default True), set in tests/roots/test-linkcheck/conf.py as linkcheck_anchors = True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests tests/test_build_linkcheck.py exercise both the genuine-anchor-missing case (www.google.com/#top, sphinx-doc intro html#does-not-exist still expected to report 'Anchor ... not found') and the broken-URL case (localhost:7777/doesnotexist expected to report 'Max retries exceeded ...'); a fix must preserve genuine anchor-not-found reporting for URLs that otherwise load OK."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CheckExternalLinksBuilder reports per-URL results; a url with '#' is split so the network request targets req_url (the URL minus fragment) and only anchor validity is checked on the fetched body."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix lives in the nested check_uri() of CheckExternalLinksBuilder (sphinx/builders/linkcheck.py), in the anchor-checking branch executed when the URL contains '#', linkcheck_anchors is True, and the anchor is not matched by linkcheck_anchors_ignore."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only patch change is adding response.raise_for_status() right after the streamed requests.get(req_url,...) call in that branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new raise_for_status routes HTTP error responses into the pre-existing except HTTPError handler, which returns 'working' with '- unauthorized' for status 401, 'ignored' with str(err) for status 503, and 'broken' with str(err) for all other HTTP error statuses."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The non-anchor branch (HEAD-then-GET) already had raise_for_status calls and is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Succcessful (2xx) GET responses in the anchor branch still proceed to check_anchor as before."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test whose assertion genuinely tests requirement R1 (an anchor-bearing URL whose base req_url returns an HTTP error status must be reported via the standard HTTP-error handling — 'working'/'- unauthorized' for 401, 'ignored'+err for 503, 'broken'+err otherwise — instead of being reported 'Anchor ... not found' after scanning the error body).\n\nThe relevant oracle file that could host such a test is tests/test_build_linkcheck.py (the only linkcheck test module, and the location named for the failing test test_raises_for_invalid_status). read_test_file reports this file's entire content as [VISIBLE] and its actual content contains only: test_defaults, test_defaults_json, test_anchors_ignored, test_auth, and test_linkcheck_request_headers. None of these asserts the anchor-branch/HTTP-error-status behavior of R1:\n- test_defaults / test_defaults_json check genuine 'Anchor not found' reports for URLs that load fine (google #top, sphinx intro #does-not-exist), the fully-unreachable localhost:7777 case ('Max retries exceeded'), image 404s and local-file cases. These cover the pre-existing/anchor-missing side, not the case where req_url itself yields an HTTP error status while an anchor is being followed.\n- test_anchors_ignored / test_auth / test_linkcheck_request_headers exercise ignore-patterns and request header/auth configuration, not status reporting in the anchor branch.\n\ntest_raises_for_invalid_status — the one test the task description lists as currently failing against the buggy program, and the test that would plausibly enforce R1 — is not present in the test file as shown to me, and I could not locate it in any other oracle file. Crucially, everything I actually could read that pertains to this behavior (the entire test module) is labeled [VISIBLE], and per the Verso rule a witness may only rest on [HIDDEN] assertions; an assertion drawn from [VISIBLE] content can never serve regardless of how well it matches r. I also verified the builder/source and the test-linkcheck roots (links.txt, conf.py both [HIDDEN], but they are inputs and define no behavioral assertion about HTTP-error-status handling in the anchor branch).\n\nBecause I could not read any [HIDDEN] test assertion enforcing R1 (the reported failing test test_raises_for_invalid_status was not surfaced in any read), and because I have no byte-exact test source I could run and confirm against both gold (PASS) and buggy (FAIL), I cannot in good faith submit a found=true witness. Nothing in the oracle that I could read genuinely and (hiddenly) tests R1, so the correct result is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (CheckExternalLinksBuilder.check_uri anchor branch): When linkcheck checks a URL with a fragment anchor (anchor present, not ignored, and linkcheck_anchors enabled) and the streamed GET of the anchor's base URL (req_url) returns an HTTP error status, the URL is reported based on that HTTP error via the standard status handling (401 as 'working'/'- unauthorized', 503 as 'ignored' with the error, any other error status as 'broken' with the error) rather than being reported as 'Anchor ... not found' after scanning the error document body. — not entailed by S_vis (S_vis r1 (and its cited issue report) pins down the central commit that when GET of the base URL yields an HTTP error, the result is reported via the HTTP error as in the linkcheck_anchors=False branch (broken with HTTPError for 404/500) rather than 'Anchor not found' after scanning the error body. However, R1 additionally specifies a fine-grained routing table (401→'working'/'- unauthorized', 503→'ignored' with the error), and S_vis's visible evidence only exemplifies the broken class (404/500) and never states the 401/503 special handling, so not every specifically-listed sub-behavior is pinned.); confirmed by a synthesized witness: Requirement R1 says that in the anchor branch (anchor present, not ignored, linkcheck_anchors enabled) when the streamed GET of the anchor's base URL (req_url) returns an HTTP error status, the URL must be reported via the standard HTTP-error status handling (here 503 -> 'ignored' with the server error) rather than being scanned and reported as 'Anchor ... not found'. The gold fix adds response.raise_for_status() after that GET, so a 503 GET raises HTTPError and is caught by the pre-existing except HTTPError handler -> 'ignored'. The buggy code lacks raise_for_status, so it proceeds to check_anchor on the error body (which contains no matching anchor), raising the generic 'Anchor not found' and reporting 'broken'. The test is self-contained (pytest, run via the harness): it builds a minimal linkcheck project whose single external reference is an anchor-bearing URL, mocks sphinx.util.requests.get to return a fake 503 response (whose raise_for_status raises requests.exceptions.HTTPError with response.status_code=503), and asserts output.json records that URL as status 'ignored' whose info is NOT \"Anchor ... not found\". Confirmed by run_test: gold PASSED (status 'ignored'), buggy FAILED (status 'broken', info \"Anchor 'missing' not found\"). This anchors on R1-specific behavior (503 ignored status reporting for an HTTP-error base URL in the anchor branch), which is not asserted anywhere in the visible test file tests/test_build_linkcheck.py (its functions are test_defaults, test_defaults_json, test_anchors_ignored, test_auth, test_linkcheck_request_headers — none covers an HTTP-error req_url status in the anchor branch), so it is a genuine discriminating witness.",
+    "confidence": "Medium"
+  }
+}

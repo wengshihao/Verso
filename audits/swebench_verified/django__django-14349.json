@@ -1,0 +1,99 @@
+{
+  "task_id": "django__django-14349",
+  "status": "ok",
+  "duration_seconds": 318.0917284999741,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14349",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "URLValidator.__call__ must raise ValidationError for an http:// URL that contains a trailing newline character, both when the host is a plain hostname ending with '/' (e.g. 'http://www.djangoproject.com/\\n') and when the netloc is an IPv6 literal (e.g. 'http://[::ffff:192.9.5.5]\\n'); the retry path (urlsplit -> punycode -> urlunsplit -> re-validate) must not let such URLs silently pass once urlsplit has stripped the newline.",
+        "subject": "django.core.validators.URLValidator.__call__",
+        "hunk_ids": [],
+        "cited_from": "# Trailing newlines not accepted\n    (URLValidator(), 'http://www.djangoproject.com/\\n', ValidationError),\n    (URLValidator(), 'http://[::ffff:192.9.5.5]\\n', ValidationError),  // tests/validators/tests.py TEST_DATA"
+      },
+      {
+        "id": "2",
+        "statement": "URLValidator must still accept a plain http URL without a trailing newline such as 'http://www.djangoproject.com/' (i.e. the fix must not reject the newline-free form as a side effect).",
+        "subject": "django.core.validators.URLValidator.__call__",
+        "hunk_ids": [],
+        "cited_from": "'http://www.djangoproject.com/' appears in tests/validators/valid_urls.txt, which is loaded into TEST_DATA as (URLValidator(), 'http://www.djangoproject.com/', None)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "URLValidator raises a ValidationError (message 'Enter a valid URL.', code 'invalid', params {'value': value}) when the value is a str that contains any tab ('\\t'), carriage-return ('\\r'), or line-feed ('\\n') character, and this rejection happens even when the same value would otherwise have been accepted by the trivial regex or by the IDN retry path.",
+        "subject": "django.core.validators.URLValidator.__call__",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis[1] pins that URLValidator rejects trailing newlines in http URLs (plain hostname and IPv6 literal) and that the retry path must not bypass it, which overlaps R1's line-feed clause. But R1 additionally requires rejection for tabs and carriage-returns and for these characters generally (not only trailing), which no S_vis entry mentions, so the exact broad behavior R1 describes is not fully entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_tab_rejected",
+      "test_source": "from django.core.exceptions import ValidationError\nfrom django.core.validators import URLValidator\n\n\ndef test_tab_rejected():\n    validator = URLValidator()\n    try:\n        validator('http://www.example.com/\\t')\n    except ValidationError:\n        pass\n    else:\n        raise AssertionError('URL containing a tab character must be rejected')\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (accepts the trailing-tab URL without raising ValidationError)",
+      "explanation": "R1 requires URLValidator.__call__ to raise ValidationError for a str containing any of {tab, CR, LF}, even when that URL would otherwise be accepted by the trivial regex / IDN-retry path (because newer urlsplit strips these trailing control chars). The visible oracle (tests/validators/tests.py) embeds exactly two rejection cases, both for the trailing NEWLINE '\\n': 'http://www.djangoproject.com/\\n' and 'http://[::ffff:192.9.5.5]\\n'. My witness instead exercises the TAB character ('\\t') that the visible tests never assert: 'http://www.example.com/\\t' — a genuinely distinct input that cannot be inferred from the visible content. Empirically confirmed: gold's new unsafe_chars guard ('\\t\\r\\n') raises ValidationError, so the test PASSES on gold; the buggy code (no guard) lets the value fall through to the IDN/urlsplit retry path where the trailing tab is stripped and the URL is accepted, so the test FAILS on buggy. This captures the exact requirement and discriminates between the gold fix and the bug."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Validator tests live in tests/validators/tests.py plus data files tests/validators/valid_urls.txt and invalid_urls.txt; the data-file lines are each passed through url.strip() before validation (so no newline reaches the validator from those files)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The two failing trailing-newline cases are hard-coded in TEST_DATA of TestValidators.test_validators under the comment '# Trailing newlines not accepted'; both expect ValidationError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The root cause mechanism described in the issue report: on Python versions with the bpo-43882 fix, urlsplit strips all LF, CR and tab characters before they reach the URLValidator's regex, so Django's IDN-retry path silently accepts them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "URLValidator.regex = _lazy_re_compile(r'^(?:[a-z0-9.+-]*):// ... (?:[/?#][^\\s]*)?\\Z', re.IGNORECASE) uses \\Z and the resource-path fragment '[^\\s]*', i.e. whitespace such as '\\n' is not permitted in the URL; valid_urls.txt confirms 'http://www.djangoproject.com/' is a valid URL."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The check in __call__ uses self.unsafe_chars, which is a URLValidator class-level attribute defaulting to frozenset('\\t\\r\\n'); subclasses or instances could override it to change the set of rejected characters."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The unsafe-character check runs after the non-string type check and before scheme validation in __call__; all these rejection branches raise ValidationError with the same message and code, so they are observable-equivalent."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 (defining unsafe_chars) and H1 (adding the guard clause) together implement the single rejection behavior; no other behavior in the patch is independently checkable."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1 is that URLValidator.__call__ rejects a str containing tab/CR/LF (ValidationError) even when the value would otherwise pass the trivial regex or the IDN-retry path. I investigated the oracle test content thoroughly.\n\n1. The only assertions that directly exercise this unsafe-character rejection live in tests/validators/tests.py TEST_DATA entries: (URLValidator(), 'http://www.djangoproject.com/\\n', ValidationError) and (URLValidator(), 'http://[::ffff:192.9.5.5]\\n', ValidationError) under '# Trailing newlines not accepted'. I confirmed empirically that such a value passes on gold and fails on buggy (trailing '\\n' is accepted by buggy because urlsplit strips it), so the behavior genuinely distinguishes gold/buggy. HOWEVER, tests.py is labeled [VISIBLE] in full — none of its content can serve as a Witness because it was never hidden.\n\n2. The [HIDDEN] oracle files in scope are the data files tests/validators/valid_urls.txt and invalid_urls.txt. I read both. Neither contains tab/CR/LF-bearing URL content, and each line is passed through url.strip() in TEST_DATA loading before it ever reaches the validator, so no whitespace-at-ends can be delivered to URLValidator by these files at all. They test ordinary URL validity, not unsafe-character rejection, so they cannot witness R1.\n\n3. I also checked the other plausible URL-validator test homes (forms_tests/field_tests/test_urlfield.py, validation/test_validators.py, model_fields tests) — all [VISIBLE] and none assert URL-with-unsafe-whitespace rejection other than the normalized-space URLField cases (which are stripped by the form prior to validation).\n\nSince the genuine witness for R1 exists only as [VISIBLE] tests.py content and no [HIDDEN] oracle assertion covers the tab/CR/LF rejection, no valid witness exists. I ran a candidate to confirm the underlying gold/buggy distinction, but because it restates [VISIBLE] assertions it cannot be submitted as a witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.core.validators.URLValidator.__call__): URLValidator raises a ValidationError (message 'Enter a valid URL.', code 'invalid', params {'value': value}) when the value is a str that contains any tab ('\\t'), carriage-return ('\\r'), or line-feed ('\\n') character, and this rejection happens even when the same value would otherwise have been accepted by the trivial regex or by the IDN retry path. — not entailed by S_vis (S_vis[1] pins that URLValidator rejects trailing newlines in http URLs (plain hostname and IPv6 literal) and that the retry path must not bypass it, which overlaps R1's line-feed clause. But R1 additionally requires rejection for tabs and carriage-returns and for these characters generally (not only trailing), which no S_vis entry mentions, so the exact broad behavior R1 describes is not fully entailed.); confirmed by a synthesized witness: R1 requires URLValidator.__call__ to raise ValidationError for a str containing any of {tab, CR, LF}, even when that URL would otherwise be accepted by the trivial regex / IDN-retry path (because newer urlsplit strips these trailing control chars). The visible oracle (tests/validators/tests.py) embeds exactly two rejection cases, both for the trailing NEWLINE '\\n': 'http://www.djangoproject.com/\\n' and 'http://[::ffff:192.9.5.5]\\n'. My witness instead exercises the TAB character ('\\t') that the visible tests never assert: 'http://www.example.com/\\t' — a genuinely distinct input that cannot be inferred from the visible content. Empirically confirmed: gold's new unsafe_chars guard ('\\t\\r\\n') raises ValidationError, so the test PASSES on gold; the buggy code (no guard) lets the value fall through to the IDN/urlsplit retry path where the trailing tab is stripped and the URL is accepted, so the test FAILS on buggy. This captures the exact requirement and discriminates between the gold fix and the bug.",
+    "confidence": "Medium"
+  }
+}

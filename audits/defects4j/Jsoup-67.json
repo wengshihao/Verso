@@ -1,0 +1,121 @@
+{
+  "task_id": "Jsoup-67",
+  "status": "ok",
+  "duration_seconds": 350.5679878260016,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-67",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Parsing a body fragment whose document string is built from 25000 repetitions of '<i><dl><dd>' followed by 25000 corresponding repetitions of '</dd></dl>' must complete (terminate) rather than hang or overflow, and the resulting document body must contain exactly 2 direct child nodes and exactly 25000 'dd' elements.",
+        "subject": "Parser.parseBodyFragment / HtmlTreeBuilder: deeply nested <dl><dd>",
+        "hunk_ids": [],
+        "cited_from": "handlesDeepStack test in HtmlParserTest.java: \"for (int i = 0; i < 25000; i++) { longBody.append(i).append(\"<dl><dd>\"); } for (int i = 0; i < 25000; i++) { longBody.append(i).append(\"</dd></dl>\"); } ... Document doc = Parser.parseBodyFragment(longBody.toString(), \"\"); ... assertEquals(2, doc.body().childNodeSize()); assertEquals(25000, doc.select(\"dd\").size());\""
+      },
+      {
+        "id": "R2",
+        "statement": "Parsing a body fragment containing 25000-deep nesting of repeated <dl><dd> pairs (with matching </dd></dl> closures) over a 500000-char document must complete in under 1000 milliseconds — i.e. the parse must scale substantially better than (approximately) quadratic in nesting depth so that pathological deep-stack documents do not take multiple seconds or hang.",
+        "subject": "HtmlTreeBuilder: performance scaling on deeply nested tags",
+        "hunk_ids": [],
+        "cited_from": "handlesDeepStack test in HtmlParserTest.java: \"long start = System.currentTimeMillis(); Document doc = Parser.parseBodyFragment(longBody.toString(), \"\"); ... assertTrue(System.currentTimeMillis() - start < 1000);\" and header comment \"// inspired by http://sv.stargate.wikia.com/wiki/M2J and https://github.com/jhy/jsoup/issues/955\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "When a specific-scope search (inSpecificScope, and hence the in*Scope checks it backs) runs while the open-element stack holds more elements than the configured MaxScopeSearchDepth boundary permits, the search only examines a bounded window of stack entries around depth MaxScopeSearchDepth rather than starting at the true current (deepest) element and walking the entire stack; the deepest currently-open elements beyond that boundary no longer influence the scope result, and so the cost of each scope decision on an exceptionally deep stack does not grow with the stack's full depth.",
+        "subject": "HtmlTreeBuilder - open-element stack scope search (inSpecificScope / inScope family) depth bounding",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "HtmlTreeBuilder exposes a public static final int field named MaxScopeSearchDepth whose value is 100, advertised as the bound preventing the parser from bogging down on exceptionally broken pages.",
+        "subject": "HtmlTreeBuilder.MaxScopeSearchDepth public constant (value 100)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible evidence (handlesDeepStack test) demands that parsing a 25000-deep document complete quickly (<1000ms) with correct DOM counts, but it says nothing about HOW that is achieved internally — specifically it never mentions inSpecificScope/in*Scope searches, a bounded window around MaxScopeSearchDepth, or that deepest stack entries no longer influence scope results. Many alternative fixes could satisfy the timing/termination requirement."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No visible artifact references a public static final field MaxScopeSearchDepth with value 100; the test only asserts timing and DOM structure. The constant's name, visibility, and value are pure implementation choices not pinned down by visible information."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to synthesize a genuine, execution-confirmed witness for S_IMPL-1 (the 100-element MaxScopeSearchDepth bound in HtmlTreeBuilder.inSpecificScope that makes in*Scope searches windowed on very deep open-element stacks).\n\nApproach: I built deep (>101 concurrent element) broken-parse inputs and, via persistent probe experiments run on BOTH gold and buggy, compared tree signatures (body-children count, select(\"dd\")/select(\"dl\")/select(\"ol\") counts, rendered-html length, and elapsed ms). I verified that with only ~55–115 concurrent opens the two programs are byte-for-byte structurally identical across nested dl/dd (balanced and unbalanced), nested ol/li, nested table/tr/td, and nested div. I also confirmed at larger depth (n=6000 nested table opens) buggy and gold were both ~41ms and produced identical trees, and at n=20000 nested <div> both produced the same tree — the ONLY difference is elapsed time (buggy 1378ms vs gold 61ms at n=20000; dl/dd blew up only through the same superlinearity). I found no input on which gold and buggy return different DOMs.\n\nRoot cause of non-witness-ability: the fix is behavior-transparent. The cap only changes runtime cost (prevents each scope decision from walking the full stack). In every parseable/deep scenario I could engineer, the scope result (and therefore the resulting tree) is identical between gold and buggy unless the structure already contains a pathological ordering that places the decisive in*Scope marker beyond index 100 while a conflicting one remains within 0..100 — I could not construct such a case without the HTML state-machine toggle internals (HtmlTreeBuilderState, not in the visible file set), and real drivable sequences I probed all agreed.\n\nThe only externally observable discriminator between gold and buggy is elapsed time on an exceptionally deep broken nesting (superlinear growth when unbounded). That is precisely the general shape of the [VISIBLE] test method handlesDeepStack in src/test/java/org/jsoup/parser/HtmlParserTest.java (which the oracle read as VISIBLE), which pins: parse of a ~500000-char / 25000-level nested broken document completes within 1000 ms yielding 2 body children and 25000 dd nodes. Any independent rewrite — different element types (dl/dd vs div), depths, or different timing threshold — is the same bounded-scope-search-on-deep-stack behavioral claim already fully exposed by that visible test, so it would not demonstrate a hidden fact and is not a valid Witness under the grounding rules.\n\nHaving exhausted reasonable structural attempts and confirming only a visible-timing anchor exists, I report found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The actual token insertion-mode state machine code (e.g. an HtmlTreeBuilderState enum) is NOT among the visible files (only HtmlTreeBuilder.java, TreeBuilder.java, and HtmlParserTest.java are), though the task states the fix touches org.jsoup.parser.HtmlTreeBuilder."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible bug-report text is a fallback that only cites upstream jsoup issue #955 (https://github.com/jhy/jsoup/issues/955); the concrete behavioral anchor for that issue in the visible material is the test method handlesDeepStack in HtmlParserTest.java, whose header comment names both the M2J wiki page and GitHub issue 955."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A second large-input performance test, handlesManyChildren, also parses a ~500000-char body (25000 '<i><br>' sequences) and asserts 50000 body child nodes within 1000ms; it does not reference issue 955 and is likely a pre-existing/regression general test rather than this bug's specific contract, but it exercises similar scale and could constrain any fix to large/wide documents."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HtmlTreeBuilder methods that repeatedly walk the open-element stack (getFromStack, inScope/inSpecificScope, onStack) are the plausible superlinearity source for deep nesting, but no requirement about implementation is inferred — only the visible completion/structure/timing expectations."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "HtmlTreeBuilder store open elements in an ArrayList `stack`, with the html root at index 0 and each newly pushed element appended, so the current/deepest element sits at the highest index (stack.size()-1)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "With the H1 cap, when stack.size()-1 > 100 the inSpecificScope loop iterates pos from 100 down to 0, so it consults the bottom ~101 entries (indices 0..100) and skips the deeper tail (indices 101..stack.size()-1); when the stack is at or under 101 elements the scan covers the whole stack as before, so SS_IMPL-1 only alters behavior for stacks deeper than 101 elements."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "inSpecificScope is private and reached via package-private inScope/inListItemScope/inButtonScope/inTableScope, which drive the tree-builder state machine's token handling; the externally observable consequence of the cap is on how very deep/wide nesting is parsed (completes / keeps bounded work) rather than on any public parse-API return."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0's public field and H1's use of it are coupled (changing the bound value would change both), but a reader of the public field vs. observed parse behavior are independently checkable, hence kept as separate requirements."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: S_IMPL-1 is the deep-stack, bounded-window scope-search contract of the HTML parser's inSpecificScope/in*Scope checks (fix for jsoup issue #955). I enumerated the whole oracle (21 test files, via list_test_files) and read every parser/build-relevant one.\n\nThe ONLY test that genuinely exercises this requirement is `handlesDeepStack` in src/test/java/org/jsoup/parser/HtmlParserTest.java — it builds a 25000-level nested `<dl><dd>` body (500000 chars) and asserts that parsing completes and produces 25000 `dd` nodes / 2 body children under a 1000 ms bound, which fails on the buggy program precisely because every scope decision walks the entire ~25000-deep open-element stack. That test is what isolates the superlinear (unbounded) scope-scan cost that S_IMPL-1's bounded window removes.\n\nHowever, read_test_file labels the ENTIRE HtmlParserTest.java file as [VISIBLE]. Because the only genuine oracle assertion anchoring S_IMPL-1 lives in [VISIBLE] content, it cannot serve as a Witness for this hidden-behavior requirement (a visible assertion never demonstrates behavior that was hidden). The other files I read that could conceivably be candidates are also not real matches: XmlTreeBuilderTest [HIDDEN] targets the XML parser (a different tree builder that does not use the HTML inSpecificScope stack logic per this requirement), and integration/ParseTest [HIDDEN] covers real-world page parsing/charset detection, not deep HTML-stack scope bounding. Remaining files (nodes/elements/selector/safety/css/etc.) do not touch HtmlTreeBuilder's in*Scope stack depth behavior.\n\nSo, while `handlesDeepStack` is the correct observable anchor and it fails against buggy and would pass on gold, it is [VISIBLE] and therefore cannot be a valid witness. No [HIDDEN] oracle content tests S_IMPL-1's behavior, so I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-1]: I attempted to synthesize a genuine, execution-confirmed witness for S_IMPL-1 (the 100-element MaxScopeSearchDepth bound in HtmlTreeBuilder.inSpecificScope that makes in*Scope searches windowed on very deep open-element stacks).\n\nApproach: I built deep (>101 concurrent element) broken-parse inputs and, via persistent probe experiments run on BOTH gold and buggy, compared tree signatures (body-children count, select(\"dd\")/select(\"dl\")/select(\"ol\") counts, rendered-html length, and elapsed ms). I verified that with only ~55–115 concurrent opens the two programs are byte-for-byte structurally identical across nested dl/dd (balanced and unbalanced), nested ol/li, nested table/tr/td, and nested div. I also confirmed at larger depth (n=6000 nested table opens) buggy and gold were both ~41ms and produced identical trees, and at n=20000 nested <div> both produced the same tree — the ONLY difference is elapsed time (buggy 1378ms vs gold 61ms at n=20000; dl/dd blew up only through the same superlinearity). I found no input on which gold and buggy return different DOMs.\n\nRoot cause of non-witness-ability: the fix is behavior-transparent. The cap only changes runtime cost (prevents each scope decision from walking the full stack). In every parseable/deep scenario I could engineer, the scope result (and therefore the resulting tree) is identical between gold and buggy unless the structure already contains a pathological ordering that places the decisive in*Scope marker beyond index 100 while a conflicting one remains within 0..100 — I could not construct such a case without the HTML state-machine toggle internals (HtmlTreeBuilderState, not in the visible file set), and real drivable sequences I probed all agreed.\n\nThe only externally observable discriminator between gold and buggy is elapsed time on an exceptionally deep broken nesting (superlinear growth when unbounded). That is precisely the general shape of the [VISIBLE] test method handlesDeepStack in src/test/java/org/jsoup/parser/HtmlParserTest.java (which the oracle read as VISIBLE), which pins: parse of a ~500000-char / 25000-level nested broken document completes within 1000 ms yielding 2 body children and 25000 dd nodes. Any independent rewrite — different element types (dl/dd vs div), depths, or different timing threshold — is the same bounded-scope-search-on-deep-stack behavioral claim already fully exposed by that visible test, so it would not demonstrate a hidden fact and is not a valid Witness under the grounding rules.\n\nHaving exhausted reasonable structural attempts and confirming only a visible-timing anchor exists, I report found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_IMPL-1] (HtmlTreeBuilder - open-element stack scope search (inSpecificScope / inScope family) depth bounding) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to synthesize a genuine, execution-confirmed witness for S_IMPL-1 (the 100-element MaxScopeSearchDepth bound in HtmlTreeBuilder.inSpecificScope that makes in*Scope searches windowed on very deep open-element stacks).\n\nApproach: I built deep (>101 concurrent element) broken-parse inputs and, via persistent probe experiments run on BOTH gold and buggy, compared tree signatures (body-children count, select(\"dd\")/select(\"dl\")/select(\"ol\") counts, rendered-html length, and elapsed ms). I verified that with only ~55–115 concurrent opens the two programs are byte-for-byte structurally identical across nested dl/dd (balanced and unbalanced), nested ol/li, nested table/tr/td, and nested div. I also confirmed at larger depth (n=6000 nested table opens) buggy and gold were both ~41ms and produced identical trees, and at n=20000 nested <div> both produced the same tree — the ONLY difference is elapsed time (buggy 1378ms vs gold 61ms at n=20000; dl/dd blew up only through the same superlinearity). I found no input on which gold and buggy return different DOMs.\n\nRoot cause of non-witness-ability: the fix is behavior-transparent. The cap only changes runtime cost (prevents each scope decision from walking the full stack). In every parseable/deep scenario I could engineer, the scope result (and therefore the resulting tree) is identical between gold and buggy unless the structure already contains a pathological ordering that places the decisive in*Scope marker beyond index 100 while a conflicting one remains within 0..100 — I could not construct such a case without the HTML state-machine toggle internals (HtmlTreeBuilderState, not in the visible file set), and real drivable sequences I probed all agreed.\n\nThe only externally observable discriminator between gold and buggy is elapsed time on an exceptionally deep broken nesting (superlinear growth when unbounded). That is precisely the general shape of the [VISIBLE] test method handlesDeepStack in src/test/java/org/jsoup/parser/HtmlParserTest.java (which the oracle read as VISIBLE), which pins: parse of a ~500000-char / 25000-level nested broken document completes within 1000 ms yielding 2 body children and 25000 dd nodes. Any independent rewrite — different element types (dl/dd vs div), depths, or different timing threshold — is the same bounded-scope-search-on-deep-stack behavioral claim already fully exposed by that visible test, so it would not demonstrate a hidden fact and is not a valid Witness under the grounding rules.\n\nHaving exhausted reasonable structural attempts and confirming only a visible-timing anchor exists, I report found=false.",
+    "confidence": "Medium"
+  }
+}

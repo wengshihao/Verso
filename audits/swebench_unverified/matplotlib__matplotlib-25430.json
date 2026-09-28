@@ -1,0 +1,146 @@
+{
+  "task_id": "matplotlib__matplotlib-25430",
+  "status": "ok",
+  "duration_seconds": 557.4483018750325,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-25430",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Calling Figure.savefig (or plt.savefig) with a filename whose extension selects JPEG output (e.g. \"sin.jpg\") together with a \"metadata\" dict must not crash with the raw unexpected-keyword TypeError \"FigureCanvasAgg.print_jpg() got an unexpected keyword argument 'metadata'\" surfacing from the internal print method; instead the metadata must be handled for JPEG output (stored, silently ignored, or rejected with a clear user-facing/self-explanatory message) rather than leaking an internal unexpected-keyword TypeError.",
+        "subject": "matplotlib.backends.backend_agg.FigureCanvasAgg.print_jpg / print_jpeg / matplotlib.figure.Figure.savefig",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: `plt.savefig(\"sin.jpg\", metadata={})`; Actual outcome traceback ends `TypeError: FigureCanvasAgg.print_jpg() got an unexpected keyword argument 'metadata'`; Expected outcome: \"Either metadata should be added, the argument ignored, or a more informative error message.\"  Visible code: `backend_agg.py` `def print_jpg(self, filename_or_obj, *, pil_kwargs=None): ... print_jpeg = print_jpg`, which (unlike `print_png(self, filename_or_obj, *, metadata=None, pil_kwargs=None)`) has no `metadata` parameter; and `backend_bases.py` `print_figure` forwards `**kwargs` (incl. `metadata`) through `print_method(filename, ..., **kwargs)`."
+      },
+      {
+        "id": "R2",
+        "statement": "JPEG output selected through either the \".jpg\" or \".jpeg\" file extension must behave identically with respect to a \"metadata\" keyword (both extensions resolve to the same print method currently aliased as print_jpeg = print_jpg), so any handling of the metadata kwarg added to the JPEG path applies to both spellings.",
+        "subject": "matplotlib.backends.backend_agg.FigureCanvasAgg print_jpg vs print_jpeg",
+        "hunk_ids": [],
+        "cited_from": "backend_agg.py: `def print_jpg(self, filename_or_obj, *, pil_kwargs=None): ... print_jpeg = print_jpg`; backend_bases.py `_default_backends = {... 'jpg': 'matplotlib.backends.backend_agg', 'jpeg': 'matplotlib.backends.backend_agg', ...}`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "imsave raises a ValueError (with a message indicating the format does not support metadata) instead of silently ignoring *metadata* when saving to any raster format handled by Pillow other than 'png' (e.g. jpeg, tiff, webp); metadata continues to be honoured for 'png' and for the vector formats 'pdf'/'ps'/'eps'/'svg', and a None metadata still passes through unchanged.",
+        "subject": "matplotlib.image.imsave",
+        "hunk_ids": [
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "FigureCanvasAgg.print_raw (and its alias print_rgba) now accepts a keyword-only *metadata* argument and, when metadata is not None, raises ValueError (message indicating metadata is not supported for raw/rgba) instead of writing the buffer with metadata silently dropped.",
+        "subject": "FigureCanvasAgg.print_raw / print_rgba",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "FigureCanvasAgg.print_jpg (alias print_jpeg), print_tif (alias print_tiff), and print_webp now accept a keyword-only *metadata* argument and forward it into the imsave path, so that saving a figure to these formats with a non-None metadata yields a ValueError ('metadata not supported ...') rather than the metadata being silently dropped or rejected at the print-method boundary without a clear message.",
+        "subject": "FigureCanvasAgg.print_jpg/print_jpeg/print_tif/print_tiff/print_webp",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The visible evidence concerns only print_jpg/print_jpeg and savefig not crashing with the raw metadata TypeError; it never mentions imsave, the non-png-ValueError design, the png/pdf/ps/eps/svg exception list, or None pass-through. Nothing pins the imsave ValueError behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry mentions print_raw or print_rgba; the visible evidence is entirely about the jpg/jpeg metadata TypeError. There is nothing to lead a repair system to add a keyword-only metadata argument to print_raw/print_rgba or raise a ValueError there."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only constrains the jpg path to avoid the TypeError and even leaves three open resolutions (store/ignore/informative rejection); forwarding keyword-only metadata into imsave for a ValueError is one branch, not pinned. tif/tiff/webp forwarding is entirely unmentioned."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_imsave_jpeg_metadata_rejected",
+      "test_source": "def test_imsave_jpeg_metadata_rejected():\n    from io import BytesIO\n    import numpy as np\n    import pytest\n    from matplotlib.image import imsave\n    buf = BytesIO()\n    arr = np.zeros((4, 4), dtype=np.uint8)\n    metadata = {\"Copyright\": \"Me\"}\n    with pytest.raises(ValueError):\n        imsave(buf, arr, format=\"jpeg\", metadata=metadata)",
+      "gold_result": "PASSED (ValueError raised as expected because metadata is not supported for format 'jpeg')",
+      "buggy_result": "FAILED with error 'DID NOT RAISE <class ValueError>' — the pre-fix imsave silently ignored the metadata dict for jpeg instead of raising.",
+      "explanation": "R1 is exactly the behaviour added by gold H4 in matplotlib.image.imsave: the `if format == \"png\"` metadata-embedding block in the Pillow (raster) branch was changed into an `if format == \"png\": ... elif metadata is not None: raise ValueError(f\"metadata not supported for format {format!r}\")`. So for any non-png Pillow-handled raster format (jpeg/tiff/webp), passing a non-None metadata must now raise a ValueError; in the pre-fix (buggy) version that branch is absent, so the metadata dict is silently dropped. My test drives imsave directly to an in-memory BytesIO with an RGBA data array, format='jpeg', and a non-empty metadata dict, asserting `pytest.raises(ValueError)`. On gold the metadata check fires and the ValueError is raised (PASSED); on buggy the call never raises, so the raises-context fails with 'DID NOT RAISE' (buggy FAILED). This is the defining, newly-introduced behaviour of R1 and is not pinned down anywhere in the visible tests: visible imsave tests only cover dpi round-trips, fspath saving, colour/alpha preservation, and pil_kwargs pnginfo/description injection — none of them passes a metadata dict to a non-png Pillow raster format and expects a ValueError. Confirmed by real execution against both revisions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "JPG/JPEG output for savefig is handled by the Agg backend: FigureCanvasBase.print_figure does not have a print_jpg, so it switches to the registered agg FigureCanvas via _switch_canvas_and_return_print_method and calls FigureCanvasAgg.print_jpg; print_jpeg = print_jpg is an alias of the same method."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "print_figure forwards savefig's extra kwargs (here metadata) into print_method, stripping only {dpi, facecolor, edgecolor, orientation, bbox_inches_restore}; metadata is not among those, so it reaches print_jpg which rejects it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "print_jpg/print_jpeg/print_tif/print_webp all delegate to _print_pil -> mpl.image.imsave; only print_png routes metadata. imsave() previously accepted a metadata kwarg but only actually writes it for png (Software default 'Matplotlib version<ver>...' plus arbitrary keys), and for jpg/jpeg merely paints the RGBA buffer onto a white background (facecolor) before saving."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In figure.py, the documented metadata formats for Figure.savefig are only 'png' (Agg), 'pdf', 'svg', and 'eps'/'ps' (only 'Creator'); jpg/jpeg/tif/webp are not documented as accepting metadata there."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "There is an existing parameterized test test_savefig_warns in lib/matplotlib/tests/test_figure.py that asserts savefig to io.BytesIO with an unknown kwarg raises TypeError for each of ['png','pdf','svg','tif','jpg']; no test currently covers jpg+metadata explicitly."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 (figure.savefig metadata docstring) and H3 (imsave metadata docstring) are documentation-only changes describing which formats embed metadata; they impose no new behavior beyond that coded by H0/H1/H4."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The metadata-format validation added in H4 lives in the Pillow (raster) branch of imsave, reached only by non-vector formats; vector formats 'pdf'/'ps'/'eps'/'svg' follow the earlier Figure.savefig path and are unaffected by the new check."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "png metadata handling (default 'Software' entry + arbitrary keys) is structurally preserved by converting the png-only block into an if/elif; png behavior is unchanged by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "print_rgba is an alias assigned as print_rgba = print_raw, so both share the new metadata parameter."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "backend_agg's _print_pil already forwarded a metadata argument to imsave before this patch; what H1 changes is that the public print_jpg/print_jpeg/print_tif/print_tiff/print_webp now accept and relay that metadata instead of failing on it at the signature boundary."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle test files for any test whose assertion genuinely exercises R1 — that imsave (or the Agg figure.savefig path that routes to it) raises a ValueError when a *metadata* dict is passed while saving to a Pillow-handled raster format other than png (jpeg/tiff/webp …), while png/vector formats keep honoring metadata and None passes through.\n\nWhat I checked:\n- lib/matplotlib/tests/test_image.py [VISIBLE]: This is the canonical home for plt.imsave tests. Its imsave-related tests (test_imsave parametrized over png/jpg/jpeg/tiff; test_imsave_fspath; test_imsave_pil_kwargs_png/tiff; test_imsave_color_alpha) only check dpi-consistent round-trips and pil_kwargs metadata injection. None passes metadata and asserts a ValueError for a non-png raster format. Being VISIBLE, its content also can never serve as a witness regardless.\n- lib/matplotlib/tests/test_figure.py [VISIBLE]: test_savefig_warns parametrizes over png/pdf/svg/tif/jpg but passes non_existent_kwarg=True and expects a TypeError (unknown-arg handling), not metadata rejection.\n- lib/matplotlib/tests/test_agg.py [VISIBLE]: file-save tests for jpg/tiff/webp/png (test_jpeg_dpi, test_pil_kwargs_*) check dpi/pil_kwargs, not metadata ValueError.\n- test_backend_pdf.py / test_backend_svg.py / test_backend_ps.py [VISIBLE]: contain metadata-honoring tests but only for vector figure.savefig (pdf/svg), a pre-existing behavior; none drives the imsave Pillow raster path or asserts an error.\n- lib/matplotlib/tests/test_png.py [HIDDEN]: the only relevant file that is hidden, but its content covers pngsuite image comparison and truncated-file/buffer robustness — nothing about imsave metadata validation.\n- test_backend_bases.py, test_pyplot.py, test_matplotlib.py, test_determinism.py, test_compare_images.py, test_streamplot.py, test_animation.py [all VISIBLE]: no imsave/metadata-format rejection assertions.\n\nNo file in the oracle (in particular no [HIDDEN] file) contains an assertion that calls imsave/savefig with a non-empty metadata dict on a non-png Pillow raster format and expects the ValueError that is the defining new behavior of R1. Therefore no execution-backed [HIDDEN] assertion can be produced to witness R1, and I report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (matplotlib.image.imsave): imsave raises a ValueError (with a message indicating the format does not support metadata) instead of silently ignoring *metadata* when saving to any raster format handled by Pillow other than 'png' (e.g. jpeg, tiff, webp); metadata continues to be honoured for 'png' and for the vector formats 'pdf'/'ps'/'eps'/'svg', and a None metadata still passes through unchanged. — not entailed by S_vis (The visible evidence concerns only print_jpg/print_jpeg and savefig not crashing with the raw metadata TypeError; it never mentions imsave, the non-png-ValueError design, the png/pdf/ps/eps/svg exception list, or None pass-through. Nothing pins the imsave ValueError behavior.); confirmed by a synthesized witness: R1 is exactly the behaviour added by gold H4 in matplotlib.image.imsave: the `if format == \"png\"` metadata-embedding block in the Pillow (raster) branch was changed into an `if format == \"png\": ... elif metadata is not None: raise ValueError(f\"metadata not supported for format {format!r}\")`. So for any non-png Pillow-handled raster format (jpeg/tiff/webp), passing a non-None metadata must now raise a ValueError; in the pre-fix (buggy) version that branch is absent, so the metadata dict is silently dropped. My test drives imsave directly to an in-memory BytesIO with an RGBA data array, format='jpeg', and a non-empty metadata dict, asserting `pytest.raises(ValueError)`. On gold the metadata check fires and the ValueError is raised (PASSED); on buggy the call never raises, so the raises-context fails with 'DID NOT RAISE' (buggy FAILED). This is the defining, newly-introduced behaviour of R1 and is not pinned down anywhere in the visible tests: visible imsave tests only cover dpi round-trips, fspath saving, colour/alpha preservation, and pil_kwargs pnginfo/description injection — none of them passes a metadata dict to a non-png Pillow raster format and expects a ValueError. Confirmed by real execution against both revisions.",
+    "confidence": "Medium"
+  }
+}

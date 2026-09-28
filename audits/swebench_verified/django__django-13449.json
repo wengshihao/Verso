@@ -1,0 +1,117 @@
+{
+  "task_id": "django__django-13449",
+  "status": "ok",
+  "duration_seconds": 119.0518949170364,
+  "llm_calls": 11,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13449",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "Evaluating/printing a queryset annotated with Window(expression=Lag('amount', 7), partition_by=[F('modified')], order_by=F('modified').asc()) — where amount is a DecimalField(decimal_places=4, max_digits=7) on SQLite — must not raise an OperationalError ('near \"OVER\": syntax error'); the DecimalField CAST introduced by the SQLite backend must wrap the whole window expression (i.e. around LAG(...) OVER (...) AS \"w\") rather than terminate after the LAG call before the OVER clause.",
+        "subject": "Window(expression=Lag(...)) SQL generation on the SQLite backend",
+        "hunk_ids": [],
+        "cited_from": "OperationalError: near \"OVER\": syntax error ... The generated SQL query is: SELECT \"test1_lagtest\".\"id\", \"test1_lagtest\".\"modified\", \"test1_lagtest\".\"data\", \"test1_lagtest\".\"amount\", CAST(LAG(\"test1_lagtest\".\"amount\", 7) AS NUMERIC) OVER (PARTITION BY \"test1_lagtest\".\"modified\" ORDER BY \"test1_lagtest\".\"modified\" ASC) AS \"w\" FROM \"test1_lagtest\" I believe this fails as the CAST() statement ends after LAG whereas it should be around the whole statement up until \"w\""
+      },
+      {
+        "id": "2",
+        "statement": "A Window(expression=Lag('data', 7), partition_by=[F('modified')], order_by=F('modified').asc()) over a FloatField column ('data') on SQLite must continue to work without a syntax error, and equivalently giving the Lag an explicit output_field=FloatField() override must work; i.e. the DecimalField-only CAST placement is the failing case and the fix must not turn these non-Decimal cases into errors.",
+        "subject": "Lag() over a non-Decimal field (FloatField) on SQLite",
+        "hunk_ids": [],
+        "cited_from": "This only applies where the lagged field is a DecimalField e.g. w = Window(expression=Lag('data',7), partition_by=[F('modified')], order_by=F('modified').asc()) works correctly. I can override it by adding output_field=FloatField() to the Lag function e.g. w = Window(expression=Lag('amount',7,output_field=FloatField()), partition_by=[F('modified')], order_by=F('modified').asc())"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "On the SQLite backend, a Window(...) expression whose output field resolves to a DecimalField (e.g. Lag/Lead windowed over a DecimalField column) no longer crashes/invalid SQL: its windowed source function is compiled without an independent NUMERIC cast applied to it before OVER, and the single `CAST(... AS NUMERIC)` is instead applied to the whole `<windowexpr> OVER (...)`, so that such an annotated query executes successfully and returns the window values converted as decimal.",
+        "subject": "Window.as_sqlite (django.db.models.expressions.Window)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_2",
+        "statement": "On the SQLite backend, a Window(...) expression whose output field is not a DecimalField continues to compile exactly as the ordinary Window.as_sql path (yielding `<expr> OVER (...)`) with no additional NUMERIC cast added at the window-expression level.",
+        "subject": "Window.as_sqlite (django.db.models.expressions.Window)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis_1 directly reports the failing SQL showing an independent CAST(LAG(...) AS NUMERIC) ending before OVER, and explicitly states the CAST 'should be around the whole statement up until w' — i.e., the single numeric cast must wrap the whole <windowexpr> OVER (...), exactly matching S_IMPL_1's fix."
+      },
+      {
+        "requirement_id": "S_IMPL_2",
+        "entailed": "true",
+        "checked_ids": [
+          "1",
+          "2"
+        ],
+        "rationale": "S_vis_2 states the error 'only applies where the lagged field is a DecimalField' and that the FloatField/non-Decimal window case 'works correctly' (and works when giving output_field=FloatField override), pinning down that the fix leaves non-Decimal windows compiling on the ordinary path with no extra NUMERIC cast at the window-expression level."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Regression/feature tests for window functions live under tests/expressions_window/ (uses Employee model with salary=PositiveIntegerField and DateField hire_date — no DecimalField is exercised there for the failing Window path)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Lag (and Lead, NthValue) carry output field = their source expression's output_field (see LagLeadFunction._resolve_output_field in django/db/models/functions/window.py), so Lag over a DecimalField column yields a DecimalField output."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The CAST-to-NUMERIC wrapping on SQLite for DecimalField outputs is implemented in SQLiteNumericMixin.as_sqlite (django/db/models/expressions.py), which Func subclasses such as Lag inherit; the crash arises because that CAST is applied to the inner LAG(...) SQL before the enclosing Window.as_sql appends ' OVER (...)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Window.as_sql (django/db/models/expressions.py) compiles source_expression first, then formats it as '%(expression)s OVER (%(window)s)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sqlite_backend_decimal_converter quantizes DecimalField results (see sqlite3 DatabaseOperations.get_decimalfield_converter), which is presumably why the DB-level cast to NUMERIC exists."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Window's new MRO is [Window, SQLiteNumericMixin, Expression, ...]; H0 is what makes `super(Window, copy).as_sqlite(...)` resolve to SQLiteNumericMixin.as_sqlite."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The decimal SQLite path mutates a shallow copy: `copy = self.copy()` then rewrites index 0 of get_source_expressions() to a FloatField output so the inner window function (e.g. Lag) does not self-wrap in CAST during ASQLite compilation; the window copy's own output_field stays DecimalField, which drives the outer NUMERIC cast in SQLiteNumericMixin.as_sqlite."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Window output_field comes from `_resolve_output_field()` = the source_expression's output_field, so a window over a Decimal-output function yields a DecimalField-output Window — this is the case the Decimal branch targets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "SQLiteNumericMixin.as_sqlite (already present pre-patch) applies the CAST for expressions whose output_field.get_internal_type() == 'DecimalField', propagating to Func subclasses (Lag and Window, after H0)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

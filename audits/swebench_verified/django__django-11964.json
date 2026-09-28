@@ -1,0 +1,106 @@
+{
+  "task_id": "django__django-11964",
+  "status": "ok",
+  "duration_seconds": 374.63625475007575,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11964",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a model instance of a model whose CharField/IntegerField carries choices set to a TextChoices/IntegerChoices enum is freshly created by passing the enum member as the field value (e.g. MyObject.objects.create(my_str_value=MyChoice.FIRST_CHOICE)), the field's attribute getter on that (in-memory, not yet round-tripped) instance must return the plain underlying scalar (an instance of str for a TextChoices-backed CharField, or of int for an IntegerChoices-backed IntegerField) whose str()/value equals the raw database value (e.g. 'first'), and must NOT return a value whose str() renders the enum reference (e.g. 'MyChoice.FIRST_CHOICE'). The resulting attribute type/content must match that observed on a DB-retrieved instance.",
+        "subject": "django.db.models.Model.__init__ field-value storage / Field descriptor value coercion for ChoiceEnum member assignment",
+        "hunk_ids": [],
+        "cited_from": "\"If we create an instance of a model having a CharField or IntegerField with the keyword choices pointing to IntegerChoices or TextChoices, the value returned by the getter of the field will be of the same type as the one created by enum.Enum (enum value)\" — and the failing test \"def test_created_object_is_str: ... self.assertIsInstance(my_object.my_str_value, str); self.assertEqual(str(my_object.my_str_value), 'first')\" with traceback \"AssertionError: 'MyChoice.FIRST_CHOICE' != 'first'\" — while \"test_retrieved_object_is_str: ... assertEqual(str(my_object.my_str_value), 'first')\" reported correct; description: \"When we invoke __str__(...) we don't actually get the value property of the enum value which can lead to some unexpected issues\""
+      },
+      {
+        "id": "R2",
+        "statement": "A model instance created by assigning a TextChoices enum member to a CharField must expose a field value that is consistent between a freshly created instance and one re-fetched from the database (MyObject.objects.last()), i.e. the in-memory assignment path must coerce the enum member to the same plain scalar the database round-trip produces, so that str() of the attribute gives the same raw value ('first') in both the created and retrieved cases.",
+        "subject": "django.db.models.Model field attribute value equivalence between newly-created and DB-retrieved instances",
+        "hunk_ids": [],
+        "cited_from": "\"self.my_object = MyObject.objects.create(my_str_value=MyChoice.FIRST_CHOICE)\" ... \"def test_retrieved_object_is_str: my_object = MyObject.objects.last() ... assertEqual(str(my_object.my_str_value), 'first')\" (passes) contrasted with the failing test_created_object_is_str; \"the one that was retrieved would send my_value\" being the desired end-state for both."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Calling str() on any member of a Choices-derived enum class (Choices itself, IntegerChoices, TextChoices, or a user subclass) returns the string form of that member's value (str(member.value)) rather than the standard enum string form that names the member, e.g. 'MyEnum.MEMBER_NAME' or the enum class reference.",
+        "subject": "Choices.__str__ / str(TextChoices|IntegerChoices|Choices member)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes model-field getter coercion so that an attribute assigned an enum member returns the plain scalar matching the DB value (with assertIsInstance-into-str evidence), but never states that the Choices enum class's __str__ itself is/was overridden so that bare str(member)==str(value) globally. The symptom (str must not render the enum ref) is shared, but the precise enum-base-class __str__ mechanism S_impl commits to is not pinned down — it could equally be resolved via field-descriptor coercion, per S_vis's own wording."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_str_matches_str_of_member_value",
+      "test_source": "import unittest\nfrom django.db import models\n\n\nclass Vehicle(models.IntegerChoices):\n    CAR = 1\n    TRUCK = 2\n\n\nclass Grade(models.TextChoices):\n    A = 'A1'\n\n\nclass PlainChoice(models.Choices):\n    X = 'xv'\n\n\nclass W(unittest.TestCase):\n    def test_str_matches_str_of_member_value(self):\n        # R1: str() on any Choices-derived enum member must yield str(value),\n        # not the standard enum name form ('<Class>.<MEMBER>').\n        self.assertEqual(str(Vehicle.CAR), str(Vehicle.CAR.value))\n        self.assertEqual(str(Vehicle.TRUCK), str(Vehicle.TRUCK.value))\n        self.assertEqual(str(Grade.A), str(Grade.A.value))\n        self.assertEqual(str(PlainChoice.X), str(PlainChoice.X.value))\n        self.assertNotIn('Vehicle.', str(Vehicle.CAR))\n        self.assertNotIn('Grade.', str(Grade.A))",
+      "gold_result": "PASSED — on gold, Choices.__str__ returns str(self.value), so str(Vehicle.CAR)=='1', str(Grade.A)=='A1', str(PlainChoice.X)=='xv'; all equalities hold.",
+      "buggy_result": "FAILED — on buggy, Choices has no __str__, so standard enum-name form is used: str(Vehicle.CAR)=='Vehicle.CAR' ('Vehicle.CAR' != '1'), str(Grade.A)=='Grade.A', etc. AssertionError.",
+      "explanation": "R1 states that str() of any Choices-derived enum member must equal str(member.value) (the value's string form) rather than the standard enum member-name form like 'MyEnum.MEMBER'. The gold patch adds `def __str__: return str(self.value)` to the base Choices class, which is inherited by IntegerChoices, TextChoices, and user subclasses. The witness defines one plain IntegerChoices, one TextChoices, and one direct Choices subclass (covering all three inheritance paths named in the requirement) and asserts str(member) == str(member.value) plus that the enum class-name string does not leak into the result.\n\nMechanical confirmation via run_test: gold PASSED (str returns '1', '2', 'A1', 'xv'), while buggy FAILED (no __str__ on Choices, so default enum str gives 'Vehicle.CAR' != '1', etc.). This is a genuine hidden behavior — I surveyed the visible tests in tests/model_enums/tests.py, tests/model_fields/tests.py and tests/str/tests.py, none of which ever assert that str(member) equals str(member.value); they only check repr(member), .value, .label, .choices/.values/.labels/.names, containment, and get_status_display. So the delta R1 describes is not already pinned down by any visible assertion and forms a valid discriminating witness for the requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "TextChoices/IntegerChoices are defined in django/db/models/enums.py; members are enum members mixed into str/int (e.g. class TextChoices(str, Choices)), so str(member) renders the enum reference like 'MyChoice.FIRST_CHOICE' rather than the underlying value."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Field attribute getters on models come from Field.descriptor_class = DeferredAttribute (django/db/models/query_utils.py), whose __get__ reads instance.__dict__[field.attname] and which defines no __set__ of its own."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In Model.__init__ (django/db/models/base.py), non-related field values are placed into the instance via line roughly '_setattr(self, field.attname, val)', writing the raw object passed in (here the TextChoices/IntegerChoices member) straight into __dict__ without passing through field.to_python()/get_prep_value(), which is why a freshly created object holds the enum member while a value fetched back from the DB has already been converted to plain str/int."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant field conversion methods live on field classes in django/db/models/fields/__init__.py: e.g. CharField.to_python returns str(value) when value already a str and get_prep_value leads to that; IntegerField.get_prep_value does int(value)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue test set (freshly-created vs retrieved) lives implicitly in the report; in this repo, basic model-enum tests exist in tests/model_enums/tests.py but do not exercise model-field instantiation with enum members."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "text/fix scope looks like django/db/models/base.py (Model.__init__) and/or django/db/models/fields/__init__.py where a member is stored into a model attr."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "django/db/models/enums.py defines ChoicesMeta, base Choices(enum.Enum), IntegerChoices(int, Choices), TextChoices(str, Choices). The patch adds __str__ only to the base Choices class; both subclasses inherit it without overriding."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is motivated (per docstring) by model-instance attributes holding a Choices member needing to render as the member value in templates, which depends on the str() behavior described in R1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "TextChoices/IntegerChoices members are mixed-in subclasses of str/int; this __str__ add does not alter value-based equality or membership behavior of the enums."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated whether the real oracle already contains a test witnessing R1 (str() on a Choices/IntegerChoices/TextChoices member returns str(member.value) rather than the enum-member string form).\n\nMechanical confirmation of the behavior gap: a candidate test asserting str(Suit.DIAMOND)=='1' and str(YIS.FRESHMAN)=='FR' PASSED against gold and FAILED against buggy (buggy str() returns 'Suit.DIAMOND'), so the delta R1 describes is real. But the Submission rules require the witness assertion to be drawn from a [HIDDEN] oracle test, and to be an assertion the pre-existing oracle actually contains.\n\nFiles checked:\n- tests/model_enums/tests.py — the canonical home for IntegerChoices/TextChoices/Choices behavior tests. It is labeled [VISIBLE] (so unusable as a witness regardless), and its test methods never assert str(member) == str(member.value); they only verify repr(member), label, value type, containment, and choices/labels/values/names lists.\n- tests/model_fields/tests.py ([VISIBLE]) — field/choices/get_display tests; none assert str() of a Choices-derived member returning its value.\n- tests/str/tests.py ([VISIBLE]) — model __str__ tests; unrelated.\n- tests/model_regress/models.py is [HIDDEN] but is a models file with a plain INTEGER choice field; its tests.py ([VISIBLE]) exercises get_status_display etc., not str() of a Choices-derived member held directly. No R1 assertion among them.\n\nAlso consistent: the task reports no currently-failing tests against the buggy program, and no [HIDDEN] test asserting the str-of-member==value behavior was found in any of the relevant files surveyed. Conclusion: the pre-existing oracle test suite does not already enforce R1, so no genuine Witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Choices.__str__ / str(TextChoices|IntegerChoices|Choices member)): Calling str() on any member of a Choices-derived enum class (Choices itself, IntegerChoices, TextChoices, or a user subclass) returns the string form of that member's value (str(member.value)) rather than the standard enum string form that names the member, e.g. 'MyEnum.MEMBER_NAME' or the enum class reference. — not entailed by S_vis (S_vis describes model-field getter coercion so that an attribute assigned an enum member returns the plain scalar matching the DB value (with assertIsInstance-into-str evidence), but never states that the Choices enum class's __str__ itself is/was overridden so that bare str(member)==str(value) globally. The symptom (str must not render the enum ref) is shared, but the precise enum-base-class __str__ mechanism S_impl commits to is not pinned down — it could equally be resolved via field-descriptor coercion, per S_vis's own wording.); confirmed by a synthesized witness: R1 states that str() of any Choices-derived enum member must equal str(member.value) (the value's string form) rather than the standard enum member-name form like 'MyEnum.MEMBER'. The gold patch adds `def __str__: return str(self.value)` to the base Choices class, which is inherited by IntegerChoices, TextChoices, and user subclasses. The witness defines one plain IntegerChoices, one TextChoices, and one direct Choices subclass (covering all three inheritance paths named in the requirement) and asserts str(member) == str(member.value) plus that the enum class-name string does not leak into the result.\n\nMechanical confirmation via run_test: gold PASSED (str returns '1', '2', 'A1', 'xv'), while buggy FAILED (no __str__ on Choices, so default enum str gives 'Vehicle.CAR' != '1', etc.). This is a genuine hidden behavior — I surveyed the visible tests in tests/model_enums/tests.py, tests/model_fields/tests.py and tests/str/tests.py, none of which ever assert that str(member) equals str(member.value); they only check repr(member), .value, .label, .choices/.values/.labels/.names, containment, and get_status_display. So the delta R1 describes is not already pinned down by any visible assertion and forms a valid discriminating witness for the requirement.",
+    "confidence": "Medium"
+  }
+}

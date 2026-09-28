@@ -1,0 +1,120 @@
+{
+  "task_id": "JacksonDatabind-95",
+  "status": "ok",
+  "duration_seconds": 300.0158941789996,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-95",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "TypeFactory.constructFromCanonical(\"java.util.List\") (an unparameterized/\"raw\" canonical string of a generic type) must succeed without throwing NullPointerException, returning a JavaType whose raw class is java.util.List, that is an instance of CollectionType, and whose content type raw class is java.lang.Object.",
+        "subject": "TypeFactory.constructFromCanonical",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"TypeFactory.constructFromCanonical() throws NPE for Unparameterized generic canonical strings... the following code runs fine on 2.6.1: returnType = \"java.util.List\"; objectMapper.getTypeFactory().constructFromCanonical(returnType); But in version 2.8.7, the same code gives a NullPointerException with the stack trace: ... at com.fasterxml.jackson.databind.type.TypeFactory._fromVariable(TypeFactory.java:1421)...\" ; Test TestTypeFactory.testCanonicalNames: \"// [databind#1941]: allow \"raw\" types too\\n\\nt = tf.constructFromCanonical(\"java.util.List\");\\nassertEquals(List.class, t.getRawClass());\\nassertEquals(CollectionType.class, t.getClass());\\n// 01-Mar-2018, tatu: not 100% should we expect type parameters here...\\n//    But currently we do NOT get any\\n/*\\nassertEquals(1, t.containedTypeCount());\\nassertEquals(Object.class, t.containedType(0).getRawClass());\\n*/\\nassertEquals(Object.class, t.getContentType().getRawClass());\""
+      },
+      {
+        "id": "R2",
+        "statement": "The JavaType produced by TypeFactory.constructFromCanonical(\"java.util.List\") has a canonical form of \"java.util.List<java.lang.Object>\", and TypeFactory.constructFromCanonical of that canonical string yields an equal JavaType.",
+        "subject": "JavaType.toCanonical / constructFromCanonical idempotence (via constructFromCanonical)",
+        "hunk_ids": [],
+        "cited_from": "Test TestTypeFactory.testCanonicalNames: \"can = t.toCanonical();\\nassertEquals(\"java.util.List<java.lang.Object>\", can);\\nassertEquals(t, tf.constructFromCanonical(can));\" (immediately following the constructFromCanonical(\"java.util.List\") block in the same test)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_R1",
+        "statement": "Parsing a canonical type name that ends in a raw generic interface or class (no following '<'>...<'>, e.g. a bare 'java.util.List') must complete and yield a resolved JavaType rather than throwing a NullPointerException while resolving that generic type's generic super-type type variables, because the resolution is now seeded with a non-null empty TypeBindings instead of null.",
+        "subject": "TypeFactory.constructFromCanonical(String) / TypeParser.parseType",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_R2",
+        "statement": "When a class supplied in the parameterClasses varargs of constructParametricType is itself a generic type whose hierarchy resolution needs to walk its type variables, that parameter class is now resolved with empty (non-null) type bindings and must not throw a NullPointerException from unbound type-variable resolution (previously it was resolved with null bindings).",
+        "subject": "TypeFactory.constructParametricType(Class, Class...)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 (with its issue citation showing NPE at TypeFactory._fromVariable during type-variable resolution for constructFromCanonical(\"java.util.List\"), and the passing test asserting a resolved CollectionType) pins exactly the behavior S_IMPL_R1 requires: parsing a bare raw generic completes without NPE and yields a resolved JavaType. R2 covers only canonical round-trip idempotence."
+      },
+      {
+        "requirement_id": "S_IMPL_R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_IMPL_R2 concerns constructParametricType resolving a generic class in the parameterClasses varargs with non-null type bindings, but neither S_vis entry mentions constructParametricType or the parameterClasses path at all; both concern constructFromCanonical only. No visible evidence would lead to this specific behavior."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "rawGenericParamNoNpe",
+      "test_source": "@Test\npublic void rawGenericParamNoNpe() throws Exception {\n    com.fasterxml.jackson.databind.type.TypeFactory tf =\n            com.fasterxml.jackson.databind.type.TypeFactory.defaultInstance().withModifier(null);\n    com.fasterxml.jackson.databind.JavaType t =\n            tf.constructParametricType(java.util.ArrayList.class, java.util.List.class);\n    org.junit.Assert.assertNotNull(t);\n    org.junit.Assert.assertEquals(java.util.ArrayList.class, t.getRawClass());\n    org.junit.Assert.assertEquals(java.util.List.class,\n            ((com.fasterxml.jackson.databind.type.CollectionType) t).getContentType().getRawClass());\n}",
+      "gold_result": "PASSED (assertNotNull/assertEqual checks on constructed ArrayList-with-content-List type satisfied).",
+      "buggy_result": "FAILED: NullPointerException at TypeFactory._fromVariable(TypeFactory.java:1413) <- _fromAny <- _fromParamType <- _resolveSuperInterfaces <- _fromClass(TypeFactory.java:1254) <- constructParametricType(TypeFactory.java:896) — exactly the null-bindings crash on a raw generic vararg parameter class (List.class) whose Collection<E> super-interface resolution walks its type variable E.",
+      "explanation": "Confirms S_IMPL_R2: the H2 hunk changed constructParametricType(Class,Class...) to resolve each vararg parameter class with EMPTY_BINDINGS (non-null) rather than null. When a supplied parameter class is a raw generic type (java.util.List) that must broaden up its declared hierarchy to Collection<E> via type-variable resolution, the buggy null-bindings call NPEs in _fromVariable (bindings is null); the gold empty-bindings call succeeds and the Collection<E> variable resolves to Object, producing an ArrayList<List<Object>>-style CollectionType with content rawClass == List. On gold the test passes all assertions. On buggy it NPEs at TypeFactory.java:896 (constructParametricType) with stack _fromVariable<-_fromAny<-_fromParamType<-_resolveSuperInterfaces<-_fromClass, verified by run_test against both. This scenario is not visibly pinned: disclosed tests only exercise the constructFromCanonical/TypeParser path for the raw-List case ([databind#1941]), and the only visible constructParametricType-with-raw-param call (testRawMapType) passes a raw Map, whose root interface has no generic super-type and so does not traverse type variables (does not NPE even in buggy). Using defaultInstance().withModifier(null) constructs a pristine TypeFactory with an empty cache so the discriminating resolution is guaranteed to run (not short-circuited by a prior cached List resolution)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug (regression NPE in 2.8.7 while 2.6.1 worked) is triggered at the class-hierarchy resolution level: for interfaces like java.util.List, TypeFactory._resolveSuperInterfaces -> _fromParamType -> _fromVariable walks the generic super-interface java.util.Collection<T extends Object> with empty bindings and NPEs inside TypeFactory._fromVariable (TypeFactory.java:1421) when binding lookups come up empty. The visible fix-relevant test lives in src/test/java/com/fasterxml/jackson/databind/type/TestTypeFactory.java inside testCanonicalNames(), under the //[databind#1941] comment."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypeParser.parse(String) is what TypeFactory.constructFromCanonical delegates to; for a name with no following '<' it calls _factory._fromClass(null, base, null) with NULL bindings, which is the path that must tolerate empty/unbound generic super-type variables rather than NPE."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only the raw java.util.List canonical case is pinned down by visible tests; the raw Map / other generic canonical cases are not covered by disclosed assertions."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible disclosed tests live under src/test/java/...; TypeFactory._fromVariable returns CORE_TYPE_OBJECT for unbound variables, which is the intended mechanism by which the raw generic type resolves its type parameters to java.lang.Object."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "EMPTY_BINDINGS in TypeFactory is defined as TypeBindings.emptyBindings(), which returns the same singleton TypeBindings.EMPTY; therefore H0 and H1 (replacing TypeBindings.emptyBindings() with the EMPTY_BINDINGS field inside constructSpecializedType) are behaviorally neutral refactors — buggy code there already passed non-null empty bindings. Neither hunk produces a new observable behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The behavior-relevant patch effect is confined to substituting a non-null empty TypeBindings where null was previously passed: H3 (TypeParser leaf parse, used by constructFromCanonical) and H2 (constructParametricType(Class,Class...) parameter-class resolution)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The NPE mechanism predates the patch: with null bindings, TypeFactory._fromVariable would dereference bindings.findBoundType(...)/hasUnbound(...) when a raw generic type's hierarchy (e.g. java.util.List's Collection<E> super-interface) is walked. Non-null empty bindings let that walk run; _fromVariable's unbound-variable handling (resolving to CORE_TYPE_OBJECT) already existed in the buggy code, merely unreachable due to the null bindings."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "constructSpecializedType call sites modified by H0/H1, and type resolution down through _resolveSuperInterfaces/_resolveSuperClass/_fromParamType/_fromVariable, are the shared plumbing; _fromClass treats null and empty bindings identically for cache-key purposes (key = rawType either way)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_R2]: Target requirement S_IMPL_R2 specifically concerns the constructParametricType(Class, Class...) path: when a vararg parameter class is itself a raw generic type whose super-interface/type-variable resolution must walk type variables with empty (non-null) bindings, instead of the previous null bindings that caused an NPE.\n\nI mechanically confirmed this R2 behavior is real and observable: constructParametricType(ArrayList.class, List.class) throws NullPointerException against the buggy program (stack: TypeFactory.constructParametricType line 896 → _fromClass → _resolveSuperInterfaces → _fromParamType → _fromAny → _fromVariable), while the identical call PASSES against the gold program. So a genuine R2 witness scenario exists.\n\nHowever, per the benchmark the ONLY test currently failing against the buggy program is com.fasterxml.jackson.databind.type.TestTypeFactory::testCanonicalNames. That file is labeled [VISIBLE], and its fix-relevant [databind#1941] assertions exercise the CONSTRUCTFROMCANONICAL path (TypeParser.parse → _fromClass with null bindings), which corresponds to a different requirement/H3 hunk — not constructParametricType (H2). None of testCanonicalNames's assertions call constructParametricType with a raw generic parameter, so it is not a witness for R2 in any event; and being [VISIBLE] content it cannot serve as a Witness regardless.\n\nI checked the full oracle test inventory and read the type-package tests (TestTypeFactory, TestTypeResolution, TestTypeBindings, TestJavaType, RecursiveTypeTest, RecursiveType1658Test, TestTypeFactory1604, NestedTypes1604Test, LocalTypeTest, TestTypeFactoryWithRecursiveTypes, TestTypeFactoryWithClassLoader, TestGenericFieldInSubtype, TestGenericsBounded, PolymorphicList036Test, TypeAliasesTest, TestAnnotatedClass, DeprecatedConstructType1456Test) as well as generic deser/generics tests. No [HIDDEN] test constructs a parametric type where a raw generic container class (List/Collection/Map, etc.) needs empty-bindings resolution — i.e. no hidden assertion covers the R2 constructParametricType-empty-bindings effect. Since any real R2 witness would necessarily fail against the buggy program (NPE) and therefore appear in the failing-test list, and the only entry there (testCanonicalNames) is [VISIBLE] and covers a different (constructFromCanonical) code path, I find no qualifying [HIDDEN] oracle witness for R2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL_R2] (TypeFactory.constructParametricType(Class, Class...)): When a class supplied in the parameterClasses varargs of constructParametricType is itself a generic type whose hierarchy resolution needs to walk its type variables, that parameter class is now resolved with empty (non-null) type bindings and must not throw a NullPointerException from unbound type-variable resolution (previously it was resolved with null bindings). — not entailed by S_vis (S_IMPL_R2 concerns constructParametricType resolving a generic class in the parameterClasses varargs with non-null type bindings, but neither S_vis entry mentions constructParametricType or the parameterClasses path at all; both concern constructFromCanonical only. No visible evidence would lead to this specific behavior.); confirmed by a synthesized witness: Confirms S_IMPL_R2: the H2 hunk changed constructParametricType(Class,Class...) to resolve each vararg parameter class with EMPTY_BINDINGS (non-null) rather than null. When a supplied parameter class is a raw generic type (java.util.List) that must broaden up its declared hierarchy to Collection<E> via type-variable resolution, the buggy null-bindings call NPEs in _fromVariable (bindings is null); the gold empty-bindings call succeeds and the Collection<E> variable resolves to Object, producing an ArrayList<List<Object>>-style CollectionType with content rawClass == List. On gold the test passes all assertions. On buggy it NPEs at TypeFactory.java:896 (constructParametricType) with stack _fromVariable<-_fromAny<-_fromParamType<-_resolveSuperInterfaces<-_fromClass, verified by run_test against both. This scenario is not visibly pinned: disclosed tests only exercise the constructFromCanonical/TypeParser path for the raw-List case ([databind#1941]), and the only visible constructParametricType-with-raw-param call (testRawMapType) passes a raw Map, whose root interface has no generic super-type and so does not traverse type variables (does not NPE even in buggy). Using defaultInstance().withModifier(null) constructs a pristine TypeFactory with an empty cache so the discriminating resolution is guaranteed to run (not short-circuited by a prior cached List resolution).",
+    "confidence": "Medium"
+  }
+}

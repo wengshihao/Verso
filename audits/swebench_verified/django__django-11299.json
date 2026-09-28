@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-11299",
+  "status": "ok",
+  "duration_seconds": 127.56976874999236,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11299",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a CheckConstraint check Q combines an AND-group with other leaf conditions under OR (or any Q nesting deeper than one level), every column reference in the CHECK SQL — in both the AND branch and the OR branch — must compile to an unqualified column identifier (no 'table'.'column' qualification). For the issue's example this means the generated CHECK must read ((('field_1' IS NOT NULL AND 'flag' = 1) OR 'flag' = 0)) with field_1 and both flag references unqualified.",
+        "subject": "django.db.models.CheckConstraint._get_check_sql / django.db.models.sql.query.Query.build_where(_add_q) SimpleCol resolution",
+        "hunk_ids": [],
+        "cited_from": "Issue-text: \"the AND clause items using Col while the OR clause uses SimpleCol\" together with the concrete proper-query quote: \"CREATE TABLE \"new__app_testconstraint\" (\"id\" integer NOT NULL PRIMARY KEY AUTOINCREMENT, \"field_1\" integer NULL, \"flag\" bool NOT NULL, CONSTRAINT \"field_1_has_value_if_flag_set\" CHECK (((\"field_1\" IS NOT NULL AND \"flag\" = 1) OR \"flag\" = 0)));\""
+      },
+      {
+        "id": "R2",
+        "statement": "Applying the issue's migration (CreateModel 'TestConstraint' followed by AddConstraint for the model-level CheckConstraint with the OR/AND Q) on SQLite must not fail with a malformed-schema/no-such-column error; after the table is rebuilt under the temporary name 'new__app_testconstraint' and renamed back, the stored check constraint must not reference the temporary table name.",
+        "subject": "django.db.backends.sqlite3.schema.DatabaseSchemaEditor._remake_table / add_constraint",
+        "hunk_ids": [],
+        "cited_from": "Issue-text: \"The ALTER TABLE fails with the following: malformed database schema (app_testconstraint) - no such column: new__app_testconstraint.field_1.\" and the buggy generated line \"CHECK (((\"new__app_testconstraint\".\"field_1\" IS NOT NULL AND \"new__app_testconstraint\".\"flag\" = 1) OR \"flag\" = 0)))\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Query.build_where (which sets simple_col=True, e.g. when generating a model check constraint's SQL) is given a Q object whose top level is combined with further nested Q tree children, the leaf column references inside those nested Q branches are resolved as simple, unqualified columns — the generated CHECK SQL references only the column name and omits the table name/alias, exactly matching the top-level leaves.",
+        "subject": "Query._add_q/build_where nested-Q recursion; CheckConstraint._get_check_sql/constraint_sql/create_sql SQL output",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a CheckConstraint whose check Q contains a nested (grouped) child under an AND/OR connector, generating the constraint's CREATE SQL produces valid per-column CHECK SQL in which no column reference is table/alias-qualified, for columns in both the top-level and the nested branch (previously nested-branch columns would be table-qualified).",
+        "subject": "CheckConstraint.create_sql/_get_check_sql for nested (grouped) Q checks",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 states that when a check Q is nested deeper than one level, every column reference in both the AND branch and OR branch compiles to an unqualified identifier, and its citation gives the exact generated SQL showing nested-branch leaves (field_1, both flag refs) unqualified — precisely the behavior S_impl R1 describes for nested Q child leaf column resolution under simple_col."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's subject names CheckConstraint._get_check_sql and its statement/citation require that CREATE/CHECK SQL for a nested (grouped) Q contain no table/alias-qualified column in either top-level or nested branches, directly matching S_impl R2; S_vis R2 likewise confirms the stored constraint must not reference the temporary table name."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo is the Django framework source itself (not an app using it). The load-bearing defect is in Django's own Q-to-SQL resolution path used by model constraints."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CheckConstraint._get_check_sql (django/db/models/constraints.py) builds a fresh Query(model=model), calls build_where(self.check), then renders the where clause to SQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Query.build_where calls self._add_q(..., allow_joins=False, simple_col=True); however in _add_q (django/db/models/sql/query.py) the recursive call for a child that is a nested tree.Node is invoked WITHOUT re-passing simple_col=simple_col, so simple_col silently reverts to its False default inside any nested Q ('AND' group) — this is the observed source of the mixed Col vs SimpleCol output."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The SimpleCol class docstring in expressions.py documents intent: 'This variant of Col doesn't include the table name (or an alias) to avoid a syntax error in check constraints.'"
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Compilation routes through where.py WhereNode.as_sql and expressions.py Col/SimpleCol.as_sql; per-column field check SQL (db_params['check']) is a separate mechanism and not the subject."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Backend schema layers involved: sqlite3/schema.py `_remake_table` (creates `new__<table>`, copies, drops, renames back) and Oracle also cannot accept a CHECK referencing the just-renamed table; base schema.py `add_constraint` calls constraint.create_sql."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/constraints (tests/constraints/*) only exercise a single-Q AND CheckConstraint and model UniqueConstraints; no existing regression test covers OR-combined check SQL in this snapshot."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue-report model: TestConstraint has IntegerField field_1 (null=True) and BooleanField flag (null=False); its Meta constrains via CheckConstraint check=Q(flag__exact=True, field_1__isnull=False) | Q(flag__exact=False), name='field_1_has_value_if_flag_set'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch (single hunk H0) adds only `simple_col` to the already-fully-forwarded list of args on the recursive _add_q call for a nested Node (tree) child. All other parameters (used_aliases, branch_negated, current_negated, allow_joins, split_subq) were already forwarded, so the sole behavioral delta is propagation of the simple_col flag into nested Q subgroups."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "R1 and R2 describe the same observable effect at slightly different aggregation levels; R1 frames it as the internal _add_q/build_where propagation and R2 frames it at the CheckConstraint CREATE-SQL output. They are jointly satisfied/broken by the single mechanism; kept separate because R1 (bare unqualified column even in nested branches of the where) is checkable independent of the CheckConstraint create path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Top-level (non-nested) Q handling passes simple_col only through the else->build_filter branch and is unchanged; likewise Query.add_q (simple_col default False) is unaffected since default was False both top-level and nested before."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

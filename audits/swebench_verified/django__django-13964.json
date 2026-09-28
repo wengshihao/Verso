@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-13964",
+  "status": "ok",
+  "duration_seconds": 344.86134633398615,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13964",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When an unsaved parent Order is given a related Product instance via order.product = <Product> and then the Product's primary key field ('sku') is assigned a value ('foo') and both objects are saved (product first, then order), the Order row that is persisted must reference the Product by that primary key ('foo') in the order.product_id column: Order.objects.filter(product_id=\"\").exists() must be False and Order.objects.filter(product=order.product).exists() must be True, so that the transaction commits without a foreign-key violation. This must hold whether the Product's pk was empty/unset at assignment time (assigned later) or was supplied at Product construction (Product(sku='foo')) before assignment.",
+        "subject": "Model.save / ForeignKey (Order.product -> Product with a non-AutoField CharField primary key)",
+        "hunk_ids": [],
+        "cited_from": "with transaction.atomic():\n\torder = Order()\n\torder.product = Product()\n\torder.product.sku = \"foo\"\n\torder.product.save()\n\torder.save()\nassert Order.objects.filter(product_id=\"\").exists() # Succeeds, but shouldn't\nassert Order.objects.filter(product=order.product).exists() # Fails\n...\nInstead of product_id being populated with product.sku, it is set to emptystring.\n...\nwith transaction.atomic():\n\torder = Order()\n\torder.product = Product(sku=\"foo\")\n\torder.product.save()\n\torder.save()\nassert Order.objects.filter(product=order.product).exists() # succeeds"
+      },
+      {
+        "id": "R2",
+        "statement": "At the moment a related instance is assigned to the parent (order.product = ...), the parent's cached foreign-key value (order.product_id) must not falsely 'latch on' to a placeholder empty-string primary-key value of an unsaved related instance in a way that later prevents the column from being corrected; when Product.sku is set and saved after the assignment, an Order.save() must not silently write product_id='' but instead persist the actual Product pk value ('foo'), so the model-as-requested never records a dangling emptystring foreign key.",
+        "subject": "Forward FK value copied at assignment time (ForeignKeyDeferredAttribute/ForwardManyToOneDescriptor for the order.product relationship)",
+        "hunk_ids": [],
+        "cited_from": "If the relation is initialized on the parent with an empty instance that does not yet specify its primary key, and the primary key is subsequently defined, the parent does not \"see\" the primary key's change:\n...\nInstead of product_id being populated with product.sku, it is set to emptystring."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a model instance being saved has an assigned, cached forward relation (ForeignKey/OneToOneField) whose related object already has a non-None pk, and the referencing model's own foreign-key attname currently holds any empty value for that field (including the empty string '' as well as NULL), that foreign-key attname is re-synced to the related object's pk value before the save proceeds. In other words, saving an instance whose FK initially held '' (because it references a target with a CharField primary key that defaults to empty string) persists the related object's actual pk once that pk has been set, rather than leaving a stale ''.",
+        "subject": "Model.save / Model._prepare_related_fields_for_save (django.db.models.base)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The existing guard is unchanged: if the cached related object's pk is None at save time (i.e. the relation points to an unsaved related instance), saving is still prohibited — that condition takes precedence regardless of whether the referencing instance's FK attname is an empty value — and the ValueError for an unsaved related object is still raised.",
+        "subject": "Model.save / Model._prepare_related_fields_for_save (django.db.models.base)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis clearly pins the core '' scenario: an Order whose FK attname latched to '' (CharField pk defaulting to empty) must, upon save after the related pk is set, persist the actual pk rather than a stale ''. However S_impl R1 states the guard fires whenever the attname holds any empty value 'including... NULL' and locates it at a precise re-sync step in _prepare_related_fields_for_save, and S_vis shows no NULL-attname variant or the guard's exact trigger semantics—only desired outcomes for the '' case. Conservative leaning favors uncertain over a full-fidelity entailment."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only demonstrates scenarios where the Product is saved (with its sku set) before the Order, so the related object has a non-None pk at save time; nothing in the visible issue report describes a related object whose pk is still None at save time nor mentions that saving such an unsaved related object must still raise a ValueError. S_impl R2's preserved-guard behavior is not pinned by any visible information, so it is not entailed."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R2 asserts ONLY that the pre-existing \"unsaved related object -> ValueError\" guard in Model._prepare_related_fields_for_save() is unchanged, takes precedence (fires regardless of whether the referencing instance's FK attname is an empty value), and still raises. I read both django/db/models/base.py versions in full: the guard block `if obj.pk is None: ... raise ValueError(...)` is BYTE-FOR-BYTE IDENTICAL in gold and buggy. The only difference between the two files is in the LATER elif re-sync condition that is unreachable whenever obj.pk is None (guard `obj.pk is None` evaluates True and raises before the `elif getattr(self, field.attname) ...` is evaluated). Gold's `elif ... in field.empty_values:` vs buggy's `elif ... is None:` differ only for the SAVED-related-object re-sync path, which is exactly the R1 (bug-fixing) behavior, NOT R2's concern.\n\nConsequently every input scenario R2 covers (pointing a referencing model's FK at an unsaved related instance whose pk is None — under any attname state, including an empty '' CharField-pk default, or even None) triggers the identical ValueError path on both programs. A genuine witness must PASS gold and FAIL buggy, but no observable behavior differs: any test asserting the guard raises is satisfied by BOTH programs, so it can never be a discriminating witness. This is a provable property of the code, not a limitation of the harness. (The harness's isolated pytest context also cannot import the repo's many_to_one/model_fields test models, but that is moot given the logical equivalence.) Therefore no genuine witness for R2 exists; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in Django ORM model saving. Mother class Model._prepare_related_fields_for_save() (django/db/models/base.py) only refreshes the FK attname from the related object's pk with `elif getattr(self, field.attname) is None: setattr(self, field.attname, obj.pk)`; because a fresh CharField pk defaults to empty string '' (not None), the order.product_id stays '' and is never re-synced to Product.sku after it is set -- matching the issue's diagnosis that only non-AutoField (non-numeric/non-None) pks misbehave."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Forward FK assignment is implemented in django/db/models/fields/related_descriptors.py (ForwardManyToOneDescriptor.__set__ sets `setattr(instance, lh_field.attname, getattr(value, rh_field.attname))` and then caches the value)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Related existing many_to_one/save tests live in tests/many_to_one/tests.py (e.g. test_save_nullable_fk_after_parent, test_save_nullable_fk_after_parent_with_to_field); Django's test models for non-integer pks live in tests/model_fields/models.py (PrimaryKeyCharModel/FkToChar) and tests/model_fields/test_foreignkey.py (test_empty_string_fk #19299)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue-report reproduction uses models Product(sku CharField primary_key) and Order(ForeignKey(Product)); sequence A (pk assigned after FK assignment) currently fails, sequence B (pk given in Product(sku='foo') constructor) currently succeeds -- a fix must preserve B while correcting A."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Some databases interpret empty strings as NULL; tests often guard/skip those (connection.features.interprets_empty_strings_as_nulls), relevant because this bug turns on the ''-vs-None distinction for the FK value."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single changed hunk is in Model._prepare_related_fields_for_save() (django/db/models/base.py), generalizing the re-sync condition from `getattr(self, field.attname) is None` to `getattr(self, field.attname) in field.empty_values`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_prepare_related_fields_for_save() runs at the top of Model.save(); it only processes fields that are cached relations (field.is_relation and field.is_cached(self))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This fixes the case where a fresh FK to a CharField-pk target stores '' as attname default and, when the related object's pk is assigned after the FK assignment, the FK column would otherwise remain '' and never be re-synced."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Notes from earlier stages flag that some databases interpret empty strings as NULL (connection.features.interprets_empty_strings_as_nulls), which is pertinent to tests distinguishing '' from None for FK values."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 asserts only that the pre-existing \"unsaved related object -> ValueError\" guard in Model._prepare_related_fields_for_save() is unchanged. Both the buggy (pre-fix) and gold (fixed) implementations contain the identical guard `if obj.pk is None: raise ValueError(...)` at the top of the cached-relation loop, and the patch only changes the LATER elif re-sync condition (`attname is None` -> `attname in field.empty_values`), which is never reached when that guard raises. Consequently R2's behavior is byte-for-byte identical in buggy and gold, so no oracle test can pass against gold while failing against buggy — a hard requirement for any witness. This matches the record that no test currently fails against the buggy program for R2. I examined the relevant existing guard/regression tests (tests/many_to_one/tests.py incl. the #8070 create-unsaved-parent ValueError cases and save-nullable-fk-after-parent variants; tests/model_fields/test_foreignkey.py incl. test_empty_string_fk on FkToChar/PrimaryKeyCharModel) — those files are [VISIBLE] and their assertions pass on both programs. I additionally attempted to run representative unsaved-related-object guard scenarios through run_test but the harness's isolated pytest context cannot import the repo's many_to_one/model_fields test models, and in any case the guard logic is provably unchanged between buggy and gold. Therefore no genuine witness exists for R2."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: Target R2 asserts ONLY that the pre-existing \"unsaved related object -> ValueError\" guard in Model._prepare_related_fields_for_save() is unchanged, takes precedence (fires regardless of whether the referencing instance's FK attname is an empty value), and still raises. I read both django/db/models/base.py versions in full: the guard block `if obj.pk is None: ... raise ValueError(...)` is BYTE-FOR-BYTE IDENTICAL in gold and buggy. The only difference between the two files is in the LATER elif re-sync condition that is unreachable whenever obj.pk is None (guard `obj.pk is None` evaluates True and raises before the `elif getattr(self, field.attname) ...` is evaluated). Gold's `elif ... in field.empty_values:` vs buggy's `elif ... is None:` differ only for the SAVED-related-object re-sync path, which is exactly the R1 (bug-fixing) behavior, NOT R2's concern.\n\nConsequently every input scenario R2 covers (pointing a referencing model's FK at an unsaved related instance whose pk is None — under any attname state, including an empty '' CharField-pk default, or even None) triggers the identical ValueError path on both programs. A genuine witness must PASS gold and FAIL buggy, but no observable behavior differs: any test asserting the guard raises is satisfied by BOTH programs, so it can never be a discriminating witness. This is a provable property of the code, not a limitation of the harness. (The harness's isolated pytest context also cannot import the repo's many_to_one/model_fields test models, but that is moot given the logical equivalence.) Therefore no genuine witness for R2 exists; found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (Model.save / Model._prepare_related_fields_for_save (django.db.models.base)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R2 asserts ONLY that the pre-existing \"unsaved related object -> ValueError\" guard in Model._prepare_related_fields_for_save() is unchanged, takes precedence (fires regardless of whether the referencing instance's FK attname is an empty value), and still raises. I read both django/db/models/base.py versions in full: the guard block `if obj.pk is None: ... raise ValueError(...)` is BYTE-FOR-BYTE IDENTICAL in gold and buggy. The only difference between the two files is in the LATER elif re-sync condition that is unreachable whenever obj.pk is None (guard `obj.pk is None` evaluates True and raises before the `elif getattr(self, field.attname) ...` is evaluated). Gold's `elif ... in field.empty_values:` vs buggy's `elif ... is None:` differ only for the SAVED-related-object re-sync path, which is exactly the R1 (bug-fixing) behavior, NOT R2's concern.\n\nConsequently every input scenario R2 covers (pointing a referencing model's FK at an unsaved related instance whose pk is None — under any attname state, including an empty '' CharField-pk default, or even None) triggers the identical ValueError path on both programs. A genuine witness must PASS gold and FAIL buggy, but no observable behavior differs: any test asserting the guard raises is satisfied by BOTH programs, so it can never be a discriminating witness. This is a provable property of the code, not a limitation of the harness. (The harness's isolated pytest context also cannot import the repo's many_to_one/model_fields test models, but that is moot given the logical equivalence.) Therefore no genuine witness for R2 exists; found=false.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "task_id": "sympy__sympy-16792",
+  "status": "ok",
+  "duration_seconds": 347.4765189590398,
+  "llm_calls": 20,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-16792",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When autowrap/codegen is given a MatrixSymbol array argument (e.g. via autowrap's args) that does not appear anywhere in the wrapped expression, the generated C function signature must still declare that array argument as a pointer (`double *x`), not as a scalar (`double x`); consequently the wrapped callable, when invoked with a non-scalar numpy array for that argument, returns the constant expression value (1.0) instead of raising `TypeError: only size-1 arrays can be converted to Python scalars`.",
+        "subject": "sympy.utilities.codegen.CodeGen.routine / CCodeGen.get_prototype (array argument not appearing in expression)",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"f(np.array([[1.0, 2.0]])) ... should of course return `1.0` but instead fails with: `TypeError: only size-1 arrays can be converted to Python scalars`\" and \"the corresponding C function is generated with an incorrect signature: ... `double autofunc(double x) { ... autofunc_result = 1.0; ...}` (`x` should be `double *`, not `double` in this case)\""
+      },
+      {
+        "id": "R2",
+        "statement": "In CodeGen.routine, when an argument in the given argument_sequence (notably a MatrixSymbol) does not appear among the expression's symbols and is therefore created anew in the KeyError/fallback path, the created InputArgument must retain/normalize the MatrixSymbol's dimensional bounds so downstream signature generation (get_prototype) emits it as an array pointer rather than a scalar.",
+        "subject": "sympy.utilities.codegen.CodeGen.routine (redundant MatrixSymbol argument in argument_sequence)",
+        "hunk_ids": [],
+        "cited_from": "codegen.py: \"for symbol in argument_sequence: try: new_args.append(name_arg_dict[symbol]) except KeyError: new_args.append(InputArgument(symbol))\" combined with CodeGen.routine's earlier array handling \"for array in expressions.atoms(MatrixSymbol) | ...: array_symbols[array] = array\" and CCodeGen.get_prototype \"if arg.dimensions or isinstance(arg, ResultBase):\n type_args.append((arg.get_datatype('C'), \"*%s\" % name))\nelse:\n type_args.append((arg.get_datatype('C'), name))\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a symbol supplied in CodeGen.routine's argument_sequence is not present among the symbols inferred from the expressions (`free_symbols`) — i.e. a redundant/unused extra array argument — and that symbol is an IndexedBase or MatrixSymbol, the generated corresponding InputArgument is created with `dimensions` metadata `[(0, n - 1) for n in s.shape]`, so that in generated C headers/prototypes the parameter is declared as a pointer/array (and in Fortran as an array declaration) rather than as a scalar.",
+        "subject": "CodeGen.routine (argument_sequence argument construction) / resulting Routine InputArgument dimensions",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "For a symbol in argument_sequence that is neither an IndexedBase nor a MatrixSymbol (e.g. a scalar extra argument) and that is not among the expression-derived symbols, the generated InputArgument still receives no `dimensions` metadata, leaving it a scalar parameter in the emitted signature.",
+        "subject": "CodeGen.routine (argument_sequence scalar extra-argument handling)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 (issue: redundant MatrixSymbol array must produce double* array signature returning 1.0, not scalar/TypeError) and S_vis R2 (fallback-created InputArgument for a redundant MatrixSymbol must carry dimensional bounds so get_prototype, which keys off arg.dimensions, emits an array pointer) together pin down exactly this behavior: the redundant array arg's InputArgument gets array dimensions so it is declared as a pointer/array rather than a scalar."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry mentions redundant scalar arguments or their handling; both are exclusively about ensuring redundant MatrixSymbol/array arguments become array-typed. Nothing in the visible evidence either supports or contradicts the claim that a scalar extra argument receives no dimensions and stays scalar, so the specific scalar behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 describes behavior that is preserved between the gold and buggy programs. In H2, the argument_sequence 'except KeyError' fallback was changed so that redundant symbols not derived from the expression now only get `dimensions` metadata when they are IndexedBase/MatrixSymbol instances. For a plain scalar extra argument (a Symbol that is neither an IndexedBase nor a MatrixSymbol and is not among the expression-derived symbols), the gold code takes the `else: metadata = {}` branch and produces InputArgument(symbol) with no dimensions — byte-for-byte the same as the buggy code's `new_args.append(InputArgument(symbol))`.\n\nI verified this empirically: a candidate test that builds a routine with expression `x[i]**2` (x an IndexedBase, i an Idx with range (0,5)) and argument_sequence `[x, z]` where z is a scalar Symbol, then asserts `args[z].dimensions is None`, PASSED against BOTH the gold and the buggy program. Since gold and buggy behave identically for the R2 scenario (the scalar extra argument stays scalar in both), any test asserting the R2 property will pass on both programs — it is impossible for a test to pass on gold and fail on buggy for this requirement. R2 therefore has no genuine witness; it documents a negative/preserved behavior rather than the net behavior introduced by the fix (which concerns R1-style array/Matrix redundant args)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause localized to sympy/utilities/codegen.py, CodeGen.routine(): symbols are computed only from the expressions' free symbols; a MatrixSymbol passed in argument_sequence/autowrap args but absent from the expression never enters 'symbols', so it misses the 'array_symbols' step and falls into the 'except KeyError: new_args.append(InputArgument(symbol))' fallback without 'dimensions'. CCodeGen.get_prototype then emits it as a non-pointer scalar."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CCodeGen.get_prototype decides pointer-ness solely via 'arg.dimensions or isinstance(arg, ResultBase)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Cython autowrap maps routines through C codegen: _lang_lookup maps 'CYTHON'->('C99',...), and CythonCodeWrapper.dump_pyx partitions arguments using routine.arguments and _prototype_arg, treating args with dimensions as np.ndarray."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reported working comparison (expr = x[0,0] using x) goes through the normal array_symbols path so dimensions are attached and the pointer signature results; this bug only shows for unused matrix args."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant test files: sympy/utilities/tests/test_codegen.py and test_autowrap.py, sympy/external/tests/test_autowrap.py; installed-backend tests live in sympy/external/tests/test_autowrap.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'dimensions' helper introduced in H0 wraps the exact computation previously inlined in the Main (non-argument_sequence) input-argument loop; H1 replaces that loop body with a call to the helper. H0+H1 together reproduce the pre-patch behavior for the non-argument_sequence path and add no behavioral change there (the metadata {'dimensions': [(S.Zero, dim-1) ...]} is identical)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Net new behavior is confined to H2: the argument_sequence 'except KeyError' fallback now attaches dimensions metadata for array-like redundant symbols that never entered the array_symbols path (because they do not appear in the expression's free symbols). The helper 'dimensions' reads s.shape, which is only defined for the array/Matrix types reached via H1/H2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "argument_sequence entries that are IndexedBase are first converted to their .label before the per-symbol loop in which H2's isinstance(symbol, (IndexedBase, MatrixSymbol)) check runs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "CCodeGen/JuliaCodeGen.get_prototype and FCodeGen._declare_arguments decide array-ness solely via arg.dimensions, so attaching dimensions here is what turns an unused matrix argument's emitted signature into a pointer/array. Downstream cython autowrap (dump_pyx) likewise keys off arg (has) dimensions to treat such arguments as np.ndarray."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated whether the real oracle contains any test that acts as a witness for R2 (CodeGen.routine argument_sequence handling of a symbol that is neither an IndexedBase nor a MatrixSymbol — i.e. a scalar extra argument — not among the expression-derived symbols, which must STILL receive no `dimensions` metadata and be emitted as a scalar).\n\nI read every codegen/autowrap test file the oracle contains (all labeled [VISIBLE]): sympy/utilities/tests/test_codegen.py, test_autowrap.py, test_codegen_julia.py, test_codegen_octave.py, test_codegen_rust.py, and sympy/external/tests/test_autowrap.py and test_codegen.py. None contained a [HIDDEN] assertion, so by the governing rule no content in the oracle can serve as a hidden Witness regardless.\n\nMore fundamentally, I empirically confirmed (running an identical test method against gold and buggy) that the R2 scenario is behaviorally identical in the two programs:\n  gold : r.arguments == [(z, None), (x, None), (y, None)]  (z = scalar extra arg, dimensions=None)\n  buggy: r.arguments == [(z, None), (x, None), (y, None)]  (same)\nThe fix (H2) attaches `dimensions` only for array-like redundant symbols that are IndexedBase/MatrixSymbol; genuine plain-scalar extra arguments never receive dimensions in either version. Hence R2 describes a preserved behavior for which the gold program and the buggy program do not differ, so no oracle test can both fail on buggy and pass on gold for this requirement. Found = false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 describes behavior that is preserved between the gold and buggy programs. In H2, the argument_sequence 'except KeyError' fallback was changed so that redundant symbols not derived from the expression now only get `dimensions` metadata when they are IndexedBase/MatrixSymbol instances. For a plain scalar extra argument (a Symbol that is neither an IndexedBase nor a MatrixSymbol and is not among the expression-derived symbols), the gold code takes the `else: metadata = {}` branch and produces InputArgument(symbol) with no dimensions — byte-for-byte the same as the buggy code's `new_args.append(InputArgument(symbol))`.\n\nI verified this empirically: a candidate test that builds a routine with expression `x[i]**2` (x an IndexedBase, i an Idx with range (0,5)) and argument_sequence `[x, z]` where z is a scalar Symbol, then asserts `args[z].dimensions is None`, PASSED against BOTH the gold and the buggy program. Since gold and buggy behave identically for the R2 scenario (the scalar extra argument stays scalar in both), any test asserting the R2 property will pass on both programs — it is impossible for a test to pass on gold and fail on buggy for this requirement. R2 therefore has no genuine witness; it documents a negative/preserved behavior rather than the net behavior introduced by the fix (which concerns R1-style array/Matrix redundant args)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (CodeGen.routine (argument_sequence scalar extra-argument handling)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 describes behavior that is preserved between the gold and buggy programs. In H2, the argument_sequence 'except KeyError' fallback was changed so that redundant symbols not derived from the expression now only get `dimensions` metadata when they are IndexedBase/MatrixSymbol instances. For a plain scalar extra argument (a Symbol that is neither an IndexedBase nor a MatrixSymbol and is not among the expression-derived symbols), the gold code takes the `else: metadata = {}` branch and produces InputArgument(symbol) with no dimensions — byte-for-byte the same as the buggy code's `new_args.append(InputArgument(symbol))`.\n\nI verified this empirically: a candidate test that builds a routine with expression `x[i]**2` (x an IndexedBase, i an Idx with range (0,5)) and argument_sequence `[x, z]` where z is a scalar Symbol, then asserts `args[z].dimensions is None`, PASSED against BOTH the gold and the buggy program. Since gold and buggy behave identically for the R2 scenario (the scalar extra argument stays scalar in both), any test asserting the R2 property will pass on both programs — it is impossible for a test to pass on gold and fail on buggy for this requirement. R2 therefore has no genuine witness; it documents a negative/preserved behavior rather than the net behavior introduced by the fix (which concerns R1-style array/Matrix redundant args).",
+    "confidence": "Medium"
+  }
+}

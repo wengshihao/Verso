@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-14351",
+  "status": "ok",
+  "duration_seconds": 762.6404099999927,
+  "llm_calls": 41,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14351",
+    "s_vis": [
+      {
+        "id": "REQ_1",
+        "statement": "A queryset built as `.annotate(Count('agent__property_groups')).filter(Q(agent__property_groups__in=<a PropertyGroup QuerySet>) | Q(agent__property_groups__count=0)).distinct()` must compile into SQL whose `agent__property_groups__in` subquery selects only a single column (the related PropertyGroup id / the single lookup column required), and must execute without raising `django.db.utils.ProgrammingError: subquery must return only one column`. In other words, OR-ing an `__in`-against-related-queryset filter with an aggregate-count filter must not cause the related model's entire default-column set to be selected inside the generated subselect.",
+        "subject": "QuerySet / Q.filter + annotate(Count) OR-combination subquery column selection",
+        "hunk_ids": [],
+        "cited_from": "# not working in 3.2, was working in 2.2.5, now causes all the fields to be added as part of the get_default_columns on the aliases\nqueryset.filter(\n\tQ(agent__property_groups__in=property_groups)\n\t| Q(agent__property_groups__count=0)\n).distinct()\n...\ndjango.db.utils.ProgrammingError: subquery must return only one column\n...\n\t\t\t\t-- the issue is right here\n\t\t\t\tSELECT U0.\"id\", U0.\"created\", U0.\"updated\", U0.\"create_by\", U0.\"update_by\", U0.\"tenant_objs\", U0.\"name\" \n\t\t\t\t-- the issue is the line above\n                FROM \"property_propertygroup\" U0 [JOIN...] WHERE U1.\"management_agent_id\" = %s)\tHAVING (...)\n...\nuhoh {'model': <class 'property.models.PropertyGroup'>, 'select_fields': [0, 1, 2, 3, 4, 5, 6]}\n# VS working\n... {'model': <class 'property.models.PropertyGroup'>, 'select_fields': [0]}\n[(Col(U0, property.PropertyGroup.id), ('U0.\"id\"', []), None)]"
+      },
+      {
+        "id": "REQ_2",
+        "statement": "Keep the behavior/parity that the equivalent filter expressed via `Q(agent__property_groups__id__in=<related queryset's flat pk/id values>)` correctly produces a single-column (`id`) select for the `__in` subquery under the same annotation/OR/distinct structure, i.e. this formulation already works and must not be regressed by the fix to REQ_1.",
+        "subject": "Unrelated-subselect form of same OR filter (id__in=values_list(...flat=True))",
+        "hunk_ids": [],
+        "cited_from": "# working in 3.2\nqueryset.filter(\n\tQ(agent__property_groups__id__in=property_groups.values_list(\"id\", flat=True))\n\t| Q(agent__property_groups__count=0)\n).distinct()\n# VS\n# not working in 3.2 ... queryset.filter(\n\tQ(agent__property_groups__in=property_groups)\n\t| Q(agent__property_groups__count=0)\n).distinct()\n...\nuhoh {'model': <class 'property.models.PropertyGroup'>, 'select_fields': [0]}\n[(Col(U0, property.PropertyGroup.id), ('U0.\"id\"', []), None)] {'model': <class 'property.models.PropertyGroup'>, 'select_fields': [0]} {}\nextra_select []"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When an `__in` lookup's right-hand side is a query whose select columns have not been explicitly set (no select fields), the columns that the enclosing query contributes to an enclosing GROUP BY from that RHS are limited to the RHS model's primary key rather than expanding to all of the RHS model's default columns — i.e. only the same pk-only expression the subquery itself selects.",
+        "subject": "django.db.models.lookups.In / django.db.models.fields.related_lookups.RelatedIn",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ2",
+        "statement": "For an `__in` lookup whose RHS is a query that has no select fields, computing the group-by columns deterministically includes the RHS primary key in the returned columns from the RHS side.",
+        "subject": "django.db.models.lookups.In.get_group_by_cols",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ_1",
+          "REQ_2"
+        ],
+        "rationale": "S_vis REQ_1 pins down the visible symptom that an `__in` against a related queryset with no explicit select fields causes the enclosing query to widen the generated subquery to all default columns (ProgrammingError), and the desired outcome that only the single pk lookup column be selected. However, REQ1 (S_impl) is phrased as a specific internal mechanism limited to the group-by-column contribution of lookups.In/RelatedIn, a level of implementational detail (which columns get contributed to an enclosing GROUP BY) not directly evidenced by the visible SQL/subquery description, though it is closely aligned."
+      },
+      {
+        "requirement_id": "REQ2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "REQ_1",
+          "REQ_2"
+        ],
+        "rationale": "S_vis REQ_2 shows the working values_list(flat=True) counterpart produces a single-column id select, and REQ_1 shows the broken non-values_list form; this is behavioral parity evidence but says nothing about the deterministic inclusion of the RHS primary key inside lookups.In.get_group_by_cols. That specific method-level behavior is not derivable from visible information alone."
+      }
+    ],
+    "target_requirement_id": "REQ1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible repository is the full Django source; the reproduction models/property_groups come only from the issue's user code, not from this repo."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant framework code: django/db/models/sql/query.py (Query.combine/OR relabeling, get_default_columns path), django/db/models/sql/compiler.py (get_default_columns, get_select, as_sql subquery wrapping), django/db/models/lookups.py (In.process_rhs, which only clear_select_clause/selects pk when the rhs has no select fields), django/db/models/fields/related_lookups.py (RelatedIn.as_sql, also gated on has_select_fields)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause suggested by the source: when the RHS queryset for a related `__in` already has select fields (default cols), neither In.process_rhs nor RelatedIn.as_sql collapses the subquery to a single column, so when such a branch is OR-combined with an aggregate (Count) filter + .distinct(), the compiler's wrapping subquery ends up selecting every default column of the related model."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The regression is reported as new in Django 3.2 (worked in 2.2.5); the failing pattern involves `.annotate(Count(...)) ... |` combined with `.distinct()`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new `In.get_group_by_cols` is structurally a copy of `Lookup.get_group_by_cols` plus a collapse branch identical to that in `In.process_rhs`: when `self.rhs` has no select fields (`has_select_fields` falsy) it clears the select clause and re-adds only `['pk']` before calling `self.rhs.get_group_by_cols()`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before this patch `In` had no override, so it inherited `Lookup.get_group_by_cols`, which never collapses the RHS select clause before collecting its group-by columns; the patch therefore only changes behavior for the not-has_select_fields case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`RelatedIn` (django/db/models/fields/related_lookups.py) subclasses `In` and defines no `get_group_by_cols`, so it inherits the new method as well."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The collapse uses the model primary key, matching what the row is actually IN-checked against in the generated IN subquery."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The regression context (per earlier stage notes) is queries where a nested `__in` filter branch is OR-combined with an aggregate-filtered query and `.distinct()` is applied, where the surrounding subquery previously selected/grouped by every default column of the related model."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ1]: I searched the oracle for a test that genuinely enforces REQ1 (that the columns a `__in` RHS contributes to an enclosing GROUP BY are limited to that RHS model's pk when its select clause was not set).\n\nFiles examined (all in the queryset/aggregation/lookup machinery where such a fix would be exercised): tests/queries/tests.py, tests/queries/test_query.py, tests/queries/test_q.py, tests/queries/test_qs_combinators.py, tests/queries/test_iterator.py, tests/aggregation/tests.py, tests/aggregation/test_filter_argument.py, tests/aggregation_regress/tests.py, tests/annotations/tests.py, tests/or_lookups/tests.py, tests/lookup/tests.py, tests/lookup/test_lookups.py, tests/distinct_on_fields/tests.py, tests/expressions/test_queryset_values.py. Every one of these was labeled [VISIBLE] (byte-identical to the visible Django source), so none of their assertions can serve as a Witness regardless of how well they touch `In`/`RelatedIn` GROUP BY behavior.\n\nI found no [HIDDEN] test file or assertion in any of the relevant locations that asserts the specific new behavior — that an `__in`/`RelatedIn` subquery whose select columns were not explicitly set contributes only its pk columns (not all of its default columns) to an enclosing GROUP BY after OR-combination/assignment of a wrapping subquery. No test currently failing against the buggy program was recorded either.\n\nBecause the Candidate can only be built from a real [HIDDEN] oracle assertion confirming PASS-vs-FAIL on the same behavior, and none was found (all relevant material is visible-or-absent), this is the expected found=false outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ1]: gave up after exhausting its exploration budget without concluding (22 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[REQ1] (django.db.models.lookups.In / django.db.models.fields.related_lookups.RelatedIn) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

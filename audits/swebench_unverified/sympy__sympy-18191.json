@@ -1,0 +1,107 @@
+{
+  "task_id": "sympy__sympy-18191",
+  "status": "ok",
+  "duration_seconds": 594.718246540986,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-18191",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "Evaluating `sqrt(1 / tan(1 + I))` (i.e. `Pow(Pow(tan(1 + I), -1), S.Half)` under eager evaluation) must terminate instead of raising `RecursionError: maximum recursion depth exceeded`, returning a valid SymPy expression.",
+        "subject": "sympy.core.power.Pow._eval_power / sqrt",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: `>>> from sympy import *` / `>>> sqrt(1 / tan(1 + I))` / `Traceback (most recent call last):` ... repeated `File \"/home/eward/se/sympy/core/power.py\", line 375, in _eval_power` / `return Pow(b.conjugate()/Abs(b)**2, other)` ... `RecursionError: maximum recursion depth exceeded while calling a Python object`. Also: \"There should be an additional check on this line:\nhttps://github.com/sympy/sympy/blob/1923822ddf8265199dbd9ef9ce09641d3fd042b9/sympy/core/power.py#L373-L374\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_impl-1",
+        "statement": "When evaluating a reciprocal power (Pow(b, e))**other with e == -1 (i.e. an inner exponent of -1) and with `other` having a rational form whose denominator is literally 2 (the `_half` case), a base b that is known to be non-negative (b.is_negative is False) is simplified directly to `Pow(b, -other)` (i.e. b**-other) — e.g. computing (b**-1)**Rational(m,2) for such a b reduces to b**Rational(-m,2).",
+        "subject": "Pow._eval_power (sympy.core.power.Pow)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_impl-2",
+        "statement": "For the same reciprocal-half-power case, a non-real base (b.is_extended_real is False), which is not negative and therefore enters the non-negative branch, is no longer rewritten via `Pow(b.conjugate()/Abs(b)**2, other)`; it is simplified to `Pow(b, -other)` directly, so that such a power evaluation terminates (does not recurse infinitely through Pow.__new__/_eval_power) instead of raising a RecursionError.",
+        "subject": "Pow._eval_power (sympy.core.power.Pow)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis-1 confirms a recursion bug in the reciprocal-power path for the sqrt(1/tan(1+I)) case and points to where a check should be added (lines 373-374), but never states the exact conditions (inner e==-1, outer denominator literally 2, base non-negative) nor the outcome b**-other; the evidence is consistent with but does not pin down this specific fix."
+      },
+      {
+        "requirement_id": "S_impl-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1"
+        ],
+        "rationale": "S_vis-1's trace does implicate the conjugate/Abs rewrite branch at line 375 in an infinite recursion for a non-real base, and says a check is needed there, but it does not specify that the fix replaces that branch with a direct Pow(b, -other) simplification; the exact committed behavior is ambiguous."
+      }
+    ],
+    "target_requirement_id": "S_impl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_t",
+      "test_source": "from sympy import Pow, Symbol, Rational\n\ndef test_t():\n    b = Symbol('b', complex=True, real=False, imaginary=False)\n    e = (b**-1)**Rational(1, 2)\n    expected = Pow(b, -Rational(1, 2))\n    assert e == expected",
+      "gold_result": "PASSED — (b**-1)**Rational(1,2) simplifies to Pow(b,-Rational(1,2)) == 1/sqrt(b).",
+      "buggy_result": "FAILED — buggy yields sqrt(conjugate(b))/Abs(b) == (conjugate(b)/Abs(b)**2)**(1/2) (via the removed non-real-extended-real branch), not 1/sqrt(b).",
+      "explanation": "Target requirement S_impl-1: in Pow._eval_power, for an inner exponent e == -1 with `other` having denominator 2 (the _half case), a base b known to be non-negative (b.is_negative is False) is simplified directly to Pow(b, -other). A genuine witness must hit the gold-added branch `elif b.is_negative is False: return Pow(b, -other)` while the buggy version instead returns `Pow(b.conjugate()/Abs(b)**2, other)` from the removed `if b.is_extended_real is False:` branch. That requires a base b that is simultaneously non-negative-in-sign (is_negative False) AND not an extended real — precisely a generic complex base with real=False (e.g. Symbol('b', complex=True, real=False, imaginary=False)). Raising (b**-1) to Rational(1,2): gold reduces it to Pow(b,-Rational(1,2)) = 1/sqrt(b) (execution-confirmed PASSED); buggy keeps it as sqrt(conjugate(b))/Abs(b) (execution-confirmed FAILED). A plain real nonnegative base would NOT distinguish the versions, because there the buggy code falls through to the s=1 floor calc giving the same b**(-other); so the non-real/non-negative base is the crucial disambiguating input. I verified against the visible tests (test_power.py, test_arit.py, test_complex.py, complexes/miscellaneous/powsimp/sqrtdenest tests) + the prior S_vis/Oracle findings that none pins down this reciprocal-power simplification for such a base, so the witness is a hidden fact enforced only by the fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in sympy/core/power.py Pow._eval_power; traceback recurses between __new__/line ~301 (`obj = b._eval_power(e)`) and the `e == -1` + `_half(other)` branch returning `Pow(b.conjugate()/Abs(b)**2, other)` (~line 375), each level re-entering Pow.__new__."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The exact line numbers in the issue (373-374 at commit 1923822d) differ slightly from the working copy present here, but the cited code text (`return Pow(b.conjugate()/Abs(b)**2, other)` inside the `if e == -1:` / `if b.is_extended_real is False:` block) is present verbatim in this file's `_eval_power`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No dedicated test for this expression exists in the visible tree (sympy/core/tests/test_power.py has no issue-18191 test); the only visible evidence is the issue report's reproduction and traceback."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "sqrt is defined in sympy/functions/elementary/miscellaneous.py as `return Pow(arg, S.Half, evaluate=evaluate)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Change is inside Pow._eval_power, the e == -1 / _half(other) sub-case. The pre-existing negative-base branch (b.is_negative is True -> S.NegativeOne**other*Pow(-b, e*other)) is unchanged context and is not the subject of the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The rule removed was: when b.is_extended_real is False (complex non-real base), the code returned Pow(b.conjugate()/Abs(b)**2, other). That rewrite is what the S_vis traceback reports recursing between Pow.__new__ (obj = b._eval_power(e), ~line 301) and ~line 375."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new rule fires on b known to be non-negative (b.is_negative is False), which includes positive/extended-nonnegative reals and also pure-imaginary (etc.) non-real bases, since imaginary bases satisfy is_negative False."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_impl-1]: Target requirement S_impl-1 concerns a behavioral change in Pow._eval_power: for an inner exponent e == -1 with `other` having denominator literally 2 (the `_half` case), a base b with b.is_negative False is simplified directly to Pow(b, -other) (e.g. (b**-1)**Rational(1,2) -> 1/sqrt(b)). I confirmed the gold/buggy behavioral difference directly: for b = Symbol('b', complex=True, real=False, imaginary=False), buggy yields (b**-1)**Rational(1,2) == sqrt(conjugate(b))/Abs(b) (i.e. (conjugate(b)/Abs(b)**2)**(1/2) from the removed non-real branch), while gold yields 1/sqrt(b) = Pow(b,-Rational(1,2)). So the expression genuinely distinguishes the versions.\n\nHowever, no oracle test worth submitting exists for it. I inspected sympy/core/tests/test_power.py (the natural home for a Pow._eval_power regression test) and confirmed it contains no such assertion (no issue-18191 test, nothing asserting reciprocal-power simplification of a non-negative/non-real base to Pow(b,-other)). I also inspected the other likely candidates that exercise this code region (sympy/core/tests/test_arit.py, test_numbers.py, test_complex.py, sympy/functions/elementary/tests/test_complexes.py, test_miscellaneous.py, sympy/simplify/tests/test_powsimp.py, test_sqrtdenest.py) — all are labeled [VISIBLE], and none contains a distinguishing assertion about this r. Since content that a repair system already saw ([VISIBLE]) can never serve as a Witness, and I found no [HIDDEN] assertion that covers this requirement, found=false. This is consistent with the recorded fact that no tests currently fail against the buggy program: no pre-existing (hidden) oracle test enforces the specific e==-1/_half/non-negative-base rule introduced by the fix."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_impl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_impl-1] (Pow._eval_power (sympy.core.power.Pow)): When evaluating a reciprocal power (Pow(b, e))**other with e == -1 (i.e. an inner exponent of -1) and with `other` having a rational form whose denominator is literally 2 (the `_half` case), a base b that is known to be non-negative (b.is_negative is False) is simplified directly to `Pow(b, -other)` (i.e. b**-other) — e.g. computing (b**-1)**Rational(m,2) for such a b reduces to b**Rational(-m,2). — not entailed by S_vis (S_vis-1 confirms a recursion bug in the reciprocal-power path for the sqrt(1/tan(1+I)) case and points to where a check should be added (lines 373-374), but never states the exact conditions (inner e==-1, outer denominator literally 2, base non-negative) nor the outcome b**-other; the evidence is consistent with but does not pin down this specific fix.); confirmed by a synthesized witness: Target requirement S_impl-1: in Pow._eval_power, for an inner exponent e == -1 with `other` having denominator 2 (the _half case), a base b known to be non-negative (b.is_negative is False) is simplified directly to Pow(b, -other). A genuine witness must hit the gold-added branch `elif b.is_negative is False: return Pow(b, -other)` while the buggy version instead returns `Pow(b.conjugate()/Abs(b)**2, other)` from the removed `if b.is_extended_real is False:` branch. That requires a base b that is simultaneously non-negative-in-sign (is_negative False) AND not an extended real — precisely a generic complex base with real=False (e.g. Symbol('b', complex=True, real=False, imaginary=False)). Raising (b**-1) to Rational(1,2): gold reduces it to Pow(b,-Rational(1,2)) = 1/sqrt(b) (execution-confirmed PASSED); buggy keeps it as sqrt(conjugate(b))/Abs(b) (execution-confirmed FAILED). A plain real nonnegative base would NOT distinguish the versions, because there the buggy code falls through to the s=1 floor calc giving the same b**(-other); so the non-real/non-negative base is the crucial disambiguating input. I verified against the visible tests (test_power.py, test_arit.py, test_complex.py, complexes/miscellaneous/powsimp/sqrtdenest tests) + the prior S_vis/Oracle findings that none pins down this reciprocal-power simplification for such a base, so the witness is a hidden fact enforced only by the fix.",
+    "confidence": "Medium"
+  }
+}

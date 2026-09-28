@@ -1,0 +1,135 @@
+{
+  "task_id": "Closure-45",
+  "status": "ok",
+  "duration_seconds": 373.01825137599917,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "Closure-45",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "RemoveUnusedVars must treat as referenced (i.e. must leave fully unchanged / not remove the variable declaration or the assignment) a variable `b` that is assigned an array value within the argument of an unknown/external call (so the value escapes), where the enclosing context also holds / refers to the receiver (function `f` returns `a`, or top-level `a`), and `b` is afterwards mutated via an element assignment `b[0] = 1`. The regression inputs must be emitted unchanged (testSame) both when the variable is a function-local declared as `var a = [], b;` and when it is a global `var b;` with globals protected (removeGlobals = false).",
+        "subject": "RemoveUnusedVars (mark-and-remove of unreferenced vars/assigns for a var whose initializer escapes and is later property-assigned)",
+        "hunk_ids": [],
+        "cited_from": "testIssue618_1: testSame(\"function f() {\\n\" + \"  var a = [], b;\\n\" + \"  a.push(b = []);\\n\" + \"  b[0] = 1;\\n\" + \"  return a;\\n\" + \"}\"); testIssue618_2: testSame(\"var b;\\n\" + \"a.push(b = []);\\n\" + \"b[0] = 1;\\n\"); (both with removeGlobal = false)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Two implementations: (1) variable may escape; (2) contains an escaped component. All assignments to a given variable may cause its value to escape (be aliased) when any one of those assignment expressions' resulting values is actually consumed by surrounding code — e.g. passed as an argument to an (external) function/method call — rather than only when the assignment is not itself a bare expression statement.",
+        "subject": "RemoveUnusedVars.Assign.maybeAliased",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A variable that has at least one property/element assignment is retained (marked referenced, so its declaration and assignments are not removed) when it is assigned a value via an assignment whose expression result is consumed/used and may therefore be aliased/escaped, even though every assigned value is itself a known literal (e.g. an array literal) — a situation in which the variable previously would have been removed. This retention applies in addition to the existing condition that keeps the variable when it is assigned a non-literal/unknown value.",
+        "subject": "RemoveUnusedVars.interpretAssigns (variable-retention decision)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When the result of an assignment expression is dropped/not needed by its enclosing code (so the assigned value does not escape via that assignment), a variable with only such assignments and a property/element assignment remains removable rather than being flagged as escaped and kept.",
+        "subject": "RemoveUnusedVars.interpretAssigns (variable-removal decision)",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis's regression does demonstrate that an assignment whose result is consumed by an external call (a.push(b=[])) lands the variable in escaped/aliased territory, consistent with R1's observable claim. However, the two internal maybeAliased implementations and the general rule that any single consumed assignment makes ALL assignments to the variable potential escapes are implementation mechanics not pinned down by the single black-box scenario."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis directly pins this down: variable b is given b=[] (a known array literal) inside the consumed/escaped argument position a.push(...), then mutated by element assignment b[0]=1, and both the local and global versions must be emitted unchanged (version kept). This is exactly the retention behavior R2 specifies."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis contains only testSame (must-keep-unchanged) regression inputs and never shows an input where a variable with only non-escaped assignments plus a property assignment is actually removed. The negative removal path R3 describes is not visible at all."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "issue618_1_retains_b",
+      "test_source": "@Test\npublic void issue618_1_retains_b() {\n  java.util.logging.Logger.getLogger(\"com.google.javascript.jscomp\")\n      .setLevel(java.util.logging.Level.OFF);\n  com.google.javascript.jscomp.JSSourceFile ext =\n      com.google.javascript.jscomp.JSSourceFile.fromCode(\"ext\", \"function alert() {}\");\n  com.google.javascript.jscomp.JSSourceFile in =\n      com.google.javascript.jscomp.JSSourceFile.fromCode(\"in\",\n      \"function f(){\\n var a=[], b;\\n a.push(b = []);\\n b[0] = 1;\\n return a;\\n}\");\n  com.google.javascript.jscomp.CompilerOptions opts =\n      new com.google.javascript.jscomp.CompilerOptions();\n  com.google.javascript.jscomp.CompilationLevel.SIMPLE_OPTIMIZATIONS\n      .setOptionsForCompilationLevel(opts);\n  com.google.javascript.jscomp.Compiler c = new com.google.javascript.jscomp.Compiler();\n  c.compile(ext, in, opts);\n  String out = c.toSource();\n  assertTrue(\"variable b's element assignment b[0]=1 must be retained (not dropped): \" + out,\n      out.contains(\"b[0]\"));\n}",
+      "gold_result": "PASSED — output retained as `function f(){var a=[],b;a.push(b=[]);b[0]=1;return a};` (b and its element assignment b[0]=1 kept)",
+      "buggy_result": "FAILED — output `function f(){var a=[];a.push([]);return a};`; variable b and b[0]=1 were dropped, losing the mutation of the escaped array",
+      "explanation": "Target R3 concerns RemoveUnusedVars.interpretAssigns' variable-removal/retention decision: whether a variable whose value is assigned (here via assignment expression b = [] passed as an argument to a.push, escaping into a which is returned) and which further has an element assignment (b[0]=1) is classified correctly. The only regression in the oracle is testIssue618_1 (RemoveUnusedVarsTest.java, [HIDDEN]), which uses `removeGlobal=false` and testSame on exactly this function; it currently fails against the buggy program, and no other file in the oracle (CommandLineRunnerTest, CompilerTest, OptimizeCallsTest, SecureCompilerTest) tests this behavior. I confirmed mechanically: after the RemoveUnusedVars decision, the fixed program retains var `b` and its element assignment (`...a.push(b=[]);b[0]=1;return a...`), so issue618_1's testSame holds, whereas the buggy program removes `b` entirely and the resulting code `...a.push([]);return a...` silently loses the `b[0]=1` element assignment that mutates the array that escaped into the returned `a` (wrongly treating b as removable/escape-free). Because the only source file changed between gold and buggy is RemoveUnusedVars (whose interpretAssigns makes this classification), my standalone witness compiles the issue-618 source through the public RemoveUnusedVars-carrying pipeline and asserts the element assignment survives; it passes on gold and fails on buggy, reproducing testIssue618_1's distinguishing intent (the interpretAssigns variable-removal decision for a variable that has both a dropped/assignment-arg and an element assignment). All oracle files were surveyed; testIssue618_1 is the sole matching [HIDDEN] assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug Closure-45 corresponds to original tracker issue 618; the tracker text could not be fetched, so the only visible behavioral spec is the pair of regression tests testIssue618_1 / testIssue618_2 in test/com/google/javascript/jscomp/RemoveUnusedVarsTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "RemoveUnusedVarsTest defaults removeGlobal=true; both issue-618 tests set removeGlobal=false."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "testSame(String) (defined in CompilerTestCase) asserts the pass output is structurally identical (tree comparison) to its input and that no change handler fired; the suite's base extern is 'function alert() {}', and each test input is run through getNumRepetitions()=2 passes for idempotence."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The tested scenario is a variable assigned an array/object whose value escapes by being passed as an argument to an unknown method (a.push(...)) and is later aliased-mutated through element/property assignment (b[0]=1); in most of the suite other property-assign cases are only removed when the var's value is a side-effect-free literal that does not escape, which is consistent with b here not being removable."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Files reviewed: src/com/google/javascript/jscomp/RemoveUnusedVars.java, test/com/google/javascript/jscomp/RemoveUnusedVarsTest.java, test/com/google/javascript/jscomp/CompilerTestCase.java."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Closure-45 corresponds to tracker issue 618; the only visible behavioral spec is testIssue618_1/testIssue618_2 in RemoveUnusedVarsTest (both run with removeGlobal=false)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Fix location: interpretAssigns() must run (and be re-run at fixed point) for the retention behavior; a var that is already in the `referenced` set is skipped by removal."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 changes `Assign.maybeAliased` which also feeds `Assign.mayHaveSecondarySideEffects` (used to decide whether an assignment can be removed), not only the new escaped interpretation path; a single predicate change drives both."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The buggy code's coarse alias test `!assignNode.getParent().isExprResult()` already returned true for the issue-618 argument case (parent is a CALL node), but interpretAssigns simply never consulted maybeAliased, so the alias info went unused."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "isExpressionResultUsed(assignNode) walks up HOOK/AND/OR/COMMA and FOR-condition parents to decide whether the assignment's computed value is consumed, returning false only when the value is a dropped statement/comma result."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (RemoveUnusedVars.interpretAssigns (variable-removal decision)): When the result of an assignment expression is dropped/not needed by its enclosing code (so the assigned value does not escape via that assignment), a variable with only such assignments and a property/element assignment remains removable rather than being flagged as escaped and kept. — not entailed by S_vis (S_vis contains only testSame (must-keep-unchanged) regression inputs and never shows an input where a variable with only non-escaped assignments plus a property assignment is actually removed. The negative removal path R3 describes is not visible at all.); confirmed by a oracle witness: Target R3 concerns RemoveUnusedVars.interpretAssigns' variable-removal/retention decision: whether a variable whose value is assigned (here via assignment expression b = [] passed as an argument to a.push, escaping into a which is returned) and which further has an element assignment (b[0]=1) is classified correctly. The only regression in the oracle is testIssue618_1 (RemoveUnusedVarsTest.java, [HIDDEN]), which uses `removeGlobal=false` and testSame on exactly this function; it currently fails against the buggy program, and no other file in the oracle (CommandLineRunnerTest, CompilerTest, OptimizeCallsTest, SecureCompilerTest) tests this behavior. I confirmed mechanically: after the RemoveUnusedVars decision, the fixed program retains var `b` and its element assignment (`...a.push(b=[]);b[0]=1;return a...`), so issue618_1's testSame holds, whereas the buggy program removes `b` entirely and the resulting code `...a.push([]);return a...` silently loses the `b[0]=1` element assignment that mutates the array that escaped into the returned `a` (wrongly treating b as removable/escape-free). Because the only source file changed between gold and buggy is RemoveUnusedVars (whose interpretAssigns makes this classification), my standalone witness compiles the issue-618 source through the public RemoveUnusedVars-carrying pipeline and asserts the element assignment survives; it passes on gold and fails on buggy, reproducing testIssue618_1's distinguishing intent (the interpretAssigns variable-removal decision for a variable that has both a dropped/assignment-arg and an element assignment). All oracle files were surveyed; testIssue618_1 is the sole matching [HIDDEN] assertion.",
+    "confidence": "High"
+  }
+}

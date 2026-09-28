@@ -1,0 +1,128 @@
+{
+  "task_id": "JacksonCore-10",
+  "status": "ok",
+  "duration_seconds": 298.5915233450014,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-10",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a JsonFactory's byte field-name symbol canonicalizer is a ByteQuadsCanonicalizer created by createRoot(-523743345), parsing the UTF-8 bytes of the document {\"expectedGCperPosition\":null,\"1\":null,\"2\":null,...,\"60\":null} (an object whose field names are \"expectedGCperPosition\" plus the decimal strings \"1\"..\"60\", inserted through subsequent adds that overflow the primary/secondary/tertiary slots into the shared spill-over area) must run to end-of-input without throwing an ArrayIndexOutOfBoundsException.",
+        "subject": "ByteQuadsCanonicalizer / UTF-8 JSON field-name canonicalization during parsing",
+        "hunk_ids": [],
+        "cited_from": "testIssue207 in src/test/java/com/fasterxml/jackson/core/sym/TestByteBasedSymbols.java: \"ByteQuadsCanonicalizer nc = ByteQuadsCanonicalizer.createRoot(-523743345); ... byteSymbolCanonicalizerField.set(jsonF, nc);\" and \"stringBuilder.append(\"    \\\"expectedGCperPosition\\\": null\"); for (int i = 0; i < 60; ++i) { stringBuilder.append(\",\\n    \\\"\").append(i + 1).append(\"\\\": null\"); } ... JsonParser p = jsonF.createParser(stringBuilder.toString().getBytes(\"UTF-8\")); while (p.nextToken() != null) { }\" — matched in the issue text: \"it looks to me as if the ... _hashArea has a spillover area that is not accounted for properly in the String array _names\" and \"As a workaround ... disable ... CANONICALIZE_FIELD_NAMES\"."
+      },
+      {
+        "id": "R2",
+        "statement": "The String[] _names in ByteQuadsCanonicalizer must be sized/accounted so that any slot reached while adding field names (including slots in the shared spill-over area that _findOffsetForAdd returns via '_spilloverEnd') can be written with 'name' at '_names[offset >> 2]' without an array-index out-of-bounds, for the table state produced by inserting the ~61 field names described on the seed-(-523743345) root table.",
+        "subject": "ByteQuadsCanonicalizer.addName / name storage indexing",
+        "hunk_ids": [],
+        "cited_from": "addName(...) in src/main/java/com/fasterxml/jackson/core/sym/ByteQuadsCanonicalizer.java: \"_names[offset >> 2] = name;\" alongside \"offset = _spilloverEnd; _spilloverEnd += 4;\" in _findOffsetForAdd and the name-bucket field doc \"Array that contains String instances matching entries in _hashArea.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a new symbol cannot fit in the primary/secondary/tertiary areas and must be appended to the spill-over area, spill-over exhaustion is detected against the true end of the fixed main-hash region (which spans `_hashSize` slots x 8 ints), not against the physical length of the backing int[] `_hashArea` (which can be longer once it has been grown to hold 'long name' quad storage). The consequence is that once the spill-over area fills up to that boundary, the normal overflow response executes (DoS `_reportTooManyCollisions` when `_failOnDoS` is set; otherwise marking for rehash on the following add) instead of continuing to write further spill-over entries into and past the long-name quad region. As a result, the stored quads of previously-interned multi-quad names are never overwritten by spill-over additions, so symbol lookups and parsing of such names remain correct even when many colliding single-quad field names saturate the spill-over area.",
+        "subject": "ByteQuadsCanonicalizer._findOffsetForAdd",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The single-quad hash function `calcHash(int q1)` re-mixes the intermediate hash after its high/low 16-bit fold: it additionally XORs the running hash with a copy shifted left by 3, then adds the high bits shifted right by 12. For each fixed (seed, q1) input this returns a different int hash value than the prior fold-only formulation, and consequently distributes single-quad (short, ~<=3-character) field names over differently-spread primary/subsequent slots, so that a seed that previously routed a run of small/colliding keys into one slot chain no longer does so.",
+        "subject": "ByteQuadsCanonicalizer.calcHash(int)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 only pins the observable outcome (parsing the 61-field doc to end without AIOOBE) and S_vis R2 attributes the fault to _names-array/spill-over accounting, but neither states the exhaustion-boundary must be compared against _hashSize*8 (not the physical _hashArea length) nor spells out the multi-quad-name preservation consequence. The visible evidence plausibly steers toward spill-over accounting but does not pin this exact mechanism."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis entry mentions calcHash(int), any re-mixing of the single-quad hash (XOR with <<3 copy, add >>12), or key redistribution; visible evidence points instead to array/spill-over accounting fixes. Nothing in S_vis would lead to this specific hash-function transformation."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    com.fasterxml.jackson.core.sym.ByteQuadsCanonicalizer nc =\n            com.fasterxml.jackson.core.sym.ByteQuadsCanonicalizer.createRoot();\n    int seed = nc.hashSeed();\n    int[] q1s = { 0x01, 0x02, 0x30, 0x31, 0x32, 0x39, 0x61, 0x62,\n            0x3130, 0x3132, 0x6162, 0x616263, 0x0A0B0C, 0x41414141,\n            0x7FFFFFFF, 0x80000000, 0xDEADBEEF, 123456789, 987654321 };\n    for (int q1 : q1s) {\n        int h = q1 ^ seed;\n        h += (h >>> 16);\n        h ^= (h << 3);\n        h += (h >>> 12);\n        org.junit.Assert.assertEquals(\"single-quad remix for q1=0x\"\n                + Integer.toHexString(q1), h, nc.calcHash(q1));\n    }\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "R2 concerns ByteQuadsCanonicalizer.calcHash(int q1), the single-quad hash used for short (<~=3-char) field names, whose fixed (gold) re-mix is `h += (h>>>16); h ^= (h<<3); h += (h>>>12)` whereas the pre-fix (buggy) version used only a fold plus `h ^= (h>>>12)`, so each fixed (seed,q1) yields a different int (and consequently a different slot distribution). This witness drives calcHash(int) directly: it constructs the canonicalizer through its only public factory, reads the instance's actual seed via the public hashSeed() accessor, and asserts that its single-quad hash output equals the corrected re-mix arithmetic re-derived inline in the test. This discriminates because it structurally compares against the gold formula rather than the buggy fold-only one. Verified by execution: the identical method source PASSED against the gold build and FAILED against the buggy build (e.g. q1=0x1 returned -1514465596 on the fixed algorithm vs 2076726991 under the buggy one). The visible tests (TestSymbolTables/TestByteBasedSymbols) only pin aggregate slot-count distributions for fixed seeds or the issue-207 parse smoke test; none asserts the raw scalar output of calcHash(int) for a chosen q1 against the corrected re-mix, so this isn't a re-worded copy of a visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction is captured in the checked-in test testIssue207 (src/test/java/com/fasterxml/jackson/core/sym/TestByteBasedSymbols.java), which exactly mirrors the reported SEED -523743345 and the 61-field document."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug's suspected locus per the issue and source is the interaction between the spill-over region of the int[] _hashArea (1/8 of the total area, starting at _spilloverStart() = 7*hashSize) and entries in String[] _names indexed by 'offset >> 2' during addName/findName."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_hashArea is sized hashAreaSize = sz<<3 ints (2*sz four-int slots) in TableInfo.createInitial; _names is sized sz<<1 strings; rehash() grows _hashArea by 'oldSize<<3' and doubles _names."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Other byte-symbol tests (TestSymbolTables.testSyntheticWithBytesNew, testCollisionsWithBytesNew187a/b etc.) pin exact primary/secondary/tertiary/spillover counts, but the only test reproducing the specific bug (207) is testIssue207."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The two hunks are independent mechanisms both aimed at the Issue-207 collision scenario (seed -523743345, a doc mixing the long name \"expectedGCperPosition\" with 60 numeric single-quad field names \"1\"..\"60\") and are separately fixable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 trigger arithmetic: the fixed main-hash area that contains primary/secondary/tertiary/spill-over ends at `_hashSize << 3`; the spill-over region occupies the last 1/8 of it, from `_spilloverStart() = 7*hashSize` up to `8*hashSize`, and the long-name quad area begins at that boundary (`_longNameOffset`). `_hashArea.length` equals or exceeds `_hashSize << 3` because `rehash()` and `_appendLongName` grow the array, so the pre-fix test against `hashArea.length` could let spill-over writes clobber the long-name region when long names had already extended the array."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 overflow handling bodies are unchanged by the patch: when `_failOnDoS` (and the table is large enough, hashSize > 1024) `_reportTooManyCollisions` throws; otherwise/at small tables it sets `_needRehash`, forcing a rehash on the next add."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 edits the single-arg `calcHash(int q1)` (used for names fitting one quad); the 2-quad, 3-quad and multi-quad (`int[]`) hash routines are untouched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "`calcHash(int)` is public, so its input-output values are directly observable; createRoot(seed) is package/protected-scope alongside the test."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The checked-in test `testIssue207` (TestByteBasedSymbols) is a smoke test: it parses the document and iterates tokens with no per-token assertions, so pre-fix it would fail by throwing/crashing due to symbol-table corruption rather than by failing an equality check."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: R2 targets the single-quad hash re-mix in ByteQuadsCanonicalizer.calcHash(int) (the change that redistributes short, ~1-3 char single-quad field names so an issue seed no longer clumps a run of colliding keys into one slot chain).\n\nI enumerated every oracle test file. The only tests in the entire corpus that exercise this specific behavior are the count/slot-distribution tests and the issue-207 smoke test with seed -523743345: testIssue207, testCollisionsWithBytesNew187b, testSyntheticWithBytesNew, testShortNameCollisionsDirectNew (skewed toward single-quad names) and the sibling char/short-name tests. Every one of these lives in the two [VISIBLE] files TestByteBasedSymbols.java and TestSymbolTables.java — i.e. their content was visible to the repair system, so none can serve as an oracle witness no matter how precisely it matches R2. A witness may only rest on [HIDDEN] content.\n\nI then read every other oracle file that could plausibly hold a matching assertion (TestJsonParserSymbols, TestParserSymbols, TestHashCollisionChars, TestSymbolsWithMediaItem, TestWithTonsaSymbols, TestJsonParser, TestParserDupHandling, TestUtf8Parser, JsonFactoryTest). None contains any assertion that tests ByteQuadsCanonicalizer.calcHash(int)'s single-quad re-mix / re-distribution of short names (the char-based pieces in those files concern CharsToNameCanonicalizer HASH_MULT/collision-overflow or generic dup handling, not the byte single-quad fold re-mix). No [HIDDEN] test in the oracle genuine enforces R2, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (ByteQuadsCanonicalizer.calcHash(int)): The single-quad hash function `calcHash(int q1)` re-mixes the intermediate hash after its high/low 16-bit fold: it additionally XORs the running hash with a copy shifted left by 3, then adds the high bits shifted right by 12. For each fixed (seed, q1) input this returns a different int hash value than the prior fold-only formulation, and consequently distributes single-quad (short, ~<=3-character) field names over differently-spread primary/subsequent slots, so that a seed that previously routed a run of small/colliding keys into one slot chain no longer does so. — not entailed by S_vis (Neither S_vis entry mentions calcHash(int), any re-mixing of the single-quad hash (XOR with <<3 copy, add >>12), or key redistribution; visible evidence points instead to array/spill-over accounting fixes. Nothing in S_vis would lead to this specific hash-function transformation.); confirmed by a synthesized witness: R2 concerns ByteQuadsCanonicalizer.calcHash(int q1), the single-quad hash used for short (<~=3-char) field names, whose fixed (gold) re-mix is `h += (h>>>16); h ^= (h<<3); h += (h>>>12)` whereas the pre-fix (buggy) version used only a fold plus `h ^= (h>>>12)`, so each fixed (seed,q1) yields a different int (and consequently a different slot distribution). This witness drives calcHash(int) directly: it constructs the canonicalizer through its only public factory, reads the instance's actual seed via the public hashSeed() accessor, and asserts that its single-quad hash output equals the corrected re-mix arithmetic re-derived inline in the test. This discriminates because it structurally compares against the gold formula rather than the buggy fold-only one. Verified by execution: the identical method source PASSED against the gold build and FAILED against the buggy build (e.g. q1=0x1 returned -1514465596 on the fixed algorithm vs 2076726991 under the buggy one). The visible tests (TestSymbolTables/TestByteBasedSymbols) only pin aggregate slot-count distributions for fixed seeds or the issue-207 parse smoke test; none asserts the raw scalar output of calcHash(int) for a chosen q1 against the corrected re-mix, so this isn't a re-worded copy of a visible assertion.",
+    "confidence": "Medium"
+  }
+}

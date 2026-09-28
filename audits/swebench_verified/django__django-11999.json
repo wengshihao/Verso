@@ -1,0 +1,108 @@
+{
+  "task_id": "django__django-11999",
+  "status": "ok",
+  "duration_seconds": 115.68778595805634,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11999",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a Model class itself defines a method named get_<field_name>_display for a model field that also has choices set, that user-defined method must take effect — Field field registration/contribute_to_class must not overwrite it with the auto-generated choice-based get_<field_name>_display.",
+        "subject": "Field.contribute_to_class / Model.get_<field>_display",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"Description ... What I expect is that I should be able to override this function. Example: class FooBar(models.Model):\\n\\tfoo_bar = models.CharField(_(\"foo\"), choices=[(1, 'foo'), (2, 'bar')])\\n\\tdef __str__(self):\\n\\t\\treturn self.get_foo_bar_display() # This returns 'foo' or 'bar' in 2.2, but 'something' in 2.1\\n\\tdef get_foo_bar_display(self):\\n\\t\\treturn \"something\"\" — i.e. calling get_foo_bar_display()/str() must yield the override 'something', not the choices label ('foo'/'bar')."
+      },
+      {
+        "id": "R2",
+        "statement": "For a field with choices whose model does NOT define its own get_<field_name>_display, the object still gains a working get_<field_name>_display() returning the human-readable label for the stored value (choosing by the field's choices), returning the raw value itself when the stored value is not among the choices, and this default behavior must continue to be installed for such non-overriding models.",
+        "subject": "Model.get_<field>_display (default choices display)",
+        "hunk_ids": [],
+        "cited_from": "docs/ref/models/instances.txt: \"For every field that has choices set, the object will have a get_FOO_display() method, where FOO is the name of the field. This method returns the 'human-readable' value of the field.\"; tests/model_fields/tests.py GetFieldDisplayTests: \"self.assertEqual(Whiz(c=1).get_c_display(), 'First') ... self.assertEqual(Whiz(c=9).get_c_display(), 9)          # Invalid value\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "When a Field with choices set contributes to a model class that already defines a method named get_<field>_display, the Field registration does not overwrite it: invoking that name on the model runs the user-defined method rather than the auto-generated _get_FIELD_display partialmethod.",
+        "subject": "django.db.models.fields.Field.contribute_to_class (get_FIELD_display auto-generation)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_2",
+        "statement": "When a Field with choices set contributes to a model class that does not already define get_<field>_display, the class still receives the auto-generated get_<field>_display partialmethod bound to cls._get_FIELD_display for that field.",
+        "subject": "django.db.models.fields.Field.contribute_to_class (get_FIELD_display auto-generation)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 directly states that when a Model defines get_<field_name>_display for a field with choices, contribute_to_class must not overwrite it, so the user-defined method takes effect — matching S_IMPL_1 exactly. Its citation confirms calling get_foo_bar_display()/str() must yield the override."
+      },
+      {
+        "requirement_id": "S_IMPL_2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R2 directly states that for a field with choices whose model does not define its own get_<field_name>_display, the object still gains a working auto-generated get_<field_name>_display, which must continue to be installed for such non-overriding models — matching S_IMPL_2. Its citation documents the auto-generated get_FOO_display() behavior."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Root-cause mechanism located in django/db/models/fields/__init__.py Field.contribute_to_class: `if self.choices is not None: setattr(cls, 'get_%s_display' % self.name, partialmethod(cls._get_FIELD_display, field=self))`. This setattr runs inside ModelBase.__new__ AFTER type.__new__ has already created the class with whatever get_<field>_display the model body defined, so it unconditionally clobbers a user override."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The same unconditional-setattr pattern exists for parallel auto-generated helpers in DateField.contribute_to_class (django/db/models/fields/__init__.py): `setattr(cls, 'get_next_by_%s' % self.name, partialmethod(cls._get_next_or_previous_by_FIELD, field=self, is_next=True))` and get_previous_by_ — no visible issue material asserts override of those, but the code-path is analogous."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Baseline default-get_FIELD_display behavior is exercised by tests/model_fields/tests.py GetFieldDisplayTests against the Whiz/WhizDelayed/WhizIter models in tests/model_fields/models.py; none of the visible models define their own get_<field>_display override, so visible tests only pin down the default path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The hidden repair test presumably adds a model that both sets choices and defines its own get_<field>_display, checking the override wins — this is exactly what issue text + Field.contribute_to_class setattr establish as required."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch changes Field.contribute_to_class in django/db/models/fields/__init__.py so the auto-generated 'get_%s_display' setattr (present only when self.choices is not None) is guarded by `if not hasattr(cls, 'get_%s_display' % self.name)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The bug was that contribute_to_class runs during ModelBase.__new__ after the class is created, so an unconditional setattr clobbered a user override defined in the model body."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Parallel auto-generated helpers get_next_by_<field>/get_previous_by_<field> (in DateField.contribute_to_class) still use the unconditional setattr pattern and are not touched by this patch."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "task_id": "Lang-56",
+  "status": "ok",
+  "duration_seconds": 95.00779725100074,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "Lang-56",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A FastDateFormat instance produced by FastDateFormat.getInstance(\"yyyy/MM/dd\") can be serialized and then deserialized without throwing any exception (i.e. the instance, which extends Format/Serializable, does not carry a non-serializable mRules payload that aborts the round trip).",
+        "subject": "FastDateFormat (serialization support)",
+        "hunk_ids": [],
+        "cited_from": "FastDateFormatTest.testLang303(): \"public void testLang303() { FastDateFormat format = FastDateFormat.getInstance(\"yyyy/MM/dd\"); format = (FastDateFormat) SerializationUtils.deserialize( SerializationUtils.serialize( format ) ); }\" — and the class declares \"private static final long serialVersionUID = 1L;\" / \"Required for serialization support.\" The issue text: \"FastDateFormat.mRules is not transient or serializable\" with options \"make the Rule interface Serializable, or make mRules transient and add deserializing code to kick off init().\""
+      },
+      {
+        "id": "R2",
+        "statement": "After a FastDateFormat instance is deserialized, the mRules field is repopulated (Option B: mRules made transient requires deserialization-side init so it is not left null), rather than the mRules derivative state (rules used by applyRules) being lost.",
+        "subject": "FastDateFormat.mRules deserialization state",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Either we need to make the Rule interface Serializable, or make mRules transient and add deserializing code to kick off init().\" Note: No visible test explicitly asserts that formatting works after deserialization, so this remains an inference from the prescribed remedy rather than a direct assertion."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "A FastDateFormat instance can be serialized and deserialized (round-tripped, e.g. through ObjectOutputStream/ObjectInputStream) without throwing a NotSerializableException or other exception.",
+        "subject": "FastDateFormat serialization round-trip",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "After being serialized and deserialized, a FastDateFormat instance remains fully functional: formatting a Date/Calendar/Long produces the same output as it did before serialization, and getMaxLengthEstimate() returns the same value as before serialization.",
+        "subject": "FastDateFormat formatting and getMaxLengthEstimate after deserialization",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins this exact behavior down: testLang303 serializes a FastDateFormat.getInstance(\"yyyy/MM/dd\") instance through SerializationUtils and deserializes it, expecting no exception, and the issue/class establish mRules serialization support as the remedy."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 pins down that mRules must be repopulated after deserialization rather than left null (so rules used by applyRules aren't lost), which implies formatting remains functional; but the specific literal claims that output equals pre-serialization output and getMaxLengthEstimate() returns the identical value are only an inference from the prescribed init remedy, and the citation itself notes no test directly asserts formatting works after deserialization."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "import org.junit.Test;\nimport org.junit.Assert;\n\n@Test public void t() throws Exception {\n    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();\n    java.io.ObjectOutputStream oos = new java.io.ObjectOutputStream(bos);\n    java.util.TimeZone tz = java.util.TimeZone.getTimeZone(\"GMT\");\n    org.apache.commons.lang.time.FastDateFormat fmt =\n        org.apache.commons.lang.time.FastDateFormat.getInstance(\"yyyy/MM/dd 'at' HH:mm\", tz);\n\n    java.util.Date date = new java.util.Date(1234567890123L);\n    java.util.Calendar cal = new java.util.GregorianCalendar(tz);\n    cal.setTime(date);\n    Long lMillis = new Long(date.getTime());\n\n    String beforeDate = fmt.format(date);\n    String beforeCal = fmt.format(cal);\n    String beforeLong = fmt.format(lMillis);\n    int estimateBefore = fmt.getMaxLengthEstimate();\n\n    oos.writeObject(fmt);\n    oos.flush();\n    java.io.ObjectInputStream ois = new java.io.ObjectInputStream(\n        new java.io.ByteArrayInputStream(bos.toByteArray()));\n    org.apache.commons.lang.time.FastDateFormat fmt2 =\n        (org.apache.commons.lang.time.FastDateFormat) ois.readObject();\n\n    Assert.assertEquals(beforeDate, fmt2.format(date));\n    Assert.assertEquals(beforeCal, fmt2.format(cal));\n    Assert.assertEquals(beforeLong, fmt2.format(lMillis));\n    Assert.assertEquals(estimateBefore, fmt2.getMaxLengthEstimate());\n}\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (java.io.NotSerializableException: org.apache.commons.lang.time.FastDateFormat$PaddedNumberField thrown during oos.writeObject(fmt) because mRules is non-transient and Rule[] members are not Serializable; the gold readObject/transient fix builds rules from mPattern after deserialization.)",
+      "explanation": "R2 requires that a FastDateFormat stays fully functional after serialize/deserialize: formatting a Date, a Calendar, and a Long each produce the same output as before serialization, and getMaxLengthEstimate() returns the same value as before. The fix (H0: mark mRules/mMaxLengthEstimate transient; H1: add readObject that calls defaultReadObject()+init()) rebuilds the parsed rules field from the serialized mPattern on deserialization. My witness is a plain-Java ObjectOutputStream/ObjectInputStream round trip (with a GMT time zone and a literal-bearing pattern 'yyyy/MM/dd ''at'' HH:mm', distinct from the visible testLang303 which uses the simpler 'yyyy/MM/dd' via SerializationUtils and asserts nothing). After readObject it asserts that format(Date), format(Calendar), and format(Long) all equal the pre-serialization output and that getMaxLengthEstimate() is unchanged. Execution-confirmed: against gold it PASSED (transient fields repopulated by readObject init()); against buggy it FAILED because serialization throws NotSerializableException (FastDateFormat$PaddedNumberField), since buggy keeps mRules as a plain (non-transient) Rule[] whose members are not Serializable. The visible testLang303 only confirms the round-trip completes for 'yyyy/MM/dd' and makes no post-deserialization formatting/getMaxLengthEstimate assertion, so this behavior is not already pinned down by visible material."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "FastDateFormat extends java.text.Format (which is Serializable) and provides all the serialization plumbing (serialVersionUID, package imports of java.io.ObjectInputStream). The only non-serializable instance-field risk is mRules, a Rule[] where the private interface Rule does not extend Serializable."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible test actually named for this bug is testLang303() in FastDateFormatTest; it round-trips a formatter created with the pattern \"yyyy/MM/dd\" through SerializationUtils.serialize/deserialize but asserts nothing beyond the round trip completing. No test checks formatting behavior after deserialization."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "mPattern, mTimeZone, mLocale are final and set only in the constructor; mRules and mMaxLengthEstimate are populated in init(), which is called from getInstance after construction."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Several other methods in the same test file test_format etc. are unrelated to this bug (formatting etc.); testLang303 in this tree does not format after deserialization, so a serialization-preserving format-after-deserialize claim is only weakly grounded."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 marks mRules (Rule[]) and mMaxLengthEstimate as transient; H1 adds a private readObject(ObjectInputStream) that calls defaultReadObject() then init() to repopulate those transient fields after deserialization."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The private Rule/NumberRule interfaces and their concrete rule implementations do not extend Serializable, so without the transient keyword serialization of the Rule[] would fail; the fix rebuilds the rules from mPattern on the way back in via init()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "mPattern, mTimeZone, mLocale, mTimeZoneForced, mLocaleForced are final and untouched by this patch; equality/hashCode/accessor behavior is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "init() (which parses mPattern into mRules and computes mMaxLengthEstimate) is the same method used at construction time in getInstance."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: The oracle contains exactly three test files.\n\n1. FastDateFormatTest.java — labeled [VISIBLE]. Its testLang303() does settle the deserialization bug by serializing/deserializing a \"yyyy/MM/dd\" FastDateFormat, but it asserts nothing: it only checks that the round trip *completes* (no formatting output comparison, no getMaxLengthEstimate check). Even if it did make the relevant assertions it is [VISIBLE] content, which the prompt forbids as a witness. Every other test in this file (testFormat, testSimpleDate, testShortDateStyleWithLocales, etc.) tests formatting/getInstance behavior on non-deserialized instances and is unrelated to R2's post-deserialization claim.\n\n2. DateFormatUtilsTest.java — [HIDDEN]. Tests DateFormatUtils static helper methods and DateFormatUtils.ISO_*_FORMAT (FastDateFormat constants) formatting. All calls to .format() are on freshly-constructed instances (never round-tripped through SerializationUtils.serialize/deserialize), so nothing here exercises a deserialized FastDateFormat's formatting or getMaxLengthEstimate. Not a witness for R2.\n\n3. DurationFormatUtilsTest.java — [HIDDEN]. Tests DurationFormatUtils duration/period formatting and Token lexing; no FastDateFormat serialization of any kind. Not a witness for R2.\n\nNo [HIDDEN] assertion anywhere in the oracle checks that a deserialized FastDateFormat still formats Date/Calendar/Long to the pre-serialization output or returns the same getMaxLengthEstimate. The only test named for this bug (testLang303) is [VISIBLE] and in any case makes no behavioral assertion about R2's post-deserialization formatting/estimate claims. Therefore no genuine witness exists; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (FastDateFormat formatting and getMaxLengthEstimate after deserialization): After being serialized and deserialized, a FastDateFormat instance remains fully functional: formatting a Date/Calendar/Long produces the same output as it did before serialization, and getMaxLengthEstimate() returns the same value as before serialization. — not entailed by S_vis (S_vis R2 pins down that mRules must be repopulated after deserialization rather than left null (so rules used by applyRules aren't lost), which implies formatting remains functional; but the specific literal claims that output equals pre-serialization output and getMaxLengthEstimate() returns the identical value are only an inference from the prescribed init remedy, and the citation itself notes no test directly asserts formatting works after deserialization.); confirmed by a synthesized witness: R2 requires that a FastDateFormat stays fully functional after serialize/deserialize: formatting a Date, a Calendar, and a Long each produce the same output as before serialization, and getMaxLengthEstimate() returns the same value as before. The fix (H0: mark mRules/mMaxLengthEstimate transient; H1: add readObject that calls defaultReadObject()+init()) rebuilds the parsed rules field from the serialized mPattern on deserialization. My witness is a plain-Java ObjectOutputStream/ObjectInputStream round trip (with a GMT time zone and a literal-bearing pattern 'yyyy/MM/dd ''at'' HH:mm', distinct from the visible testLang303 which uses the simpler 'yyyy/MM/dd' via SerializationUtils and asserts nothing). After readObject it asserts that format(Date), format(Calendar), and format(Long) all equal the pre-serialization output and that getMaxLengthEstimate() is unchanged. Execution-confirmed: against gold it PASSED (transient fields repopulated by readObject init()); against buggy it FAILED because serialization throws NotSerializableException (FastDateFormat$PaddedNumberField), since buggy keeps mRules as a plain (non-transient) Rule[] whose members are not Serializable. The visible testLang303 only confirms the round-trip completes for 'yyyy/MM/dd' and makes no post-deserialization formatting/getMaxLengthEstimate assertion, so this behavior is not already pinned down by visible material.",
+    "confidence": "Medium"
+  }
+}

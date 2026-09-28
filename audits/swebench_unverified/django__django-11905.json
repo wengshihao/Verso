@@ -1,0 +1,118 @@
+{
+  "task_id": "django__django-11905",
+  "status": "ok",
+  "duration_seconds": 682.5392870000796,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11905",
+    "s_vis": [
+      {
+        "id": "REQ_isnull_rejects_non_boolean",
+        "statement": "Using the `__isnull` field lookup with any non-boolean value (e.g. `None`, an integer, a string, or a general expression) must raise an error rather than being silently interpreted via truthiness.",
+        "subject": "django.db.models.lookups.IsNull / __isnull lookup rhs validation",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"`__isnull` should not allow for non-boolean values. Using truthy/falsey doesn't promote INNER JOIN to an OUTER JOIN but works fine for a simple queries. Using non-boolean values is undocumented and untested. IMO we should raise an error for non-boolean values to avoid confusion and for consistency.\""
+      },
+      {
+        "id": "REQ_isnull_accepts_boolean",
+        "statement": "Using the `__isnull` field lookup with the boolean value `True` and `False` must keep working, yielding the SQL `IS NULL` for `True` and `IS NOT NULL` for `False` respectively.",
+        "subject": "django.db.models.lookups.IsNull / __isnull lookup with boolean rhs",
+        "hunk_ids": [],
+        "cited_from": "docs/ref/models/querysets.txt \"isnull\": \"Takes either ``True`` or ``False``, which correspond to SQL queries of ``IS NULL`` and ``IS NOT NULL``, respectively.\" Also tests/null_queries/tests.py exercises it: `OuterB.objects.filter(inner__isnull=False)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "req_1",
+        "statement": "When the rhs value supplied to an isnull lookup is not a bool instance (True or False), compiling that lookup (IsNull.as_sql) emits a RemovedInDjango40Warning carrying the message 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.'; a bool rhs (True or False) does not emit any such warning.",
+        "subject": "django.db.models.lookups.IsNull.isnull lookup rhs validation / as_sql warning",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "req_2",
+        "statement": "Emitting the deprecation warning is non-fatal: an isnull lookup with a non-boolean rhs still proceeds to compile and return the same SQL as before the fix — '%s IS NULL' for a truthy rhs and '%s IS NOT NULL' for a falsy rhs (i.e. non-boolean values remain accepted and remain interpreted by truthiness; the patch does not raise an error for them).",
+        "subject": "django.db.models.lookups.IsNull.as_sql result for non-boolean rhs",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "req_1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ_isnull_rejects_non_boolean",
+          "REQ_isnull_accepts_boolean"
+        ],
+        "rationale": "S_vis describes the end-state where a non-boolean isnull rhs must raise an error; it says nothing about emitting a RemovedInDjango40Warning with a specific deprecation message, which is a distinct transitional behavior. If anything, S_vis directly contradicts a warning-then-continue scheme."
+      },
+      {
+        "requirement_id": "req_2",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ_isnull_rejects_non_boolean",
+          "REQ_isnull_accepts_boolean"
+        ],
+        "rationale": "S_vis REQ_isnull_rejects_non_boolean explicitly requires that non-boolean values raise an error rather than continue to be interpreted by truthiness, whereas req_2 requires that non-boolean values remain accepted via truthiness (with only a non-fatal warning). The behaviors directly conflict, so S_vis does not entail req_2."
+      }
+    ],
+    "target_requirement_id": "req_1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_nonbool_isnull_warns",
+      "test_source": "import warnings\nfrom django.db.models.lookups import IsNull\nfrom django.utils.deprecation import RemovedInDjango40Warning\n\ndef test_nonbool_isnull_warns():\n    lookup = IsNull('name', 'foo')\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        try:\n            lookup.as_sql(None, None)\n        except AttributeError:\n            pass\n        assert len(w) == 1\n        assert issubclass(w[0].category, RemovedInDjango40Warning)\n        message = str(w[0].message)\n        assert 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.' == message\n\ndef test_bool_isnull_no_warning():\n    lookup = IsNull('name', True)\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        try:\n            lookup.as_sql(None, None)\n        except AttributeError:\n            pass\n        assert len(w) == 0",
+      "gold_result": "PASSED — non-bool rhs emitted exactly one RemovedInDjango40Warning carrying the exact deprecation message; bool rhs True emitted zero warnings.",
+      "buggy_result": "FAILED — non-bool rhs emitted zero warnings (assert 0 == 1) because buggy as_sql has no isinstance/warnings.warn block.",
+      "explanation": "The target requirement req_1 is that IsNull.as_sql emits a RemovedInDjango40Warning carrying exactly 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.' when rhs is not a bool instance, and emits no such warning when rhs is True/False. The gold code adds `if not isinstance(self.rhs, bool): warnings.warn(<message>, RemovedInDjango40Warning)` before compiling the lhs; the buggy code contains no such guard/warning. My candidate constructs an IsNull lookup with a non-bool string rhs ('foo') and calls as_sql inside warnings.catch_warnings(record=True), suppressing the incidental AttributeError/SQL-generation noise from the dummy compiler (which occurs after the warning on gold; the buggy path never reaches the warning so the suppression level is identical on both sides). On gold, exactly one RemovedInDjango40Warning whose payload equals the exact deprecation message is captured, and a separate bool rhs True produces zero warnings; both assertions pass. On buggy, the non-bool rhs produces zero captured warnings (len(w)==0), so `assert len(w) == 1` fails (assert 0 == 1). I inspected the visible isnull-related tests (tests/null_queries, tests/lookup, tests/queries): all use literal boolean isnull values and only assert SQL row results / join trimming, never a deprecation warning for a non-bool rhs — so this behavior was not already pinned down by visible material and no existing test fails against buggy. I verified the candidate by actual run_test calls against gold (PASSED) and buggy (FAILED) with this exact byte-for-byte source."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The `__isnull` lookup is implemented by `django.db.models.lookups.IsNull` (lookup_name='isnull', prepare_rhs=False), whose as_sql does `if self.rhs: return '%s IS NULL' ... else: '%s IS NOT NULL'`, so any truthy/falsy rhs (not just bool) is currently silently accepted."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant query building is in `django.db.models.sql.query.Query.build_filter` / `build_lookup` (query.py); internal call sites construct IsNull with literal `True`/`False` (e.g. 'isnull' lookups created from `__exact=None` handling and reverse-relation handling), so validation must not break those literal boolean uses."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for existing isnull behavior live under tests/null_queries/tests.py (models in tests/null_queries/models.py: Poll, Choice, OuterA, OuterB, Inner)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Project is django; current docs/ref/models/querysets.txt documents isnull as taking either True or False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds imports of the stdlib 'warnings' module (H0) and of 'RemovedInDjango40Warning' from django.utils.deprecation (H1); the functional change is confined to IsNull.as_sql (H2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A commented-out block in as_sql indicates the deprecation scheme's end-state is to raise ValueError for non-boolean isnull values in Django 4.0; the present patch does not raise and only warns."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Non-bool values that are also valid like 1/0 (truthy/falsy) continue to behave exactly as before; the only added observable is the warning."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [req_1]: I searched the oracle test suite for a test that genuinely asserts the req_1 behavior: compiling an isnull lookup whose rhs is a non-bool (e.g. an int/str/None) emits a RemovedInDjango40Warning with the message 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.', while a bool rhs emits no such warning.\n\nLocations checked (natural homes of isnull-lookup/lookup-behavior tests):\n- tests/null_queries/tests.py + tests/null_queries/models.py\n- tests/lookup/tests.py, tests/lookup/test_lookups.py, tests/lookup/test_decimalfield.py, tests/lookup/test_timefield.py (+ tests/lookup/models.py)\n- tests/queries/test_query.py, tests/queries/test_q.py, tests/queries/tests.py\n\nEvery existing isnull test uses literal boolean rhs values (isnull=True/False) and only asserts the SQL row-results / join-trimming behavior — e.g. NullQueriesTests, the many test_ticket_10790_* tests, IsNullTests, Queries tests, YearLookupTests, and lookup's custom-IsNull tests (test_custom_lookup_none_rhs uses rhs=True). None of these constructs an isnull lookup with a non-bool rhs and checks for the RemovedInDjango40Warning during as_sql compilation; none would fail against the buggy program because no warning is expected/asserted there in the first place. Moreover, the problem states that no tests currently fail against the buggy program, which is a necessary condition for any witness of this (warning-emitting) requirement — and indeed none is recorded.\n\nAll of the relevant test files read as [VISIBLE] material (the isnull behaviors they assert are already established by the visible information about the existing IsNull implementation), so even where they overlap with req_1 they cannot serve as a hidden witness. No [HIDDEN] test file was found that asserts the non-bool-isnull deprecation warning. I therefore conclude the real oracle contains no test serving as a witness for req_1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [req_1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[req_1] (django.db.models.lookups.IsNull.isnull lookup rhs validation / as_sql warning): When the rhs value supplied to an isnull lookup is not a bool instance (True or False), compiling that lookup (IsNull.as_sql) emits a RemovedInDjango40Warning carrying the message 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.'; a bool rhs (True or False) does not emit any such warning. — not entailed by S_vis (S_vis describes the end-state where a non-boolean isnull rhs must raise an error; it says nothing about emitting a RemovedInDjango40Warning with a specific deprecation message, which is a distinct transitional behavior. If anything, S_vis directly contradicts a warning-then-continue scheme.); confirmed by a synthesized witness: The target requirement req_1 is that IsNull.as_sql emits a RemovedInDjango40Warning carrying exactly 'Using a non-boolean value for an isnull lookup is deprecated, use True or False instead.' when rhs is not a bool instance, and emits no such warning when rhs is True/False. The gold code adds `if not isinstance(self.rhs, bool): warnings.warn(<message>, RemovedInDjango40Warning)` before compiling the lhs; the buggy code contains no such guard/warning. My candidate constructs an IsNull lookup with a non-bool string rhs ('foo') and calls as_sql inside warnings.catch_warnings(record=True), suppressing the incidental AttributeError/SQL-generation noise from the dummy compiler (which occurs after the warning on gold; the buggy path never reaches the warning so the suppression level is identical on both sides). On gold, exactly one RemovedInDjango40Warning whose payload equals the exact deprecation message is captured, and a separate bool rhs True produces zero warnings; both assertions pass. On buggy, the non-bool rhs produces zero captured warnings (len(w)==0), so `assert len(w) == 1` fails (assert 0 == 1). I inspected the visible isnull-related tests (tests/null_queries, tests/lookup, tests/queries): all use literal boolean isnull values and only assert SQL row results / join trimming, never a deprecation warning for a non-bool rhs — so this behavior was not already pinned down by visible material and no existing test fails against buggy. I verified the candidate by actual run_test calls against gold (PASSED) and buggy (FAILED) with this exact byte-for-byte source.",
+    "confidence": "Medium"
+  }
+}

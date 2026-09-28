@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-11734",
+  "status": "ok",
+  "duration_seconds": 771.9077945830068,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11734",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Annotating the outer `Number` queryset with `foo=Exists(Item.objects.exclude(tags__category_id=OuterRef('pk')))` and then filtering `.filter(foo=True)` must evaluate without raising `ValueError: This queryset contains a reference to an outer query and may only be used in a subquery`; the `OuterRef('pk')` must be resolved against the outer `Number.pk` rather than the wrong model, in the same way the un-negated form `Item.objects.filter(tags__category_id=OuterRef('pk'))` already works.",
+        "subject": "QuerySet.exclude / negated filter (~Q) with OuterRef inside an Exists subquery annotation",
+        "hunk_ids": [],
+        "cited_from": "# exclude()\nqs = Number.objects.annotate(\n    foo =Exists(\n        Item.objects.exclude(tags__category_id=OuterRef('pk'))\n    )\n).filter(foo=True)\nprint(qs) # crashes  ...  # filter(~Q())\nqs = Number.objects.annotate(\n    foo =Exists(\n        Item.objects.filter(~Q(tags__category_id=OuterRef('pk')))\n    )\n).filter(foo=True)\nprint(qs) # crashes  ...  It results in the following error\nValueError: This queryset contains a reference to an outer query and may only be used in a subquery"
+      },
+      {
+        "id": "R2",
+        "statement": "Annotating the outer `Number` queryset with `foo=Exists(Item.objects.filter(~Q(tags__category_id=OuterRef('pk'))))` and then filtering `.filter(foo=True)` must likewise evaluate without raising the `ValueError: This queryset contains a reference to an outer query and may only be used in a subquery`, matching the behavior of the plain filter form.",
+        "subject": "QuerySet.exclude / negated filter (~Q) with OuterRef inside an Exists subquery annotation",
+        "hunk_ids": [],
+        "cited_from": "# filter(~Q())\nqs = Number.objects.annotate(\n    foo =Exists(\n        Item.objects.filter(~Q(tags__category_id=OuterRef('pk')))\n    )\n).filter(foo=True)\nprint(qs) # crashes  ...  ValueError: This queryset contains a reference to an outer query and may only be used in a subquery"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Anonymous auto-generated fields (via AutoFieldMixin: AutoField/BigAutoField/SmallAutoField) no longer define a get_prep_value override that short-circuits/passes-through an OuterRef argument; get_prep_value on such a field now delegates to the base integer field implementation and processes any value reaching it (including an expression object) the way a normal integer field would.",
+        "subject": "django.db.models.fields.AutoFieldMixin.get_prep_value",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Single-column related-field lookups (the lookup family sharing RelatedLookupMixin.get_prep_lookup: exact/lt/gt/... and RelatedIn) perform RHS normalization and target-field get_prep_value only when the RHS is a plain, non-expression value; when the RHS implements resolve_expression (e.g. an OuterRef) the RHS is left intact as the expression rather than being reduced/collapsed through direct-value handling.",
+        "subject": "django.db.models.fields.related_lookups.RelatedLookupMixin.get_prep_lookup",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "In Query.split_exclude (the path that rewrites a negated n-to-many/multi-valued relation filter into a NOT IN subquery), when the negated filter's RHS is already an OuterRef the expression is preserved as an outer query reference by wrapping it again via OuterRef(filter_rhs) instead of leaving it to be mis-resolved; consequently a negated filter comparing a related column to an enclosing query column resolves against the correct outer query and evaluates to a valid subquery rather than raising the 'reference to an outer query' ValueError.",
+        "subject": "django.db.models.sql.query.Query.split_exclude",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "The S_vis sources describe only a user-facing behavior (an Exists-of-negated-OuterRef subquery should no longer crash) with no detail about how that is achieved. Nothing pins down an implementation change to AutoFieldMixin.get_prep_value or any auto-field value handling."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis never mentions RelatedLookupMixin.get_prep_lookup, RHS normalization, resolve_expression, or when get_prep_value is called. It only states the negated-subquery scenario should not raise a ValueError, which does not pin down this specific lookup-path implementation change."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes the crash/no-crash symptom of a negated (exclude) OuterRef filter, but says nothing about Query.split_exclude wrapping the OuterRef RHS in another OuterRef. The specific mechanism inside split_exclude is not derivable from the behavior-level sources."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I attempted to build a genuine witness for R1 (removal of the AutoFieldMixin.get_prep_value shim that short-circuits OuterRef arguments, so auto-generated fields now delegate expression processing to the base integer field).\n\nWhat I found and tried:\n1. The only behavior-level distinction between buggy and gold at the location in question is calling get_prep_value directly with an expression: on buggy, AutoField.get_prep_value(OuterRef(...)) short-circuits and returns the OuterRef unchanged; on gold the override is gone, so it falls through to IntegerField.get_prep_value which calls int(OuterRef(...)) and raises. I empirically confirmed with run_test that this candidate PASSES gold and FAILS buggy (AssertionError: '...passed an OuterRef through unchanged').\n2. However, that candidate is exactly derivable from material that was VISIBLE to a repair system all along: the gold/buggy source snippet for django/db/models/fields/__init__.py shows the removed `get_prep_value` shim verbatim, and the R1 spec I was handed describes precisely this removal in words. The submission was rejected on exactly these grounds.\n3. The pre-existing visible tests in the locale (tests/queries/test_qs_combinators.py and friends) contain no negated-Q/OuterRef auto-PK lookup test (test_exists_exclude is absent from the disclosed test file), and no [VISIBLE] test passes an expression into an auto-field get_prep_value. Per the Oracle Search Agent's independent audit plus my own tool exploration, no [HIDDEN] test asserting the R1 scenario could be located; the only hidden file found in the relevant suites (tests/model_fields/models.py) is a model-definitions file with no assertions.\n\nEvery reconstructible test for R1 ends up mirroring what the visible issue/source already establishes (the shim either returns OuterRef unchanged or not), so none can serve as a Witness per the Verso rule that a Witness must enforce something visible information does not establish. Accordingly I submit found=false: no genuinely hidden, non-derivable witness exists for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug-report's proposed test method `test_exists_exclude` is NOT present in the disclosed test file `tests/queries/test_qs_combinators.py` — it exists only as code in the issue description, so the S_vis requirements are derived from that description together with the model definitions in `tests/queries/models.py`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Model shapes relevant to the example (tests/queries/models.py): `Number` has `num` and `other_num`; `Item.tags` is a M2M to `Tag`; `Tag.category` is a FK to `NamedCategory`; `NamedCategory` subclasses `DumbCategory`. So the lookup `tags__category_id=OuterRef('pk')` traverses Item M2M -> Tag then references the outer Number's pk."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both failing forms route through the same negation mechanism: `QuerySet.exclude()` -> `_filter_or_exclude(True, ...)` -> `add_q(~Q(...))`, and `filter(~Q(...))` also passes a negated Q into `add_q`. The issue title attributes the defect to re-lateralization of the OuterRef against the wrong model during negated-Q processing (in django/db/models/query_utils.py Q / django/db/models/sql machinery), which is why the two examples crash together."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The error text lives in `django/db/models/expressions.py`: `ResolvedOuterRef.as_sql()` raises `ValueError('This queryset contains a reference to an outer query and may only be used in a subquery.')`, indicating the ValueErrors in the report occur when a ResolvedOuterRef is compiled outside the subquery context it belongs to."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Django's ORM machinery notes: `OuterRef.resolve_expression` returns `ResolvedOuterRef`; on a negation/decompose path the inner query must be re-lateralized so the OuterRef is re-resolved against the outer query alias rather than kept pointing at a wrongly-chosen table."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy AutoFieldMixin.get_prep_value previously returned an OuterRef unchanged (short-circuiting super); H0 removes that shim because H1 now prevents an expression RHS from ever reaching target-field get_prep_value in relation lookups."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 changes only the guard condition in RelatedLookupMixin.get_prep_lookup (and the analogous RelatedIn branch, whose callers share get_normalized_value); the rest of get_prep_lookup is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2 splits split_exclude's handling so an OuterRef RHS and an F RHS take distinct branches; only the new OuterRef branch carries the F()-chained behavior for a concrete query."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The three hunks cooperate: H1 avoids corrupting expression-valued RHS during lookup preparation and H2 performs the re-lateralization (re-resolution of OuterRef against the correct outer query) in the split-exclude path; H0 drops the now-superfluous field-level passthrough."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Locale of concern (per task notebook): Number/Item/Tag models in tests/queries/models.py; lookup tags__category_id=OuterRef('pk') crosses an m2m (Item.tags -> Tag) and then references the outer Number pk, going through negated-Q handling that previously crashed in ResolvedOuterRef.as_sql."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated the oracle for a hidden witness of R1 (removal of the AutoFieldMixin.get_prep_value shim so auto-generated fields delegate expression processing to the base integer field). I read every test file in the locale of concern named in the notebook: tests/queries/models.py, tests/queries/test_qs_combinators.py, test_query.py, tests.py, test_q.py, test_bulk_update.py, test_iterator.py, test_explain.py — all [VISIBLE], and none contains a negated-Q/OuterRef exclusion test (test_exists_exclude is genuinely absent, and the surrounding exclusion/split_exclude tests use F()/literals, not OuterRef into an auto PK). I also read tests/expressions/tests.py, tests/lookup/tests.py, tests/field_subclassing, and the entire tests/model_fields test suite (test_autofield.py, test_integerfield.py, test_booleanfield.py, test_uuid.py, test_charfield.py, test_decimalfield.py, test_datetimefield.py, test_floatfield.py, test_textfield.py, test_filefield.py, test_field_flags.py, tests.py, test_foreignkey.py, test_manytomanyfield.py) — every one of these oracle files is labeled [VISIBLE]. The only [HIDDEN] file discovered is tests/model_fields/models.py (a model-definition file, not an assertion-bearing test). R1 is an unusually implementation-specific requirement about AutoFieldMixin no longer overriding get_prep_value; because H1 prevents expression RHS values from ever reaching target-field get_prep_value in the fixed lookup path, no existing behavior-level test distinguishes the presence of that shim (buggy) from its removal (gold) other than passing an expression directly into an auto-field get_prep_value — and no [HIDDEN] test asserting that behavior could be found in the oracle. All accessible tests that touch the R1 scenario come from [VISIBLE] content and per the rules cannot serve as a witness. Therefore no qualifying witness exists in the accessible oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: I attempted to build a genuine witness for R1 (removal of the AutoFieldMixin.get_prep_value shim that short-circuits OuterRef arguments, so auto-generated fields now delegate expression processing to the base integer field).\n\nWhat I found and tried:\n1. The only behavior-level distinction between buggy and gold at the location in question is calling get_prep_value directly with an expression: on buggy, AutoField.get_prep_value(OuterRef(...)) short-circuits and returns the OuterRef unchanged; on gold the override is gone, so it falls through to IntegerField.get_prep_value which calls int(OuterRef(...)) and raises. I empirically confirmed with run_test that this candidate PASSES gold and FAILS buggy (AssertionError: '...passed an OuterRef through unchanged').\n2. However, that candidate is exactly derivable from material that was VISIBLE to a repair system all along: the gold/buggy source snippet for django/db/models/fields/__init__.py shows the removed `get_prep_value` shim verbatim, and the R1 spec I was handed describes precisely this removal in words. The submission was rejected on exactly these grounds.\n3. The pre-existing visible tests in the locale (tests/queries/test_qs_combinators.py and friends) contain no negated-Q/OuterRef auto-PK lookup test (test_exists_exclude is absent from the disclosed test file), and no [VISIBLE] test passes an expression into an auto-field get_prep_value. Per the Oracle Search Agent's independent audit plus my own tool exploration, no [HIDDEN] test asserting the R1 scenario could be located; the only hidden file found in the relevant suites (tests/model_fields/models.py) is a model-definitions file with no assertions.\n\nEvery reconstructible test for R1 ends up mirroring what the visible issue/source already establishes (the shim either returns OuterRef unchanged or not), so none can serve as a Witness per the Verso rule that a Witness must enforce something visible information does not establish. Accordingly I submit found=false: no genuinely hidden, non-derivable witness exists for R1."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (django.db.models.fields.AutoFieldMixin.get_prep_value) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I attempted to build a genuine witness for R1 (removal of the AutoFieldMixin.get_prep_value shim that short-circuits OuterRef arguments, so auto-generated fields now delegate expression processing to the base integer field).\n\nWhat I found and tried:\n1. The only behavior-level distinction between buggy and gold at the location in question is calling get_prep_value directly with an expression: on buggy, AutoField.get_prep_value(OuterRef(...)) short-circuits and returns the OuterRef unchanged; on gold the override is gone, so it falls through to IntegerField.get_prep_value which calls int(OuterRef(...)) and raises. I empirically confirmed with run_test that this candidate PASSES gold and FAILS buggy (AssertionError: '...passed an OuterRef through unchanged').\n2. However, that candidate is exactly derivable from material that was VISIBLE to a repair system all along: the gold/buggy source snippet for django/db/models/fields/__init__.py shows the removed `get_prep_value` shim verbatim, and the R1 spec I was handed describes precisely this removal in words. The submission was rejected on exactly these grounds.\n3. The pre-existing visible tests in the locale (tests/queries/test_qs_combinators.py and friends) contain no negated-Q/OuterRef auto-PK lookup test (test_exists_exclude is absent from the disclosed test file), and no [VISIBLE] test passes an expression into an auto-field get_prep_value. Per the Oracle Search Agent's independent audit plus my own tool exploration, no [HIDDEN] test asserting the R1 scenario could be located; the only hidden file found in the relevant suites (tests/model_fields/models.py) is a model-definitions file with no assertions.\n\nEvery reconstructible test for R1 ends up mirroring what the visible issue/source already establishes (the shim either returns OuterRef unchanged or not), so none can serve as a Witness per the Verso rule that a Witness must enforce something visible information does not establish. Accordingly I submit found=false: no genuinely hidden, non-derivable witness exists for R1.",
+    "confidence": "Medium"
+  }
+}

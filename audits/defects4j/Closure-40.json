@@ -1,0 +1,111 @@
+{
+  "task_id": "Closure-40",
+  "status": "ok",
+  "duration_seconds": 251.6107513200002,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "Closure-40",
+    "s_vis": [
+      {
+        "id": "V1",
+        "statement": "When the NameAnalyzer pass (a.k.a. smart-name removal, removeUnreferenced=true) is run on a program in which goog.inherits is used to declare a subclass (ns.PageSelectionModel.ChangeEvent) that is never itself declared or constructed anywhere, where the referenced superclass (ns.PageSelectionModel.FooEvent) and the whole ns.PageSelectionModel namespace are likewise never referenced elsewhere, the pass must eliminate the entire set of declarations, yielding empty output, rather than throwing an exception or preserving any of the class-defining calls/names as reachable.",
+        "subject": "com.google.javascript.jscomp.NameAnalyzer",
+        "hunk_ids": [],
+        "cited_from": "NameAnalyzerTest.testIssue284: test(\"var goog = {};\" + \"goog.inherits = function(x, y) {};\" + \"var ns = {};\" + \"/** @constructor */\" + \"ns.PageSelectionModel = function() {};\" + \"/** @constructor */\" + \"ns.PageSelectionModel.FooEvent = function() {};\" + \"/** @constructor */\" + \"ns.PageSelectionModel.SelectEvent = function() {};\" + \"goog.inherits(ns.PageSelectionModel.ChangeEvent,\" + \"    ns.PageSelectionModel.FooEvent);\", \"\"); — and the identical input/expected-output pair in IntegrationTest.testIssue284 (with options.smartNameRemoval = true)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When NameAnalyzer's FindDeclarationsAndSetters visits a class-defining call (a CALL that touches class definitions, e.g. detected via CodingConvention.getClassesDefinedByCall/ getSingletonGetter), it records that CALL as a removable ClassDefiningFunctionNode associated with the subclass name it defines, even when that subclass name has no other prior declaration/occurrence in the program and is otherwise unknown to the analyzer — thereby also creating such a name. (Previously a CALL whose defined subclass name was not already in the analyzer's symbol table was not recorded at all and thus never became a removal candidate.)",
+        "subject": "NameAnalyzer.FindDeclarationsAndSetters class-defining-call handling",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "With removeUnreferenced enabled (smart-name-removal), a class-defining call (e.g. a goog.inherits-style invocation defining a subclass) whose subclass is not referenced anywhere and is not externally defined/exported is removed from the output program, including when that subclass name is declared only by the call itself and has no separate var/function/prototype declaration feeding into the analyzer's name table.",
+        "subject": "NameAnalyzer process/removeUnreferenced output behavior for orphan class-defining calls",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "V1"
+        ],
+        "rationale": "V1 and its cited test evidence describe only external output expectations (test program yields empty output), with no mention of how FindDeclarationsAndSetters records CALLs or creates symbols for unknown subclass names in its internal tables. The specific recording/name-creation mechanism R1 describes is not stated in any visible artifact."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "V1"
+        ],
+        "rationale": "V1's cited test exactly exercises R2's case: a subclass only defined via a goog.inherits-class call with no separate declaration and no other reference is removed, and the whole program is reduced to empty output. The visible expectation pins down the removal output behavior R2 describes."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testIssue284",
+      "test_source": "@Test\npublic void testIssue284() {\n  String src =\n      \"var goog = {};\" +\n      \"goog.inherits = function(x, y) {};\" +\n      \"var ns = {};\" +\n      \"/** @constructor */\" +\n      \"ns.PageSelectionModel = function() {};\" +\n      \"/** @constructor */\" +\n      \"ns.PageSelectionModel.FooEvent = function() {};\" +\n      \"/** @constructor */\" +\n      \"ns.PageSelectionModel.SelectEvent = function() {};\" +\n      \"goog.inherits(ns.PageSelectionModel.ChangeEvent,\" +\n      \"    ns.PageSelectionModel.FooEvent);\";\n  com.google.javascript.jscomp.CompilerOptions opts =\n      new com.google.javascript.jscomp.CompilerOptions();\n  opts.setCodingConvention(new com.google.javascript.jscomp.GoogleCodingConvention());\n  opts.smartNameRemoval = true;\n  com.google.javascript.jscomp.Compiler c =\n      new com.google.javascript.jscomp.Compiler();\n  c.compile(\n      com.google.javascript.jscomp.JSSourceFile.fromCode(\"externs\", \"\"),\n      com.google.javascript.jscomp.JSSourceFile.fromCode(\"code\", src),\n      opts);\n  String out = c.toSource().trim();\n  assertEquals(\"\", out);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (INTERNAL COMPILER ERROR 'Unexpected variable goog' at VarCheck — the goog.inherits(...ChangeEvent,...) CALL is retained while its defining symbols get stripped because on the buggy program the class-defining call is NOT recorded as removable when its defined subclass name 'ChangeEvent' was previously unknown; test asserts fully-empty output, which gold achieves).",
+      "explanation": "Requirement R1 states that when NameAnalyzer's FindDeclarationsAndSetters visits a class-defining CALL (here goog.inherits(...)) whose defined subclass name ('ns.PageSelectionModel.ChangeEvent') has no prior occurrence/declaration, it must still record that CALL as a removable ClassDefiningFunctionNode, whereas previously the CALL was dropped because getName(name,false) returned null for the unknown name. The pre-existing oracle regression test issue284 encodes exactly this: an input where goog.inherits(ns.PageSelectionModel.ChangeEvent, ns.PageSelectionModel.FooEvent) defines a never-declared subclass ChangeEvent (and superclass FooEvent is also unreferenced), and asserts that the entire program compiles down to empty output (all classes + the defining CALL removed). I checked all three oracle test files; NameAnalyzerTest.testIssue284 is labeled [HIDDEN] and is the direct unit-level oracle for this NameAnalyzer behavior (IntegrationTest.testIssue284 is [VISIBLE] and exercises the same smartNameRemoval path). I constructed a standalone JUnit4 test reproducing the oracle assertion (input -> empty output via the NameAnalyzer-driven smart-name-removal compile path that the fix targets) and confirmed by running it mechanically: against GOLD it PASSED, producing empty output (the class-defining CALL is recorded and removed along with it); against BUGGY it FAILED with an internal compiler error 'Unexpected variable goog' (VarCheck) because the buggy program leaves the goog.inherits(...ChangeEvent,...) CALL dangling while stripping its defining symbols — the CALL was never recorded as a removal candidate since 'ChangeEvent' was unknown. This failure is precisely the R1 behavior not yet in place. No assertions grounded only in [VISIBLE] content were used; the asserted behavior (the defined-subclass-unknown inherits call being removable, yielding fully-empty output) is the [HIDDEN] NameAnalyzerTest regression."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue-284 regression is exercised by two same-named test methods: NameAnalyzerTest.testIssue284 (runs MarkNoSideEffectCalls then NameAnalyzer(compiler, true), with normalization enabled and getNumRepetitions()==1) and IntegrationTest.testIssue284 (full compiler with options.smartNameRemoval = true)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both encode the exact same input producing empty output, so they are jointly satisfiable/broken by a single NameAnalyzer fix."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Crucial structural fact about the input: goog.inherits declares a subclass 'ns.PageSelectionModel.ChangeEvent' that is never declared or instantiated, and its superclass 'ns.PageSelectionModel.FooEvent' is likewise never used; all of the declared classes (PageSelectionModel, FooEvent, SelectEvent) are unreferenced."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "NameAnalyzer's class-defining-call handling lives in FindDeclarationsAndSetters.visit (which adds refNodes with getName(ns.name, false), skipping when the class name is unknown) and FindReferences.visit (which for onlyAffectsClassDef records inheritance references and references to the inherits function)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "NameAnalyzer handles goog.inherits-style subclassing through CodingConvention.getClassesDefinedByCall via SubclassRelationship (subclassName/superclassName)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is a single call site in FindDeclarationsAndSetters.visit (n.isCall() branch): getName(ns.name, false) → getName(ns.name, true), which also pulled refNodes.add out of the previous implicit null-guard. getName(name, canCreate) with canCreate=true always creates the JsName so the returned value is never null."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "getName(name,false) is also used elsewhere (e.g. referenceAliases, removeUnreferenced via refNode.name()) where a null result is expected/guarded; only this site was changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ClassDefiningFunctionNode.remove() deletes the whole CALL when its parent is an EXPR_RESULT, else replaces the call with an empty statement (void 0)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The affected FindReferences branch that records subclass→superclass inheritance edges and subclass→inherits-function regular edges uses getName(_, true) already and is unchanged; the patch only governs the class-defining CALL's own removal candidacy in FindDeclarationsAndSetters."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (NameAnalyzer.FindDeclarationsAndSetters class-defining-call handling): When NameAnalyzer's FindDeclarationsAndSetters visits a class-defining call (a CALL that touches class definitions, e.g. detected via CodingConvention.getClassesDefinedByCall/ getSingletonGetter), it records that CALL as a removable ClassDefiningFunctionNode associated with the subclass name it defines, even when that subclass name has no other prior declaration/occurrence in the program and is otherwise unknown to the analyzer — thereby also creating such a name. (Previously a CALL whose defined subclass name was not already in the analyzer's symbol table was not recorded at all and thus never became a removal candidate.) — not entailed by S_vis (V1 and its cited test evidence describe only external output expectations (test program yields empty output), with no mention of how FindDeclarationsAndSetters records CALLs or creates symbols for unknown subclass names in its internal tables. The specific recording/name-creation mechanism R1 describes is not stated in any visible artifact.); confirmed by a oracle witness: Requirement R1 states that when NameAnalyzer's FindDeclarationsAndSetters visits a class-defining CALL (here goog.inherits(...)) whose defined subclass name ('ns.PageSelectionModel.ChangeEvent') has no prior occurrence/declaration, it must still record that CALL as a removable ClassDefiningFunctionNode, whereas previously the CALL was dropped because getName(name,false) returned null for the unknown name. The pre-existing oracle regression test issue284 encodes exactly this: an input where goog.inherits(ns.PageSelectionModel.ChangeEvent, ns.PageSelectionModel.FooEvent) defines a never-declared subclass ChangeEvent (and superclass FooEvent is also unreferenced), and asserts that the entire program compiles down to empty output (all classes + the defining CALL removed). I checked all three oracle test files; NameAnalyzerTest.testIssue284 is labeled [HIDDEN] and is the direct unit-level oracle for this NameAnalyzer behavior (IntegrationTest.testIssue284 is [VISIBLE] and exercises the same smartNameRemoval path). I constructed a standalone JUnit4 test reproducing the oracle assertion (input -> empty output via the NameAnalyzer-driven smart-name-removal compile path that the fix targets) and confirmed by running it mechanically: against GOLD it PASSED, producing empty output (the class-defining CALL is recorded and removed along with it); against BUGGY it FAILED with an internal compiler error 'Unexpected variable goog' (VarCheck) because the buggy program leaves the goog.inherits(...ChangeEvent,...) CALL dangling while stripping its defining symbols — the CALL was never recorded as a removal candidate since 'ChangeEvent' was unknown. This failure is precisely the R1 behavior not yet in place. No assertions grounded only in [VISIBLE] content were used; the asserted behavior (the defined-subclass-unknown inherits call being removable, yielding fully-empty output) is the [HIDDEN] NameAnalyzerTest regression.",
+    "confidence": "High"
+  }
+}

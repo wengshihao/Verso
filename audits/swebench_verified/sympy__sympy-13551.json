@@ -1,0 +1,86 @@
+{
+  "task_id": "sympy__sympy-13551",
+  "status": "ok",
+  "duration_seconds": 2523.21861862496,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "sympy__sympy-13551",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Evaluating Product(n + 1/2**k, (k, 0, n-1)) with .doit() and then substituting the concrete value 2 for n must yield the true finite product (2 + 2**0)*(2 + 2**(-1)) = 15/2 (equivalently, for every positive integer n the symbolic result, after substituting n, must equal prod_{k=0}^{n-1}(n + 2**-k)); the current behavior gives 9/2, so any expression this evaluates to must not drop to such an incorrect value at n=2.",
+        "subject": "sympy.concrete.products.Product.doit",
+        "hunk_ids": [],
+        "cited_from": "Product(n + 1 / 2**k, [k, 0, n-1]) is incorrect\n>>> p = Product(n + 1 / 2**k, [k, 0, n-1]).doit()\n>>> print(simplify(p))\n2**(n*(-n + 1)/2) + n**n\n>>> print(p.subs(n,2))\n9/2\n\nThis is incorrect- for example, the product for `n=2` is `(2 + 2^0) * (2 + 2^(-1)) = 15/2`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When Product._eval_product is applied to a term that is an Add whose as_numer_denom() yields a purely numeric (is_Number) denominator q — i.e. the term cannot be factored into independently-evaluable numerator/denominator products, such as n + 2**(-k) or n**(2/3) + 1 — the returned value is exp(Sum(log(p), (k, a, n))) / q (p being the numerator), rather than the sum over the separately-evaluated products of the numerator's individual Add addends.",
+        "subject": "Product._eval_product",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis documents only the symptom (doit() gives 9/2 for n=2 instead of 15/2) and the correct expected value; it says nothing about Product._eval_product's internal handling of Add terms with numeric denominators or the exp(Sum(log(p),...))/q strategy versus summing separate addend products. No visible information leads to this specific implementation mechanism."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_R1_q_product_numeric_denominator",
+      "test_source": "from sympy import (\n    symbols, exp, log, S, Sum, product, simplify)\n\ndef test_R1_q_product_numeric_denominator():\n    k, n, a = symbols('k n a', integer=True)\n    result = product(a + 2**-k, (k, 0, n)).doit()\n    expected = exp(Sum(log(a*2**k + 1), (k, 0, n))) / 2**(S(n**2)/2 + S(n)/2)\n    assert simplify(result - expected) == 0\n",
+      "gold_result": "PASSED — gold gives 2**(-n**2/2 - n/2)*exp(Sum(log(2**k*a + 1), (k, 0, n))), which equals the expected exp(Sum(log))/q closed form, so the assertion holds.",
+      "buggy_result": "FAILED — buggy gives 2**(-n**2/2 - n/2)*(2**(n**2/2 + n/2)*a**(n + 1) + 1) == a**(n+1) + 2**(-n*(n+1)/2), i.e. the erroneous sum over separately-evaluated addend products; simplify(result - expected) != 0, assertion fails.",
+      "explanation": "R1 concerns the Add branch of Product._eval_product in which as_numer_denom yields a term that cannot be split into independent products (e.g. an index appearing in an exponent of a power — a + 2**(-k)). Rationalizing this term recursively reaches (a*2**k + 1, 1): the innermost Add has denominator 1, whose product is the Number 1, so q.is_Number is True and the patched sub-branch fires. Gold replaces the p factor with exp(Sum(log(p),(k,a,n))) giving the mathematically correct single q-Pochhammer closed form exp(Sum(log(a*2**k+1),(k,0,n)))/2**((n**2+n)/2); buggy instead sums self._eval_product over p.as_coeff_Add(), yielding the plainly wrong result a**(n+1) + 2**(-(n**2+n)/2) (a sum, not a product). My witness asserts the product's doit() result equals the exp(Sum(log(...)))/q form, which thus PASSES on gold and FAILS on buggy — precisely distinguishing R1's intended behavior. This scenario (products of an Add whose index appears in a power exponent) is not covered in the visible test_products.py / test_sums_products.py files, so it is a genuine hidden-oracle-style check verified by actual runs against both revisions."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Buggy logic lives in Product._eval_product in sympy/concrete/products.py; the term n + 1/2**k = n + 2**(-k) contains k inside an exponent so it is not polynomial in k and is routed through the Add/as_numer_denom branch, where the wrong closed form is generated."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing tests are in sympy/concrete/tests/test_products.py (test_special_products, test_rational_products, test__eval_product, etc.); none currently covers a term whose free range-variable appears in the exponent of a power denominator."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Expression in the issue, Product(n + 1/2**k, (k, 0, n-1)), uses 1/2**k = 2**(-k); correct expression is described by the reporter as involving the q-Pochhammer symbol."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only affects the inner sub-branch where the denominator q from as_numer_denom() on the Add term is a Number (q.is_Number). The outer branch structure (p/q returned) is unchanged; only the computation of the numerator factor p in that sub-case is replaced."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The new code reuses the log/product rewriting also found in Product._eval_rewrite_as_Sum (exp(Sum(log(self.function), ...))), importing Sum from sympy.concrete.summations at point of use."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "This path is observable through Product.doit(), since doit() delegates to _eval_product; the motivating expression is Product(n + 1/2**k, (k, 0, n-1))."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test exercising the R1 behaviour: Product._eval_product producing exp(Sum(log(p),...))/q for an Add term whose as_numer_denom() denominator q is a Number, where the free range-variable appears in an exponent (e.g. n + 2**(-k), or n**(2/3)+1). The only relevant product test files are sympy/concrete/tests/test_products.py and sympy/concrete/tests/test_sums_products.py. I read both in full. test_products.py contains test__eval_product (issues 4809/4810: product(2*a(i)) and product(2**i)), test_rational_products, test_special_products, test_rewrite_Sum, test_simple_products, etc.; test_sums_products.py contains overlapping-plus-additional generic product rational/simple/eval tests. None of these tests applies _eval_product/.doit() to an Add term whose free index appears in an exponent giving a purely numeric denominator — i.e. none distinguishes the 'single q-Pochhammer/exp(Sum(log)) term' closed form from the (wrong) sum-over-addend-products the patch fixes, which is precisely the region R1 describes. Moreover, both of these files are labeled [VISIBLE], so no assertion drawn from them could serve as a legitimate witness regardless. No test is currently recorded as failing against the buggy program. Since every product-related test in the oracle is visible and none is about R1's specific behavior, there is no hidden oracle assertion witnessing R1; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (Product._eval_product): When Product._eval_product is applied to a term that is an Add whose as_numer_denom() yields a purely numeric (is_Number) denominator q — i.e. the term cannot be factored into independently-evaluable numerator/denominator products, such as n + 2**(-k) or n**(2/3) + 1 — the returned value is exp(Sum(log(p), (k, a, n))) / q (p being the numerator), rather than the sum over the separately-evaluated products of the numerator's individual Add addends. — not entailed by S_vis (S_vis documents only the symptom (doit() gives 9/2 for n=2 instead of 15/2) and the correct expected value; it says nothing about Product._eval_product's internal handling of Add terms with numeric denominators or the exp(Sum(log(p),...))/q strategy versus summing separate addend products. No visible information leads to this specific implementation mechanism.); confirmed by a synthesized witness: R1 concerns the Add branch of Product._eval_product in which as_numer_denom yields a term that cannot be split into independent products (e.g. an index appearing in an exponent of a power — a + 2**(-k)). Rationalizing this term recursively reaches (a*2**k + 1, 1): the innermost Add has denominator 1, whose product is the Number 1, so q.is_Number is True and the patched sub-branch fires. Gold replaces the p factor with exp(Sum(log(p),(k,a,n))) giving the mathematically correct single q-Pochhammer closed form exp(Sum(log(a*2**k+1),(k,0,n)))/2**((n**2+n)/2); buggy instead sums self._eval_product over p.as_coeff_Add(), yielding the plainly wrong result a**(n+1) + 2**(-(n**2+n)/2) (a sum, not a product). My witness asserts the product's doit() result equals the exp(Sum(log(...)))/q form, which thus PASSES on gold and FAILS on buggy — precisely distinguishing R1's intended behavior. This scenario (products of an Add whose index appears in a power exponent) is not covered in the visible test_products.py / test_sums_products.py files, so it is a genuine hidden-oracle-style check verified by actual runs against both revisions.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "task_id": "JacksonDatabind-29",
+  "status": "ok",
+  "duration_seconds": 180.00569270699998,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-29",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Deserializing an externally-typed (@JsonTypeInfo(include=EXTERNAL_PROPERTY)) bean whose typed property value is the JSON literal null, when the external type id property is also present, must succeed without throwing an exception, producing a valid deserialized enclosing object — regardless of whether the property value appears before or after the type id property in the JSON object.",
+        "subject": "ExternalTypeHandler / external type id deserialization of an externally-typed property whose JSON value is null",
+        "hunk_ids": [],
+        "cited_from": "TestExternalId.java, testExternalTypeIdWithNull (// for [databind#942]): \"ObjectMapper mapper = new ObjectMapper(); mapper.registerSubtypes(ValueBean.class); ExternalBean b; b = mapper.readValue(aposToQuotes(\"{'bean':null,'extType':'vbean'}\"), ExternalBean.class); assertNotNull(b); b = mapper.readValue(aposToQuotes(\"{'extType':'vbean','bean':null}\"), ExternalBean.class); assertNotNull(b);\" where ExternalBean declares '@JsonTypeInfo(use=Id.NAME, include=As.EXTERNAL_PROPERTY, property=\"extType\") public Object bean;'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SI-1",
+        "statement": "In ExternalTypeHandler._deserialize, when the buffered token stream for the external-type property begins with a JSON null value (JsonToken.VALUE_NULL), the method returns Java null immediately instead of merging the type-id and value into a wrapper array and invoking the property deserializer.",
+        "subject": "ExternalTypeHandler._deserialize",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SI-2",
+        "statement": "In ExternalTypeHandler._deserializeAndSet, when the buffered token stream for the external-type property begins with a JSON null value (JsonToken.VALUE_NULL), the method sets that property's value to Java null on the target bean and returns immediately, instead of merging the type-id and value into a wrapper array and invoking the property's deserializeAndSet.",
+        "subject": "ExternalTypeHandler._deserializeAndSet",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SI-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's visible evidence (testExternalTypeIdWithNull) only asserts the observable outcome that deserializing an external-bean with a null typed property succeeds and yields a non-null bean. It does not specify that ExternalTypeHandler._deserialize must return null immediately on a leading VALUE_NULL token rather than merging into a wrapper array — that exact internal branch in a specific private method is an implementation mechanism not constrained by the test."
+      },
+      {
+        "requirement_id": "SI-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "Similarly, R1 does not pin down that _deserializeAndSet must set the property to Java null and return immediately on a leading VALUE_NULL token. The visible test only verifies the high-level success outcome; the specific early-return/set-null mechanism inside this private method is not derivable from it."
+      }
+    ],
+    "target_requirement_id": "SI-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "static class ValueNull942 {\n        public int value;\n        public ValueNull942() {}\n        public ValueNull942(int v) { value = v; }\n    }\n    @com.fasterxml.jackson.annotation.JsonTypeName(\"vbean\")\n    static class EnvCreator942 {\n        public Object payload;\n        @com.fasterxml.jackson.annotation.JsonCreator\n        public EnvCreator942(@com.fasterxml.jackson.annotation.JsonProperty(\"payload\")\n            @com.fasterxml.jackson.annotation.JsonTypeInfo(\n                use=com.fasterxml.jackson.annotation.JsonTypeInfo.Id.NAME,\n                include=com.fasterxml.jackson.annotation.JsonTypeInfo.As.EXTERNAL_PROPERTY,\n                property=\"extType\")\n            Object payload) {\n            this.payload = payload;\n        }\n    }\n    @Test public void t() throws Exception {\n        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n        mapper.registerSubtypes(ValueNull942.class);\n        EnvCreator942 b = mapper.readValue(\"{\\\"extType\\\":\\\"vbean\\\",\\\"payload\\\":null}\",\n                EnvCreator942.class);\n        org.junit.Assert.assertNotNull(b);\n        org.junit.Assert.assertNull(b.payload);\n    }",
+      "gold_result": "PASSED: EnvCreator942 deserializes with payload == null (the null early-return in _deserialize returns null, which is then assigned to the creator property).",
+      "buggy_result": "FAILED: JsonMappingException (unknown type id) thrown from ExternalTypeHandler._deserialize (line 238) via complete(); buggy code does not special-case VALUE_NULL so it wraps the null into [\"vbean\", null] and tries to type-deserialize it.",
+      "explanation": "Requirement [SI-1] is that ExternalTypeHandler._deserialize must return Java null when the buffered token begins with JsonToken.VALUE_NULL, instead of merging the type-id + value into a wrapper array and invoking the deserializer. I needed a scenario that actually reaches _deserialize — that happens on the property-based-creator path (complete(…, PropertyValueBuffer, PropertyBasedCreator)), which is triggered when an externally-typed value is itself a @JsonCreator constructor parameter (payload). The visible oracle R1 (TestExternalId.testExternalTypeIdWithNull) only exercises the setter/field path (_deserializeAndSet) with ExternalBean and only asserts assertNotNull(b) — it never uses a creator bean nor asserts that the typed field is null, so it does not pin down this creator-path null behavior. My witness reads {\"extType\":\"vbean\",\"payload\":null} into a creator bean whose externally-typed payload param is null; gold's early return null makes payload == null (PASSED), while buggy merges null into a wrapper array and throws a JsonMappingException from ExternalTypeHandler._deserialize (FAILED). Execution confirmed both directions: PASSED on gold and FAILED on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is Jackson databind issue #942; the bug target (per the visible description and the code comments '29-Sep-2015, tatu: As per [databind#942], nulls need special support') is ExternalTypeHandler._deserialize / _deserializeAndSet, which wrap the buffered type-id + value into a wrapper array and then call the property deserializer. The visible source already contains that #942 comment but shows no actual null-value handling beneath it, so a JSON-null property value is what currently fails."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The new regression test lives in src/test/java/com/fasterxml/jackson/databind/jsontype/TestExternalId.java (testExternalTypeIdWithNull) and only asserts the enclosing bean deserializes (assertNotNull(b)); it does not assert the value of the typed bean field itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ExternalTypeHandler beans use a wrapper-array ([\"<typeId>\", <value>]) serialization convention when combining external type id with the buffered value before deserialization."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note: the visible ExternalTypeHandler also supports defaultImpl handling and buffers creator parameters, relevant to unrelated tests (#96/#118/#94), not this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_deserialize (H0) feeds the property-based-creator path (complete(..., PropertyValueBuffer, PropertyBasedCreator)), where the returned value is later assigned to creator-parameter or non-creator properties."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_deserializeAndSet (H1) feeds the setter paths: handleTypePropertyValue, handlePropertyValue, and complete(JsonParser, DeserializationContext, Object bean)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The pre-existing code comment 'As per [databind#942], nulls need special support' was already present in the buggy revision directly above where the fix was added (no null-handling existed until this patch)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Natural-type/defaultImpl handling in complete() (databind#94/#118) is unrelated to these hunks and remains unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SI-1]: The only oracle test that exercises the requirement [SI-1] behavior (JSON-null external-property value handled in ExternalTypeHandler._deserialize/_deserializeAndSet) is `TestExternalId.testExternalTypeIdWithNull`, which reads {'bean':null,'extType':'vbean'} and the reversed-order equivalent and asserts the enclosing bean just deserializes. However, read_test_file labels the whole TestExternalId.java file as [VISIBLE]; per the Verso rules a witness may only rest on [HIDDEN] assertions, so this test (even though it is the currently-failing regression test and does genuinely target the null-handling path) cannot serve as a witness.\n\nI checked every oracle file: TestCustomTypeIdResolver (external custom type-id resolution, but only non-null values, e.g. testCustomWithExternal with value y=12), TestVisibleTypeId (visible type ids / #408 etc.), and TestJDKSerialization (JDK serialization) — none of these [HIDDEN] files contains an assertion about a JSON-null value for an externally-typed property reaching ExternalTypeHandler._deserialize. No [HIDDEN] assertion enforces r, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SI-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SI-1] (ExternalTypeHandler._deserialize): In ExternalTypeHandler._deserialize, when the buffered token stream for the external-type property begins with a JSON null value (JsonToken.VALUE_NULL), the method returns Java null immediately instead of merging the type-id and value into a wrapper array and invoking the property deserializer. — not entailed by S_vis (R1's visible evidence (testExternalTypeIdWithNull) only asserts the observable outcome that deserializing an external-bean with a null typed property succeeds and yields a non-null bean. It does not specify that ExternalTypeHandler._deserialize must return null immediately on a leading VALUE_NULL token rather than merging into a wrapper array — that exact internal branch in a specific private method is an implementation mechanism not constrained by the test.); confirmed by a synthesized witness: Requirement [SI-1] is that ExternalTypeHandler._deserialize must return Java null when the buffered token begins with JsonToken.VALUE_NULL, instead of merging the type-id + value into a wrapper array and invoking the deserializer. I needed a scenario that actually reaches _deserialize — that happens on the property-based-creator path (complete(…, PropertyValueBuffer, PropertyBasedCreator)), which is triggered when an externally-typed value is itself a @JsonCreator constructor parameter (payload). The visible oracle R1 (TestExternalId.testExternalTypeIdWithNull) only exercises the setter/field path (_deserializeAndSet) with ExternalBean and only asserts assertNotNull(b) — it never uses a creator bean nor asserts that the typed field is null, so it does not pin down this creator-path null behavior. My witness reads {\"extType\":\"vbean\",\"payload\":null} into a creator bean whose externally-typed payload param is null; gold's early return null makes payload == null (PASSED), while buggy merges null into a wrapper array and throws a JsonMappingException from ExternalTypeHandler._deserialize (FAILED). Execution confirmed both directions: PASSED on gold and FAILED on buggy.",
+    "confidence": "Medium"
+  }
+}

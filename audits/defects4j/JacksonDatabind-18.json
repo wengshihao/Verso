@@ -1,0 +1,149 @@
+{
+  "task_id": "JacksonDatabind-18",
+  "status": "ok",
+  "duration_seconds": 178.45854583100027,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-18",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a sequence of root-level JSON objects read via ObjectReader.readValues(), when an element's deserialization fails part-way with a JsonMappingException (because it contains an unrecognized field), the iterator must not be permanently stuck: it skips the remainder of the failing element so that subsequent elements in the sequence can still be read and correctly bound (and iteration later reports no more values once those are exhausted).",
+        "subject": "MappingIterator.readValues (root-level object sequence recovery)",
+        "hunk_ids": [],
+        "cited_from": "testSimpleRootRecovery: JSON \"{'a':3}{'a':27,'foo':[1,2],'b':{'x':3}}  {'a':1,'b':2} \"; bind first bean then \"try { it.nextValue(); } catch (JsonMappingException e) { verifyException(e, \"Unrecognized field \\\"foo\\\"\"); } // but should recover nicely bean = it.nextValue(); // a=1, b=2 ... assertFalse(it.hasNextValue());"
+      },
+      {
+        "id": "R2",
+        "statement": "For a sequence of JSON objects wrapped in a top-level array and read via ObjectReader.readValues(), an element failing part-way with a JsonMappingException (unrecognized field) must likewise be skipped over so that later elements inside the array can still be read and correctly bound, with iteration ending normally at the sequence's close.",
+        "subject": "MappingIterator.readValues (array-wrapped sequence recovery)",
+        "hunk_ids": [],
+        "cited_from": "testSimpleArrayRecovery: JSON \"[{'a':3},{'a':27,'foo':[1,2],'b':{'x':3}}  ,{'a':1,'b':2}  ]\"; after catching JsonMappingException(\"Unrecognized field \\\"foo\\\"\") on the second element: \"bean = it.nextValue(); assertNotNull(bean); assertEquals(1, bean.a); assertEquals(2, bean.b); assertFalse(it.hasNextValue());\""
+      },
+      {
+        "id": "R3",
+        "statement": "When an element at the root level fails deserialization with a JsonMappingException and that failing element was the final content available, iteration correctly reports that no more values remain rather than attempting to keep reading.",
+        "subject": "MappingIterator.hasNextValue after a JsonProcessingException / EOF at root",
+        "hunk_ids": [],
+        "cited_from": "testRootBeans: JSON \"{'a':3} {'x':5}\"; after second read throws JsonMappingException (\"Unrecognized field \\\"x\\\"\"): comment \"With [databind#734], recovery, we now know there's no more data!\" followed by \"assertFalse(it.hasNextValue());\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "MappingIterator.close() is an idempotent, terminal operation: the first call to close() closes the underlying parser (when one is present) and transitions the iterator into its closed state, after which subsequent close() calls, hasNextValue() calls, and nextValue() calls behave as on an exhausted iterator (no repeated access to a closed parser, hasNextValue() returns false, and nextValue() throws NoSuchElementException) rather than attempting further reads.",
+        "subject": "MappingIterator.close / hasNextValue / nextValue",
+        "hunk_ids": [
+          "H0",
+          "H2",
+          "H4",
+          "H5",
+          "H6"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "If deserialization of an element of a sequence throws an exception, the iterator does not terminate: after a failed read the iterator enters a state requiring re-synchronization, and a subsequent hasNextValue() (or nextValue() that first goes through hasNextValue()) re-synchronizes the underlying parser back to the sequence context recorded when the iterator was constructed (i.e., the position that began the current element, accounting for whether the parser was initially pointing at a START_ARRAY/START_OBJECT marker), skipping whatever partially-consumed tokens/nested content resulted from the failed read, so that the remaining elements of the sequence continue to be produced and, when actual input runs out, iteration ends normally (hasNextValue() returning false) rather than failing repeatedly.",
+        "subject": "MappingIterator.hasNextValue / nextValue (read-recovery)",
+        "hunk_ids": [
+          "H3",
+          "H5",
+          "H6",
+          "H7",
+          "H8"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_impl R1 concerns close() being idempotent/terminal and the behavior of hasNextValue()/nextValue() after close (returns false / throws NoSuchElementException without touching a closed parser). None of the S_vis requirements describe close() at all or the closed state; R1-R3 only cover skipping a partially-failed element so later sequence elements can still be read and clean termination on data exhaustion, not exhaustion caused by close()."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1's testSimpleRootRecovery and R2's testSimpleArrayRecovery both pin down that after a JsonMappingException on one element the failing element's remainder is skipped and subsequent elements are still produced and correctly bound, with iteration ending at input exhaustion via hasNextValue() false; R3 additionally pins down clean hasNextValue() false at EOF after a root-level failure. Together these establish the full observable recovery-and-normal-termination contract described by S_impl R2 for both root and array contexts."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n    com.fasterxml.jackson.databind.MappingIterator<Integer> it = mapper.readerFor(Integer.class)\n        .readValues(\"[1,2,3]\");\n    org.junit.Assert.assertTrue(it.hasNextValue());\n    org.junit.Assert.assertEquals(Integer.valueOf(1), it.nextValue());\n    it.close();\n    org.junit.Assert.assertFalse(it.hasNextValue());\n    try {\n        it.nextValue();\n        org.junit.Assert.fail(\"should have thrown NoSuchElementException\");\n    } catch (java.util.NoSuchElementException expected) { }\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - NullPointerException at com.fasterxml.jackson.core.json.ReaderBasedJsonParser.nextToken during hasNextValue() after explicit close()",
+      "explanation": "R1 states that MappingIterator.close() is idempotent and terminal: after an explicit close(), a subsequent hasNextValue() must simply return false and nextValue() must throw NoSuchElementException, with no further reads on the (now closed) underlying parser. The gold implementation encodes this via the _state=STATE_CLOSED machine (close() guards on _state != STATE_CLOSED; hasNextValue() returns false on STATE_CLOSED; nextValue() throws on STATE_CLOSED), never touching _parser again. The buggy implementation keeps no closed flag: close() merely calls _parser.close() while leaving _parser non-null and _hasNextChecked untouched, so a later hasNextValue() re-enters parsing logic on the already-closed parser, which is exactly the forbidden 'repeated access to a closed parser'.\n\nMy witness constructs a MappingIterator over [1,2,3], consumes one value via hasNextValue()+nextValue(), then calls close(). After close it asserts hasNextValue()==false and that nextValue() throws NoSuchElementException. It PASSED on gold (returns false/throws NoSuchElement cleanly) and FAILED on buggy with a NullPointerException thrown from ReaderBasedJsonParser.nextToken during hasNextValue() — demonstrating the buggy close() fails to transition the iterator out of the active/readable state. The visible ReadRecoveryTest and all other visible content only exercise natural-EOF exhaustion followed by a final close(); none pins down the close-then-use / repeated-parser-access-after-explicit-close scenario, so this witness encodes a genuinely hidden fact for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Repo exposes only two source files for this task: src/main/java/com/fasterxml/jackson/databind/MappingIterator.java and src/test/java/com/fasterxml/jackson/databind/seq/ReadRecoveryTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ReadRecoveryTest extends BaseMapTest and calls helpers (aposToQuotes, verifyException, assertEquals, assertNotNull, fail) that live in a test base class not visible in this scope."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MappingIterator.java shown appears to be the pre-fix version of the recovery work: its 'State constants' javadoc paragraphs are empty, and the field block describing the resync/context ('Context to resynchronize to, in case an exception is encountered...') is present only as empty javadoc with no field, matching a source stripped of the future recovery/state machinery."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue text itself is largely aspirational ('ideally it should...', 'it may make sense to add a switch to prevent using any automated heuristics') and refers to a separate tracker (#734), so the concrete checkable recover semantics were taken from the disclosed tests; no test or code enforces any user-visible disable-heuristics switch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MappingIterator already clears the parser current token in a finally block after deserialization (#733 refs in source), which the constructor/state comments note is only a partial mitigation the recovery work is meant to improve."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch refactors MappingIterator iteration bookkeeping from a boolean _hasNextChecked flag into an integer state machine (STATE_CLOSED/STATE_NEED_RESYNC/STATE_MAY_HAVE_VALUE/STATE_HAS_VALUE) with a new _seqContext field and a _resync() helper, implementing the sequence read-recovery described for the issue."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_parser and _seqContext become final fields (H1); _parser is no longer nulled out at EOF/close — the closed condition is encoded in _state instead."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In the constructor (H3), a null parser yields the CLOSED state (used by EMPTY_ITERATOR); for managed parsers at expected START_ARRAY the token is cleared and seq context is the array; otherwise, when the current token is START_ARRAY/START_OBJECT the seq context is the parent context, and it defaults to the current parsing context otherwise."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "nextValue() (H7) always leaves the iterator in MAY_HAVE_VALUE on successful deserialize and in NEED_RESYNC on failure (the state is assigned in a finally block), so recovery is driven by whichever state is leftover after each read."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The prior #733 mitigation (clearCurrentToken in a finally after each deserialize) is retained inside the new state machine."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Externally-observable old behaviors that the patch preserves without changing meaning (e.g. at natural end-of-input hasNextValue() returns false and closes a managed parser) were not separately emitted as requirements since the patch's mechanism change yields equivalent behavior for all inputs."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I examined all four oracle test files: TestJDKSerialization.java, convert/TestUpdateValue.java (both [HIDDEN] but unrelated to MappingIterator), ReadRecoveryTest.java ([VISIBLE]) and seq/ReadValuesTest.java ([HIDDEN]).\n\nR1 concerns MappingIterator.close() being idempotent/terminal: after close(), a re-close is harmless and hasNextValue() returns false / nextValue() throws NoSuchElementException, with no further access to a closed parser. To witness it an oracle test would have to create a MappingIterator, call close(), and then verify post-close behavior (double-close, hasNextValue()==false, nextValue() throwing NoSuchElementException).\n\nThe only currently-failing tests are the three recovery tests in ReadRecoveryTest.java (testSimpleRootRecovery, testRootBeans, testSimpleArrayRecovery). Those test read-recovery after a deserialization error (STATE_NEED_RESYNC/NEED_RESYNC recovery of subsequent values, ending in assertFalse(it.hasNextValue()) at natural end-of-data followed by a plain close()). They do not assert anything about calling close() early and then hasNextValue()/nextValue()/close() afterward — i.e. they test the recovery mechanism, not R1's closed-terminal semantics — and in any event that whole file is [VISIBLE] content, which by the rules can never serve as a witness.\n\nI checked every hidden file (ReadValuesTest, TestJDKSerialization, TestUpdateValue). ReadValuesTest only covers standard value-sequence consumption: hasNext/next/readAll on valid JSON and hasNext-after-natural-EOF; all its iterators are closed only at the very end after exhaustion with no subsequent close/hasNextValue/nextValue calls. No hidden test anywhere exercises the close-then-use / double-close behavior that R1 describes. This is consistent with the fact that the only tests failing against the buggy program are the [VISIBLE] recovery tests; no [HIDDEN] test fails against buggy, and none encodes R1's distinct behavior. Hence no genuine oracle witness exists for R1; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (MappingIterator.close / hasNextValue / nextValue): MappingIterator.close() is an idempotent, terminal operation: the first call to close() closes the underlying parser (when one is present) and transitions the iterator into its closed state, after which subsequent close() calls, hasNextValue() calls, and nextValue() calls behave as on an exhausted iterator (no repeated access to a closed parser, hasNextValue() returns false, and nextValue() throws NoSuchElementException) rather than attempting further reads. — not entailed by S_vis (S_impl R1 concerns close() being idempotent/terminal and the behavior of hasNextValue()/nextValue() after close (returns false / throws NoSuchElementException without touching a closed parser). None of the S_vis requirements describe close() at all or the closed state; R1-R3 only cover skipping a partially-failed element so later sequence elements can still be read and clean termination on data exhaustion, not exhaustion caused by close().); confirmed by a synthesized witness: R1 states that MappingIterator.close() is idempotent and terminal: after an explicit close(), a subsequent hasNextValue() must simply return false and nextValue() must throw NoSuchElementException, with no further reads on the (now closed) underlying parser. The gold implementation encodes this via the _state=STATE_CLOSED machine (close() guards on _state != STATE_CLOSED; hasNextValue() returns false on STATE_CLOSED; nextValue() throws on STATE_CLOSED), never touching _parser again. The buggy implementation keeps no closed flag: close() merely calls _parser.close() while leaving _parser non-null and _hasNextChecked untouched, so a later hasNextValue() re-enters parsing logic on the already-closed parser, which is exactly the forbidden 'repeated access to a closed parser'.\n\nMy witness constructs a MappingIterator over [1,2,3], consumes one value via hasNextValue()+nextValue(), then calls close(). After close it asserts hasNextValue()==false and that nextValue() throws NoSuchElementException. It PASSED on gold (returns false/throws NoSuchElement cleanly) and FAILED on buggy with a NullPointerException thrown from ReaderBasedJsonParser.nextToken during hasNextValue() — demonstrating the buggy close() fails to transition the iterator out of the active/readable state. The visible ReadRecoveryTest and all other visible content only exercise natural-EOF exhaustion followed by a final close(); none pins down the close-then-use / repeated-parser-access-after-explicit-close scenario, so this witness encodes a genuinely hidden fact for R1.",
+    "confidence": "Medium"
+  }
+}

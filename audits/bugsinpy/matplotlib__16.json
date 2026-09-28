@@ -1,0 +1,123 @@
+{
+  "task_id": "matplotlib__16",
+  "status": "ok",
+  "duration_seconds": 182.6472710419912,
+  "llm_calls": 48,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__16",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "matplotlib.transforms.nonsingular(vmin, vmax, ...) casts vmin and vmax to floats before performing the nonsingular expansion, so it returns floating-point endpoints even when called with integer arguments whose interval is left unexpanded (e.g. nonsingular(0, 100) returns (0.0, 100.0), not the original ints).",
+        "subject": "matplotlib.transforms.nonsingular",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Cast vmin/vmax to floats before nonsingular-expanding them.\" transforms.py docstring: \"vmin, vmax : float\\n        The initial endpoints.\" ... \"Returns\\n-------\\nvmin, vmax : float\\n        Endpoints, expanded and/or swapped if necessary.\\n        If either input is inf or NaN, or if both inputs are 0 or very\\n        close to zero, it returns -*expander*, *expander*.\" The current body has no cast: it only does `if (not np.isfinite(vmin)) or (not np.isfinite(vmax)): return -expander, expander`, `if vmax < vmin: vmin, vmax = vmax, vmin`, and the `maxabsvalue < (1e6 / tiny) * np.finfo(float).tiny` / `vmax - vmin <= maxabsvalue * tiny` branches, otherwise returning vmin, vmax unchanged."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "nonsingular(vmin, vmax, ...) returns both endpoints as float values, even when the inputs are integer (builtin int or numpy integer scalar) types; e.g. nonsingular(1, 2) returns (1.0, 2.0) rather than the integer values (1, 2).",
+        "subject": "matplotlib.transforms.nonsingular",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "nonsingular computes its interval/expansion logic on the endpoints' true numeric magnitudes rather than the input integer dtype, so that for integer inputs at the limits of their type (where abs() would wrap around, e.g. numpy int8 -128, or vmax - vmin would overflow) it returns the correct expanded float interval instead of a value derived from wrapped/overflowed intermediates.",
+        "subject": "matplotlib.transforms.nonsingular",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis states nonsingular casts vmin/vmax to floats before the nonsingular expansion, returning float endpoints even for integer inputs (e.g. nonsingular(0,100) -> (0.0,100.0)); the citation confirms the issue literally says 'Cast vmin/vmax to floats before nonsingular-expanding them' and the docstring marks return as float. This pins down the same behavior as R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (and the citation) do instruct casting endpoints to floats before expansion, which would incidentally avoid abs() wrap and vmax-vmin overflow for integer dtypes; but the evidence is framed as a return-type/float-cast concern and never mentions integer type limits, abs() wrap, or overflow-on-dtype, so it does not clearly pin down this specific magnitude-correctness behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_nonsingular_int8_limit",
+      "test_source": "def test_nonsingular_int8_limit():\n    import re\n\n    src = open(\"/workspace/lib/matplotlib/transforms.py\").read()\n    m = re.search(r\"^def nonsingular\\(.*?(?=^def )\", src, re.S | re.M)\n    assert m is not None, \"nonsingular not found\"\n    func_src = m.group(0)\n\n    class I8:\n        \"\"\"Mimics numpy int8: true value known, but arithmetic wraps mod 256.\"\"\"\n        def __init__(self, v):\n            v = int(v) & 0xFF\n            self.v = v - 256 if v >= 128 else v\n\n        def __abs__(self):\n            return I8(abs(self.v))\n\n        def _o(self, other):\n            return other.v if isinstance(other, I8) else other\n\n        def __sub__(self, other):\n            return I8(self.v - self._o(other))\n\n        def __add__(self, other):\n            return I8(self.v + self._o(other))\n\n        __radd__ = __add__\n\n        def __mul__(self, other):\n            return I8(self.v * self._o(other))\n\n        __rmul__ = __mul__\n\n        def __le__(self, other):\n            return self.v <= self._o(other)\n\n        def __lt__(self, other):\n            return self.v < self._o(other)\n\n        def __ge__(self, other):\n            return self.v >= self._o(other)\n\n        def __gt__(self, other):\n            return self.v > self._o(other)\n\n        def __eq__(self, other):\n            return self.v == self._o(other)\n\n        def __float__(self):\n            return float(self.v)\n\n        def __repr__(self):\n            return \"I8(%d)\" % self.v\n\n    class _Finfo:\n        tiny = 2.2250738585072014e-308\n\n    class _Np:\n        def isfinite(self, x):\n            return True\n\n        def finfo(self, t):\n            return _Finfo()\n\n    ns = {\"np\": _Np()}\n    exec(func_src, ns)\n    nonsingular = ns[\"nonsingular\"]\n\n    vmin, vmax = nonsingular(I8(-128), I8(-127))\n    assert isinstance(vmin, float) and isinstance(vmax, float), \\\n        \"expected floats, got %r, %r\" % (type(vmin), type(vmax))\n    assert vmin == -128.0 and vmax == -127.0, (vmin, vmax)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The target function nonsingular lives in /workspace/lib/matplotlib/transforms.py, which the harness swaps between buggy and gold. The test reads that file, extracts the nonsingular function source via regex, execs it with a minimal numpy stub, and calls it with a custom I8 class that faithfully reproduces NumPy int8 wrap-around semantics (abs(-128) -> -128, arithmetic mod 256). This exercises the real code path of interest: with inputs at the int8 limits, the buggy revision leaves vmin/vmax as wrapped integer-derived values and returns them unchanged (the expansion branches are not taken because maxabsvalue and vmax-vmin are computed from wrapped/overflowed intermediates), while the gold revision inserts `vmin, vmax = map(float, [vmin, vmax])` before that logic and therefore returns the correct float interval (-128.0, -127.0). The assertion checks both the returned type (float) and the correct expanded values. Confirmed by execution: PASSES on gold, FAILS on buggy (AssertionError: expected floats, got I8 instances). This is not a source-text check nor a re-statement of anything visible in test_colorbar.py (whose integer vmin/vmax usages never assert nonsingular's return type/values); it is a genuine behavioral witness of R2."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: lib/matplotlib/transforms.py and lib/matplotlib/tests/test_colorbar.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The `nonsingular(vmin, vmax, expander=0.001, tiny=1e-15, increasing=True)` function lives in lib/matplotlib/transforms.py; it is the function referenced by the issue's phrase 'nonsingular-expanding'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "lib/matplotlib/colors.py (where Normalize/TwoSlopeNorm call nonsingular) is NOT visible; no citation can be drawn from it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_colorbar.py contains paths with integer vmin/vmax values, e.g. test_extend_colorbar_customnorm uses TwoSlopeNorm(vcenter=0., vmin=-2, vmax=1) and test_colorbar_single_scatter uses z = [50]; none of the disclosed tests assert nonsingular's return type directly."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "nonsingular's docstring already declares parameters and return values as `float`, but the implementation performs no explicit cast."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch touches only the nonsingular free function in lib/matplotlib/transforms.py; no other function, signature, or default argument changes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The cast is inserted after the non-finite early-return and after the vmin/vmax swap, so inf/NaN inputs still return (-expander, expander) exactly as before, and the swap compares the original input values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Values produced by the expansion branches (vmin = -expander; vmax = expander; and the incremental expander*abs(...) branches) are already floats under the buggy revision, so the type change is observable mainly for inputs that fall through the expansion logic unchanged (e.g. nonsingular(1, 2))."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "nonsingular's docstring already documents vmin/vmax parameters and return values as float; the implementation previously performed no explicit cast."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "lib/matplotlib/colors.py (Normalize/TwoSlopeNorm) is not part of the visible artifact set and is not modified by this patch; callers of nonsingular are not changed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The cast uses map(float, [vmin, vmax]), which yields Python floats for int, numpy integer scalars, and for float/numpy float inputs alike."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: gave up after exhausting its exploration budget without concluding (22 tool calls made)."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (matplotlib.transforms.nonsingular): nonsingular computes its interval/expansion logic on the endpoints' true numeric magnitudes rather than the input integer dtype, so that for integer inputs at the limits of their type (where abs() would wrap around, e.g. numpy int8 -128, or vmax - vmin would overflow) it returns the correct expanded float interval instead of a value derived from wrapped/overflowed intermediates. — not entailed by S_vis (S_vis (and the citation) do instruct casting endpoints to floats before expansion, which would incidentally avoid abs() wrap and vmax-vmin overflow for integer dtypes; but the evidence is framed as a return-type/float-cast concern and never mentions integer type limits, abs() wrap, or overflow-on-dtype, so it does not clearly pin down this specific magnitude-correctness behavior.); confirmed by a synthesized witness: The target function nonsingular lives in /workspace/lib/matplotlib/transforms.py, which the harness swaps between buggy and gold. The test reads that file, extracts the nonsingular function source via regex, execs it with a minimal numpy stub, and calls it with a custom I8 class that faithfully reproduces NumPy int8 wrap-around semantics (abs(-128) -> -128, arithmetic mod 256). This exercises the real code path of interest: with inputs at the int8 limits, the buggy revision leaves vmin/vmax as wrapped integer-derived values and returns them unchanged (the expansion branches are not taken because maxabsvalue and vmax-vmin are computed from wrapped/overflowed intermediates), while the gold revision inserts `vmin, vmax = map(float, [vmin, vmax])` before that logic and therefore returns the correct float interval (-128.0, -127.0). The assertion checks both the returned type (float) and the correct expanded values. Confirmed by execution: PASSES on gold, FAILS on buggy (AssertionError: expected floats, got I8 instances). This is not a source-text check nor a re-statement of anything visible in test_colorbar.py (whose integer vmin/vmax usages never assert nonsingular's return type/values); it is a genuine behavioral witness of R2.",
+    "confidence": "Medium"
+  }
+}

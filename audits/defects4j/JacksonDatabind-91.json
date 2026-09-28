@@ -1,0 +1,110 @@
+{
+  "task_id": "JacksonDatabind-91",
+  "status": "ok",
+  "duration_seconds": 302.88568038800076,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-91",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On a single ObjectMapper, after first deserializing a bean whose property declares an un-annotated Map<String,String> (so the plain map deserializer for that type becomes cached), deserializing a second property of the same raw Map<String,String> shape that is annotated with a custom key deserializer via @JsonDeserialize(keyUsing = MyKeyDeserializer.class) must actually use that custom key deserializer — the resulting keys must be the original keys suffixed with \" (CUSTOM)\" (\"1st\" -> \"1st (CUSTOM)\", \"2nd\" -> \"2nd (CUSTOM)\") — rather than reuse the previously cached non-custom map deserializer.",
+        "subject": "DeserializerCache caching lookup for Map<String,String> with a custom key deserializer",
+        "hunk_ids": [],
+        "cited_from": "MapDeserializerCachingTest.java:\n        NonAnnotatedMapHolderClass ignored = mapper.readValue(json, NonAnnotatedMapHolderClass.class);\n        assertTrue(ignored.data.containsKey(\"1st\"));\n        assertTrue(ignored.data.containsKey(\"2nd\"));\n        ...\n        MapHolder model2 = mapper.readValue(json, MapHolder.class);\n        if (!model2.data.containsKey(\"1st (CUSTOM)\")\n            || !model2.data.containsKey(\"2nd (CUSTOM)\")) {\n            fail(\"Not using custom key deserializer for input: \"+json+\"; resulted in: \"+model2.data);\n        }\nwith\n        @JsonDeserialize(keyUsing = MyKeyDeserializer.class)\n        public Map<String, String> data = new TreeMap<String, String>();\n\n        String json = aposToQuotes(\"{'data':{'1st':'onedata','2nd':'twodata'}}\");"
+      },
+      {
+        "id": "R2",
+        "statement": "DeserializerCache deserializer lookups must not serve a cached deserializer for a container (e.g. map) JavaType when that type carries custom (de)serialization handlers on its component/key value — such types must be treated as a cache miss so a fresh, handler-aware deserializer is constructed.",
+        "subject": "DeserializerCache._findCachedDeserializer",
+        "hunk_ids": [],
+        "cited_from": "DeserializerCache._hasCustomHandlers():\n        // 27-Mar-2015, tatu: As per [databind#735], avoid caching types with custom value desers\n        boolean addToCache = !_hasCustomHandlers(type) && deser.isCachable();\nand\n    private boolean _hasCustomHandlers(JavaType t) {\n        if (t.isContainerType()) {\n            // First: value types may have both value and type handlers\n            JavaType ct = t.getContentType();\n            if (ct != null) {\n                return (ct.getValueHandler() != null) || (ct.getTypeHandler() != null);\n            // Second: map(-like) types may have value handler for key (but not type; keys are untyped)\n            }\n        }\n        return false;\n    }"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "DeserializerCache treats a map-like type whose key type carries a custom value handler as having custom handlers even when the type's content type has no value handler and no type handler; concretely this excludes such a map type from the cached-deserializer store — a cached-entry lookup for it returns null (forcing deserializer reconstruction) and a freshly constructed deserializer for it is not added to the cached-deserializer map, so repeated resolution of such a map type does not reuse a prior installed deserializer.",
+        "subject": "DeserializerCache._hasCustomHandlers / deserializer caching behavior for map-like types whose key type has a custom value handler",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's behavioral test only demonstrates that with @JsonDeserialize(keyUsing=...) on a Map<String,String>, the custom key deserializer is actually used rather than a cached plain one — a black-box outcome reachable through several mechanisms and phrased around an annotation, not a JavaType key value handler. S_vis R2's cited _hasCustomHandlers code checks only the content type's value/type handlers and returns immediately for containers, so it does not clearly implement S_impl R1's specific claim that a map whose KEY carries a custom value handler counts as custom even when the content type has no handlers, and that it is excluded from the cached store (null lookup / not added)."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "testKeyHandlerMapNotFromPlainCache",
+      "test_source": "    public static class PlainRoot {\n        public java.util.Map<String,String> data;\n    }\n    public static class KeyRoot {\n        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(keyUsing = XKeyDeser.class)\n        public java.util.Map<String,String> data;\n    }\n    public static class XKeyDeser extends com.fasterxml.jackson.databind.KeyDeserializer {\n        @Override\n        public Object deserializeKey(String key, com.fasterxml.jackson.databind.DeserializationContext ctxt) throws java.io.IOException {\n            return key + \"!\";\n        }\n    }\n\n    @org.junit.Test\n    public void testKeyHandlerMapNotFromPlainCache() throws Exception {\n        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n        // Seed the cache: plain Map<String,String> deserializer becomes the cached entry.\n        mapper.readValue(\"{\\n\\\"data\\\":{\\\"x\\\":\\\"1\\\"}\\n}\", PlainRoot.class);\n\n        KeyRoot got = mapper.readValue(\"{\\n\\\"data\\\":{\\\"a\\\":\\\"p\\\"}\\n}\", KeyRoot.class);\n        org.junit.Assert.assertTrue(\"custom key deserializer bypassed by cached plain-map deserializer\",\n                got.data.containsKey(\"a!\"));\n    }\n",
+      "gold_result": "PASSED (a! key present -- freshly constructed custom-key map deserializer used, cache correctly bypassed)",
+      "buggy_result": "FAILED: AssertionError \"custom key deserializer bypassed by cached plain-map deserializer\" -- the cached plain Map<String,String> deserializer was reused, so the key-bearing custom deserializer's handler was never applied (key was left as \"a\")",
+      "explanation": "Target R1 states that DeserializerCache._hasCustomHandlers must report TRUE for a map-like JavaType whose KEY type carries a value handler even when its content type has no value/type handler — thereby excluding such a map from both cache-stores (addToCache) and cache-lookups (_findCachedDeserializer). In buggy, the content-type branch returns immediately ((ct.getValueHandler()!=null)||(ct.getTypeHandler()!=null)) without ever consulting the map key type, so any map whose content has no handler is treated as \"no custom handlers\" even if its key carries one.\n\nI exercised this only through the public ObjectMapper API (the private helper has no external effect, per my reading of the code). The discriminating runtime scenario: first deserialize a bean whose plain Map<String,String> property installs the plain map deserializer into the cache under its declared JavaType; then deserialize a second bean whose Map<String,String> property is identical at the cache-key level but carries @JsonDeserialize(keyUsing=...) on its key, which would only be installed during a FRESH deserializer construction. Gold (correct) treats the keyed map as custom → doesn't serve/reuse the cached plain entry → fresh construction runs the custom KeyDeserializer producing key \"a!\". Buggy incorrectly treats it as non-custom → returns the stale cached plain deserializer → the key deserializer never runs, key stays \"a\", assertion fails. Confirmed empirically: gold PASSED, buggy FAILED with exactly that message.\n\nCaveat on novelty: the runtime manifestation of this caching defect inherently requires two resolutions of the same-declared Map property where the second would install a custom key handler, and the visible (S_vis) oracle test MapDeserializerCachingTest.testCachedSerialize (databind#1807) already pins that canonical scenario. My alternative attempt that seeded the cache via a bare root-map readValue (constructMapType) rather than a bean property PASSED on buggy too (root-key vs bean-property JavaTypes don't share the collision), confirming the double-bean-property structure is intrinsic. So my test re-renders the visible scenario's essential shape with different classes, marker (\"!\"), and plain JSON JSON notation; it is an independently written, execution-confirmed statement of R1 rather than a byte-copy, but not a fundamentally different input that the visible test left unpinned."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: src/main/java/com/fasterxml/jackson/databind/deser/DeserializerCache.java and src/test/java/com/fasterxml/jackson/databind/deser/jdk/MapDeserializerCachingTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test references issue [databind#1807]; the bug-report text describes a separate regression (#1809, Log4j enum/Level String deserialization) which does not directly exercise code in this repo."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test extends BaseMapTest and uses helper aposToQuotes(...), both of which live outside this visible repo."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DeserializerCache caches factory-constructed deserializers in a ConcurrentHashMap keyed by JavaType and keeps in-progress deserializers in a synchronized _incompleteDeserializers map to resolve cyclic references."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_findCachedDeserializer intentionally returns null for types with custom handlers (via _hasCustomHandlers), but that helper's map-handling branch currently only inspects the content (value) type and not the map key's value handler."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DeserializerCache is Serializable; its writeReplace() clears _incompleteDeserializers before JDK serialization."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "_findCachedDeserializer throws IllegalArgumentException(\"Null JavaType passed\") for a null type argument."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is entirely within the private helper _hasCustomHandlers(JavaType t). That helper has no direct external effect; its only influence is through _findCachedDeserializer (which returns null on custom handlers, bypassing the cache) and through the addToCache computation in _createAndCache2. The pre-existing bug (before-state) unconditionally returned after the content-type check for any non-null content type, so a map whose content had no custom handler never reached any key inspection; the fix restructures so content-handler presence short-circuits to 'true', and otherwise a map-like key value handler also short-circuits to 'true' before falling through to the final 'return false'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The behavior applies to map-like container types (which by definition of the enclosing isContainerType() guard always have a key type), so the keyType is not null-guarded in the added branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DeserializerCache is final and Serializable; _cachedDeserializers is a ConcurrentHashMap, _incompleteDeserializers a synchronized HashMap used for cyclic-reference resolution."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1 describes the very narrow behavior that DeserializerCache._hasCustomHandlers returns true (thereby excluding from the deserializer cache and cache lookups) for a map-like type whose KEY type carries a custom value handler even when the content/value type has neither a value nor a type handler. The only test in the oracle that exercises precisely this caching scenario — issue databind#1807, where after deserializing a plain Map<String,String> so its MapDeserializer becomes the cached one, a subsequent Map<String,String> property whose key uses a custom key deserializer (keyUsing=MyKeyDeserializer, which is installed as a value handler on the key type by modifyTypeByAnnotation) must NOT reuse the cached plain-Map deserializer — is MapDeserializerCachingTest.testCachedSerialize, which directly targets R1 but is [VISIBLE], and visible content cannot serve as a witness.\n\nI surveyed the oracle test files for any [HIDDEN] test that independently reproduces this distinct behavior. Candidates examined include TestCachingOfDeser (hidden; tests content/value handler caching per databind#735 — uses contentUsing, not key handlers in a caching scenario), TestCustomDeserializers, TestGenericMapDeser, TestMapDeserialization, TestCustomFactory, KeyDeser1429Test, TestKeyDeserializers, TestCustomEnumKeyDeserializer, TestContextualKeyTypes, TestBeanDeserializer, TestDefaultForMaps, TestTypeModifiers, TestConcurrency, AnySetter349Test, TestContextualDeserialization, TestSimpleModule, and others touching maps/custom keys/type factory. None of the [HIDDEN] tests assert the R1 caching behavior: none combine (a) a map whose key type carries a custom value handler with (b) a content type that has no handler, in a single-mapper context where a prior plain-map deserialization would have installed a cached entry that must be bypassed. The remaining hidden map/key tests either use a fresh mapper (so no cache-reuse is involved), use content/value handlers instead of key handlers, or test unrelated behaviors (type resolution, contextual keys, serialization, polymorphic typing). Since every candidate found rests on [VISIBLE] content (or no test at all), no genuine [HIDDEN]-anchored witness exists for R1 in this oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (DeserializerCache._hasCustomHandlers / deserializer caching behavior for map-like types whose key type has a custom value handler): DeserializerCache treats a map-like type whose key type carries a custom value handler as having custom handlers even when the type's content type has no value handler and no type handler; concretely this excludes such a map type from the cached-deserializer store — a cached-entry lookup for it returns null (forcing deserializer reconstruction) and a freshly constructed deserializer for it is not added to the cached-deserializer map, so repeated resolution of such a map type does not reuse a prior installed deserializer. — not entailed by S_vis (S_vis R1's behavioral test only demonstrates that with @JsonDeserialize(keyUsing=...) on a Map<String,String>, the custom key deserializer is actually used rather than a cached plain one — a black-box outcome reachable through several mechanisms and phrased around an annotation, not a JavaType key value handler. S_vis R2's cited _hasCustomHandlers code checks only the content type's value/type handlers and returns immediately for containers, so it does not clearly implement S_impl R1's specific claim that a map whose KEY carries a custom value handler counts as custom even when the content type has no handlers, and that it is excluded from the cached store (null lookup / not added).); confirmed by a synthesized witness: Target R1 states that DeserializerCache._hasCustomHandlers must report TRUE for a map-like JavaType whose KEY type carries a value handler even when its content type has no value/type handler — thereby excluding such a map from both cache-stores (addToCache) and cache-lookups (_findCachedDeserializer). In buggy, the content-type branch returns immediately ((ct.getValueHandler()!=null)||(ct.getTypeHandler()!=null)) without ever consulting the map key type, so any map whose content has no handler is treated as \"no custom handlers\" even if its key carries one.\n\nI exercised this only through the public ObjectMapper API (the private helper has no external effect, per my reading of the code). The discriminating runtime scenario: first deserialize a bean whose plain Map<String,String> property installs the plain map deserializer into the cache under its declared JavaType; then deserialize a second bean whose Map<String,String> property is identical at the cache-key level but carries @JsonDeserialize(keyUsing=...) on its key, which would only be installed during a FRESH deserializer construction. Gold (correct) treats the keyed map as custom → doesn't serve/reuse the cached plain entry → fresh construction runs the custom KeyDeserializer producing key \"a!\". Buggy incorrectly treats it as non-custom → returns the stale cached plain deserializer → the key deserializer never runs, key stays \"a\", assertion fails. Confirmed empirically: gold PASSED, buggy FAILED with exactly that message.\n\nCaveat on novelty: the runtime manifestation of this caching defect inherently requires two resolutions of the same-declared Map property where the second would install a custom key handler, and the visible (S_vis) oracle test MapDeserializerCachingTest.testCachedSerialize (databind#1807) already pins that canonical scenario. My alternative attempt that seeded the cache via a bare root-map readValue (constructMapType) rather than a bean property PASSED on buggy too (root-key vs bean-property JavaTypes don't share the collision), confirming the double-bean-property structure is intrinsic. So my test re-renders the visible scenario's essential shape with different classes, marker (\"!\"), and plain JSON JSON notation; it is an independently written, execution-confirmed statement of R1 rather than a byte-copy, but not a fundamentally different input that the visible test left unpinned.",
+    "confidence": "Medium"
+  }
+}

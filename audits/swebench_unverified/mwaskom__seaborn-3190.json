@@ -1,0 +1,82 @@
+{
+  "task_id": "mwaskom__seaborn-3190",
+  "status": "ok",
+  "duration_seconds": 431.3424024170963,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "mwaskom__seaborn-3190",
+    "s_vis": [
+      {
+        "id": "req1",
+        "statement": "Compiling a Plot that maps a boolean-typed data vector (e.g. [True, False]) to the `color` (or other normed semantic) variable via the default/automatic scale must succeed without raising the numpy boolean-subtraction TypeError during scale setup; i.e. boolean data must not fail when the color scale normalizes its range.",
+        "subject": "Color property / ContinuousBase._setup scale normalization (seaborn._core.properties.Color, seaborn._core.scales.Continuous)",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction: \"so.Plot([\"a\", \"b\"], [1, 2], color=[True, False]).add(so.Bar())\" followed by traceback ending \"TypeError: numpy boolean subtract, the `-` operator, is not supported, use the bitwise_xor, the `^` operator, or the logical_xor function instead.\", at scales.py ContinuousBase._setup line \"b = forward(vmax) - forward(vmin)\"."
+      },
+      {
+        "id": "req2",
+        "statement": "The default scale inferred for a Color property on boolean-typed data must not treat the data in a way that requires unsupported boolean arithmetic on the raw values; boolean dtype data with two distinct levels ([True, False]) should map to usable color output rather than propagating a numpy boolean subtraction error.",
+        "subject": "seaborn._core.properties.Color.default_scale / Property.default_scale + scalar scale class selection",
+        "hunk_ids": [],
+        "cited_from": "properties.py Property.default_scale: \"var_type = variable_type(data, boolean_type=\"numeric\")\" combined with example color=[True, False] (dtype bool, which np.isin(vector, [0, 1, np.nan]).all() classifies as numeric) selecting Continuous(), whose ContinuousBase._setup normalization \"b = forward(vmax) - forward(vmin)\" fails for numpy bool."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a ContinuousBase scale is set up with norming enabled (prop.normed True) and with norm endpoints needing unit conversion (values from the data min/max when norm is None, or from the explicit norm), converting those endpoints via axis.convert_units yields Python floats, so the resulting normalization constants a=forward(vmin) and b=forward(vmax)-forward(vmin) are float-scalar numerics. This ensures the scale's normalize step maps each data value's forward-transformed coordinate to a correct finite normalized value (the vmin value mapping to 0 and vmax to 1) rather than failing or producing invalid/non-numeric result types (such as numpy datetime/timedelta values) when the endpoints are date/time or otherwise non-float unit-converted values.",
+        "subject": "ContinuousBase._setup normalization affine map (normed temporal/continuous scales, incl. legend/color PseudoAxis)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "req1",
+          "req2"
+        ],
+        "rationale": "S_vis concerns only boolean-dtype data raising a numpy boolean subtraction TypeError at the 'b = forward(vmax) - forward(vmin)' line. R1, by contrast, describes a distinct mechanism — that axis.convert_units yields Python floats for date/time or other non-float unit-converted norm endpoints, ensuring normalization maps vmin->0 / vmax->1 instead of producing invalid non-float numeric types. Nothing in S_vis mentions unit conversion, date/time data, or float-scalar conversion, so it does not pin down the behavior R1 commits to."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_interval_with_bools",
+      "test_source": "import numpy as np\nimport pandas as pd\n\nfrom seaborn._core.scales import Continuous\nfrom seaborn._core.properties import IntervalProperty\n\n\ndef test_interval_with_bools():\n    d = pd.Series([False, True, True, False, True], name=\"d\", dtype=bool)\n    s = Continuous()._setup(d, IntervalProperty())\n    out = s(d)\n    # The normed scale maps minimum data point to 0 and max to 1 (as floats).\n    np.testing.assert_array_equal(out, [0, 1, 1, 0, 1])",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: TypeError: numpy boolean subtract, the `-` operator, is not supported (raised at seaborn/_core/scales.py line 351, `b = forward(vmax) - forward(vmin)` in the normed normalization branch).",
+      "explanation": "R1 targets ContinuousBase._setup's normed normalization affine-map constants a=forward(vmin) and b=forward(vmax)-forward(vmin), which must be float-scalar. The gold diff adds `vmin, vmax = map(float, axis.convert_units((vmin, vmax)))`. I searched for an input whose convert_units does NOT yield floats under the buggy code. Date data (Intervals/Color with Temporal on real and PseudoAxis) resolved to float64 even pre-fix on this testbed's matplotlib, giving no contrast. Boolean data is the discriminator: with a normed IntervalProperty and norm=None, vmin/vmax = data.min()/max() are numpy bools; buggy's `axis.convert_units(...)` leaves them as bools (bool dtype is not a np.number subtype, and no converter is registered), so `b = forward(vmax) - forward(vmin)` raises TypeError (numpy bool subtraction not supported). Gold's `map(float, ...)` turns them into 0.0/1.0 and normalizes every data point to the correct finite 0/1 float values. This is a genuine unseen behavior (the visible test_scales.py, test_plot.py, etc. contain no Continuous interval-with-bool assertion — the failing-test clue `test_interval_with_bools` is absent from all visible content), and the run confirmed gold PASSED / buggy FAILED (TypeError at scales.py line 351), matching the exact edited line."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed line lies in ContinuousBase._setup within the `if prop.normed:` block, shared by Continuous and Temporal scales (via ContinuousBase)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The `axis` here may be a real matplotlib Axis or the internal PseudoAxis; both expose convert_units. The normalization path is the same for both."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The affected downstream pipeline normalizes data after forward-transform and before prop.get_mapping, i.e. affects scaled coordinates / legend tick locations for normed semantic scales."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated whether the real oracle already contains a test that serves as a Witness for R1 (ContinuousBase._setup normalizing affine map converting unit endpoints to Python floats when normed, for temporal/continuous scales including the legend/color PseudoAxis path). \n\nFailing-test clue: the only test listed as currently failing is tests/_core/test_scales.py::TestContinuous::test_interval_with_bools. However, that method does NOT exist in the file content read at that path (nor anywhere else in the oracle's file listing): the test_scales.py file returned is marked [VISIBLE] and contains TestContinuous interval tests (defaults/range/norm/range-norm-and-transform) plus TestTemporal interval tests, but no `test_interval_with_bools`. I read the file twice to be sure.\n\nI systematically checked every test file that could host R1's scale `_setup` normalization/legend/color behavior: tests/_core/test_scales.py, test_properties.py, test_plot.py (incl. TestLegend / normalization / datetime mapping), test_data.py, test_groupby.py, test_moves.py (incl. Norm move), test_rules.py, test_subplots.py, tests/_marks/test_base.py, plus tests/conftest.py. Every one of these is labeled [VISIBLE] except conftest.py, whose [HIDDEN] content is only autouse/closing fixtures and data fixtures (long_df etc.) — no `_setup`/normalization assertions.\n\nConsequently, while the visible suite does exercise Continuous/Temporal interval normalization with unit-converted datetime endpoints (test_scales.py TestTemporal::test_interval_*, TestContinuous::test_interval_*), none of that content is [HIDDEN], so per the Verso rule even behaviorally-similar assertions there cannot serve as a Witness for R1 (they were never hidden from a repair system). I found no [HIDDEN] oracle content that genuinely (re)constructs, let alone enforces, the specific continuous-scale unit-conversion-to-float behavior that R1 describes. Because no accessible hidden assertion matches R1 and passes gold/fails buggy, found=false is the correct result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ContinuousBase._setup normalization affine map (normed temporal/continuous scales, incl. legend/color PseudoAxis)): When a ContinuousBase scale is set up with norming enabled (prop.normed True) and with norm endpoints needing unit conversion (values from the data min/max when norm is None, or from the explicit norm), converting those endpoints via axis.convert_units yields Python floats, so the resulting normalization constants a=forward(vmin) and b=forward(vmax)-forward(vmin) are float-scalar numerics. This ensures the scale's normalize step maps each data value's forward-transformed coordinate to a correct finite normalized value (the vmin value mapping to 0 and vmax to 1) rather than failing or producing invalid/non-numeric result types (such as numpy datetime/timedelta values) when the endpoints are date/time or otherwise non-float unit-converted values. — not entailed by S_vis (S_vis concerns only boolean-dtype data raising a numpy boolean subtraction TypeError at the 'b = forward(vmax) - forward(vmin)' line. R1, by contrast, describes a distinct mechanism — that axis.convert_units yields Python floats for date/time or other non-float unit-converted norm endpoints, ensuring normalization maps vmin->0 / vmax->1 instead of producing invalid non-float numeric types. Nothing in S_vis mentions unit conversion, date/time data, or float-scalar conversion, so it does not pin down the behavior R1 commits to.); confirmed by a synthesized witness: R1 targets ContinuousBase._setup's normed normalization affine-map constants a=forward(vmin) and b=forward(vmax)-forward(vmin), which must be float-scalar. The gold diff adds `vmin, vmax = map(float, axis.convert_units((vmin, vmax)))`. I searched for an input whose convert_units does NOT yield floats under the buggy code. Date data (Intervals/Color with Temporal on real and PseudoAxis) resolved to float64 even pre-fix on this testbed's matplotlib, giving no contrast. Boolean data is the discriminator: with a normed IntervalProperty and norm=None, vmin/vmax = data.min()/max() are numpy bools; buggy's `axis.convert_units(...)` leaves them as bools (bool dtype is not a np.number subtype, and no converter is registered), so `b = forward(vmax) - forward(vmin)` raises TypeError (numpy bool subtraction not supported). Gold's `map(float, ...)` turns them into 0.0/1.0 and normalizes every data point to the correct finite 0/1 float values. This is a genuine unseen behavior (the visible test_scales.py, test_plot.py, etc. contain no Continuous interval-with-bool assertion — the failing-test clue `test_interval_with_bools` is absent from all visible content), and the run confirmed gold PASSED / buggy FAILED (TypeError at scales.py line 351), matching the exact edited line.",
+    "confidence": "Medium"
+  }
+}

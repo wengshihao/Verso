@@ -1,0 +1,153 @@
+{
+  "task_id": "pydata__xarray-3095",
+  "status": "ok",
+  "duration_seconds": 407.26474208396394,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "pydata__xarray-3095",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Dataset.copy(deep=True) must preserve the stored unicode dtype ('<U*') of dimension-index coordinates (IndexVariable) rather than casting that coordinate's dtype to object.",
+        "subject": "Dataset.copy(deep=True) preserving IndexVariable unicode dtype",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"ds.copy(deep=True) accidentally cast IndexVariable's with dtype='<U*' to object...\"; In[2] ds shows \"* x (x) <U3 'foo'\"; In[3] ds.copy() shows \"* x (x) <U3 'foo'\"; In[4] ds.copy(deep=True) shows (buggy) \"* x (x) object 'foo'\" while \"y (x) <U3 'bar'\" (a non-index coordinate Variable) stays <U3."
+      },
+      {
+        "id": "R2",
+        "statement": "DataArray.copy() (deep=True default) and DataArray.copy(deep=True)/(deep=False)... must preserve the stored unicode dtype ('<U*') of an IndexVariable dimension index coordinate rather than casting it to object.",
+        "subject": "DataArray.copy preserving IndexVariable unicode dtype",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"DataArray.copy (deep=True/False) accidentally cast IndexVariable's with dtype='<U*' to object.\"; In[6] ds.z.copy() shows (buggy) \"* x (x) object 'foo'\" while the underlying \"array(['baz'], dtype='<U3')\" and the non-index coordinate y stay <U3/U-preserved."
+      },
+      {
+        "id": "R3",
+        "statement": "Python's copy.copy(ds) and copy.deepcopy(ds) (equivalently used on the affected Dataset/DataArray, routed through the object's copy methods) must preserve the stored unicode dtype ('<U*') of an IndexVariable dimension-index coordinate rather than casting it to object.",
+        "subject": "copy.copy / copy.deepcopy preserving IndexVariable unicode dtype",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"Same applies to copy.copy() and copy.deepcopy()... Dataset.copy(deep=True) and DataArray.copy (deep=True/False) accidentally cast IndexVariable's with dtype='<U*' to object.\"; regression introduced in xarray >= 0.12.2, xarray 0.12.1 unaffected."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "Deep-copying an object holding an IndexVariable whose data are numpy unicode strings (via IndexVariable.copy(deep=True), or Dataset/DataArray deep-copies and copy.deepcopy that route through Variable.copy/IndexVariable.copy) yields an index coordinate whose dtype equals the source's unicode dtype (e.g. <U3) rather than being demoted to object dtype.",
+        "subject": "IndexVariable.copy / Variable.copy deep-copy code path (Dataset, DataArray deep copy, copy.deepcopy)",
+        "hunk_ids": [
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "PandasIndexAdapter exposes a new copy(deep=True) method that returns a new PandasIndexAdapter; with deep=True it wraps a deep copy of the underlying pandas index, with deep=False it shares the same underlying index, and in both cases the adapter's stored dtype is preserved on the returned adapter.",
+        "subject": "PandasIndexAdapter.copy",
+        "hunk_ids": [
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-3",
+        "statement": "When PandasIndexAdapter is constructed with an explicit (non-None) dtype, its internal stored dtype is the numpy dtype obtained from np.dtype(dtype), so the .dtype property always normalizes a supplied dtype-like value (including string dtypes) to a np.dtype rather than retaining it verbatim.",
+        "subject": "PandasIndexAdapter.__init__ / .dtype",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1-R3 all pin down that deep-copies of objects holding an IndexVariable must preserve the source's unicode dtype ('<U*, e.g. <U3) rather than demoting it to object — exactly the behavior S_IMPL-1 describes. The cited issue confirms the desired <U3 preservation on the affected copy paths."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the S_vis requirements mention PandasIndexAdapter, a copy() method on it, or the deep=False sharing / deep=True-wraps-deep-copy semantics. These are internal implementation details invisible in the issue report, so S_vis does not pin down this behavior."
+      },
+      {
+        "requirement_id": "S_IMPL-3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "No S_vis entry describes PandasIndexAdapter.__init__/dtype normalizing a supplied dtype-like value to np.dtype. This low-level constructor detail is not present in the visible issue report, so it is not covered."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_pandas_index_adapter_copy_preserves_unicode_dtype",
+      "test_source": "import numpy as np\nimport pandas as pd\nfrom xarray.core import indexing\n\n\ndef test_pandas_index_adapter_copy_preserves_unicode_dtype():\n    expected = np.dtype('U3')\n    adapter = indexing.PandasIndexAdapter(\n        np.array(['foo', 'bar'], dtype=expected))\n    assert adapter.dtype == expected\n    # underlying pandas index exposes object dtype (unicode migrated)\n    assert adapter.dtype != adapter.array.dtype\n\n    copied = adapter.copy()\n    assert copied is not adapter\n    assert copied.dtype == expected\n    assert not (copied.array is adapter.array)\n\n    shared = adapter.copy(deep=False)\n    assert shared is not adapter\n    assert shared.dtype == expected\n    assert shared.array is adapter.array",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - AttributeError: 'PandasIndexAdapter' object has no attribute 'copy'",
+      "explanation": "Target S_IMPL-2 requires PandasIndexAdapter to gain a copy(deep=True) method returning a NEW PandasIndexAdapter whose stored numpy dtype is preserved (in particular a unicode <U* dtype, which the underlying object-dtype pandas index does not carry). The gold fix adds `PandasIndexAdapter.copy(deep)` that (a) deep-copies the underlying pandas index when deep=True, (b) shares the underlying index for deep=False, and (c) reconstructs via `PandasIndexAdapter(array, self._dtype)` so the tracked dtype (<U3) is forwarded rather than recomputed to object.\n\nMy witness constructs a PandasIndexAdapter from an explicit numpy '<U3' array (so adapter.dtype==U3 while adapter.array.dtype==object, precisely the mismatch the patch addresses) then asserts: copy() returns a new adapter (is not), shares no underlying index (deep), preserves <U3 dtype (not recomputed to object); copy(deep=False) returns a new adapter that shares the same underlying index while still preserving <U3 dtype. These four assertions mirror the four clauses of the requirement.\n\nI ran the same source against gold and buggy. Gold: PASSED (the new copy method behaves exactly as the requirement states). Buggy: FAILED with AttributeError: 'PandasIndexAdapter' object has no attribute 'copy' — confirming the pre-fix class exposes no such dtype-preserving copy. I inspected the co-located copy/dtype tests in the visible oracle (test_indexing.py, test_variable.py float/multiindex copy tests, test_dataset/test_dataarray copy tests that sidestep string index dtype via safe_cast_to_index) and none assert this adapter-level dtype-preserving copy behavior, so this is not a reinvention of an already-visible oracle assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The regression manifests specifically on IndexVariable objects (dimension-index coordinates, e.g. ``coords={'x': ['foo']}`` rendered with a ``* x (x) <U3``); regular (non-index) coordinate/data Variables that hold numpy unicode arrays (e.g. ``y='('x',['bar'])`` and datavar ``z``) keep their ``<U3`` dtype, so the cast-to-object is confined to the index coordinate."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Since copies of all of Dataset/DataArray route back to ``Variable.copy``/``IndexVariable.copy`` (``xarray/core/variable.py``), and ``IndexVariable.copy`` stores Index data via ``PandasIndexAdapter`` (``xarray/core/indexing.py``), the dtype loss stems from how the stored unicode dtype is tracked by the pandas.Index / PandasIndexAdapter pair during copy; ``safe_cast_to_index`` (``xarray/core/utils.py``) converts a numpy unicode ``<U*`` array to a pandas.Index whose own ``dtype`` is object while xarray separately tracks the original ``<U*`` dtype."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing copy tests acknowledge string-dtype IndexVariables are always re-copied: comment in xarray/tests/test_dataset.py test_copy: \"Note: IndexVariable objects with string dtype are always copied because of xarray.core.util.safe_cast_to_index\", which is why that test only asserts source-sharing for data_vars; test_copy_index / test_copy in test_variable.py assert multi-index structure but not unicode-dtype preservation."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Dataset.copy has default deep=False; DataArray.copy has default deep=True; both __copy__/__deepcopy__ (copy.copy/copy.deepcopy) delegate to these copy methods."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source location: xarray/core/indexing.py PandasIndexAdapter.__init__ recomputes self._dtype from the wrapped index's dtype, so a pd.Index of object dtype over unicode strings yields dtype=object."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Most of the diff is static-typing-only: H0 adds from-imports (Any, Tuple, Union, DTypeLike); H1/H3 and the annotation portions of H2/H4 add type annotations and return-type hints (dtype as np.dtype, __getitem__ returning a Union[...], shuffle/copy/transpose/__repr__ return annotations) to PandasIndexAdapter and its methods. These carry no runtime behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Root cause of the regression being fixed: pandas (via utils.safe_cast_to_index) wraps numpy unicode arrays into an object-dtype pd.Index while xarray independently tracks the original <U* dtype in PandasIndexAdapter._dtype. The old buggy IndexVariable.copy(deep=True) rebuilt PandasIndexAdapter(self._data.array.copy(deep=True)) without forwarding the tracked dtype, letting the recomputed dtype (object) leak out; the fix delegates to a new dtype-preserving PandasIndexAdapter.copy."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "PandasIndexAdapter is a duck-typed internal wrapper (xarray.core.indexing), not part of the stable public API; its dtype preservation is most visible through the IndexVariable/Dataset/DataArray copy interfaces of S_IMPL-1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2's dtype normalization is behaviorally inert for the copy path (self._dtype is already a np.dtype when forwarded by the new copy method); it only changes behavior for direct construction with a non-np.dtype (e.g. string) dtype argument."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-2]: S_IMPL-2 concerns PandasIndexAdapter's new dtype-preserving copy(deep=) method, whose externally visible effect is that `IndexVariable.copy(deep=True)` preserves the stored unicode dtype (e.g. `<U3`) rather than recomputing it as object, plus deep/shallow sharing of that index.\n\nTo find a witness I located all potentially relevant copy/dtype tests in the real oracle and read them: xarray/tests/test_variable.py (where the reported failing test TestIndexVariable::test_copy lives, plus VariableSubclassobjects.test_copy/test_copy_index), xarray/tests/test_indexing.py (PandasIndexAdapter/internal wrapper tests), xarray/tests/test_dataset.py and test_dataarray.py (higher-level copy tests incl. test_copy_coords which is xfail and uses only int coords), xarray/tests/test_utils.py (safe_cast_to_index), and several others (test_dtypes, test_conventions, test_concat, xarray/testing.py, properties/test_encode_decode.py).\n\nEvery one of these files is labeled [VISIBLE]. In particular, the test_variable.py copy tests only exercise FLOAT data (`0.5*np.arange(10)` in the parametrized test_copy over deep=[True,False]) and int/multiindex (test_copy_index); none assert dtype preservation of a string-dtype index coordinate through copy. The dataset/dataarray copy tests explicitly sidestep dtype preservation for string index objects (there is an in-repo comment that string-dtype IndexVariables are always copied because of safe_cast_to_index), and the DataArray/Dataset test_copy_coords tests (xfail) use int coords only. So no accessible oracle assertion actually enforces the dtype-preserving behavior that the patch introduces.\n\nBecause a Witness must rest on [HIDDEN] oracle content, and no [HIDDEN] test in the oracle asserts the dtype-preserving str-index copy behavior of S_IMPL-2 (all the copy/dtype tests I could find are [VISIBLE] and do not cover this case), there is no qualifying witness. This is the expected outcome rather than a missed match; I checked the full body of copy/index/dtype tests the oracle contains."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-2] (PandasIndexAdapter.copy): PandasIndexAdapter exposes a new copy(deep=True) method that returns a new PandasIndexAdapter; with deep=True it wraps a deep copy of the underlying pandas index, with deep=False it shares the same underlying index, and in both cases the adapter's stored dtype is preserved on the returned adapter. — not entailed by S_vis (None of the S_vis requirements mention PandasIndexAdapter, a copy() method on it, or the deep=False sharing / deep=True-wraps-deep-copy semantics. These are internal implementation details invisible in the issue report, so S_vis does not pin down this behavior.); confirmed by a synthesized witness: Target S_IMPL-2 requires PandasIndexAdapter to gain a copy(deep=True) method returning a NEW PandasIndexAdapter whose stored numpy dtype is preserved (in particular a unicode <U* dtype, which the underlying object-dtype pandas index does not carry). The gold fix adds `PandasIndexAdapter.copy(deep)` that (a) deep-copies the underlying pandas index when deep=True, (b) shares the underlying index for deep=False, and (c) reconstructs via `PandasIndexAdapter(array, self._dtype)` so the tracked dtype (<U3) is forwarded rather than recomputed to object.\n\nMy witness constructs a PandasIndexAdapter from an explicit numpy '<U3' array (so adapter.dtype==U3 while adapter.array.dtype==object, precisely the mismatch the patch addresses) then asserts: copy() returns a new adapter (is not), shares no underlying index (deep), preserves <U3 dtype (not recomputed to object); copy(deep=False) returns a new adapter that shares the same underlying index while still preserving <U3 dtype. These four assertions mirror the four clauses of the requirement.\n\nI ran the same source against gold and buggy. Gold: PASSED (the new copy method behaves exactly as the requirement states). Buggy: FAILED with AttributeError: 'PandasIndexAdapter' object has no attribute 'copy' — confirming the pre-fix class exposes no such dtype-preserving copy. I inspected the co-located copy/dtype tests in the visible oracle (test_indexing.py, test_variable.py float/multiindex copy tests, test_dataset/test_dataarray copy tests that sidestep string index dtype via safe_cast_to_index) and none assert this adapter-level dtype-preserving copy behavior, so this is not a reinvention of an already-visible oracle assertion.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "task_id": "django__django-15334",
+  "status": "ok",
+  "duration_seconds": 807.62700149999,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15334",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A QuerySet that carries prefetch_related() lookups must honor them when results are consumed through iterator(): each yielded model object must have its prefetched related objects populated (so that accessing those related objects does not trigger additional queries per object), rather than the prefetch lookups being silently ignored.",
+        "subject": "QuerySet.iterator",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I was surprised when I found out that prefetch_related calls are ignored when using Queryset.iterator\". Docs (ref/models/querysets.txt, prefetch_related section) currently state: \"Note that if you use ``iterator()`` to run the query, ``prefetch_related()`` calls will be ignored since these two optimizations do not make sense together.\" and (iterator() section): \"Also, use of ``iterator()`` causes previous ``prefetch_related()`` calls to be ignored since these two optimizations do not make sense together.\" — the issue asks to remove this ignoring."
+      },
+      {
+        "id": "R2",
+        "statement": "When iterator() is used with prefetch_related() lookups, the prefetch must be performed on each chunk of results as they are streamed (iterator chunking, default chunk_size=2000), so that the primary query result set is not all loaded into memory up-front merely to support prefetching.",
+        "subject": "QuerySet.iterator",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The iterator allows chunking (by default 2000) and it would be very helpful to prefetch related for each chunk.\" Code (django/db/models/query.py, iterator()): \"def iterator(self, chunk_size=2000): ... use_chunked_fetch = not connections[self.db].settings_dict.get('DISABLE_SERVER_SIDE_CURSORS') return self._iterator(use_chunked_fetch, chunk_size)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "QuerySet.iterator() called on a QuerySet that currently has prefetch_related() lookups set, with chunk_size omitted (None, the new default), emits a DeprecationWarning whose message starts 'Using QuerySet.iterator() after prefetch_related() without specifying chunk_size is deprecated.', and does not raise an exception.",
+        "subject": "QuerySet.iterator()",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When iterating a QuerySet that has prefetch_related() lookups set, calling QuerySet.iterator(chunk_size=N) with an explicit positive N causes the yielded model instances to have their prefetch_related lookups applied (their prefetched related-object caches populated via prefetch_related_objects) in batches of size N as iteration proceeds, instead of the prefetch lookups being ignored during iterator-based retrieval.",
+        "subject": "QuerySet.iterator()",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "QuerySet.iterator() with an explicitly provided chunk_size that is <= 0 raises ValueError('Chunk size must be strictly positive.'); passing no chunk_size (None) does not trigger this ValueError (so iteration can proceed, with the default chunking and, when prefetch lookups are present, the deprecation warning).",
+        "subject": "QuerySet.iterator()",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes honoring prefetch_related with iterator and per-chunk prefetching (default chunk_size 2000), but never mentions a DeprecationWarning, a chunk_size=None default, or any warning message text; R2 even implies a numeric default (2000), contradicting the None-default premise."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 does state prefetch must be performed on each streamed chunk so results aren't all loaded up-front, which closely matches prefetch applied per iterator chunk; however, S_vis only pinpoints the default chunking (2000) and general outcome, not the specific parameterized behavior where an explicitly user-supplied positive chunk_size=N drives prefetch application in N-batches."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis says nothing about chunk_size validation, negative/zero chunk sizes, or the specific ValueError('Chunk size must be strictly positive.') / None not raising; no visible evidence leads to this interface-level error handling."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_prefetch_iterator_deprecation",
+      "test_source": "import warnings\nimport django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DEBUG=True,\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=['django.contrib.contenttypes'],\n        DEFAULT_AUTO_FIELD='django.db.models.AutoField',\n    )\ndjango.setup()\n\nfrom django.db import models\n\n\nclass Book(models.Model):\n    title = models.CharField(max_length=20)\n\n    class Meta:\n        app_label = 'verso_app'\n\n\nclass TestWitness:\n    def test_prefetch_iterator_deprecation(self):\n        from django.utils.deprecation import RemovedInDjango50Warning\n\n        qs = Book.objects.all().prefetch_related('title')\n        with warnings.catch_warnings(record=True) as caught:\n            warnings.simplefilter('always')\n            qs.iterator()\n\n        assert any(\n            issubclass(w.category, RemovedInDjango50Warning)\n            and str(w.message).startswith(\n                'Using QuerySet.iterator() after prefetch_related() '\n                'without specifying chunk_size is deprecated.'\n            )\n            for w in caught\n        ), caught\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "R1 requires that calling QuerySet.iterator() without chunk_size (which is now the None default) on a queryset carrying prefetch_related() lookups emits a RemovedInDjango50Warning whose message starts with \"Using QuerySet.iterator() after prefetch_related() without specifying chunk_size is deprecated.\" and raises no exception. My witness constructs a queryset that has prefetch_related() lookups set (Book.objects.all().prefetch_related('title')), calls .iterator() with no chunk_size argument, and asserts that exactly this DeprecationWarning was emitted. On the gold implementation, iterator(chunk_size=None) with a non-empty _prefetch_related_lookups emits the warning (PASSED). On the buggy implementation, iterator() still has the old signature with default chunk_size=2000 and contains no None/deprecation branch at all, so no such warning is ever emitted and the assertion fails (FAILED). This tests the real discriminating behavior added by the fix. It is not pinned down by any visible test: the visible R1/R2 assertions were checked and found insufficient, the oracle's relevant visible test files (tests/queries/test_iterator.py, tests/prefetch_related/*, etc.) contain no assertion of this message, and a repo-wide scan of visible files found no code containing the warning text 'without specifying chunk_size'. The witness therefore rests on genuinely hidden behavior, not on anything already asserted by a visible oracle."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "iterator() bypasses QuerySet._fetch_all(): it yields from self._iterable_class directly (query.py). _fetch_all() is the only place that calls _prefetch_related_objects()/applies _prefetch_related_lookups after the primary query, which is why prefetch lookups are currently ignored under iterator()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ModelIterable.__iter__ and the other iterables carry no prefetch logic; _prefetch_done / _prefetch_related_objects / prefetch_related_objects() (module-level in django/db/models/query.py) are the machinery used to populate prefetched caches on a list of instances."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for prefetch/query behavior live under tests/prefetch_related/ (tests.py, test_prefetch_related_objects.py, models.py) and tests/queries/test_iterator.py; the docs text that iterator ignores prefetch is in docs/ref/models/querysets.txt (both the iterator() section and the note in the prefetch_related() section)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The behavioral contract documented here lives in django/db/models/query.py, in QuerySet.iterator() and its helper QuerySet._iterator()."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds the imports islice (H0) and RemovedInDjango50Warning (H1); both are infrastructure for the iterator/_iterator changes in H2."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The visible/legacy contract that iterator() ignores prefetch lookups applies only when chunk_size is omitted: in the new _iterator, the chunk_size-is-None branch yields directly without calling prefetch_related_objects (and has a code comment indicating that after the deprecation cycle it will instead raise ValueError)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "prefetch_related_objects() is a module-level function in the same file reused by QuerySet._prefetch_related_objects(), so this path applies the same prefetch machinery used by fully-evaluated querysets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H2's iterable constructor passes 'chunk_size or 2000', so the internal default chunking size of 2000 is preserved when chunk_size is None; I did not promote this internal constant to a requirement because it is only observable through the interplay described in R1/R3."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle (the full Django test suite listed) for an assertion matching R1 — that calling QuerySet.iterator() without chunk_size on a queryset carrying prefetch_related() lookups emits a DeprecationWarning whose message starts with \"Using QuerySet.iterator() after prefetch_related() without specifying chunk_size is deprecated.\" and raises no exception. I read every plausibly-relevant file the oracle contains: tests/queries/test_iterator.py (which covers only chunk-size plumbing — test_iterator_invalid_chunk_size, test_default_iterator_chunk_size, test_iterator_chunk_size, test_no_chunked_reads — and contains no prefetch+deprecation assertion), tests/queries/tests.py, tests/prefetch_related/tests.py, tests/prefetch_related/test_prefetch_related_objects.py, tests/prefetch_related/test_uuid.py, tests/deprecation/tests.py, tests/queries/test_qs_combinators.py, and tests/known_related_objects/tests.py. None of these asserts the described DeprecationWarning-message behavior, and every one of them is content-labeled [VISIBLE]. Crucially, the file that in upstream Django carries the corresponding test for this deprecation (tests/queries/test_iteration.py, containing the QuerySetIterationTests with the prefetch+iterator warning checks) is absent from the oracle's listed test files entirely, and no [HIDDEN] test file anywhere I could locate covers this behavior. Since a Witness may only rest on [HIDDEN] content and I found no [HIDDEN] assertion exercising R1's specific behavior, no qualifying witness exists — I submit found=false. (No run_test execution was performed because there is no [HIDDEN]-sourced candidate to confirm.)"
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (QuerySet.iterator()): QuerySet.iterator() called on a QuerySet that currently has prefetch_related() lookups set, with chunk_size omitted (None, the new default), emits a DeprecationWarning whose message starts 'Using QuerySet.iterator() after prefetch_related() without specifying chunk_size is deprecated.', and does not raise an exception. — not entailed by S_vis (S_vis describes honoring prefetch_related with iterator and per-chunk prefetching (default chunk_size 2000), but never mentions a DeprecationWarning, a chunk_size=None default, or any warning message text; R2 even implies a numeric default (2000), contradicting the None-default premise.); confirmed by a synthesized witness: R1 requires that calling QuerySet.iterator() without chunk_size (which is now the None default) on a queryset carrying prefetch_related() lookups emits a RemovedInDjango50Warning whose message starts with \"Using QuerySet.iterator() after prefetch_related() without specifying chunk_size is deprecated.\" and raises no exception. My witness constructs a queryset that has prefetch_related() lookups set (Book.objects.all().prefetch_related('title')), calls .iterator() with no chunk_size argument, and asserts that exactly this DeprecationWarning was emitted. On the gold implementation, iterator(chunk_size=None) with a non-empty _prefetch_related_lookups emits the warning (PASSED). On the buggy implementation, iterator() still has the old signature with default chunk_size=2000 and contains no None/deprecation branch at all, so no such warning is ever emitted and the assertion fails (FAILED). This tests the real discriminating behavior added by the fix. It is not pinned down by any visible test: the visible R1/R2 assertions were checked and found insufficient, the oracle's relevant visible test files (tests/queries/test_iterator.py, tests/prefetch_related/*, etc.) contain no assertion of this message, and a repo-wide scan of visible files found no code containing the warning text 'without specifying chunk_size'. The witness therefore rests on genuinely hidden behavior, not on anything already asserted by a visible oracle.",
+    "confidence": "Medium"
+  }
+}

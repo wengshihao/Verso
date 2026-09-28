@@ -1,0 +1,149 @@
+{
+  "task_id": "django__django-11260",
+  "status": "ok",
+  "duration_seconds": 396.1019797499757,
+  "llm_calls": 33,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11260",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When inspectdb introspects a column that is a relation (foreign key) AND is itself the target of a single-column UNIQUE constraint (i.e. a one-to-one relation rather than an ordinary many-to-one), the generated model field declaration must use models.OneToOneField(<referenced model>) rather than models.ForeignKey(<referenced model>, ..., unique=True), so that the generated model does not raise the fields.W342 warning.",
+        "subject": "django/core/management/commands/inspectdb.py Command.handle_inspection (ForeignKey/unique column rendering)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"inspectdb generates unique ForeignKey instead of OneToOneField that caused raising fields.W342 warnings.\"  W342 text in django/db/models/fields/related.py: ForeignKey._check_unique: \"Setting unique=True on a ForeignKey has the same effect as using a OneToOneField.\"  The introspected case is modeled by tests/inspectdb/models.py: \"people_unique = models.ForeignKey(People, models.CASCADE, unique=True)\" in class PeopleMoreData."
+      },
+      {
+        "id": "R2",
+        "statement": "For a relation column that is the target of a single-column unique constraint (the one-to-one case), no explicit unique=True parameter is emitted on the generated field (because a OneToOneField always implies uniqueness), and instead the field is emitted as OneToOneField, while still supplying the DO_NOTHING on_delete argument exactly as ordinary introspected ForeignKey fields do.",
+        "subject": "django/core/management/commands/inspectdb.py Command.handle_inspection OneToOneField output",
+        "hunk_ids": [],
+        "cited_from": "Current ForeignKey emission path in django/core/management/commands/inspectdb.py uses 'if field_type.startswith(\"ForeignKey(\"): field_desc += \", models.DO_NOTHING'\" and extra_params sets 'elif column_name in unique_columns: extra_params[\"unique\"] = True'; OneToOneField in django/db/models/fields/related.py requires a second positional 'on_delete' argument with no default: 'def __init__(self, to, on_delete, to_field=None, **kwargs)'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "REQ1",
+        "statement": "When a relation (Foreign/OneToOne-reference) column is itself the single column covered by a unique constraint on its table, inspectdb generates the field definition as a OneToOneField (e.g. `models.OneToOneField(InspectdbPeople, models.DO_NOTHING)`, quoting the target if the referenced model is declared later) and does not emit a `unique=True` parameter on that line.",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ2",
+        "statement": "When a relation column is the table's primary key (a PK-FK column), inspectdb generates the field definition as a OneToOneField rather than a ForeignKey, preserving the explicit `primary_key=True` parameter and still including `models.DO_NOTHING` (e.g. `models.OneToOneField(InspectdbPeople, models.DO_NOTHING, primary_key=True)`).",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "REQ3",
+        "statement": "When a relation column is neither the table's primary key nor covered by a single-column unique constraint, inspectdb continues to generate the field as a plain ForeignKey with `models.DO_NOTHING` as the second argument (e.g. `models.ForeignKey(InspectdbPeople, models.DO_NOTHING)`).",
+        "subject": "django.core.management.commands.inspectdb.Command.handle_inspection",
+        "hunk_ids": [
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "REQ1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 pins down that a relation column that is the target of a single-column UNIQUE constraint must be generated as models.OneToOneField instead of ForeignKey with unique=True, and R2 explicitly states no unique=True parameter is emitted and the field is emitted as OneToOneField while still supplying models.DO_NOTHING."
+      },
+      {
+        "requirement_id": "REQ2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Neither S_vis requirement addresses the PK-FK scenario; R1/R2 concern only the single-column-UNIQUE-constraint (one-to-one) case, and nothing in them or their citations pins down generating OneToOneField with primary_key=True for a PK-FK column."
+      },
+      {
+        "requirement_id": "REQ3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only discusses the unique-constraint one-to-one case; the Neither-PK-nor-unique plain ForeignKey behavior is never explicitly asserted, though R2's cited evidence (ForeignKey emission always appends models.DO_NOTHING, with unique=True added only for unique columns) hints that the plain case continues unchanged without pinning it down definitively."
+      }
+    ],
+    "target_requirement_id": "REQ2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_pkfk_is_onetoone",
+      "test_source": "import sys\nimport re\nimport django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}},\n        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n        SECRET_KEY='x',\n    )\ndjango.setup()\n\nfrom django.db import connection\n\nwith connection.cursor() as cursor:\n    cursor.execute(\"CREATE TABLE ppl (id INTEGER PRIMARY KEY, name VARCHAR(20))\")\n    cursor.execute(\n        \"CREATE TABLE child (ppl_id INTEGER PRIMARY KEY \"\n        \"REFERENCES ppl (id) NOT NULL, extra VARCHAR(10))\"\n    )\n\n\ndef test_pkfk_is_onetoone():\n    \"\"\"REQ2: a relation column that is the table's primary key must be emitted\n    as models.OneToOneField(..., models.DO_NOTHING, primary_key=True).\"\"\"\n    from io import StringIO\n    from django.core.management import call_command\n\n    out = StringIO()\n    call_command('inspectdb', 'child', stdout=out)\n    output = out.getvalue()\n    expected = re.compile(r'ppl = models\\.OneToOneField\\(\\'Ppl\\', models\\.DO_NOTHING, primary_key=True\\)\\n')\n    assert expected.search(output), \"PK-FK column not emitted as OneToOneField:\\n\" + output\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: PK-FK column not emitted as OneToOneField; inspected output contained 'ppl = models.ForeignKey(... primary_key=True)')",
+      "explanation": "REQ2 requires that when a relation column is a table's primary key (a PK-FK column), inspectdb (Command.handle_inspection, django/core/management/commands/inspectdb.py) emits models.OneToOneField(..., models.DO_NOTHING, primary_key=True) rather than models.ForeignKey(...). The gold code (H1) selects rel_type='OneToOneField' for relation columns whose extra_params carry primary_key (or unique) and (H2) still appends ', models.DO_NOTHING' for OneToOneField; the buggy code always selects ForeignKey and only appends DO_NOTHING for field_type.startswith('ForeignKey(').\n\nI wrote a standalone test that configures a minimal in-memory sqlite Django environment, creates a `ppl` table and a `child` table whose `ppl_id` column is BOTH a foreign key referencing ppl(id) AND the child table's PRIMARY KEY (integer primary key / NOT NULL), then runs `call_command('inspectdb', 'child')` and asserts the emitted line is exactly `ppl = models.OneToOneField('Ppl', models.DO_NOTHING, primary_key=True)`. This is a genuinely distinct catalog scenario (bespoke tables) that no visible test constructs: the visible inspectdb test `test_attribute_name_not_python_keyword` asserts the pre-fix contrary string `people_pk = models.ForeignKey(... primary_key=True)` (and other related output), so the OneToOneField behavior this REQ encodes is not pinned anywhere visible — it is a real executable requirement.\n\nExecution: the exact source PASSED against the gold program (which emits `ppl = models.OneToOneField('Ppl', models.DO_NOTHING, primary_key=True)`) and FAILED against the buggy program (which instead emits `ppl = models.ForeignKey('Ppl', models.DO_NOTHING, primary_key=True)`), i.e. a genuine witness."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug location: django/core/management/commands/inspectdb.py Command.handle_inspection. The code path: relation columns are detected via connection.introspection.get_relations; single-column unique constraints come from connection.introspection.get_constraints (constraints where unique and len(columns)==1, excluding None). If column == primary_key_column it becomes primary_key=True, elif column in unique_columns it becomes unique=True, producing the buggy 'ForeignKey(..., unique=True)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "fields.W342 originates in django/db/models/fields/related.py ForeignKey._check_unique (message 'Setting unique=True on a ForeignKey has the same effect as using a OneToOneField.') — the exact symptom named in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "OneToOneField (subclass of ForeignKey) in this tree requires a required positional on_delete second argument, so an inspectdb OneToOneField line must still carry models.DO_NOTHING like regular FK output."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/inspectdb/models.py models the one-to-one-by-unique-FK case with PeopleMoreData.people_unique = models.ForeignKey(People, models.CASCADE, unique=True); note also PeopleData.people_pk = ForeignKey(primary_key=True), which is the distinct PK-FK case not implicated here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/inspectdb/tests.py test_attribute_name_not_python_keyword currently asserts the pre-fix output 'people_unique = models.ForeignKey(InspectdbPeople, models.DO_NOTHING, unique=True)' and 'people_pk = models.ForeignKey(InspectdbPeople, models.DO_NOTHING, primary_key=True)'; the people_unique assertion is the one that encodes the buggy feature being reported."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Introspection on sqlite (django/db/backends/sqlite3/introspection.py) reports the people_unique style column under a single-column UNIQUE constraint via get_constraints, so such a column lands both in relations and in unique_columns."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The H0 hunk only edits the auto-generated header comment (manual-cleanup instructions) to also mention OneToOneField alongside ForeignKey; captured as cosmetic output, not a separate behavioral commitment."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "OneToOneField here requires a positional on_delete second argument, so the DO_NOTHING argument (extended in H2 to also match OneToOneField) is still appended to every emitted OneToOneField."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The repo tests/inspectdb/tests.py at both this gold and buggy snapshot still asserts the pre-fix outputs `people_unique = models.ForeignKey(InspectdbPeople, models.DO_NOTHING, unique=True)` and `people_pk = models.ForeignKey(InspectdbPeople, models.DO_NOTHING, primary_key=True)` — i.e. the testing infra shown is not updated alongside this code patch and would contradict the gold code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because the 'Add primary_key and unique' block uses if/elif, a column is flagged either primary_key or unique, not both, so the two OneToOneField triggers (unique vs primary_key) are mutually exclusive in practice."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [REQ2]: I investigated whether the benchmark's real oracle contains a test that genuinely enforces REQ2: that a relation column which is the table's primary key (PK-FK, modelled by tests/inspectdb/models.py `PeopleData.people_pk = models.ForeignKey(People, models.CASCADE, primary_key=True)`) is emitted by `inspectdb` as `models.OneToOneField(InspectdbPeople, models.DO_NOTHING, primary_key=True)`.\n\nFindings:\n- The only inspectdb regression tests live in tests/inspectdb/tests.py. That file is [VISIBLE]. Its method `test_attribute_name_not_python_keyword` is the sole test that touches the PK-FK `people_pk` column output — but it asserts the PRE-FIX, contrary string `people_pk = models.ForeignKey(InspectdbPeople, models.DO_NOTHING, primary_key=True)` (and likewise asserts `people_unique = models.ForeignKey(... unique=True)`, the other relation case). Whatever its gold/buggy outcome, it is (a) byte-for-byte material the repair system already saw ([VISIBLE]), and (b) an assertion of the ForeignKey behavior, i.e. the exact opposite of REQ2's OneToOneField commitment — it cannot serve as a witness for REQ2.\n- No test anywhere encodes that the people_pk/PK-FK column should become `models.OneToOneField(... primary_key=True, ... DO_NOTHING)`. tests/inspectdb/models.py, the only other file relevant to this app, is [HIDDEN] but contains only model definitions (it is data/schema for the app, not a test method with an assertion about output).\n- No other test files found (tests/gis_tests/inspectapp/tests.py and tests/introspection/tests.py, among the applications examined) assert anything about inspectdb emitting OneToOneField for a PK-FK/unique relation column; both are likewise [VISIBLE].\n- Consequently there is no [HIDDEN] oracle assertion in this suite that is satisfied only by the REQ2 OneToOneField PK-FK output.\n\nPer the auditor rules, a witness must rest on a [HIDDEN] assertion that genuinely tests r; the repository's only relevant assertion is the [VISIBLE], pre-fix `ForeignKey` expectation, which contradicts r rather than demonstrating it. I therefore submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [REQ2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[REQ2] (django.core.management.commands.inspectdb.Command.handle_inspection): When a relation column is the table's primary key (a PK-FK column), inspectdb generates the field definition as a OneToOneField rather than a ForeignKey, preserving the explicit `primary_key=True` parameter and still including `models.DO_NOTHING` (e.g. `models.OneToOneField(InspectdbPeople, models.DO_NOTHING, primary_key=True)`). — not entailed by S_vis (Neither S_vis requirement addresses the PK-FK scenario; R1/R2 concern only the single-column-UNIQUE-constraint (one-to-one) case, and nothing in them or their citations pins down generating OneToOneField with primary_key=True for a PK-FK column.); confirmed by a synthesized witness: REQ2 requires that when a relation column is a table's primary key (a PK-FK column), inspectdb (Command.handle_inspection, django/core/management/commands/inspectdb.py) emits models.OneToOneField(..., models.DO_NOTHING, primary_key=True) rather than models.ForeignKey(...). The gold code (H1) selects rel_type='OneToOneField' for relation columns whose extra_params carry primary_key (or unique) and (H2) still appends ', models.DO_NOTHING' for OneToOneField; the buggy code always selects ForeignKey and only appends DO_NOTHING for field_type.startswith('ForeignKey(').\n\nI wrote a standalone test that configures a minimal in-memory sqlite Django environment, creates a `ppl` table and a `child` table whose `ppl_id` column is BOTH a foreign key referencing ppl(id) AND the child table's PRIMARY KEY (integer primary key / NOT NULL), then runs `call_command('inspectdb', 'child')` and asserts the emitted line is exactly `ppl = models.OneToOneField('Ppl', models.DO_NOTHING, primary_key=True)`. This is a genuinely distinct catalog scenario (bespoke tables) that no visible test constructs: the visible inspectdb test `test_attribute_name_not_python_keyword` asserts the pre-fix contrary string `people_pk = models.ForeignKey(... primary_key=True)` (and other related output), so the OneToOneField behavior this REQ encodes is not pinned anywhere visible — it is a real executable requirement.\n\nExecution: the exact source PASSED against the gold program (which emits `ppl = models.OneToOneField('Ppl', models.DO_NOTHING, primary_key=True)`) and FAILED against the buggy program (which instead emits `ppl = models.ForeignKey('Ppl', models.DO_NOTHING, primary_key=True)`), i.e. a genuine witness.",
+    "confidence": "Medium"
+  }
+}

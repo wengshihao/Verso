@@ -1,0 +1,116 @@
+{
+  "task_id": "django__django-16082",
+  "status": "ok",
+  "duration_seconds": 366.8446164999623,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16082",
+    "s_vis": [
+      {
+        "id": "SVIS-1",
+        "statement": "A MOD-combined numeric expression whose operands have different output field types must resolve its output_field to the same 'widening' numeric field type as the other mathematical operators (ADD/SUB/MUL/DIV) already do for mixed operand types — in particular an (IntegerField % DecimalField) or (DecimalField % IntegerField) combination must resolve to DecimalField instead of raising a FieldError.",
+        "subject": "django.db.models.expressions.CombinedExpression / _resolve_output_field for Combinable.MOD with mixed numeric operand types",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"Resolve output_field when combining numeric expressions with MOD operator.\" Issue body: \"if the types of the query are different (Decimal and Integer), it doesn't resolve the result to a Decimal type, like it does for other mathematical operators.\" In django/db/models/expressions.py, the 'Numeric operations - operands of different type' dict registers (IntegerField, DecimalField, DecimalField) and (DecimalField, IntegerField, DecimalField) for `Combinable.ADD, Combinable.SUB, Combinable.MUL, Combinable.DIV` only (MOD is absent there yet present in the 'same type' dict); and tests/db_functions/math/test_mod.py and ExpressionOperatorTests exercise MOD only with homogeneous operand types."
+      },
+      {
+        "id": "SVIS-2",
+        "statement": "When a MOD-combined expression resolves to a Decimal output field via mixed Decimal/Integer operands, values returned for that expression must be converted to Decimal (matching the existing DecimalField conversion semantics used by the same-type Decimal Mod function path), not left as a raw database/float value.",
+        "subject": "django.db.models.expressions.CombinedExpression.convert_value / output_field type conversion for MOD",
+        "hunk_ids": [],
+        "cited_from": "BaseExpression.convert_value returns a Decimal-converting lambda when output_field.get_internal_type() == 'DecimalField', and tests/db_functions/math/test_mod.py asserts for same-type operands: \"self.assertIsInstance(obj.n_mod, Decimal)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMPL-1",
+        "statement": "A `%` (MOD connector) CombinedExpression whose operands are an Integer output field and a Decimal output field (in either order) no longer raises FieldError during output-field resolution; its inferred output type is DecimalField.",
+        "subject": "CombinedExpression output-field resolution for Combinable.MOD with mixed Integer/Decimal operands",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMPL-2",
+        "statement": "A `%` (MOD connector) CombinedExpression whose operands are an Integer output field and a Float output field (in either order) no longer raises FieldError during output-field resolution; its inferred output type is FloatField.",
+        "subject": "CombinedExpression output-field resolution for Combinable.MOD with mixed Integer/Float operands",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "SVIS-1",
+          "SVIS-2"
+        ],
+        "rationale": "SVIS-1 directly states that an (IntegerField % DecimalField) or (DecimalField % IntegerField) MOD combination must resolve to DecimalField instead of raising a FieldError, which exactly matches SIMPL-1's behavior (both operand orders, no FieldError, DecimalField result)."
+      },
+      {
+        "requirement_id": "SIMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "SVIS-1",
+          "SVIS-2"
+        ],
+        "rationale": "Neither S_vis entry mentions FloatField operands. SVIS-1 only covers Integer/Decimal mixed types (the developer issue text and the type-registration details concern DecimalField/IntegerField), and SVIS-2 concerns Decimal value conversion. Nothing in visible information pins down the Integer/Float-to-FloatField MOD behavior SIMPL-2 requires."
+      }
+    ],
+    "target_requirement_id": "SIMPL-2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mod_mixed_integer_float_resolves_to_float",
+      "test_source": "from django.db.models import FloatField, IntegerField\nfrom django.db.models.expressions import Combinable, CombinedExpression, Expression\n\n\ndef test_mod_mixed_integer_float_resolves_to_float():\n    # Integer % Float -> FloatField.\n    int_left = CombinedExpression(\n        Expression(IntegerField()), Combinable.MOD, Expression(FloatField())\n    )\n    # Float % Integer -> FloatField.\n    float_left = CombinedExpression(\n        Expression(FloatField()), Combinable.MOD, Expression(IntegerField())\n    )\n    assert isinstance(int_left.output_field, FloatField)\n    assert isinstance(float_left.output_field, FloatField)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (FieldError: Cannot infer type of '%%' expression involving these types: IntegerField, FloatField. You must set output_field.)",
+      "explanation": "SIMPL-2 requires that a `%` (Combinable.MOD) CombinedExpression mixing an Integer output field and a Float output field (in either order) resolves without FieldError to a FloatField output. The gold fix added Combinable.MOD to the 'Numeric operations - operands of different type' connector list in _connector_combinations, so that both (IntegerField, FloatField) and (FloatField, IntegerField) MOD combinations resolve to FloatField; in the buggy version MOD is absent from that dict, so `_resolve_combined_type` returns None and `.output_field` raises FieldError for these mixed-type combinations.\n\nThe witness builds `CombinedExpression(Expression(IntegerField()), Combinable.MOD, Expression(FloatField()))` and its reverse, and asserts each resolves to a FloatField. Confirmed by run_test: it PASSES on gold and FAILS on buggy (FieldError raised). It is not a re-invention of visible content: the visible combined-expression resolution test (CombinedExpressionTests.test_resolve_output_field_number) only iterates ADD/SUB/MUL/DIV connectors and never exercises MOD, and the ExpressionOperatorTests / db_functions Mod tests cover only homogeneous operand types. So this mixed Integer/Float MOD behavior is genuinely uncovered invisible knowledge that distinguishes the fixed from the buggy program."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in the output-field resolution table in django/db/models/expressions.py: `_connector_combinations` registers same-type combos for MOD but the 'different type' dict only registers ADD/SUB/MUL/DIV (comment: 'Numeric operations - operands of different type'). Adding MOD there would handle both mixed-integer-decimal orderings at once."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MOD is reachable both as the `%`/`__mod__` Combinable.POW-style CombinedExpression operator (Combinable.MOD = '%%) and as the separate `Mod` database function class in django/db/models/functions/math.py (which uses FixDecimalInputMixin for PostgreSQL FloatField casting)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible tests for Mod (tests/db_functions/math/test_mod.py) and for % (ExpressionOperatorTests.test_lefthand_modulo / test_lefthand_modulo_null / test_right_hand_modulo in tests/expressions/tests.py) only cover homogeneous operand types (integer%integer, float%float, decimal%decimal); no visible test currently exercises mixed Decimal + Integer on % — that absence is consistent with the reported bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The models in tests/expressions/models.py (Number: integer=BigIntegerField, decimal_value=DecimalField) and db_functions/models.py provide fields a mixed-type % test would use."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds Combinable.MOD to the 'Numeric operations - operands of different type' connector tuple in `_connector_combinations` at django/db/models/expressions.py; MOD was already present in the 'same type' and 'with NULL' dicts before the change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "MOD here is the `%`/`%%` connector used to build CombinedExpression via CombinedExpression/Combinable.__mod__/__rmod__; it is distinct from the separately-defined `Mod` database function class in django/db/models/functions/math.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because Mixed Integer/Decimal and Integer/Float orderings both map to the same result field type, each pair is captured as a single behavioral requirement regardless of operand ordering."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMPL-2]: I searched the oracle for a test that genuinely asserts the SIMPL-2 behavior: a `%` (Combinable.MOD) CombinedExpression mixing an Integer output field and a Float output field (either order) resolving without FieldError to a FloatField output.\n\nChecks performed:\n- django/expressions app: tests/expressions/tests.py, expressions/models.py, expressions/test_queryset_values.py — all [VISIBLE]. The only CombinedExpression output-field resolution tests are CombinedExpressionTests.test_resolve_output_field_number / _with_null / _dates. test_resolve_output_field_number covers exclusive same-type plus ADD/SUB/MUL/DIV mixed-type combos ((Integer,Float)->Float etc.) but its connector list is only [ADD, SUB, MUL, DIV] — Combinable.MOD is never exercised with mixed operand types. ExpressionOperatorTests covers only homogeneous integer%integer modulo (test_lefthand_modulo / _null / test_right_hand_modulo). So even where the behavior \"no FieldError, type FloatField\" is conceptually resident, no assertion in the (visible) oracle exercises MOD against two different output-field types, and visible content cannot serve as a Witness anyway.\n- django db_functions app: db_functions/math/test_mod.py ([VISIBLE]) only exercises the separate `Mod` database function (math.py) with homogeneous operand types (integer%integer, decimal%decimal, float%float); db_functions/models.py ([HIDDEN] but pure model definitions with separate Integer/Float models, no assertion) and db_functions/tests.py ([VISIBLE]) contain no mixed-type MOD connector test.\n- Other arithmetic/expression locations examined: tests/expressions/test_queryset_values.py (visible), tests/lookup/test_decimalfield.py (visible; subtraction only), tests/postgres_tests/test_functions.py (visible; unrelated). None tests `%` between an Integer and a Float output field.\n\nAdditionally, no test is recorded as failing against the buggy program — the necessary (though not sufficient) precondition for a witness — and I could not identify any assertion, in a [HIDDEN] file or otherwise, that exercises Combinable.MOD with mixed Integer/Float operands during output-field resolution. The relevant type-resolution test class is entirely [VISIBLE] and does not include MOD, so nothing in the real oracle establishes the required behavior. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMPL-2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMPL-2] (CombinedExpression output-field resolution for Combinable.MOD with mixed Integer/Float operands): A `%` (MOD connector) CombinedExpression whose operands are an Integer output field and a Float output field (in either order) no longer raises FieldError during output-field resolution; its inferred output type is FloatField. — not entailed by S_vis (Neither S_vis entry mentions FloatField operands. SVIS-1 only covers Integer/Decimal mixed types (the developer issue text and the type-registration details concern DecimalField/IntegerField), and SVIS-2 concerns Decimal value conversion. Nothing in visible information pins down the Integer/Float-to-FloatField MOD behavior SIMPL-2 requires.); confirmed by a synthesized witness: SIMPL-2 requires that a `%` (Combinable.MOD) CombinedExpression mixing an Integer output field and a Float output field (in either order) resolves without FieldError to a FloatField output. The gold fix added Combinable.MOD to the 'Numeric operations - operands of different type' connector list in _connector_combinations, so that both (IntegerField, FloatField) and (FloatField, IntegerField) MOD combinations resolve to FloatField; in the buggy version MOD is absent from that dict, so `_resolve_combined_type` returns None and `.output_field` raises FieldError for these mixed-type combinations.\n\nThe witness builds `CombinedExpression(Expression(IntegerField()), Combinable.MOD, Expression(FloatField()))` and its reverse, and asserts each resolves to a FloatField. Confirmed by run_test: it PASSES on gold and FAILS on buggy (FieldError raised). It is not a re-invention of visible content: the visible combined-expression resolution test (CombinedExpressionTests.test_resolve_output_field_number) only iterates ADD/SUB/MUL/DIV connectors and never exercises MOD, and the ExpressionOperatorTests / db_functions Mod tests cover only homogeneous operand types. So this mixed Integer/Float MOD behavior is genuinely uncovered invisible knowledge that distinguishes the fixed from the buggy program.",
+    "confidence": "Medium"
+  }
+}

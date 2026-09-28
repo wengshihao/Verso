@@ -1,0 +1,134 @@
+{
+  "task_id": "Codec-8",
+  "status": "ok",
+  "duration_seconds": 370.31812825500003,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "Codec-8",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Repeatedly reading an encoding (doEncode=true) Base64InputStream one byte at a time via read(), over an underlying stream sizable enough that the codec reaches a state where buffer==null and modulus==2 before the next single-byte read, must not throw ArrayIndexOutOfBoundsException from Base64.encode; the reads must succeed (return base64-encoded bytes).",
+        "subject": "Base64InputStream.read() / Base64.encode() buffer management during single-byte encoding reads",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"ArrayIndexOutOfBoundsException when doing multiple reads() on encoding Base64InputStream ... When encoding a sizable stream byte by byte (so, just calling Base64InputStream.read()), after 10920 successful read()s, this happens: java.lang.ArrayIndexOutOfBoundsException: 2 at org.apache.commons.codec.binary.Base64.encode(Base64.java:502)\" and \"Based on this, the necessary conditions seem to be that buffer = null and modulus = 2. Then, if a read() is done, a single-byte buffer is used, whose length is doubled by resizeBuffer(), but that still doesn't make it big enough to hold the 4 bytes written to it because modulus was just incremented to 0.\" Test: \"public void testCodec105() throws IOException { Base64InputStream in = new Base64InputStream(new Codec105ErrorInputStream(), true, 0, null); for (int i = 0; i < 5; i++) { in.read(); } }\" (\"Tests the bug reported in CODEC-105. Bad interactions with InputStream when reading one byte at a time.\")"
+      },
+      {
+        "id": "R2",
+        "statement": "For an encoding Base64InputStream consumed entirely through byte-by-byte read() calls, all underlying input must still be base64-encoded and delivered through the reads, with read() returning -1 only at true end-of-stream (a repaired stream must terminate normally reaching -1, not abort on an exception mid-stream).",
+        "subject": "Base64InputStream.read() encoding completeness across single-byte reads",
+        "hunk_ids": [],
+        "cited_from": "Issue sample usage which encodes a whole stream one byte at a time and expects it to finish: \"while (b64stream.read() != -1) n++; ... } catch (Exception x) { System.out.println(n); x.printStackTrace(); }\" — the crash interrupts this loop on the 10921st call rather than reaching -1."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "Base64InputStream.read(byte[] b, int offset, int len) never reuses the caller-provided destination array b as the Base64 codec's internal output/scatch buffer; the bytes returned for each successful read are instead produced into an internal buffer and copied into b via readResults. Consequently the correct encoded-or-decoded data is returned for any streamed read regardless of the aliasing relationship between the requested length and b.length (i.e. even when b.length == len), with no corruption or error attributable to the codec writing into the same buffer the caller expects results in.",
+        "subject": "Base64InputStream.read(byte[],int,int)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Base64 decoding/encoding performed through Base64InputStream over any underlying byte stream yields exactly the data produced by accumulating codec output in the codec's private buffer and extracting it via readResults, so that round-trip (encode followed by decode) results are stable and byte-correct across arbitrary read request splits, in both doEncode=true and doEncode=false streaming modes.",
+        "subject": "Base64InputStream (streaming encode/decode read correctness)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only documents a codec-internal buffer sizing bug (modulus=2, buffer needs 4 bytes) during single-byte encoding reads and never mentions the caller-provided destination array being used/reused as codec scratch or any readResults copying behavior. Nothing in the visible evidence would pin down the aliasing-specific guarantee in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1/R2 attest that an encoding stream read byte-by-byte must deliver all data and terminate normally at -1, which supports the encoding half of R2's claim; but S_vis says nothing about decode-mode (doEncode=false) correctness, arbitrary read(byte[]) split behavior, or the accumulate-in-private-buffer/readResults design, so the full breadth of R2 is not pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Targeted R1, the aliasing-removal fix (deleting Base64.setInitialBuffer and its call site in Base64InputStream.read's inner loop). I examined both the buggy and gold codecs and the sole visible test file. The only constructible behavioral discrimination requires the pathological Codec105ErrorInputStream stimulus (encode-mode Base64InputStream over a source whose per-read behavior causes the aliased b==len caller buffer to actually receive codec output before a resize detaches it) — that input is [HIDDEN]/non-visible and not reconstructable from the visible Core file set.\n\nI empirically swept ordinary data paths that my own analyses and the extractor notes suggested should exercise b.length==len aliasing in read(byte[],int,int):\n- single read()/byte-by-byte decode of small, large (9000B), and random data — PASSED buggy (read()'s internal singleByte[1] always triggers an immediate resizeBuffer before any codec write in both revisions, so buggy/gold are behaviorally identical on this path; confirmed by running the same test against both).\n- byte-by-byte and full-buffer encode of 160 and 4099-byte random data, decode round-trips — PASSED buggy.\n- chunked encode+decode with line separators, decode buffers small and large, len==b.length reads — PASSED buggy (an apparent 2-byte discrepancy vs encodeBase64Chunked was identical on gold and buggy — just a trailing-CRLF format artifact of my stale reference, not a discriminator).\n\nEvery one of these compiled and passed identically on gold and buggy, so none is a genuine witness. As the earlier Oracle Search Agent documented, the only real witness of this aliasing regression in the project (visible testCodec105 over Codec105ErrorInputStream) sits in [VISIBLE] content and cannot serve as a Witness, and no [HIDDEN] test covers this behavior. A genuine hidden-based witness cannot be derived. found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Visible material is only three files under src/.../binary/: Base64.java, Base64InputStream.java, Base64InputStreamTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "read() is implemented in Base64InputStream as read(singleByte, 0, 1) where singleByte is a private byte[1] field; when b.length==len (both 1), read(byte[],int,int) hands that singleByte array to base64.setInitialBuffer, making it the codec's output buffer — the trigger for the reported crash."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Base64.encode(), when not at EOF, expands the buffer per input byte via resizeBuffer() (doubles existing length) and writes 4 output bytes only when modulus reaches 0 after incrementing."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Base64InputStreamTest references helper classes Codec105ErrorInputStream and Base64TestData and StringUtils that are NOT among the visible files, so those tests (e.g. testCodec105's failing input, testCodec101 data) are only partially reconstructable from visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing byte-by-byte encode/decode round-trip tests live in Base64InputStreamTest.testBase64InputStreamByteByByte / testBase64InputStreamByChunk; decode mode is the default and encode mode covers chunked output as well as lineLength 0."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Constructor used in the regression test is new Base64InputStream(InputStream, boolean doEncode=true, int lineLength=0, byte[] lineSeparator=null)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch is purely removal of a defensive aliasing optimization: H0 deletes Base64.setInitialBuffer(byte[],int,int); H1 deletes its sole call site (+ the guard `if (c > 0 && b.length == len)`) in Base64InputStream.read(byte[],int,int). The two hunks are opposite halves of one change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy Base64InputStream.read() delegates to read(singleByte,0,1), and singleByte has length 1, so the removed guard (b.length==len) was true there — that path handed the fixed 1-byte singleByte array to the codec."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "setInitialBuffer would be retained (not immediately discarded by resizeBuffer) only when a chunk's encoded/decoded writable space requirement fit within [outPos, outPos+outAvail]; for singleByte (len 1) the very first write (encodeSize/decodeSize >= 3) triggered resizeBuffer away from it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The specific crashing test input is not reconstructable from visible files (Codec105ErrorInputStream/Base64TestData/StringUtils are referenced by tests but not present among the three visible source files), so no concrete pre/post byte-level repro was derived."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After the fix, encode() when not at EOF and decode() always operate on an internal buffer reached only via resizeBuffer(), and readResults performs the sole copy into the destination array."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Requirement R1 concerns Base64InputStream.read(byte[],int,int) never reusing the caller's destination array as the codec's internal output buffer, so that byte-at-a-time reads (read() delegating to read(singleByte,0,1) with a byte[1] where b.length==len) return correct data.\n\nI listed and read all 5 oracle test files. The only genuine behavioral test of this aliasing scenario is testCodec105 in Base64InputStreamTest.java, which builds an encode-mode Base64InputStream over Codec105ErrorInputStream and issues five byte-at-a-time read() calls — precisely the b.length==len trigger — along with the byte-by-byte round-trip tests in the same file. Those are the real witness for R1, and testCodec105 is confirmed as the test failing against the buggy program.\n\nHowever, Base64InputStreamTest.java (and hence testCodec105 and all the byte-by-byte tests) is labeled [VISIBLE]. By the audit rules a Witness may only rest on [HIDDEN] assertions; an assertion a repair system already saw can never be a Witness, regardless of how exactly it matches R1.\n\nThe other four oracle files (Base64Codec13Test, Base64OutputStreamTest, Base64Test, BCodecTest) are [HIDDEN], but none of them constructs a Base64InputStream or exercises read(byte[],int,int) destination-array aliasing — they only test static Base64 encode/decode, Base64OutputStream, and BCodec. Since every genuinely relevant test lives in [VISIBLE] content and no [HIDDEN] test covers this behavior, no eligible witness exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Targeted R1, the aliasing-removal fix (deleting Base64.setInitialBuffer and its call site in Base64InputStream.read's inner loop). I examined both the buggy and gold codecs and the sole visible test file. The only constructible behavioral discrimination requires the pathological Codec105ErrorInputStream stimulus (encode-mode Base64InputStream over a source whose per-read behavior causes the aliased b==len caller buffer to actually receive codec output before a resize detaches it) — that input is [HIDDEN]/non-visible and not reconstructable from the visible Core file set.\n\nI empirically swept ordinary data paths that my own analyses and the extractor notes suggested should exercise b.length==len aliasing in read(byte[],int,int):\n- single read()/byte-by-byte decode of small, large (9000B), and random data — PASSED buggy (read()'s internal singleByte[1] always triggers an immediate resizeBuffer before any codec write in both revisions, so buggy/gold are behaviorally identical on this path; confirmed by running the same test against both).\n- byte-by-byte and full-buffer encode of 160 and 4099-byte random data, decode round-trips — PASSED buggy.\n- chunked encode+decode with line separators, decode buffers small and large, len==b.length reads — PASSED buggy (an apparent 2-byte discrepancy vs encodeBase64Chunked was identical on gold and buggy — just a trailing-CRLF format artifact of my stale reference, not a discriminator).\n\nEvery one of these compiled and passed identically on gold and buggy, so none is a genuine witness. As the earlier Oracle Search Agent documented, the only real witness of this aliasing regression in the project (visible testCodec105 over Codec105ErrorInputStream) sits in [VISIBLE] content and cannot serve as a Witness, and no [HIDDEN] test covers this behavior. A genuine hidden-based witness cannot be derived. found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (Base64InputStream.read(byte[],int,int)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Targeted R1, the aliasing-removal fix (deleting Base64.setInitialBuffer and its call site in Base64InputStream.read's inner loop). I examined both the buggy and gold codecs and the sole visible test file. The only constructible behavioral discrimination requires the pathological Codec105ErrorInputStream stimulus (encode-mode Base64InputStream over a source whose per-read behavior causes the aliased b==len caller buffer to actually receive codec output before a resize detaches it) — that input is [HIDDEN]/non-visible and not reconstructable from the visible Core file set.\n\nI empirically swept ordinary data paths that my own analyses and the extractor notes suggested should exercise b.length==len aliasing in read(byte[],int,int):\n- single read()/byte-by-byte decode of small, large (9000B), and random data — PASSED buggy (read()'s internal singleByte[1] always triggers an immediate resizeBuffer before any codec write in both revisions, so buggy/gold are behaviorally identical on this path; confirmed by running the same test against both).\n- byte-by-byte and full-buffer encode of 160 and 4099-byte random data, decode round-trips — PASSED buggy.\n- chunked encode+decode with line separators, decode buffers small and large, len==b.length reads — PASSED buggy (an apparent 2-byte discrepancy vs encodeBase64Chunked was identical on gold and buggy — just a trailing-CRLF format artifact of my stale reference, not a discriminator).\n\nEvery one of these compiled and passed identically on gold and buggy, so none is a genuine witness. As the earlier Oracle Search Agent documented, the only real witness of this aliasing regression in the project (visible testCodec105 over Codec105ErrorInputStream) sits in [VISIBLE] content and cannot serve as a Witness, and no [HIDDEN] test covers this behavior. A genuine hidden-based witness cannot be derived. found=false.",
+    "confidence": "Medium"
+  }
+}

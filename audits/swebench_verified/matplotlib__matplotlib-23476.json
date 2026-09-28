@@ -1,0 +1,90 @@
+{
+  "task_id": "matplotlib__matplotlib-23476",
+  "status": "ok",
+  "duration_seconds": 253.51907091599423,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-23476",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Pickle-round-tripping a matplotlib Figure on the MacOSX backend must preserve the figure's dpi unchanged: a figure created with dpi 200.0 must still report `fig2.dpi == 200.0` after being written and reloaded via pickle, and the dpi must remain 200.0 through each of many successive dump/load cycles (not doubling on any unpickle).",
+        "subject": "matplotlib.figure.Figure pickling/unpickling (Figure.__setstate__) — dpi preservation",
+        "hunk_ids": [],
+        "cited_from": "Expected outcome:\n```\n0: 200.0\n1: 200.0\n2: 200.0\n...\n22: 200.0\n```\n(where the reproduction function `dump_load_get_dpi(fig)` does `pickle.dump(fig, file)` then `fig2 = pickle.load(blob)` and `return fig2, fig2.dpi`), contrasted with the Actual outcome where the dpi doubles `0: 200.0, 1: 400.0, 2: 800.0, ...` until `OverflowError: signed integer is greater than maximum` during pickle.load."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "When a Figure is pickled via __getstate__, the dpi value stored in the resulting pickled state under the '_dpi' key is the figure's original dpi (the '_original_dpi' recorded on its canvas when it was created) rather than the figure's current, possibly device-pixel-ratio-inflated dpi; consequently any inflation of the figure's dpi caused by HiDPI/Retina device-pixel-ratio scaling is discarded on pickling and not carried into the unpickled figure.",
+        "subject": "matplotlib.figure.Figure.__getstate__",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 pins down the observable consequence of S1 (dpi must remain the original 200.0 across pickle rounds and never double on the MacOSX backend, i.e. pixel-ratio inflation must not be carried into the unpickled figure), which closely matches S1's intended behavior. However, R1 only captures the external fig.dpi outcome and never specifies the internal mechanism S1 describes (storing '_original_dpi' under the '_dpi' key in __getstate__ versus the current inflated dpi), and it is scoped to a backend symptom, so the exact implementation behavior is not fully pinned down."
+      }
+    ],
+    "target_requirement_id": "S1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_getstate_dpi_reset_to_original",
+      "test_source": "import matplotlib\nmatplotlib.use('Agg')\nimport pickle\n\nfrom matplotlib.figure import Figure\n\n\ndef test_getstate_dpi_reset_to_original():\n    fig = Figure()\n    original = fig._original_dpi\n    # simulate high-dpi device-pixel-ratio inflation (as on Retina/OSX)\n    assert fig.canvas._set_device_pixel_ratio(2.0) is True\n    assert fig.dpi == original * 2\n    # pickled state must record the original, uninflated dpi\n    state = fig.__getstate__()\n    assert state['_dpi'] == original\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — AssertionError at line 18: assert 200.0 == 100.0. On the buggy build, after inflating dpi to 2x via canvas._set_device_pixel_ratio(2.0) (100 -> 200), Figure.__getstate__ does NOT reset state['_dpi'] to _original_dpi, so the pickled _dpi is the inflated 200.0 instead of the original 100.0.",
+      "explanation": "Target S1 is the behavior added in lib/matplotlib/figure.py Figure.__getstate__: when a Figure is pickled, the '_dpi' entry in the produced state dict must be the figure's *original* dpi (the canvas-recorded figure._original_dpi) rather than its current, device-pixel-ratio-inflated dpi, so HiDPI inflation is discarded on pickle.\n\nWitness construction: I instantiate a bare Figure (default dpi 100), whose FigureCanvasBase.__init__ has set figure._original_dpi = figure.dpi = 100, then call fig.canvas._set_device_pixel_ratio(2.0) to reproduce exactly the mechanism a HiDPI/Retina backend uses to inflate the working dpi to 2*original (dpi becomes 200 while _original_dpi stays 100). I then serialize via fig.__getstate__() and assert state['_dpi'] equals the original (100), i.e. that the inflation is discarded at pickle time.\n\nExecution confirmation: PASSED against the gold (fixed) build, and FAILED against the buggy (pre-fix) build (the harness reported 'assert 200.0 == 100.0' at the final assertion), because the buggy __getstate__ leaves state['_dpi'] as the inflated 200.0 without the new `state[\"_dpi\"] = state.get('_original_dpi', state['_dpi'])` override. I inspected the buggy/gold __getstate__ differences and the relevant _set_device_pixel_ratio machinery in backend_bases.py, and I verified against the visible test files that no existing/visible test (test_pickle.py, test_figure.py, test_backend_macosx.py) exercises __getstate__'s stored '_dpi' after pixel-ratio inflation — test_savefig_pixel_ratio uses pixel ratio only for savefig output comparison, never pickling/state['_dpi'] — so this assertion is not already pinned down by visible content; it is a genuinely new discriminating scenario for S1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug is specific to the MacOSX backend (Retina/HiDPI, device pixel ratio up to 2) and manifests because `Figure.__setstate__` (lib/matplotlib/figure.py) re-creates a backend canvas via `new_figure_manager_given_figure`, and the MacOSX figure manager setup applies `_set_device_pixel_ratio`, scaling figure dpi off `figure._original_dpi` (set in `FigureCanvasBase.__init__`, backend_bases.py) which is itself pickled with the figure and not refreshed; each unpickle thus re-multiplies dpi."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The OverflowError in the traceback comes from `_macosx.FigureCanvas.__init__` (backend_bases new_figure_manager_given_figure -> FigureCanvasMac.__init__) querying `get_width_height()` on a figure whose already-inflated dpi produces out-of-range int dimensions; it is a downstream symptom of the dpi growth, not a separate required behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Core pickle/dump machinery lives in Figure.__getstate__/__setstate__ (figure.py); the repro figure is pyplot-managed so `_restore_to_pylab` is set and unpickling re-registers a GUI manager."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant existing tests: lib/matplotlib/tests/test_pickle.py (e.g. test_gcf, test_unpickle_canvas, test_complete pickling round trips) and lib/matplotlib/tests/test_backend_macosx.py; default figure dpi rc is 100, while the reporter observed 200.0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "FigureCanvasBase.__init__ (backend_bases.py) sets figure._original_dpi = figure.dpi to capture the dpi exactly once, and _set_device_pixel_ratio preserves it while scaling the working dpi via figure._set_dpi(ratio*_original_dpi, forward=False)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Figure.__getstate__ now overrides the '_dpi' entry in the state dict with state.get('_original_dpi', state['_dpi']); the _original_dpi key is a normal figure attribute (not popped from the state) so it remains in the pickled state, and the default branch keeps things byte-for-byte compatible when _original_dpi is absent."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Symptom in the traceback (OverflowError from canvas dimension querying after dpi inflates past int range) is downstream of repeated per-unpickle dpi re-scaling on HiDPI backends, not independently required behavior of this hunk."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S1]: The target requirement [S1] concerns Figure.__getstate__ storing the figure's original dpi (the _original_dpi recorded at canvas creation) rather than the current, device-pixel-ratio-inflated dpi when a Figure is pickled on a HiDPI/MacOSX backend.\n\nI investigated the oracle's test files. The natural homes for any such test are lib/matplotlib/tests/test_pickle.py, lib/matplotlib/tests/test_backend_macosx.py, and lib/matplotlib/tests/test_figure.py. All three files (read via read_test_file) are labeled [VISIBLE], meaning their content is identical to what the repair system already saw; per the rules, an assertion drawn from [VISIBLE] content can never serve as a Witness, no matter how well it matches S1.\n\nBehaviorally, none of these files even genuinely exercises S1: test_pickle.py's round-trip tests (test_simple, test_complete, test_gcf, test_no_pyplot, test_image, test_polar, test_shared, test_inset_and_secondary, test_unpickle_canvas, etc.) only verify that figures whose dpi was never inflated can round-trip via pickle — none calls fig.canvas._set_device_pixel_ratio() to inflate the dpi and then checks that the unpickled figure's dpi equals _original_dpi rather than the inflated value. test_backend_macosx.py has only test_cached_renderer and test_savefig_rcparam, neither of which involves pickling or dpi preservation. test_figure.py contains generic figure/alignment/subfigure/savefig tests (incl. test_savefig_pixel_ratio, which does test dpi-ratio savefig output equality but not pickling/__getstate__), none of which asserts the S1 dpi-stored-in-state behavior.\n\nNo other oracle test file plausibly tests this specific pickling dpi behavior, and no file relevant to it was found to be [HIDDEN]. I therefore found no oracle test meeting the two necessary conditions (hidden content + genuinely testing S1), and since the benchmark records no currently-failing tests against the buggy program, found=false is the correct outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S1] (matplotlib.figure.Figure.__getstate__): When a Figure is pickled via __getstate__, the dpi value stored in the resulting pickled state under the '_dpi' key is the figure's original dpi (the '_original_dpi' recorded on its canvas when it was created) rather than the figure's current, possibly device-pixel-ratio-inflated dpi; consequently any inflation of the figure's dpi caused by HiDPI/Retina device-pixel-ratio scaling is discarded on pickling and not carried into the unpickled figure. — not entailed by S_vis (R1 pins down the observable consequence of S1 (dpi must remain the original 200.0 across pickle rounds and never double on the MacOSX backend, i.e. pixel-ratio inflation must not be carried into the unpickled figure), which closely matches S1's intended behavior. However, R1 only captures the external fig.dpi outcome and never specifies the internal mechanism S1 describes (storing '_original_dpi' under the '_dpi' key in __getstate__ versus the current inflated dpi), and it is scoped to a backend symptom, so the exact implementation behavior is not fully pinned down.); confirmed by a synthesized witness: Target S1 is the behavior added in lib/matplotlib/figure.py Figure.__getstate__: when a Figure is pickled, the '_dpi' entry in the produced state dict must be the figure's *original* dpi (the canvas-recorded figure._original_dpi) rather than its current, device-pixel-ratio-inflated dpi, so HiDPI inflation is discarded on pickle.\n\nWitness construction: I instantiate a bare Figure (default dpi 100), whose FigureCanvasBase.__init__ has set figure._original_dpi = figure.dpi = 100, then call fig.canvas._set_device_pixel_ratio(2.0) to reproduce exactly the mechanism a HiDPI/Retina backend uses to inflate the working dpi to 2*original (dpi becomes 200 while _original_dpi stays 100). I then serialize via fig.__getstate__() and assert state['_dpi'] equals the original (100), i.e. that the inflation is discarded at pickle time.\n\nExecution confirmation: PASSED against the gold (fixed) build, and FAILED against the buggy (pre-fix) build (the harness reported 'assert 200.0 == 100.0' at the final assertion), because the buggy __getstate__ leaves state['_dpi'] as the inflated 200.0 without the new `state[\"_dpi\"] = state.get('_original_dpi', state['_dpi'])` override. I inspected the buggy/gold __getstate__ differences and the relevant _set_device_pixel_ratio machinery in backend_bases.py, and I verified against the visible test files that no existing/visible test (test_pickle.py, test_figure.py, test_backend_macosx.py) exercises __getstate__'s stored '_dpi' after pixel-ratio inflation — test_savefig_pixel_ratio uses pixel ratio only for savefig output comparison, never pickling/state['_dpi'] — so this assertion is not already pinned down by visible content; it is a genuinely new discriminating scenario for S1.",
+    "confidence": "Medium"
+  }
+}

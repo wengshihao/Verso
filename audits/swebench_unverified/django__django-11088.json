@@ -1,0 +1,146 @@
+{
+  "task_id": "django__django-11088",
+  "status": "ok",
+  "duration_seconds": 478.6426482909592,
+  "llm_calls": 29,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11088",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For a BinaryField whose configured Python default is the empty-bytestring-expecting value '' (i.e. default='', a non-bytes str, as opposed to default=b''), the effective database default computed by the schema editor must be an empty bytes value (b''/binary type), not the text str ''; otherwise the default-based schema operation (e.g. the reverse side of an AlterField default change) fails. Concretely: reversing a migration that changes a BinaryField default from b'' to '' must not raise 'TypeError: can't escape str to binary' when a database default parameter is built for the to-field.",
+        "subject": "BaseDatabaseSchemaEditor.effective_default / _effective_default (schema.py) with respect to an explicitly empty str default on a BinaryField",
+        "hunk_ids": [],
+        "cited_from": "issue: \"Initial migration has a default value '' for BinaryField. Later, change default value to b'' and migrate. Trying to undo this migration fails. It seems like '' is allowed during migration, but not in reverse migration.\" ... \"Error: TypeError: can't escape str to binary\" ... Notes: \"site-packages\\django\\db\\backends\\base\\shema.py def effective_default(self, field): determines default as an empty <class 'str'>, when (default = '')\" and the proposed fix sketch:\"def effective_default(self, field):\\n\\t\\tif field.has_default():\\n\\t\\t\\tdefault = field.get_default()\\n\\t\\t\\tif field.get_internal_type() == \\\"BinaryField\\\" and not default:\\n\\t\\t\\t\\tdefault = six.binary_type()\\n\\t\\telif not field.null and field.blank and field.empty_strings_allowed:\\n\\t\\t\\tif field.get_internal_type() == \\\"BinaryField\\\":\\n\\t\\t\\t\\tdefault = six.binary_type()\""
+      },
+      {
+        "id": "R2",
+        "statement": "The migration-default machinery must not hand a Python text-empty string (the literal '' set as default='' on a BinaryField, which the given reproduce uses: \"field1 = models.BinaryField(default = '')\" then \"field1 = models.BinaryField(default = b'')\") to the backend's byte-adaptor. That is, an empty-value default on a BinaryField must reach DB-prep as bytes (the value the field's db_prep wraps in connection.Database.Binary to equal the b'' default), not as str '', because BinaryField.get_db_prep_value wraps every non-None value in connection.Database.Binary(value).",
+        "subject": "BinaryField.get_default() / get_db_prep_value value handling",
+        "hunk_ids": [],
+        "cited_from": "BinaryField source: \"def get_db_prep_value(self, value, connection, prepared=False):\\n        value = super().get_db_prep_value(value, connection, prepared)\\n        if value is not None:\\n            return connection.Database.Binary(value)\\n        return value\" and reproduce diff field1 = models.BinaryField(default = '') -> field1 = models.BinaryField(default = b'')."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "Running the system checks on a BinaryField that has an explicit default which is a str (e.g. BinaryField(default='') or any other str default) returns a checks.Error with id 'fields.E170' and obj set to that field.",
+        "subject": "django.db.models.BinaryField.check",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-2",
+        "statement": "Running the system checks on a BinaryField whose default is not a str (e.g. bytes content, a callable, or no explicit default at all) does not produce a 'fields.E170' check error.",
+        "subject": "django.db.models.BinaryField.check",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL-3",
+        "statement": "BinaryField.check() continues to include the results of the base Field field checks (plus all its subclasses' checks) in addition to the new str-default check, rather than replacing them.",
+        "subject": "django.db.models.BinaryField.check",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis (R1, R2) concerns effective_default computation and get_db_prep_value DB-prep during migration reversal; neither mentions system checks, check(), or fields.E170. Nothing pins down that BinaryField.check() should emit a fields.E170 error for str defaults."
+      },
+      {
+        "requirement_id": "S_IMPL-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "Same as above: S_vis concerns migration-default byte conversion, not system check behavior, and says nothing about when a fields.E170 error should be suppressed."
+      },
+      {
+        "requirement_id": "S_IMPL-3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis provides no evidence about the composition of BinaryField.check() results or that base field checks are preserved alongside any new str-default check."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_str_default_produces_e170",
+      "test_source": "from types import SimpleNamespace\n\nimport django\nfrom django.conf import settings\nfrom django.core.checks import Error\nfrom django.db import models\n\nif not settings.configured:\n    settings.configure(SECRET_KEY='x', INSTALLED_APPS=[], DATABASES={})\nif not django.apps.apps.ready:\n    django.setup()\n\n\ndef _attach(field):\n    field.set_attributes_from_name('payload')\n    opts = SimpleNamespace(app_label='dummyapp', model_name='dummymodel')\n    field.model = SimpleNamespace(_meta=opts)\n    return field\n\n\nclass TestBinaryFieldCheck:\n    def test_str_default_produces_e170(self):\n        field = _attach(models.BinaryField(default=''))\n        errors = field.check()\n        e170 = [e for e in errors if e.id == 'fields.E170']\n        assert len(e170) == 1\n        assert e170[0].obj is field\n        assert isinstance(e170[0], Error)",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert 0 == 1: no field with id 'fields.E170' emitted)",
+      "explanation": "S_IMPL-1 requires that running system checks on a BinaryField with an explicit str default (e.g. BinaryField(default='')) returns a checks.Error with id 'fields.E170' whose obj is that field. The gold patch added BinaryField.check() (delegating to super().check()) plus _check_str_default_value(), which emits exactly this Error when has_default() and the default is a str; the buggy BinaryField has no overridden check()/helper, so its inherited base Field.check() returns no such error. The witness builds a BinaryField(default=''), attaches a minimal fake model/_meta so the inherited super().check() backend-specific branch no-ops (empty DATABASES config), runs field.check() and asserts a single fields.E170 Error whose .obj is the field itself. Confirmed by run_test: PASSES on gold, FAILS on buggy (0 E170 errors found). This scenario is not pinned by any visible file (Oracle search confirmed no visible test references fields.E170 or runs a system check on BinaryField(default=''))."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The Django checkout is the django__django-11088 snapshot. Visible-relevant modules: django/db/backends/base/schema.py (BaseDatabaseSchemaEditor.effective_default -> _effective_default -> field.get_db_prep_save) and django/db/models/fields/__init__.py (BinaryField)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Repro trace path (from issue): AlterField.database_backwards -> database_forwards -> schema_editor.alter_field(from_model, from_field, to_field); reverse of the b''->'' default change builds a to_field that is BinaryField(default='') whose effective_default yields the empty str ''."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseDatabaseSchemaEditor._effective_default already special-cases the no-explicit-default blank/not-null branch to bytes() for BinaryField; the failing branch is when the field explicitly has default='' (has_default() true) so field.get_default() returns the literal str ''."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BinaryField (source) already overrides get_default to convert the base-Field implicit ''-default into b'', but that only applies when the field has no explicit default; an explicit default='' flows through unchanged as a str."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PostgreSQL reproduce is in the issue; the TypeError arises before SQL execution from psycopg adapting the str '' ('can't escape str to binary')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing schema test test_add_field_binary (\"Tests binary fields get a sane default (#22851)\") already covers blank BinaryField without explicit default, but no visible test in this snapshot covers the default='' (non-bytestring) migration case (#11088)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests that exercise effective-default/schema behavior generally live in tests/schema/tests.py; tests model fields live in tests/model_fields/test_binaryfield.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds a BinaryField.check() override (delegating to super().check()) plus a _check_str_default_value() helper that emits checks.Error id 'fields.E170' (“BinaryField's default cannot be a string. Use bytes content instead.”)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change only guards the definition site (system checks); behavior of get_default()/effective_default is untouched, so an explicit str default (including default='') that slips past checks still flows through unchanged as a str."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "fields.E170 follows the E1xx field-check convention used by CharField (E120/E121), the DateTimeCheckMixin mutual-exclusion checks, etc."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: No oracle test enforces the S_IMPL-1 behavior (BinaryField.check() emitting fields.E170 for an explicit str default such as default=''). I inspected the natural homes for such a system-check test: tests/model_fields/test_binaryfield.py, tests/model_fields/tests.py, tests/invalid_models_tests/test_ordinary_fields.py, tests/check_framework/test_model_checks.py, and tests/schema/tests.py. None reference fields.E170, none run a system check on a BinaryField with an explicit str default, and invalid_models_tests has no BinaryField check class at all. tests/schema/tests.py test_add_field_binary covers BinaryField(blank=True) DB effective-default (the separate [S_vis] schema concern), not the E170 check, and doesn't use default=''. Furthermore, every one of these files is [VISIBLE] content, which disqualifies them as witnesses regardless of content. Critically, the failing-test record against the buggy program is '(none recorded)' — a necessary precondition for any witness (fail-on-buggy/pass-on-gold) is not met, consistent with there being no existing oracle test for this newly introduced check. A witness would necessarily have to fail against the buggy build since buggy lacks the E170 emission. Nothing qualifies, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-1] (django.db.models.BinaryField.check): Running the system checks on a BinaryField that has an explicit default which is a str (e.g. BinaryField(default='') or any other str default) returns a checks.Error with id 'fields.E170' and obj set to that field. — not entailed by S_vis (S_vis (R1, R2) concerns effective_default computation and get_db_prep_value DB-prep during migration reversal; neither mentions system checks, check(), or fields.E170. Nothing pins down that BinaryField.check() should emit a fields.E170 error for str defaults.); confirmed by a synthesized witness: S_IMPL-1 requires that running system checks on a BinaryField with an explicit str default (e.g. BinaryField(default='')) returns a checks.Error with id 'fields.E170' whose obj is that field. The gold patch added BinaryField.check() (delegating to super().check()) plus _check_str_default_value(), which emits exactly this Error when has_default() and the default is a str; the buggy BinaryField has no overridden check()/helper, so its inherited base Field.check() returns no such error. The witness builds a BinaryField(default=''), attaches a minimal fake model/_meta so the inherited super().check() backend-specific branch no-ops (empty DATABASES config), runs field.check() and asserts a single fields.E170 Error whose .obj is the field itself. Confirmed by run_test: PASSES on gold, FAILS on buggy (0 E170 errors found). This scenario is not pinned by any visible file (Oracle search confirmed no visible test references fields.E170 or runs a system check on BinaryField(default='')).",
+    "confidence": "Medium"
+  }
+}

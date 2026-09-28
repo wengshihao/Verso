@@ -1,0 +1,94 @@
+{
+  "task_id": "JacksonDatabind-57",
+  "status": "ok",
+  "duration_seconds": 40.55804826799795,
+  "llm_calls": 8,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-57",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "ObjectReader.readValues(byte[] src, int offset, int length) must honor the given offset and length when parsing (specifically in the path where no data-format detection `_dataFormatReaders` is configured), rather than parsing the whole `src` array. Concretely, when a valid multi-value JSON document (e.g. the unwrapped sequence `{\"a\":3}{\"a\":27}  `) is embedded inside a larger byte buffer with leading/trailing padding bytes and read via readValues(b, 3, b.length-6), the returned MappingIterator must yield exactly the values inside that embedded window (`{\"a\":3}`, `{\"a\":27}` => Beans with a==3 then a==27, then no more) and must not parse the surrounding padding bytes.",
+        "subject": "ObjectReader.readValues(byte[], int, int)",
+        "hunk_ids": [],
+        "cited_from": "Source ObjectReader.java: \"public <T> MappingIterator<T> readValues(byte[] src, int offset, int length) throws IOException, JsonProcessingException { if (_dataFormatReaders != null) { return _detectBindAndReadValues(_dataFormatReaders.findFormat(src, offset, length), false); } return _bindAndReadValues(_considerFilter(_parserFactory.createParser(src), true)); }\" (the non-dataFormatReaders branch calls createParser(src) with the full array, ignoring offset/length). Test ReadValuesTest.java Source.BYTE_ARRAY_OFFSET: \"ByteArrayOutputStream out = new ByteArrayOutputStream(); out.write(0); out.write(0); out.write(0); out.write(json.getBytes(\"UTF-8\")); out.write(0); out.write(0); out.write(0); byte[] b = out.toByteArray(); return r.readValues(b, 3, b.length-6);\" together with _testRootBeans assertions on \"{\\\"a\\\":3}{\\\"a\\\":27}  \" (expects b.a==3 then b.a==27, hasNext()==false after)."
+      },
+      {
+        "id": "REQ-2",
+        "statement": "When an ObjectReader is configured with data-format readers (`_dataFormatReaders != null`), readValues(byte[] src, int offset, int length) must perform format detection on the window [offset, offset+length) of the source array, not on the entire array, so that format detection and the subsequent value reading are bounded to that sub-range.",
+        "subject": "ObjectReader.readValues(byte[], int, int) with data-format detection",
+        "hunk_ids": [],
+        "cited_from": "Source ObjectReader.java: \"if (_dataFormatReaders != null) { return _detectBindAndReadValues(_dataFormatReaders.findFormat(src, offset, length), false); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "In the no-format-auto-detection path (when this ObjectReader has no DataFormatReaders configured), ObjectReader.readValues(byte[] src, int offset, int length) parses as a sequence of values only the contiguous byte slice src[offset .. offset+length): bytes outside that window are ignored rather than being interpreted as JSON content.",
+        "subject": "ObjectReader.readValues(byte[],int,int)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "true",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "REQ-1 explicitly pins down the exact behavior in the no-data-format-detection branch: readValues parses only the byte window [offset, offset+length), with bytes outside ignored (test documents the embedded-window test yielding a==3, a==27 then no more, ignoring padding). This directly entails S_IMPL-1. REQ-2 concerns the separate data-format-detection branch and was also checked but is not needed."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The benchmark source (branch 2.x) is truncated to a single visible main file: src/main/java/com/fasterxml/jackson/databind/ObjectReader.java plus the visible test tree (src/test/java/com/fasterxml/jackson/databind/seq/ReadValuesTest.java, BaseMapTest.java, BaseTest.java); symbol definitions of MappingIterator, DataFormatReaders, MappingIterator and the ObjectMapper factory methods are not present in the visible set."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In the shown source, the no-dataFormatReaders branch of readValues(byte[],int,int) calls `_parserFactory.createParser(src)` (whole array) whereas the sibling single-value readValue(byte[], int, int) correctly calls `_parserFactory.createParser(src, offset, length)` — the fix aligns readValues with that behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ReadValuesTest runs the same root-bean sequence test across Source.STRING/INPUT_STREAM/READER/BYTE_ARRAY/BYTE_ARRAY_OFFSET; the BYTE_ARRAY_OFFSET case pads the JSON with three leading and three trailing zero bytes and calls readValues(b, 3, b.length-6), so it only passes if offset/length are honored."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Format detection (withFormatDetection / _dataFormatReaders) is not exercised by the disclosed tests; REQ-2 is inferred directly from the bug report wording distinguishing the dataFormatReaders branch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The single hunk H0 alters only the default (no DataFormatReaders) branch of readValues(byte[],int,int); the format-detection branch already forwarded offset/length via `_dataFormatReaders.findFormat(src, offset, length)`."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "readValues(byte[] src) delegates to readValues(src, 0, src.length), so its behavior is defined by the fixed overload and no separate requirement is needed."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The sibling single-value readValue(byte[],int,int) already used `_parserFactory.createParser(src, offset, length)`; the patch aligns readValues with that."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_bindAndReadValues (helper used by the patched branch) parses via _initForMultiRead/nextToken/_newIterator; the requirement concerns only which bytes of the array are fed to the parser."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

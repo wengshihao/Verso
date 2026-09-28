@@ -1,0 +1,120 @@
+{
+  "task_id": "Mockito-32",
+  "status": "ok",
+  "duration_seconds": 250.6548017390014,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "Mockito-32",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a @Spy-annotated field (declared with an already-initialized instance, e.g. `@Spy List veryCoolSpy = new LinkedList()`) is spied during MockitoAnnotations.initMocks, and a later `verify(veryCoolSpy).add(2)` fails because only `add(1)` was invoked, the thrown AssertionError message must contain the substring \"veryCoolSpy\" (the field name is used as the spy's name in failure messages).",
+        "subject": "SpyAnnotationEngine (spy naming / Mockito spy created from a @Spy field whose instance already exists)",
+        "hunk_ids": [],
+        "cited_from": "test/org/mockitousage/bugs/SpyShouldHaveNiceNameTest.java: \"@Spy List veryCoolSpy = new LinkedList();\" ... \"public void shouldPrintNiceName() { //when veryCoolSpy.add(1); try { verify(veryCoolSpy).add(2); fail(); } catch(AssertionError e) { Assertions.assertThat(e.getMessage()).contains(\"veryCoolSpy\"); } }\" (comment on line \"//see issue 216\")"
+      },
+      {
+        "id": "R2",
+        "statement": "While processing a @Spy field during initMocks (TestBase '@Before init()' calls MockitoAnnotations.initMocks(this)), when the field already holds a live instance (not null, not already a mock), that instance must be wrapped via Mockito.spy instance and re-assigned to the field so that later verifications observe invocations against the real underlying instance (this is the enabling setup on which the name-bearing failure message in SpyShouldHaveNiceNameTest depends).",
+        "subject": "SpyAnnotationEngine.process (spying an existing @Spy field instance)",
+        "hunk_ids": [],
+        "cited_from": "src/org/mockito/internal/configuration/SpyAnnotationEngine.java: \"if (new MockUtil().isMock(instance)) { // instance has been spied earlier Mockito.reset(instance); } else { field.set(testClass, Mockito.spy(instance)); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When SpyAnnotationEngine.process encounters a @Spy-annotated field whose value is a non-null instance that is not already a mock, it replaces the field value with a Mockito mock whose configured mock name is the field's own name, so that the created spy is referred to by that field name (e.g. in Mockito error/verification messages that print the mock's name) rather than by a generated default mock name.",
+        "subject": "SpyAnnotationEngine.process",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The mock that process() sets on such a not-yet-mock @Spy field is created over the original field instance with CALLS_REAL_METHODS as its default answer, so that calls to un-stubbed methods of the spy execute on (delegate to) the underlying real object while calls to stubbed methods return the stubbed values.",
+        "subject": "SpyAnnotationEngine.process",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins the observable outcome (verification failure message contains the field name 'veryCoolSpy'), but S_impl R1 commits to a specific mechanism — that the @Spy field is replaced with a mock whose *configured mock name* equals the field name. S_vis R2 shows the visible implementation only does `Mockito.spy(instance)`, which sets no explicit mock name, so the name-configuring mechanism claimed by R1 (as opposed to the effect) is not pinned down by visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 cites the exact implementation `field.set(testClass, Mockito.spy(instance))` for a non-null, not-yet-mock @Spy field, and describes wrapping the original live instance via Mockito.spy so invocations against the real underlying object are observed. Mockito.spy is exactly the creation of a mock over the original instance whose default answer delegates un-stubbed calls to the real instance, matching S_impl R2's CALLS_REAL_METHODS-over-the-original behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test\npublic void t() throws Exception {\n    final Object owner = new Object() {\n        @org.mockito.Spy java.util.List spyField = new java.util.LinkedList();\n    };\n    Class<?> cls = owner.getClass();\n    new org.mockito.internal.configuration.SpyAnnotationEngine().process(cls, owner);\n    java.lang.reflect.Field f = cls.getDeclaredField(\"spyField\");\n    f.setAccessible(true);\n    Object spy = f.get(owner);\n    Object handler = new org.mockito.internal.util.MockUtil().getMockHandler(spy);\n    Object settings = handler.getClass().getMethod(\"getMockSettings\").invoke(handler);\n    Object mockName = settings.getClass().getMethod(\"getMockName\").invoke(settings);\n    assertEquals(\"spyField\", String.valueOf(mockName));\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — org.junit.ComparisonFailure: expected:<[spyField]> but was:<[linkedList]> (mock configured name is the field name in gold; a class-derived default \"linkedList\" in buggy)",
+      "explanation": "Target R1: SpyAnnotationEngine.process, when it sees a @Spy field holding a non-null, non-mock value, must install a mock whose CONFIGURED mock name is the field's own name (gold adds `.name(field.getName())` instead of plain `Mockito.spy(instance)`). The visible SpyShouldHaveNiceNameTest only observes the name indirectly as text inside a verification-failure message for its pre-built subject (\"veryCoolSpy\"). That visible assertion does not pin down whether the spy's mock NAME was actually configured — only that one message rendering output contains that literal. My Witness takes a fundamentally different observable and vector: I build my own field ('spyField') inside an anonymous class holding a non-null LinkedList, run SpyAnnotationEngine.process on it, then read the CONFIGURED mock name directly from the invocation handler settings via MockUtil.getMockHandler(mock).getMockSettings().getMockName() and assert it equals the field name. Gold passes (name 'spyField'); buggy fails because Mockito.spy(instance) leaves a cglib/default class-derived name ('linkedList'). This checks R1's precise semantics — the configured mock name equals the field name — through internal settings state rather than through the error-message text that the visible oracle already covers, and uses a distinct field name/type, so the oracle enforcing the visible test never supplies this outcome."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug report body could not be fetched; only a citation pointing at mockito issue 216 and a comment '//see issue 216' in the test anchor it. The visible spec is therefore driven almost entirely by the surviving test SpyShouldHaveNiceNameTest."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction flow: TestBase '@Before init()' calls MockitoAnnotations.initMocks(this), which processes the @Spy field via SpyAnnotationEngine.process; the field is pre-initialized so it follows the Mockito.spy(instance) branch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The @Spy processing requires initMocks to run before field use; SpyAnnotationEngine.process throws a MockitoException if the @Spy field instance is null, and resets the instance if it is already a mock."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "SpyAnnotationEngine.createMockFor returns null; no visible test exercises it, so no S_vis requirement was derived from it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "src/org/mockito/internal/configuration/SpyAnnotationEngine.java is the only visible main source file; supporting framework classes (Reporter, MockUtil, Mockito) are referenced but not present in the visible tree."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold else-branch constructs the spy via Mockito.mock(instance.getClass(), withSettings().spiedInstance(instance).defaultAnswer(Mockito.CALLS_REAL_METHODS).name(field.getName())); H0 is only the static import of withSettings enabling H1 and introduces no behavior itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Unchanged behavior in the same loop: @Spy null instances still raise a MockitoException with the 'instance is missing...' message; already-mock instances still go through Mockito.reset(instance); SpyAnnotationEngine.createMockFor still returns null."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Field accessibility (wasAccessible) is saved before field.setAccessible(true) and restored in finally, unchanged by the patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1: when SpyAnnotationEngine.process encounters a non-null, non-mock @Spy field, it replaces the value with a mock whose configured name is the field's own name (so error/verification messages print the field name instead of a generated default mock name).\n\nI searched the entire oracle. The only failing test that exercises this requirement is test/org/mockitousage/bugs/SpyShouldHaveNiceNameTest.shouldPrintNiceName, which asserts that a verification failure message contains the field name \"veryCoolSpy\" for the @Spy-initialized List — precisely R1's observable behavior. However, that file is labeled [VISIBLE], and per the rules a Witness may only rest on [HIDDEN] content; a behavioral match drawn from visible content cannot serve as a witness.\n\nI then read all the @Spy/@SpyAnnotation-related oracle tests to look for any hidden test enforcing the same naming behavior:\n- SpyAnnotationTest (HIDDEN): only checks spy init/stubbing (doReturn/empty), reset behavior, and exceptions for uninitialized/null instances — no check that the created spy's name equals the field name.\n- SpyAnnotationInitializedInBaseClassTest (HIDDEN): only asserts isMock for base/subclass spies.\n- SpyInjectionTest (HIDDEN), MockInjectionTest (HIDDEN), AnnotationsTest (HIDDEN), WrongSetOfAnnotationsTest (HIDDEN), JUnit44/JUnit45RunnerTest (HIDDEN), all @Spy tests in mockitousage.spies (partial mocking / real-object spies created via Mockito.spy() rather than annot - they never verify a spy's configured name), and the debugging/printing tests — none asserts that a @Spy-annotation-derived mock's name is the field's name or that messages refer to the field name.\n\nSo no HIDDEN oracle assertion tests R1; the only genuine behavioral witness for R1 (SpyShouldHaveNiceNameTest) is [VISIBLE] and therefore disqualified. Found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (SpyAnnotationEngine.process): When SpyAnnotationEngine.process encounters a @Spy-annotated field whose value is a non-null instance that is not already a mock, it replaces the field value with a Mockito mock whose configured mock name is the field's own name, so that the created spy is referred to by that field name (e.g. in Mockito error/verification messages that print the mock's name) rather than by a generated default mock name. — not entailed by S_vis (S_vis R1 pins the observable outcome (verification failure message contains the field name 'veryCoolSpy'), but S_impl R1 commits to a specific mechanism — that the @Spy field is replaced with a mock whose *configured mock name* equals the field name. S_vis R2 shows the visible implementation only does `Mockito.spy(instance)`, which sets no explicit mock name, so the name-configuring mechanism claimed by R1 (as opposed to the effect) is not pinned down by visible info.); confirmed by a synthesized witness: Target R1: SpyAnnotationEngine.process, when it sees a @Spy field holding a non-null, non-mock value, must install a mock whose CONFIGURED mock name is the field's own name (gold adds `.name(field.getName())` instead of plain `Mockito.spy(instance)`). The visible SpyShouldHaveNiceNameTest only observes the name indirectly as text inside a verification-failure message for its pre-built subject (\"veryCoolSpy\"). That visible assertion does not pin down whether the spy's mock NAME was actually configured — only that one message rendering output contains that literal. My Witness takes a fundamentally different observable and vector: I build my own field ('spyField') inside an anonymous class holding a non-null LinkedList, run SpyAnnotationEngine.process on it, then read the CONFIGURED mock name directly from the invocation handler settings via MockUtil.getMockHandler(mock).getMockSettings().getMockName() and assert it equals the field name. Gold passes (name 'spyField'); buggy fails because Mockito.spy(instance) leaves a cglib/default class-derived name ('linkedList'). This checks R1's precise semantics — the configured mock name equals the field name — through internal settings state rather than through the error-message text that the visible oracle already covers, and uses a distinct field name/type, so the oracle enforcing the visible test never supplies this outcome.",
+    "confidence": "Medium"
+  }
+}

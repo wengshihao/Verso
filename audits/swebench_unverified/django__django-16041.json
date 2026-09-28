@@ -1,0 +1,112 @@
+{
+  "task_id": "django__django-16041",
+  "status": "ok",
+  "duration_seconds": 815.6322367920075,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16041",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Accessing/rendering a formset's empty_form must not raise an exception when the formset was constructed with form_kwargs={'empty_permitted': True}, and likewise must not raise when form_kwargs={'empty_permitted': False}.",
+        "subject": "BaseFormSet.empty_form (django/forms/formsets.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"When explicitly setting form_kwargs = {'empty_permitted':True} or form_kwargs = {'empty_permitted':False} , a KeyError occurs when rendering a template that uses a formset's empty_form.\" + repro:\n\"ff = modelformset_factory(MyModel, fields = ['a_field'])\n context['formset'] = ff(\n     queryset = MyModel.objects.none(),\n     form_kwargs = {'empty_permitted':True} # or form_kwargs = {'empty_permitted':False}\n )\" followed by \"{{ formset.empty_form }}\". Empty_form construction in formsets.py explicitly passes empty_permitted and then un-merges it from these kwargs:\n\"empty_permitted=True, ... **self.get_form_kwargs(None),\" where \"def get_form_kwargs(self, index): return self.form_kwargs.copy()\"."
+      },
+      {
+        "id": "R2",
+        "statement": "An empty_permitted value supplied via form_kwargs must be ignored for the formset's empty_form: empty_form is a blank template form that is not validated, is not meant to receive submitted data, and therefore must not be affected by that value (which otherwise would conflict with empty_form's own empty-permitted behavior).",
+        "subject": "BaseFormSet.empty_form / formset.form_kwargs (django/forms/formsets.py)",
+        "hunk_ids": [],
+        "cited_from": "Issue Expected Behavior: \"empty_permitted is ignored for formset.empty_form since empty_permitted is irrelevant for empty_form, as empty_form is not meant to be used to pass data and therefore does not need to be validated.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "BaseFormSet.empty_form returns a form instance (rather than raising a TypeError about receiving multiple values for the same keyword argument) when the formset was constructed with form_kwargs whose keys overlap the reserved empty-form keyword arguments empty_permitted, auto_id, prefix, use_required_attribute, and/or renderer.",
+        "subject": "BaseFormSet.empty_form",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "When form_kwargs supplies a value for one of the reserved empty-form keys, the formset's internally-computed value wins and the supplied one is disregarded: the returned empty form is configured with empty_permitted=True and use_required_attribute=False, its prefix is add_prefix(\"__prefix__\") (so contains \"__prefix__\"), and it reflects the formset's auto_id and renderer regardless of what form_kwargs contains for those keys.",
+        "subject": "BaseFormSet.empty_form",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins that empty_form must not raise when form_kwargs supplies empty_permitted (R1, R2), but impl-1 enumerates five reserved keys (empty_permitted, auto_id, prefix, use_required_attribute, renderer). S_vis evidence never mentions the other four keys, so it only partially pins the described anti-raise behavior."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis (R2) pins that an empty_permitted supplied via form_kwargs must be disregarded so the internally-computed empty_permitted=True behavior wins. But impl-2 extends internal-value-wins to prefix, use_required_attribute, auto_id, and renderer, none of which appear in S_vis; so the specific multi-key config behavior is not fully pinned down."
+      }
+    ],
+    "target_requirement_id": "impl-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_empty_form_reserved_kwargs_overlap",
+      "test_source": "from django.conf import settings\nsettings.configure(FORM_RENDERER=\"django.forms.renderers.DjangoTemplates\", INSTALLED_APPS=[\"django.contrib.contenttypes\", \"django.contrib.auth\"], DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\")\nimport django\ndjango.setup()\n\ndef test_empty_form_reserved_kwargs_overlap():\n    from django.forms import formset_factory, Form\n    from django.forms.fields import CharField\n\n    class F(Form):\n        name = CharField()\n\n    FormSet = formset_factory(F)\n    formset = FormSet(form_kwargs={\"empty_permitted\": True})\n    empty = formset.empty_form\n    assert empty.empty_permitted is True",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — TypeError: F() got multiple values for keyword argument 'empty_permitted' at django/forms/formsets.py line 260 (empty_form)",
+      "explanation": "Target requirement [impl-1] concerns BaseFormSet.empty_form raising a TypeError when the formset was constructed with form_kwargs whose keys overlap the reserved empty-form keywords (empty_permitted / auto_id / prefix / use_required_attribute / renderer). The gold fix merges get_form_kwargs(None) into a dict literal and unpacks the merged dict once (reserved keys override), while the buggy code passes empty_permitted=True explicitly alongside **get_form_kwargs(None), leaving a duplicate 'empty_permitted' that raises \"got multiple values\". I constructed a plain formset (formset_factory) whose form_kwargs contains the reserved key 'empty_permitted', and requested formset.empty_form. This exercises BaseFormSet.empty_form's actual merged-vs-unpacked code path, not just co-located logic.\n\nConfirmation vs visible oracle: I reviewed every visible empty_form/forms-kwargs test (test_form_kwargs_empty_form and test_form_kwargs_formset only pass the NON-reserved key custom_kwarg; test_more_initial_data asserts empty_form.empty_permitted is True on a default formset with NO form_kwargs at all; model_formsets/inline test files don't cover reserved-key overlap). None constructs the formset with a reserved keyword inside form_kwargs, so none pins down the overlap behavior and none discriminates the bug. My scenario with form_kwargs={'empty_permitted': True} is therefore a genuinely independent input not already enforced.\n\nExecution: run_test with the exact source above PASSED against the gold program and FAILED against the buggy program with the precise duplicate-keyword TypeError described by the requirement (in buggy's empty_form, line 260). This is a genuine execution-confirmed witness: passes on gold, fails on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug locus: BaseFormSet.empty_form (django/forms/formsets.py) calls self.form(...) with an explicit empty_permitted=True keyword AND **self.get_form_kwargs(None); get_form_kwargs returns self.form_kwargs.copy(), so a form_kwargs entry of 'empty_permitted' is supplied twice to the form constructor and the call fails. The ordinary per-form construction path (self.forms via _construct_form) merges kwargs with defaults.update(kwargs) and does not hit this duplication."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Model-formset / inline-formset empty_form reuse the same BaseFormSet.empty_form code path (django/forms/models.py BaseModelFormSet subclasses BaseFormSet and does not override empty_form); the reproduction uses modelformset_factory."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Pre-existing regression tests for empty_form/kwargs live in tests/forms_tests/tests/test_formsets.py (e.g. test_form_kwargs_empty_form, which only covers a custom_kwarg reaching empty_form, and test_more_initial_data asserting formset.empty_form.empty_permitted is True). Model-formset tests are in tests/model_formsets/tests.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The entire change is confined to BaseFormSet.empty_form in django/forms/formsets.py; the dictionary-literal merge is followed by a single **form_kwargs unpacking call to self.form, so the reserved keys override rather than duplicate get_form_kwargs(None) output."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "get_form_kwargs(None) returns self.form_kwargs.copy(), so a user-supplied form_kwargs entry for any reserved key is what previously caused the duplicate-keyword TypeError; model-formsets/inline-formsets reuse this code path via subclassing and are affected."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Non-reserved custom keys from get_form_kwargs(None) still propagate into the empty_form unchanged in both versions (behavior was not altered by this patch)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-1]: I investigated the oracle for a witness of requirement [impl-1]: BaseFormSet.empty_form must not raise a TypeError when the formset is constructed with form_kwargs whose keys overlap the reserved empty-form keywords (empty_permitted, auto_id, prefix, use_required_attribute, renderer).\n\nFirst, I confirmed the actual bug/patch semantics by mechanically reproducing it: constructing `formset_factory(...)(form_kwargs={'empty_permitted': True})` and accessing `formset.empty_form` raises `TypeError: ... got multiple values for keyword argument 'empty_permitted'` against the buggy program (traced to django/forms/formsets.py line 260 empty_form) and passes against the gold program. So the requirement is real and testable.\n\nI then read every relevant oracle test file that could exercise empty_form / form-kwargs / model-formsets behavior:\n- tests/forms_tests/tests/test_formsets.py — [VISIBLE]; contains test_form_kwargs_empty_form (only a non-reserved custom_kwarg) and test_more_initial_data (asserts `formset.empty_form.empty_permitted` is True on a default formset), neither constructs the formset with a reserved key overlapping form_kwargs, so neither triggers/narrows the duplicate-keyword bug.\n- tests/model_formsets/tests.py — [VISIBLE]; no reserved-keyword overlap test on empty_form.\n- tests/model_formsets_regress/tests.py — [VISIBLE]; no relevant empty_form/kwargs overlap test.\n- tests/inline_formsets/tests.py — [VISIBLE]; no relevant test.\n- tests/forms_tests/tests/tests.py and tests/forms_tests/tests/test_forms.py — [VISIBLE]; unrelated to the empty_form reserved-kwargs issue.\n\nEvery relevant file is labeled [VISIBLE], and none asserts the specific overlap behavior described by r. Since a valid Witness must rest on [HIDDEN] oracle assertions (a [VISIBLE] assertion can never serve, and there is no [HIDDEN] test covering this overlap scenario), no genuine oracle witness exists for this requirement. Failing-test list for the buggy run was empty, consistent with the benchmark not carrying a dedicated hidden regression for r.\n\nI confirmed (via run_test) that a representative test of r fails on buggy and passes on gold, but that test is my own construction and is not present as [HIDDEN] content in the oracle, so it cannot be submitted as a witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[impl-1] (BaseFormSet.empty_form): BaseFormSet.empty_form returns a form instance (rather than raising a TypeError about receiving multiple values for the same keyword argument) when the formset was constructed with form_kwargs whose keys overlap the reserved empty-form keyword arguments empty_permitted, auto_id, prefix, use_required_attribute, and/or renderer. — not entailed by S_vis (S_vis pins that empty_form must not raise when form_kwargs supplies empty_permitted (R1, R2), but impl-1 enumerates five reserved keys (empty_permitted, auto_id, prefix, use_required_attribute, renderer). S_vis evidence never mentions the other four keys, so it only partially pins the described anti-raise behavior.); confirmed by a synthesized witness: Target requirement [impl-1] concerns BaseFormSet.empty_form raising a TypeError when the formset was constructed with form_kwargs whose keys overlap the reserved empty-form keywords (empty_permitted / auto_id / prefix / use_required_attribute / renderer). The gold fix merges get_form_kwargs(None) into a dict literal and unpacks the merged dict once (reserved keys override), while the buggy code passes empty_permitted=True explicitly alongside **get_form_kwargs(None), leaving a duplicate 'empty_permitted' that raises \"got multiple values\". I constructed a plain formset (formset_factory) whose form_kwargs contains the reserved key 'empty_permitted', and requested formset.empty_form. This exercises BaseFormSet.empty_form's actual merged-vs-unpacked code path, not just co-located logic.\n\nConfirmation vs visible oracle: I reviewed every visible empty_form/forms-kwargs test (test_form_kwargs_empty_form and test_form_kwargs_formset only pass the NON-reserved key custom_kwarg; test_more_initial_data asserts empty_form.empty_permitted is True on a default formset with NO form_kwargs at all; model_formsets/inline test files don't cover reserved-key overlap). None constructs the formset with a reserved keyword inside form_kwargs, so none pins down the overlap behavior and none discriminates the bug. My scenario with form_kwargs={'empty_permitted': True} is therefore a genuinely independent input not already enforced.\n\nExecution: run_test with the exact source above PASSED against the gold program and FAILED against the buggy program with the precise duplicate-keyword TypeError described by the requirement (in buggy's empty_form, line 260). This is a genuine execution-confirmed witness: passes on gold, fails on buggy.",
+    "confidence": "Medium"
+  }
+}

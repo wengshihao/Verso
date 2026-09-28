@@ -1,0 +1,118 @@
+{
+  "task_id": "django__django-16143",
+  "status": "ok",
+  "duration_seconds": 308.4084846249316,
+  "llm_calls": 25,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16143",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the connection's `needs_rollback` flag is True, executing any further SQL query (via the cursor/CursorWrapper execute path) raises a `TransactionManagementError` whose message is \"An error occurred in the current transaction. You can't execute queries until the end of the 'atomic' block.\"",
+        "subject": "BaseDatabaseWrapper.validate_no_broken_transaction",
+        "hunk_ids": [],
+        "cited_from": "django/db/backends/base/base.py: 'def validate_no_broken_transaction(self):\\n        if self.needs_rollback:\\n            raise TransactionManagementError(\\n                \"An error occurred in the current transaction. You can't \"\\n                \"execute queries until the end of the 'atomic' block.\"\\n            )' — and tests/transactions/tests.py test_atomic_prevents_queries_in_broken_transaction: msg = (\"An error occurred in the current transaction. You can't \" \"execute queries until the end of the 'atomic' block.\")"
+      },
+      {
+        "id": "R2",
+        "statement": "The reason that `needs_rollback` was set to True (the underlying exception, e.g. an IntegrityError raised inside an 'atomic' block that was then swallowed) is not lost at the time `validate_no_broken_transaction` later raises \"You can't execute queries until the end of the 'atomic' block\"; Django tracks why the transaction was marked for rollback so that the resulting error can point at the original cause.",
+        "subject": "Atomic.__exit__ / connection needs_rollback bookkeeping",
+        "hunk_ids": [],
+        "cited_from": "Issue report: \"The exception is thrown if self.needs_rollback is True, but the underlying reason that self.needs_rollback has been set True has been lost, since it could have happened a long time previously. Transactions should keep track of why needs_rollback has been set, and use that to provide a more helpful error.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When transaction.mark_for_rollback_on_error's guarded body raises an exception while the target connection is inside an atomic block, the connection additionally records that same exception (in the connection's new rollback_exc slot) rather than only setting needs_rollback, so the raised exception instance becomes retrievable via connection.rollback_exc afterwards.",
+        "subject": "transaction.mark_for_rollback_on_error / BaseDatabaseWrapper.rollback_exc",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The TransactionManagementError that BaseDatabaseWrapper.validate_no_broken_transaction raises (when a query/cursor operation is attempted while needs_rollback is set) is raised using 'from' the recorded rollback exception: its __cause__ is the original exception recorded by mark_for_rollback_on_error for that break, making the underlying cause of the broken transaction observable through Python exception chaining (exc.__cause__); on a connection where no such exception was ever recorded the cause is None rather than a spurious/stale exception.",
+        "subject": "BaseDatabaseWrapper.validate_no_broken_transaction / TransactionManagementError.__cause__",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2/issue expresses the intent that the underlying reason for setting needs_rollback be tracked so a later error can point at the original cause, which is conceptually related to recording the exception. But S_vis nowhere pins down the patch's concrete mechanism (a new rollback_exc connection slot set when mark_for_rollback_on_error's guarded body raises), so the exact recorded-and-retrievable behavior is not derivable."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 hints that the broken-transaction error should expose the original cause (aligning with exception chaining), but it never specifies raising TransactionManagementError via 'from' the recorded exception, that __cause__ equals the recorded rollback_exc, or that it is None when nothing was recorded. Those mechanics are not pinned down by the visible text."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_mark_for_rollback_records_exception",
+      "test_source": "import django\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(\n        DATABASES={\n            \"default\": {\n                \"ENGINE\": \"django.db.backends.sqlite3\",\n                \"NAME\": \":memory:\",\n            }\n        },\n        INSTALLED_APPS=[],\n        SECRET_KEY=\"x\",\n    )\ndjango.setup()\n\n\ndef test_mark_for_rollback_records_exception():\n    from django.db import transaction, connection\n\n    sentinel = ValueError(\"boom-witness\")\n    try:\n        with transaction.atomic():\n            with transaction.mark_for_rollback_on_error():\n                raise sentinel\n    except ValueError:\n        pass\n    assert connection.rollback_exc is sentinel\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AttributeError: 'DatabaseWrapper' object has no attribute 'rollback_exc')",
+      "explanation": "R1 requires that when transaction.mark_for_rollback_on_error's guarded body raises an exception while the target connection is inside an atomic block, the connection records that same exception instance in the new connection.rollback_exc slot (H2 sets connection.rollback_exc = exc only when connection.in_atomic_block, and H0 adds the attribute's None initializer), making it retrievable afterwards — not merely setting needs_rollback.\n\nThe witness drives the real codepath: with transaction.atomic() the connection is inside an atomic block (in_atomic_block True); the guarded raise of a ValueError sentinel propagates into mark_for_rollback_on_error's except handler which sets needs_rollback and, on the fixed program, stores the exact sentinel into connection.rollback_exc. After swallowing the error, the assertion checks connection.rollback_exc is the very same instance.\n\nGenuine discriminator, confirmed by actual executions: on the buggy program run_test FAILS because no rollback_exc attribute exists on the DatabaseWrapper ('DatabaseWrapper' object has no attribute 'rollback_exc'), while on the gold program it PASSES. Note the run was done in its final form as a Django-configured pytest-style test; the pre-existing visible oracle tests (test_mark_for_rollback_on_error_in_transaction etc.) only assert transaction.get_rollback()/needs_rollback and never probe connection.rollback_exc, so this hidden new-slot fact is not already pinned by the visible surface and is not a reinvention of a visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The `needs_rollback` boolean live on `BaseDatabaseWrapper` (django/db/backends/base/base.py), initialized False in __init__, reset False on connect()/rollback(), and set True in several spots: the error path of `Atomic.__exit__` in django/db/transaction.py (when an inner savepointless/exiting block is rolled back or a commit fails), in `transaction.mark_for_rollback_on_error`, and in `BaseDatabaseWrapper.close()` when a connection is closed while inside an atomic block."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`validate_no_broken_transaction()` is invoked from `CursorWrapper._execute`/`_executemany`/`callproc` (django/db/backends/utils.py), i.e. at every query execution, so any query made after the flag is set raises the TransactionManagementError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests exercising this behavior live in tests/transactions/tests.py, principally `AtomicErrorsTests.test_atomic_prevents_queries_in_broken_transaction` and `AtomicMiscTests.test_mark_for_rollback_on_error_in_transaction`; the flag's public API is `transaction.get_rollback()`/`set_rollback()`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue itself (django ticket #16143) is a feature request to improve the debuggability of this error; visible sources give the exact current message text but do NOT pin down a precise replacement message/format, so R2 is expressed at the functional level the issue text actually supports rather than inventing an expected string."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "django/db/backends/base/base.py: BaseDatabaseWrapper gains a rollback_exc attribute, initialized to None in __init__ (H0); it is NOT reset in connect() or rollback(), and is set only by mark_for_rollback_on_error (transaction.py H2)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "needs_rollback (the precondition for the broken-transaction error path) can also become True via BaseDatabaseWrapper.close() when closed inside an atomic block and via Atomic.__exit__ error/commit-failure handling; those paths do not set rollback_exc, so there validate_no_broken_transaction raises from None (cause suppressed) unless a previous mark_for_rollback_on_error failure left a stale rollback_exc on the same wrapper."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only three hunks are touched: __init__ (H0), the raise in validate_no_broken_transaction (H1), and the except clause of mark_for_rollback_on_error (H2); atomic-block exit handling and single-query cursor validation in django/db/backends/utils.py are unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 requires that when transaction.mark_for_rollback_on_error's guarded body raises inside an atomic block, the connection stores that exact exception in the NEW connection.rollback_exc slot (retrievable afterwards). I examined the oracle test files most relevant to this behavior.\n\nThe canonical test file for mark_for_rollback_on_error / atomic rollback state is tests/transactions/tests.py. I read it in full: it was labeled [VISIBLE] throughout, and it contains AtomicMiscTests.test_mark_for_rollback_on_error_in_transaction and test_mark_for_rollback_on_error_in_autocommit, plus AtomicErrorsTests.test_atomic_prevents_queries_in_broken_transaction. None of these assertions reference the connection.rollback_exc attribute at all — they check transaction.get_rollback(), connection.needs_rollback, TransactionManagementError message text, and row absence/presence in the DB. Since they never probe connection.rollback_exc (R1's new retrievable-exception slot), passing them cannot demonstrate the requirement, and their content is [VISIBLE] anyway so they are ineligible as a Witness.\n\nI also inspected the other transaction-orientated file transaction_hooks/tests.py and backends/base/test_base.py — both [VISIBLE], and neither contains rollback_exc assertions. No other file in the corpus plausibly hosts a hidden rollback_exc test under the transactions feature. Critically, the run record reports \"(none recorded)\" tests currently failing against the buggy program, whereas a genuine Witness must fail against the buggy program. The absence of any failing oracle test, combined with the fact that the behavioral home for this feature (transactions/tests.py) is entirely [VISIBLE] and contains no rollback_exc probe, leads me to conclude that the existing oracle does not enforce R1. found=false is the honest result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (transaction.mark_for_rollback_on_error / BaseDatabaseWrapper.rollback_exc): When transaction.mark_for_rollback_on_error's guarded body raises an exception while the target connection is inside an atomic block, the connection additionally records that same exception (in the connection's new rollback_exc slot) rather than only setting needs_rollback, so the raised exception instance becomes retrievable via connection.rollback_exc afterwards. — not entailed by S_vis (S_vis R2/issue expresses the intent that the underlying reason for setting needs_rollback be tracked so a later error can point at the original cause, which is conceptually related to recording the exception. But S_vis nowhere pins down the patch's concrete mechanism (a new rollback_exc connection slot set when mark_for_rollback_on_error's guarded body raises), so the exact recorded-and-retrievable behavior is not derivable.); confirmed by a synthesized witness: R1 requires that when transaction.mark_for_rollback_on_error's guarded body raises an exception while the target connection is inside an atomic block, the connection records that same exception instance in the new connection.rollback_exc slot (H2 sets connection.rollback_exc = exc only when connection.in_atomic_block, and H0 adds the attribute's None initializer), making it retrievable afterwards — not merely setting needs_rollback.\n\nThe witness drives the real codepath: with transaction.atomic() the connection is inside an atomic block (in_atomic_block True); the guarded raise of a ValueError sentinel propagates into mark_for_rollback_on_error's except handler which sets needs_rollback and, on the fixed program, stores the exact sentinel into connection.rollback_exc. After swallowing the error, the assertion checks connection.rollback_exc is the very same instance.\n\nGenuine discriminator, confirmed by actual executions: on the buggy program run_test FAILS because no rollback_exc attribute exists on the DatabaseWrapper ('DatabaseWrapper' object has no attribute 'rollback_exc'), while on the gold program it PASSES. Note the run was done in its final form as a Django-configured pytest-style test; the pre-existing visible oracle tests (test_mark_for_rollback_on_error_in_transaction etc.) only assert transaction.get_rollback()/needs_rollback and never probe connection.rollback_exc, so this hidden new-slot fact is not already pinned by the visible surface and is not a reinvention of a visible assertion.",
+    "confidence": "Medium"
+  }
+}

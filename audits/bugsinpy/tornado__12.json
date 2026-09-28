@@ -1,0 +1,183 @@
+{
+  "task_id": "tornado__12",
+  "status": "ok",
+  "duration_seconds": 145.18265720899217,
+  "llm_calls": 27,
+  "error": null,
+  "record": {
+    "task_id": "tornado__12",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "FacebookGraphMixin.get_authenticated_user, after exchanging the authorization code for an access token, performs the follow-up Facebook Graph request to \"/me\" and completes without raising `TypeError: 'Future' object is not callable`, ultimately yielding the user info dictionary (so the access token can be used by the caller's downstream auth pipeline).",
+        "subject": "FacebookGraphMixin.get_authenticated_user",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I had to modify `_on_access_token` so that it did not attempt to make a `facebook_request` to `/me`. With the code as it stands, I get this error: `TypeError: 'Future' object is not callable` However, removing that extra request fixes this, and I can use the access_token in the next part of my auth pipeline.\"  — Code path: `_on_access_token` body calls `self.facebook_request(path=\"/me\", callback=functools.partial(self._on_get_user_info, future, session, fields), access_token=session[\"access_token\"], fields=\",\".join(fields))`."
+      },
+      {
+        "id": "R2",
+        "statement": "FacebookGraphMixin.facebook_request must invoke the user-supplied `callback` with the request result (delivering the response to it), rather than causing the framework to attempt to call a Future as a function and raise `TypeError: 'Future' object is not callable`.",
+        "subject": "FacebookGraphMixin.facebook_request",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"I had to modify `_on_access_token` so that it did not attempt to make a `facebook_request` to `/me`. With the code as it stands, I get this error: `TypeError: 'Future' object is not callable`\" — and the undecorated body of `facebook_request` does `url = self._FACEBOOK_BASE_URL + path; return self.oauth2_request(url, callback, access_token, post_args, **args)`, forwarding the (decorator-replaced) `callback` positional argument; `_auth_future_to_callback` then does `callback(result)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "FacebookGraphMixin._on_access_token derives the session's access_token (and expires) entries from the access-token response body using the standard query-string parser (urlparse.parse_qs) rather than escape.parse_qs_bytes, so on Python 3 the resulting session values are native text strings rather than latin1-decoded byte strings.",
+        "subject": "tornado.auth.FacebookGraphMixin._on_access_token",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "FacebookGraphMixin.facebook_request returns a Future whose result is the value produced by the underlying oauth2_request call (for a successful graph API request, the JSON-decoded response body), instead of forwarding its own callback argument into oauth2_request as a callback.",
+        "subject": "tornado.auth.FacebookGraphMixin.facebook_request",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When the underlying oauth2_request fails, FacebookGraphMixin.facebook_request's returned Future is completed with that same exception (e.g. AuthError) instead of failing because a Future was misused as a callback.",
+        "subject": "tornado.auth.FacebookGraphMixin.facebook_request",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "When FacebookGraphMixin.facebook_request is invoked with a legacy callback argument, that callback is still invoked with the request result (or None when an AuthError occurred), i.e. supplying a callback neither breaks nor bypasses the future chaining.",
+        "subject": "tornado.auth.FacebookGraphMixin.facebook_request",
+        "hunk_ids": [
+          "H0",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 only says the /me request should complete without the TypeError and yield user info; it says nothing about which query-string parser _on_access_token uses or whether session values become native text vs latin1 bytes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes the bug as a callback-vs-Future misuse symptom; it does not pin down that facebook_request should return a Future whose result is oauth2_request's result rather than forwarding its callback argument."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only mentions the 'Future object is not callable' TypeError; it says nothing about the returned Future being completed with the underlying oauth2_request exception such as AuthError."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 does require that facebook_request invoke the user-supplied callback with the request result, matching R4's 'callback invoked with result', but it does not address the 'None when an AuthError occurred' clause or the requirement that supplying a callback neither breaks nor bypasses future chaining, leaving the specific behavior only partially pinned."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "FacebookGraphTest.test_facebook_login",
+      "test_source": "from tornado.auth import FacebookGraphMixin\nfrom tornado import gen\nfrom tornado.web import RequestHandler, Application\nfrom tornado.testing import AsyncHTTPTestCase\nfrom tornado.escape import json_decode\n\n\nclass FacebookGraphLoginHandler(RequestHandler, FacebookGraphMixin):\n    def initialize(self, test):\n        self._OAUTH_REDIRECT_URI = test.get_url('/facebook/client/login')\n        self._OAUTH_AUTHORIZE_URL = test.get_url('/facebook/server/authorize')\n        self._OAUTH_ACCESS_TOKEN_URL = test.get_url('/facebook/server/access_token')\n        self._FACEBOOK_BASE_URL = test.get_url('/facebook/server')\n\n    @gen.coroutine\n    def get(self):\n        code = self.get_argument('code', None)\n        if code is not None:\n            user = yield self.get_authenticated_user(\n                redirect_uri=self._OAUTH_REDIRECT_URI,\n                client_id=self.settings['facebook_api_key'],\n                client_secret=self.settings['facebook_secret'],\n                code=code)\n            self.write(user)\n        else:\n            yield self.authorize_redirect(\n                redirect_uri=self._OAUTH_REDIRECT_URI,\n                client_id=self.settings['facebook_api_key'],\n                extra_params={'scope': 'read_stream,offline_access'})\n\n\nclass FacebookGraphServerAccessTokenHandler(RequestHandler):\n    def get(self):\n        self.write('access_token=access-token&expires=1234')\n\n\nclass FacebookGraphServerMeHandler(RequestHandler):\n    def get(self):\n        self.write(dict(id='100', name='Foo'))\n\n\nclass FacebookGraphTest(AsyncHTTPTestCase):\n    def get_app(self):\n        return Application(\n            [\n                ('/facebook/client/login', FacebookGraphLoginHandler, dict(test=self)),\n                ('/facebook/server/access_token', FacebookGraphServerAccessTokenHandler),\n                ('/facebook/server/me', FacebookGraphServerMeHandler),\n            ],\n            facebook_api_key='fake_facebook_api_key',\n            facebook_secret='fake_facebook_secret')\n\n    def test_facebook_login(self):\n        response = self.fetch('/facebook/client/login?code=fake-auth-code')\n        response.rethrow()\n        parsed = json_decode(response.body)\n        self.assertEqual(parsed['id'], '100')\n        self.assertEqual(parsed['access_token'], 'access-token')\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED",
+      "explanation": "The oracle's named failing test tornado.test.auth_test.AuthTest.test_facebook_login drives the full FacebookGraphMixin login flow: the simulated access-token server returns the query-string body 'access_token=access-token&expires=1234', FacebookGraphMixin._on_access_token parses it into the session dict, the /me follow-up request returns the user, and the handler writes the resulting user dict (including access_token) as JSON. The assertion `self.assertEqual(parsed['access_token'], 'access-token')` is exactly R1's behavioral claim: on gold, _on_access_token uses urlparse.parse_qs, so session['access_token'] is the native text 'access-token' and the assertion holds; on buggy, it uses escape.parse_qs_bytes on Python 3, yielding b'access-token', so the value is a latin1-decoded byte string. This byte/text distinction is what the assertion enforces — even with the R2/facebook_request plumbing absent the bytes value cannot survive the JSON serialization of the user dict written by the handler, so the test discriminates R1 specifically, not merely the H2 callback plumbing. I reconstructed the oracle test faithfully (it is the hidden facebook addition to auth_test.py; the visible auth_test.py content shown to the repair system contained no FacebookGraphMixin coverage) and mechanically confirmed: identical source PASSES against gold and FAILS against buggy. I also separately confirmed the R1 discrimination in isolation by invoking _on_access_token directly with a fake response body and a stubbed facebook_request: gold yields the str 'access-token', buggy yields b'access-token'. I reviewed every oracle test file containing auth coverage (only tornado/test/auth_test.py) plus import_test.py/util_test.py; no other test exercises FacebookGraphMixin."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Files visible for this task: tornado/auth.py and tornado/test/auth_test.py only (no Facebook-specific tests exist)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue report is the sole source for the Facebook requirements; the disclosed tests contain no FacebookGraphMixin coverage."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Decorator plumbing: `_auth_return_future(f)` (defined in auth.py) uses `ArgReplacer(f, 'callback')` to substitute a fresh TracebackFuture for the `callback` argument; if the original `callback` was not None it registers `functools.partial(_auth_future_to_callback, callback)` on the new future, and `_auth_future_to_callback` executes `callback(result)` — so whatever occupies the `callback` slot must be callable."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both `OAuth2Mixin.oauth2_request` and `FacebookGraphMixin.facebook_request` are decorated with `_auth_return_future`; `facebook_request` forwards its own (replaced) `callback` value positionally into `oauth2_request`'s `callback` parameter, which is the mechanism that would hand a Future to `_auth_future_to_callback`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "`_on_access_token(self, redirect_uri, client_id, client_secret, future, fields, response)` receives the outer Future as `future` and passes `functools.partial(self._on_get_user_info, future, session, fields)` as the `callback` for the `/me` `facebook_request`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "GoogleOAuth2Mixin provides its own `_on_access_token` that only sets the future result (no follow-up request); Twitter/Google login flows and OAuth1 are exercised by auth_test.py but not Facebook."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "auth_test.py's module docstring: 'These tests do not currently do much to verify the correct implementation of the openid/oauth protocols, they just exercise the major code paths and ensure that it doesn't blow up'."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tornado/auth.py's top-level try/except binds the name urlparse to the stdlib urlparse module (py2) or urllib.parse (py3); urlparse.parse_qs is therefore the stdlib query-string parser and is the same function as escape.parse_qs_bytes on Python 2 (escape.parse_qs_bytes is simply re-exported _parse_qs there), so H1's behavioral change is Python-3-only."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "escape.parse_qs_bytes on Python 3 parses with encoding='latin1' and re-encodes each value to bytes, so before H1 the Facebook access_token was a bytes object on py3; urlparse.parse_qs with the default encoding returns str values."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both urlparse.parse_qs and escape.parse_qs_bytes default to keep_blank_values=False and strict_parsing=False, so only the value type changes, not which keys are present; args.get('expires') is a list (or None) both before and after."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "tornado.concurrent.chain_future(a, b) registers a done-callback on a that copies a's result, or a's exception/AuthError, into b unless b is already done or cancelled; it is called with (oauth_future, callback) where callback is the TracebackFuture injected by the _auth_return_future decorator."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_auth_return_future's wrapper registers _auth_future_to_callback on the injected future only when the original caller passed a non-None callback, and _auth_future_to_callback calls callback(result) after swallowing AuthError into None; chain_future deliberately completes that same injected future rather than invoking it as a callable."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "facebook_request's signature remains (self, path, callback, access_token=None, post_args=None, **args) and it still computes url = self._FACEBOOK_BASE_URL + path; the only hunk H2 change is how the downstream oauth2_request call is issued and how its result is propagated."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The auth module also defines a private helper named _oauth_parse_response that already uses urlparse.parse_qs; the H1 change makes FacebookGraphMixin._on_access_token consistent with that parser usage."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "OAuth2Mixin.oauth2_request is decorated with _auth_return_future, so calling it without an explicit callback returns a Future and its parsing of the query string into all_args / urlencode of access_token is unchanged by this patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (tornado.auth.FacebookGraphMixin._on_access_token): FacebookGraphMixin._on_access_token derives the session's access_token (and expires) entries from the access-token response body using the standard query-string parser (urlparse.parse_qs) rather than escape.parse_qs_bytes, so on Python 3 the resulting session values are native text strings rather than latin1-decoded byte strings. — not entailed by S_vis (S_vis R1 only says the /me request should complete without the TypeError and yield user info; it says nothing about which query-string parser _on_access_token uses or whether session values become native text vs latin1 bytes.); confirmed by a oracle witness: The oracle's named failing test tornado.test.auth_test.AuthTest.test_facebook_login drives the full FacebookGraphMixin login flow: the simulated access-token server returns the query-string body 'access_token=access-token&expires=1234', FacebookGraphMixin._on_access_token parses it into the session dict, the /me follow-up request returns the user, and the handler writes the resulting user dict (including access_token) as JSON. The assertion `self.assertEqual(parsed['access_token'], 'access-token')` is exactly R1's behavioral claim: on gold, _on_access_token uses urlparse.parse_qs, so session['access_token'] is the native text 'access-token' and the assertion holds; on buggy, it uses escape.parse_qs_bytes on Python 3, yielding b'access-token', so the value is a latin1-decoded byte string. This byte/text distinction is what the assertion enforces — even with the R2/facebook_request plumbing absent the bytes value cannot survive the JSON serialization of the user dict written by the handler, so the test discriminates R1 specifically, not merely the H2 callback plumbing. I reconstructed the oracle test faithfully (it is the hidden facebook addition to auth_test.py; the visible auth_test.py content shown to the repair system contained no FacebookGraphMixin coverage) and mechanically confirmed: identical source PASSES against gold and FAILS against buggy. I also separately confirmed the R1 discrimination in isolation by invoking _on_access_token directly with a fake response body and a stubbed facebook_request: gold yields the str 'access-token', buggy yields b'access-token'. I reviewed every oracle test file containing auth coverage (only tornado/test/auth_test.py) plus import_test.py/util_test.py; no other test exercises FacebookGraphMixin.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "task_id": "Jsoup-34",
+  "status": "ok",
+  "duration_seconds": 272.13333783300004,
+  "llm_calls": 26,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-34",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "CharacterReader.nextIndexOf(CharSequence) must not throw an ArrayIndexOutOfBoundsException and must return -1 when the searched-for sequence (e.g. \"]](>\") is not present in the remaining input, including when the leading character of the sequence appears so close to the end of input that the full-sequence comparison would otherwise run past the underlying char array's end.",
+        "subject": "CharacterReader.nextIndexOf(CharSequence)",
+        "hunk_ids": [],
+        "cited_from": "Issue stack trace: \"java.lang.ArrayIndexOutOfBoundsException: 8666\\n    at org.jsoup.parser.CharacterReader.nextIndexOf(CharacterReader.java:92)\"; CharacterReaderTest.nextIndexOfUnmatched: \"CharacterReader r = new CharacterReader(\\\"<[[one]]\\\");\\nassertEquals(-1, r.nextIndexOf(\\\"]](>\\\"));\" and the loop body in CharacterReader.java: \"for (int j = 1; i < last && seq.charAt(j) == input[i]; i++, j++);\" (unbounded w.r.t. `length`)."
+      },
+      {
+        "id": "R2",
+        "statement": "Parsing the HTML input \"<![CDATA[]]\" must succeed without throwing and must yield a Document whose body contains exactly 1 child node (the dangling CDATA-open / unterminated-content text), rather than throwing an exception from the character reader seeking past EOF for a \"]](>\" close marker that never appears.",
+        "subject": "TokeniserState CDATA / Jsoup.parse handling of unclosed CDATA at EOF",
+        "hunk_ids": [],
+        "cited_from": "HtmlParserTest.handlesUnclosedCdataAtEOF verbatim: \"// https://github.com/jhy/jsoup/issues/349 would crash, as character reader would try to seek past EOF\\nString h = \\\"<![CDATA[]]\\\";\\nDocument doc = Jsoup.parse(h);\\nassertEquals(1, doc.body().childNodeSize());\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "nextIndexOf(CharSequence seq) no longer throws an ArrayIndexOutOfBoundsException when the scan for seq's first character lands so close to the end of the unconsumed input that fewer than seq.length() characters remain from that position (i.e. the potential match window would extend past the buffer's last index).",
+        "subject": "CharacterReader.nextIntIndexOf(CharSequence)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "When the only candidate hits for seq's first character occur too close to the end of the unconsumed input for seq.length() characters to remain (so those positions cannot hold a full match), nextIndexOf(CharSequence seq) treats them as non-matches and returns -1 if no other full occurrence of seq exists in the unconsumed region, rather than returning a match that would have to read past the end of the buffer.",
+        "subject": "CharacterReader.nextIntIndexOf(CharSequence)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-3",
+        "statement": "A full occurrence of seq whose window fits entirely within the unconsumed input (its ending index last ≤ input length) is still found and its offset returned, including the edge case where the match ends exactly at the final index of the input.",
+        "subject": "CharacterReader.nextIntIndexOf(CharSequence)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1 states nextIndexOf must not throw AIOOBE when the leading character of the searched sequence appears so close to the end that the full comparison would run past the buffer end, with a backing test feeding a seq whose first char sits fewer-than-length chars from the end and asserting no throw (returns -1)."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "R1's test (input \"<[[one]]\", seq \"]](>\") has only near-end leading-char hits that cannot hold a full-length match; it pins return -1 when seq is not otherwise present, matching impl-2's treat-as-non-match + return -1 behavior."
+      },
+      {
+        "requirement_id": "impl-3",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only evidences the negative path (seq absent / candidate hits too near the end return -1); nothing tests or specifies that a full occurrence whose window fits within the input — particularly one ending exactly at the final index — is still found and its offset returned, so the positive boundary behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "impl-3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Requirement impl-3 asserts that a full occurrence of seq whose window fits entirely within the unconsumed input (last ≤ length), including a match ending exactly at the final input index, is found and its positive offset returned.\n\nI exhaustively investigated whether this is executable as a witness (buggy FAILED / gold PASSED) and concluded it is not, using both code analysis and live run_test experiments on gold and buggy CharacterReader revisions:\n\n1. Code analysis. In nextIndexOf(CharSequence), buggy guards the candidate check with only `if (offset < length)`, gold with `if (offset < length && last <= length)`. The added `last <= length` test only *suppresses* handling of windows that would extend past the buffer end (last > length). It never adds any new finding capability. Hence for ANY search whose matching window fits wholly inside the buffer (last ≤ length, incl. last == length), gold and buggy take the identical path: their shared inner compare loop runs wholly in-bounds and `if (i==last) return offset - pos;` fires in both.\n\n2. Ordering argument. Because a crash/overrun in buggy requires a window that extends past the buffer end, and last = offset+seq.length(), the offending candidate must satisfy offset > L - seq.length() (with L the input length). A fully buffer-fitting occurrence, by contrast, has start offset ≤ L - seq.length(). So any fitting occurrence is always scanned (and returned, if it is the relevant match) strictly before any overrunning candidate is ever reached — there is no input in which a non-fitting candidate can crash/block buggy before a fitting occurrence would be returned. Thus buggy cannot miss a fitting-tail occurrence that gold reports.\n\n3. Empirical confirmation (reflective access to package-private CharacterReader in org.jsoup.parser): a tail match ending exactly at the last input index (\"xxabcd\" searching \"cd\" returns offset 4) PASSES on BOTH gold and buggy; likewise \"qqqqabcd\" searching \"cd\" (ends at final index 7) returns 6 on both. Buggy only diverges (AIOOBE ArrayIndexOutOfBoundsException at CharacterReader:92) on the SIBLING case of a window that does NOT fit (\"<[[one]]\" searching \"]]>\" crashes buggy; gold returns -1) — behavior that belongs to the \"not-found / no-overrun\" requirement and is already pinned by the visible test nextIndexOfUnmatched, not by impl-3.\n\nSince gold and buggy are behaviorally identical on every input described by impl-3, no genuine discriminating witness exists for this requirement in this buggy/gold pair; and the oracle itself contains no hidden test covering it. Hence found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files are visible: src/main/java/org/jsoup/parser/CharacterReader.java plus two tests (CharacterReaderTest.java, HtmlParserTest.java). No Tokeniser/TokeniserState sources are present in this scaffold, though the issue's stack trace and the tests reference them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The crash location CharacterReader.java:92 in the issue corresponds to the CharSequence overload of nextIndexOf; its inner comparison loop `for (int j = 1; i < last && seq.charAt(j) == input[i]; i++, j++);` never bounds-checks `i` against the input `length`, so a scan-start hit near the tail of the buffer overruns the array."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The tests already present include HtmlParserTest.handlesUnclosedCdataAtEOF, which explicitly names issue 349 (the bug this task's feed example derives from) and asserts parsing `<![CDATA[]]` yields 1 body child node."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing CharacterReader unit tests nextIndexOfChar/nextIndexOfString/nextIndexOfUnmatched cover the -1-on-no-match returns for the char and CharSequence overloads."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The gist URL in the issue is not locally available; the concrete visible reproduction from which requirements were derived is the reported AIOOBE stack trace plus the two regression tests."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is confined to the CharSequence overload of nextIndexOf (CharacterReader.nextIntIndexOf(CharSequence)); the char overload and all other CharacterReader methods are untouched by this hunk."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The inner character-comparison loop `for (int j = 1; i < last && seq.charAt(j) == input[i]; i++, j++);` does not itself bounds-check i against length; the added guard `last <= length` prevents that loop from being entered when the candidate window would extend past the buffer end."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Within the outer loop, offset can reach `length` via the inner `while(++offset < length && ...)`, so the pre-existing `offset < length` check is retained and the fix extends that guard condition rather than replacing it."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-3]: I reviewed every test file in the oracle (17 files). The only tests that touch CharacterReader.nextIntIndexOf(CharSequence) or the CDATA-at-EOF crash path live in src/test/java/org/jsoup/parser/CharacterReaderTest.java and src/test/java/org/jsoup/parser/HtmlParserTest.java — and both of those files are labelled [VISIBLE]. A witness may only be derived from [HIDDEN] content, so no test in those files can qualify regardless of content.\n\nRequirement [impl-3] specifically demands demonstrating that a full occurrence of seq whose window fits entirely within the unconsumed input (ending index last ≤ length, including a match ending exactly at the final index) is FOUND and its positive offset returned. Among all tests, none asserts this positive bound-fitting found-at-tail behavior:\n- nextIndexOfUnmatched asserts the OPPOSITE (returns -1) for a seq whose window does NOT fit (\"]]>\" in \"<[[one]]\") — this is the \"not found / no overrun past EOF\" sibling behavior, not impl-3's found-positive-offset; it is also [VISIBLE].\n- handlesUnclosedCdataAtEOF asserts the whole parse of an unclosed \"<![CDATA[]]\" yields 1 body child without crashing — an integration regression about an unmatched/not-fitting window at EOF, again not an assertion that a fitting occurrence's offset is returned; also [VISIBLE].\n\nAll [HIDDEN] files (DataUtilTest, StringUtilTest, ParseTest, DocumentTest, ElementTest, EntitiesTest, FormElementTest, NodeTest, TextNodeTest, AttributeParseTest, XmlTreeBuilderTest, CleanerTest, CssTest, ElementsTest, SelectorTest) contain no test exercising CharacterReader.nextIntIndexOf or the parser EOF path. Therefore the oracle contains no [HIDDEN] assertion genuinely testing impl-3's behavior, and found=false is the correct outcome."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-3]: Requirement impl-3 asserts that a full occurrence of seq whose window fits entirely within the unconsumed input (last ≤ length), including a match ending exactly at the final input index, is found and its positive offset returned.\n\nI exhaustively investigated whether this is executable as a witness (buggy FAILED / gold PASSED) and concluded it is not, using both code analysis and live run_test experiments on gold and buggy CharacterReader revisions:\n\n1. Code analysis. In nextIndexOf(CharSequence), buggy guards the candidate check with only `if (offset < length)`, gold with `if (offset < length && last <= length)`. The added `last <= length` test only *suppresses* handling of windows that would extend past the buffer end (last > length). It never adds any new finding capability. Hence for ANY search whose matching window fits wholly inside the buffer (last ≤ length, incl. last == length), gold and buggy take the identical path: their shared inner compare loop runs wholly in-bounds and `if (i==last) return offset - pos;` fires in both.\n\n2. Ordering argument. Because a crash/overrun in buggy requires a window that extends past the buffer end, and last = offset+seq.length(), the offending candidate must satisfy offset > L - seq.length() (with L the input length). A fully buffer-fitting occurrence, by contrast, has start offset ≤ L - seq.length(). So any fitting occurrence is always scanned (and returned, if it is the relevant match) strictly before any overrunning candidate is ever reached — there is no input in which a non-fitting candidate can crash/block buggy before a fitting occurrence would be returned. Thus buggy cannot miss a fitting-tail occurrence that gold reports.\n\n3. Empirical confirmation (reflective access to package-private CharacterReader in org.jsoup.parser): a tail match ending exactly at the last input index (\"xxabcd\" searching \"cd\" returns offset 4) PASSES on BOTH gold and buggy; likewise \"qqqqabcd\" searching \"cd\" (ends at final index 7) returns 6 on both. Buggy only diverges (AIOOBE ArrayIndexOutOfBoundsException at CharacterReader:92) on the SIBLING case of a window that does NOT fit (\"<[[one]]\" searching \"]]>\" crashes buggy; gold returns -1) — behavior that belongs to the \"not-found / no-overrun\" requirement and is already pinned by the visible test nextIndexOfUnmatched, not by impl-3.\n\nSince gold and buggy are behaviorally identical on every input described by impl-3, no genuine discriminating witness exists for this requirement in this buggy/gold pair; and the oracle itself contains no hidden test covering it. Hence found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[impl-3] (CharacterReader.nextIntIndexOf(CharSequence)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Requirement impl-3 asserts that a full occurrence of seq whose window fits entirely within the unconsumed input (last ≤ length), including a match ending exactly at the final input index, is found and its positive offset returned.\n\nI exhaustively investigated whether this is executable as a witness (buggy FAILED / gold PASSED) and concluded it is not, using both code analysis and live run_test experiments on gold and buggy CharacterReader revisions:\n\n1. Code analysis. In nextIndexOf(CharSequence), buggy guards the candidate check with only `if (offset < length)`, gold with `if (offset < length && last <= length)`. The added `last <= length` test only *suppresses* handling of windows that would extend past the buffer end (last > length). It never adds any new finding capability. Hence for ANY search whose matching window fits wholly inside the buffer (last ≤ length, incl. last == length), gold and buggy take the identical path: their shared inner compare loop runs wholly in-bounds and `if (i==last) return offset - pos;` fires in both.\n\n2. Ordering argument. Because a crash/overrun in buggy requires a window that extends past the buffer end, and last = offset+seq.length(), the offending candidate must satisfy offset > L - seq.length() (with L the input length). A fully buffer-fitting occurrence, by contrast, has start offset ≤ L - seq.length(). So any fitting occurrence is always scanned (and returned, if it is the relevant match) strictly before any overrunning candidate is ever reached — there is no input in which a non-fitting candidate can crash/block buggy before a fitting occurrence would be returned. Thus buggy cannot miss a fitting-tail occurrence that gold reports.\n\n3. Empirical confirmation (reflective access to package-private CharacterReader in org.jsoup.parser): a tail match ending exactly at the last input index (\"xxabcd\" searching \"cd\" returns offset 4) PASSES on BOTH gold and buggy; likewise \"qqqqabcd\" searching \"cd\" (ends at final index 7) returns 6 on both. Buggy only diverges (AIOOBE ArrayIndexOutOfBoundsException at CharacterReader:92) on the SIBLING case of a window that does NOT fit (\"<[[one]]\" searching \"]]>\" crashes buggy; gold returns -1) — behavior that belongs to the \"not-found / no-overrun\" requirement and is already pinned by the visible test nextIndexOfUnmatched, not by impl-3.\n\nSince gold and buggy are behaviorally identical on every input described by impl-3, no genuine discriminating witness exists for this requirement in this buggy/gold pair; and the oracle itself contains no hidden test covering it. Hence found=false.",
+    "confidence": "Medium"
+  }
+}

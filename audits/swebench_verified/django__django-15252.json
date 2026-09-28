@@ -1,0 +1,142 @@
+{
+  "task_id": "django__django-15252",
+  "status": "ok",
+  "duration_seconds": 555.7499667500379,
+  "llm_calls": 32,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15252",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a `migrate` (or the MigrationRecorder operations it triggers) runs against a database connection where the configured db router's allow_migrate returns False for that database (as in the reporter's router, which returns False for every db != 'default'), Django must not create/ensure the `django_migrations` table on that connection; the migration recording schema must only be ensured on databases where migrating is actually allowed.",
+        "subject": "django.db.migrations.recorder.MigrationRecorder (ensure_schema/record_applied/applied_migrations/record_unapplied) and django.db.migrations.executor.MigrationExecutor.migrate",
+        "hunk_ids": [],
+        "cited_from": "MigrationRecorder: 'def record_applied(self, app, name): ... self.ensure_schema(); self.migration_qs.create(app=app, name=name)' ... 'def ensure_schema(self): ... if self.has_table(): return ... with self.connection.schema_editor() as editor: editor.create_model(self.Migration)'. Issue (Current Behaviour): 'The first thing that record_applied does is a call to self.ensure_schema() ... ensure_schema checks to see if the Migration model is in the tables in the connection. If it does not find the table then it tries to create the table. I believe that this is incorrect behaviour when a db_router has been provided. If using the router above, my expectation would be that the table is not created on any connection other than the 'default' connection. Looking at the other methods on the MigrationRecorder, I would expect that there will be similar issues with applied_migrations and record_unapplied.'"
+      },
+      {
+        "id": "R2",
+        "statement": "The reporter's router policy (allow_migrate returns True only for the 'default' database, False for all other databases because models there are managed=False) must keep all non-'default' databases free of tables that Django itself creates for migrations bookkeeping, so that when test databases are created and the migrate command is run against each connection, no django_migrations table (nor migration recording side effects) appears on the non-default connections.",
+        "subject": "django.db.router (allow_migrate honoring) during test-database creation / migrate against non-default aliases",
+        "hunk_ids": [],
+        "cited_from": "Issue router: 'class Router(object):\\n\\tdef allow_migrate(self, db, model):\\n\\t\\tif db == \\'default\\':\\n\\t\\t\\treturn True\\n\\t\\treturn False'. 'We run our functional tests and the migrate command is called against each connection when the test databases are created'. 'If using the router above, my expectation would be that the table is not created on any connection other than the \\'default\\' connection.'"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When migrate() is invoked with an explicit empty plan (plan == []) and the django_migrations table does not exist on the migration connection's database, migrate() returns the ProjectState built from the unmigrated apps (with_applied_migrations=False) without creating the django_migrations table (i.e. it performs an early return before ensure_schema/table creation and before folding applied migrations into the state).",
+        "subject": "django.db.migrations.executor.MigrationExecutor.migrate",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When migrate() is invoked with an explicit empty plan (plan == []) and the django_migrations table already exists on the connection's database, migrate() does not take the early-return path; it proceeds through the normal empty-plan flow and returns a ProjectState that includes applied migrations (with_applied_migrations=True).",
+        "subject": "django.db.migrations.executor.MigrationExecutor.migrate",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When migrate() is invoked without an explicit empty plan (plan is None or any non-empty plan), the django_migrations table is ensured at the outset — it is created if it does not yet exist (ensure_schema is still called, preserving prior behavior).",
+        "subject": "django.db.migrations.executor.MigrationExecutor.migrate",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis concerns router-controlled migration recording (ensure_schema on allowed DBs only), not the internal migrate() behavior when invoked with an explicit empty plan. Nothing pins down an early return before ensure_schema for plan==[]."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes when the django_migrations table should/shouldn't be created based on allow_migrate; it never specifies migrate()'s flow (early return vs normal empty-plan path vs applied-migration folding) as a function of whether an explicit empty plan was passed or whether the table already exists."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only asserts the table should not be ensured on non-allowed databases; it says nothing about the contract that migrate() with a None or non-empty plan still calls ensure_schema at the outset. That implementation-specific guarantee is absent from the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r1",
+      "test_source": "def test_r1():\n    from unittest import mock\n    from django.db.migrations.executor import MigrationExecutor\n\n    executor = MigrationExecutor.__new__(MigrationExecutor)\n    executor.recorder = mock.Mock()\n    executor.recorder.has_table.return_value = False  # no django_migrations table\n    executor.loader = mock.Mock()\n    executor.loader.replacements = {}\n    executor.migration_plan = lambda *args, **kwargs: []\n    calls = []\n    executor._create_project_state = lambda **kwargs: calls.append(kwargs) or \"STATE\"\n    result = executor.migrate([], plan=[])\n    # R1: with an empty explicit plan and no django_migrations table, migrate()\n    # early-returns the unmigrated ProjectState (with_applied_migrations=False)\n    # and never invokes ensure_schema (django_migrations stays uncreated).\n    assert calls == [{'with_applied_migrations': False}], calls\n    assert result == \"STATE\"\n    executor.recorder.ensure_schema.assert_not_called()",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: calls == [{'with_applied_migrations': True}] (buggy folds applied migrations because it lacks the early-return guard) and ensure_schema would have been called ('True' path reaches the code that always calls ensure_schema first).",
+      "explanation": "Target R1 requires that when MigrationExecutor.migrate() is invoked with an explicit empty plan (plan == []) while the django_migrations table is absent on the connection, migrate() early-returns a ProjectState built from unmigrated apps with with_applied_migrations=False, WITHOUT invoking self.recorder.ensure_schema() (i.e. it must not create the django_migrations table). The gold hunk wraps ensure_schema in a guard `if plan == []: if not self.recorder.has_table(): return self._create_project_state(with_applied_migrations=False) else: ensure_schema`. The buggy code calls ensure_schema() unconditionally and relies on the later `if not plan:` block which uses with_applied_migrations=True.\n\nThe witness drives migrate() with an explicit plan=[] while recorder.has_table() returns False (the untouched-database state), stubbing loader/_create_project_state/migration_plan so no real DB is needed. On gold this exercises the exact early-return path: _create_project_state is called with with_applied_migrations=False and ensure_schema is never called (PASSED). On buggy the guard is absent, so migrate() runs the normal empty-plan path: _create_project_state is called with with_applied_migrations=True and ensure_schema() is invoked first (FAILED via both the calls assertion and the ensure_schema.assert_not_called assertion). This mock-driven scenario reproduces the pre-visible contract of R1 and is not pinned by any visible oracle test: visible ExecutorTests (test_empty_plan and friends) always run with the django_migrations table already present (MigrationTestBase), where gold and buggy behave identically, and the creation.py tests mock out the whole executor.migrate. Neither exercises the has_table==False + explicit empty-plan early-return, which is exactly the state my witness places the executor in. Confirmed by running the exact source against both gold (PASSED) and buggy (FAILED)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant source lives in django/db/migrations/recorder.py (class MigrationRecorder with methods has_table/ensure_schema/applied_migrations/record_applied/record_unapplied/flush) and django/db/migrations/executor.py (MigrationExecutor.migrate calls self.recorder.ensure_schema() unconditionally at the top; apply_migration/unapply_migration go through recorder.record_applied/record_unapplied)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The recorder's django_migrations model is defined lazily via classproperty Migration on MigrationRecorder, with Meta.app_label='migrations', db_table='django_migrations', Apps() used so it is independent of installed apps."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The migrate management command (django/core/management/commands/migrate.py) selects a single --database alias and constructs MigrationExecutor(connection, ...) for it; router.allow_migrate is already consulted inside migrate's sync_apps via router.get_migratable_models (per-app models), and within operations, but MigrationRecorder.ensure_schema() itself does not consult allow_migrate."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "docs/topics/db/multi-db.txt documents allow_migrate(db, app_label, model_name=None, **hints): False means the operation should not run on that db db; RunPython/RunSQL use app_label 'migrations.x' style hints. migrate plans are not filtered by allow_migrate; model-level operations are skipped during application."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/migrations/test_multidb.py defines routers (AgnosticRouter, MigrateNothingRouter, MigrateEverythingRouter, MigrateWhenFooRouter) and tests operation-level (CreateModel/RunSQL/RunPython) honoring of routers on {'default','other'} databases; tests/migrations/routers.py provides DefaultOtherRouter and TestRouter."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The Django test/creation path mentioned in the issue (setup_databases -> create_test_db running migrate per connection) is in django/db/backends/base/creation.py and django/test/runner.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No hints are passed to allow_migrate by the recorder/executor ensure_schema path in the visible code; the visible code shows no router consultation for the django_migrations table itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The early-return is gated on `plan == []` (empty-list equality) in addition to the django_migrations table being absent via MigrationRecorder.has_table(). Because plan=None evaluates to `None == [] == False`, the plan=None path still falls into the else branch that calls ensure_schema, preserving the pre-existing behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The full migrate() body (plan computation, migrations, check_replacements) is unchanged by this hunk except for the wrapped ensure_schema call."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle for a test that genuinely witnesses R1: a test that (a) takes a connection whose django_migrations table does NOT exist, (b) calls MigrationExecutor.migrate with an explicit empty plan == [], and (c) asserts that the django_migrations table is NOT created (and/or that the returned ProjectState came from _create_project_state() with applied migrations folded in). I examined:\n- tests/backends/base/test_creation.py (TestDbCreationTests.test_migrate_test_setting_false / _true): this is the most topical area (create_test_db running migrate with plan==[] when TEST.MIGRATE is False and has_table mocked False). However, these tests fully mock `django.db.migrations.executor.MigrationExecutor.migrate`, so the executor's internal early-return (the exact behavior R1 describes) never executes. They only assert that call_command('migrate') would invoke a (mocked) executor with plan=[]. They therefore cannot distinguish the buggy (unconditional ensure_schema) executor from the fixed (early-return) one. This whole file is also labeled [VISIBLE], so its content can never serve as a witness.\n- tests/migrations/test_executor.py: ExecutorTests run with django_migrations already present (test DB setup + MigrationTestBase). test_empty_plan etc. exercise the empty-plan path only when the recorder table exists, in which case gold and buggy both take the normal branch (build the state with applied migrations) and behave identically; they never put the DB into the django_migrations-absent state in which the R1 early return applies. This file is [VISIBLE].\n- tests/migrations/test_multidb.py, tests/backends/base/test_schema-related, tests/migrations/test_commands.py, tests/migrations/test_base.py: operation/schema/router tests that never drop django_migrations and/or never run the empty-plan migrate path; all [VISIBLE].\n- routers.py is the only migrations-related oracle file found [HIDDEN], but it only defines router classes (DefaultOtherRouter, TestRouter); it contains no test asserting the early-return behavior.\n\nTo actually distinguish gold from buggy under R1, an oracle test would have to physically remove the django_migrations table and then run migrate([]) on a real executor, asserting the table stays absent. No such test exists anywhere in the reachable oracle files I inspected (and the natural suspects are all [VISIBLE] regardless, so their assertions could not serve as a witness). Consequently I found no [HIDDEN]-content oracle test that genuinely enforces R1, and I could not produce a run-confirmed witness."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (django.db.migrations.executor.MigrationExecutor.migrate): When migrate() is invoked with an explicit empty plan (plan == []) and the django_migrations table does not exist on the migration connection's database, migrate() returns the ProjectState built from the unmigrated apps (with_applied_migrations=False) without creating the django_migrations table (i.e. it performs an early return before ensure_schema/table creation and before folding applied migrations into the state). — not entailed by S_vis (S_vis concerns router-controlled migration recording (ensure_schema on allowed DBs only), not the internal migrate() behavior when invoked with an explicit empty plan. Nothing pins down an early return before ensure_schema for plan==[].); confirmed by a synthesized witness: Target R1 requires that when MigrationExecutor.migrate() is invoked with an explicit empty plan (plan == []) while the django_migrations table is absent on the connection, migrate() early-returns a ProjectState built from unmigrated apps with with_applied_migrations=False, WITHOUT invoking self.recorder.ensure_schema() (i.e. it must not create the django_migrations table). The gold hunk wraps ensure_schema in a guard `if plan == []: if not self.recorder.has_table(): return self._create_project_state(with_applied_migrations=False) else: ensure_schema`. The buggy code calls ensure_schema() unconditionally and relies on the later `if not plan:` block which uses with_applied_migrations=True.\n\nThe witness drives migrate() with an explicit plan=[] while recorder.has_table() returns False (the untouched-database state), stubbing loader/_create_project_state/migration_plan so no real DB is needed. On gold this exercises the exact early-return path: _create_project_state is called with with_applied_migrations=False and ensure_schema is never called (PASSED). On buggy the guard is absent, so migrate() runs the normal empty-plan path: _create_project_state is called with with_applied_migrations=True and ensure_schema() is invoked first (FAILED via both the calls assertion and the ensure_schema.assert_not_called assertion). This mock-driven scenario reproduces the pre-visible contract of R1 and is not pinned by any visible oracle test: visible ExecutorTests (test_empty_plan and friends) always run with the django_migrations table already present (MigrationTestBase), where gold and buggy behave identically, and the creation.py tests mock out the whole executor.migrate. Neither exercises the has_table==False + explicit empty-plan early-return, which is exactly the state my witness places the executor in. Confirmed by running the exact source against both gold (PASSED) and buggy (FAILED).",
+    "confidence": "Medium"
+  }
+}

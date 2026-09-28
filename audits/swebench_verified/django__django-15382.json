@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-15382",
+  "status": "ok",
+  "duration_seconds": 473.02986749995034,
+  "llm_calls": 49,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15382",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Filtering with a negated Exists subquery that is empty (so ~EXISTS is always TRUE) AND a separate field condition (e.g. name='test') must not collapse the whole outer query into an empty-result set (\"EmptyResultSet\") and must not drop/remove the remaining WHERE conditions; the other filters must still be applied so the query returns the rows matching them and its SQL retains its WHERE block.",
+        "subject": "Exists/WhereNode query construction: QuerySet.filter with a negated Exists whose subquery is an empty queryset (e.g. MyModel.objects.filter(~models.Exists(MyModel.objects.none()), name='test'))",
+        "hunk_ids": [],
+        "cited_from": ">>> qs = MyModel.objects.filter(~models.Exists(MyModel.objects.none()), name='test')\n>>> qs\n<QuerySet []>\n>>> print(qs.query)\nEmptyResultSet\nWith django-debug-toolbar I can still see the query, but there WHERE block is missing completely.\nThis seems to be very similar to #33018."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "A negated Exists (negated=True, e.g. obtained via the ~ operator) whose inner query compiles to an empty result set raises EmptyResultSet during super().as_sql compilation, but Exists.as_sql returns the empty SQL+params clause ('', ()) instead of propagating the exception, causing the enclosing WHERE/HAVING to elide the condition as always-true rather than treating the outer query as matching nothing. Observable consequence: an outer filter such as .filter(~Exists(Model.objects.none())) (or excluding an EXISTS whose subquery matches no rows) returns the full outer rowset rather than an empty queryset or a compilation error.",
+        "subject": "Exists.as_sql (django.db.models.expressions.Exists)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A non-negated Exists whose inner query compiles to an empty result set re-raises the EmptyResultSet out of Exists.as_sql (rather than swallowing or eliding it), so the enclosing WHERE treats the condition as matching nothing. Observable consequence: .filter(Exists(Model.objects.none())) yields an empty outer queryset via the normal EmptyResultSet handling.",
+        "subject": "Exists.as_sql (django.db.models.expressions.Exists)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis pins exactly this behavior: a query with a negated Exists whose subquery is empty must not collapse to EmptyResultSet and must retain the remaining WHERE conditions/rows, which is the mechanism and observable consequence described in S_impl R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only addresses the negated-Exists-with-empty-subquery case and never mentions the non-negated Exists branch re-raising EmptyResultSet to yield an empty outer queryset; no visible evidence leads to that specific behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R2 asserts that a NON-negated Exists whose inner query compiles to an empty result set re-raises EmptyResultSet so that `.filter(Exists(Model.objects.none()))` yields an empty outer queryset. Comparing the fix: buggy Exists.as_sql had NO try/except at all (so for the non-negated path the EmptyResultSet simply propagated up naturally), while gold added a try/except that only changes behavior when `self.negated` is True (the except returns ('', ()) for negated, and merely `raise`s for non-negated). Therefore on the NON-negated path described by R2 the two programs are byte-for-byte behaviorally identical: both re-raise EmptyResultSet, and the enclosing WHERE treats the condition as matching nothing.\n\nI built a self-contained pytest (bootstrapping an SQLite Django environment with the expressions test app installed and synced schema) that executes exactly the R2 scenario: seed one Employee and one Company, then `list(Company.objects.filter(Exists(Company.objects.none())))`. I ran the identical source against BOTH programs via run_test. Buggy: PASSED (empty list). Gold: PASSED (empty list). Both programs returned the identical empty outer queryset, confirming R2's observable consequence is invariant across the fix.\n\nA genuine oracle Witness must FAIL on buggy and PASS on gold. Because R2's stated non-negated empty-Exists behavior is identical on both programs, no test can dichotomize them under R2's exact claim. (Exploratory inspection also confirmed the fix's actual behavioral delta is confined to the negated/`~Exists` path, which belongs to the sibling exclude requirement rather than R2's specified non-negated path.) Hence no qualifying witness exists for R2; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug is in query-compilation layer: WHERE/where-tree construction lives in django/db/models/sql/where.py (WhereNode.as_sql), SQL assembly in django/db/models/sql/compiler.py, and Exists/Subquery expressions in django/db/models/expressions.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "An empty queryset edge is produced via Query.set_empty()/NothingNode (django/db/models/sql/query.py and where.py), which makes compiling the inner query raise EmptyResultSet; WhereNode.as_sql counts raising children as matching-nothing/empty via empty_needed/full_needed logic."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reporter observes the anomaly through the shell: qs shows <QuerySet []>, print(qs.query) shows EmptyResultSet (i.e. a query elided as empty), and the WHERE block is reported absent in the executed SQL."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for Exists/subquery live in tests/expressions/tests.py (see ExistsTests and the subquery/filter boolean-expression tests); note there is currently no test disclosed reproducing this empty-Exists-in-filter scenario."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Exists.__init__ takes negated=False, and __invert__ toggles self.negated; the negated branch in as_sql wraps the final SQL with NOT (...)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The compile that is guarded is the inner subquery compile: as_sql first rewrites to self.query.exists(using=connection.alias) and then calls Subquery.as_sql, whose query.as_sql can raise EmptyResultSet (e.g. when the inner WHERE contains a NothingNode)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "WhereNode.as_sql distinguishes children that raise EmptyResultSet (counted as matching nothing) from children returning empty sql (counted as matching everything), which is what makes the re-raise vs return-('',()) split behaviorally different."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Before this patch no try/except existed, so both negated and non-negated EmptyResultSet propagated; the fix specifically changes the negated behavior."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: Requirement R2 asserts that a NON-negated Exists whose inner query compiles to an empty result set re-raises EmptyResultSet out of Exists.as_sql, which makes `.filter(Exists(Model.objects.none()))` return an empty outer queryset.\n\nI inspected the actual `Exists.as_sql` on both target programs via `run_test` introspection:\n- BUGGY: `Exists.as_sql` has NO try/except; for every child that raises EmptyResultSet (both negated and non-negated) the exception merely propagates upward.\n- GOLD: the fix is purely in the *negated* branch:\n  ```\n  try:\n      sql, params = super().as_sql(...)\n  except EmptyResultSet:\n      if self.negated:\n          return '', ()\n      raise\n  ```\n\nFor the NON-negated case described by R2, gold and buggy are byte-for-byte identical: both simply re-raise the EmptyResultSet (there is no try/except guarding that path in buggy, and the gold except re-raises `raise` for non-negated). Consequently `.filter(Exists(Model.objects.none()))` yields an empty queryset identically on the buggy and gold programs; the required EmptyResultSet consequence is invariant across the fix.\n\nA genuine oracle Witness for R2 would have to FAIL on the buggy program and PASS on the gold program. Since there is no differential behavior for the non-negated empty-Exists path (the fix only alters behavior when `self.negated` is true — the case belonging to the sibling requirement about `~Exists`/exclude), no test that genuinely targets R2's stated behavior can fail on buggy but pass on gold. I checked the visible expressions test suite (basic subquery/exists filter tests) which contains no such scenario, and confirmed via source introspection that no oracle enforcement can distinguish buggy from gold on R2's exact claim. Therefore no qualifying witness exists for R2; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: R2 asserts that a NON-negated Exists whose inner query compiles to an empty result set re-raises EmptyResultSet so that `.filter(Exists(Model.objects.none()))` yields an empty outer queryset. Comparing the fix: buggy Exists.as_sql had NO try/except at all (so for the non-negated path the EmptyResultSet simply propagated up naturally), while gold added a try/except that only changes behavior when `self.negated` is True (the except returns ('', ()) for negated, and merely `raise`s for non-negated). Therefore on the NON-negated path described by R2 the two programs are byte-for-byte behaviorally identical: both re-raise EmptyResultSet, and the enclosing WHERE treats the condition as matching nothing.\n\nI built a self-contained pytest (bootstrapping an SQLite Django environment with the expressions test app installed and synced schema) that executes exactly the R2 scenario: seed one Employee and one Company, then `list(Company.objects.filter(Exists(Company.objects.none())))`. I ran the identical source against BOTH programs via run_test. Buggy: PASSED (empty list). Gold: PASSED (empty list). Both programs returned the identical empty outer queryset, confirming R2's observable consequence is invariant across the fix.\n\nA genuine oracle Witness must FAIL on buggy and PASS on gold. Because R2's stated non-negated empty-Exists behavior is identical on both programs, no test can dichotomize them under R2's exact claim. (Exploratory inspection also confirmed the fix's actual behavioral delta is confined to the negated/`~Exists` path, which belongs to the sibling exclude requirement rather than R2's specified non-negated path.) Hence no qualifying witness exists for R2; found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R2] (Exists.as_sql (django.db.models.expressions.Exists)) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R2 asserts that a NON-negated Exists whose inner query compiles to an empty result set re-raises EmptyResultSet so that `.filter(Exists(Model.objects.none()))` yields an empty outer queryset. Comparing the fix: buggy Exists.as_sql had NO try/except at all (so for the non-negated path the EmptyResultSet simply propagated up naturally), while gold added a try/except that only changes behavior when `self.negated` is True (the except returns ('', ()) for negated, and merely `raise`s for non-negated). Therefore on the NON-negated path described by R2 the two programs are byte-for-byte behaviorally identical: both re-raise EmptyResultSet, and the enclosing WHERE treats the condition as matching nothing.\n\nI built a self-contained pytest (bootstrapping an SQLite Django environment with the expressions test app installed and synced schema) that executes exactly the R2 scenario: seed one Employee and one Company, then `list(Company.objects.filter(Exists(Company.objects.none())))`. I ran the identical source against BOTH programs via run_test. Buggy: PASSED (empty list). Gold: PASSED (empty list). Both programs returned the identical empty outer queryset, confirming R2's observable consequence is invariant across the fix.\n\nA genuine oracle Witness must FAIL on buggy and PASS on gold. Because R2's stated non-negated empty-Exists behavior is identical on both programs, no test can dichotomize them under R2's exact claim. (Exploratory inspection also confirmed the fix's actual behavioral delta is confined to the negated/`~Exists` path, which belongs to the sibling exclude requirement rather than R2's specified non-negated path.) Hence no qualifying witness exists for R2; found=false.",
+    "confidence": "Medium"
+  }
+}

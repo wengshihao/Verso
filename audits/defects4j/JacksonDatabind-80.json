@@ -1,0 +1,112 @@
+{
+  "task_id": "JacksonDatabind-80",
+  "status": "ok",
+  "duration_seconds": 210.64920351199908,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "JacksonDatabind-80",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When collecting subtypes by type id for a base class that is abstract and has no explicit type-name annotation, the base class itself must not be included in the returned collection; only its actual subtypes (with their names) are returned — so for abstract Base1616 (typed A1616 as \"A\" and B1616 as \"B\"), the result contains exactly the two NamedTypes with names \"A\" and \"B\" and nothing else.",
+        "subject": "StdSubtypeResolver.collectAndResolveSubtypesByTypeId / _combineNamedAndUnnamed",
+        "hunk_ids": [],
+        "cited_from": "Code comment in StdSubtypeResolver._combineNamedAndUnnamed: \"// 27-Apr-2017, tatu: [databind#1616] Do not add base type itself unless\n//     it is concrete (or has explicit type name)\" and the guarded branch \"if ((cls == rawBase) && Modifier.isAbstract(cls.getModifiers())) { continue; }\". Test testBaseTypeId1616: \"Collection<NamedType> subtypes = new StdSubtypeResolver().collectAndResolveSubtypesByTypeId(\n                mapper.getDeserializationConfig(),\n                // note: `null` is fine here as `AnnotatedMember`:\n                null,\n                mapper.constructType(Base1616.class));\n        assertEquals(2, subtypes.size());\n        Set<String> ok = new HashSet<>(Arrays.asList(\"A\", \"B\"));\n        for (NamedType type : subtypes) {\n            String id = type.getName();\n            if (!ok.contains(id)) {\n                fail(\"Unexpected id '\"+id+\"' (mapping to: \"+type.getType()+\"), should be one of: \"+ok);\n            }\n        }\"; with test fixtures \"@JsonSubTypes({\n              @JsonSubTypes.Type(value = A1616.class,name = \"A\"),\n              @JsonSubTypes.Type(value = B1616.class)\n    })\n    static abstract class Base1616 { }\" and \"@JsonTypeName(\"B\")\n    static class B1616 extends Base1616 { }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "collectAndResolveSubtypesByClass(MapperConfig, AnnotatedMember property, JavaType baseType) with a null `property` (and non-null baseType) does not fail: it skips collection of subtypes from the property's own declared subtype annotations and still produces the result based on registered types and base-type-hierarchy annotation-derived subtypes. (When a non-null baseType supplies the raw base class, a null property no longer triggers a NullPointerException at the property-subtypes step.)",
+        "subject": "StdSubtypeResolver.collectAndResolveSubtypesByClass(MapperConfig, AnnotatedMember, JavaType)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "collectAndResolveSubtypesByTypeId(MapperConfig, AnnotatedMember property, JavaType baseType) with a null `property` does not fail: it skips processing of the property's declared subtype definitions and still resolves subtypes from the base-type hierarchy and explicit registrations, then returns the combined named/unnamed result. (The property-declared-subtypes step is skipped entirely when the AnnotatedMember argument is null.)",
+        "subject": "StdSubtypeResolver.collectAndResolveSubtypesByTypeId(MapperConfig, AnnotatedMember, JavaType)",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The sole S_vis entry concerns collectAndResolveSubtypesByTypeId/_combineNamedAndUnnamed and abstract-base-class exclusion; nothing in S_vis mentions the collectAndResolveSubtypesByClass overload or its null-property behavior."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "The cited testBaseTypeId1616 passes a null AnnotatedMember to collectAndResolveSubtypesByTypeId and shows it returns A/B from the base hierarchy, supporting that a null property does not fail. However, the S_vis requirement's stated claim is about abstract-base exclusion rather than the null-property mechanism ('skips property-declared subtypes step'), so the exact behavior is only incidentally demonstrated, not explicitly pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "\n    @Test\n    public void t() throws Exception {\n        class BaseW {}\n        class SubW extends BaseW {}\n        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();\n        com.fasterxml.jackson.databind.jsontype.impl.StdSubtypeResolver resolver =\n                new com.fasterxml.jackson.databind.jsontype.impl.StdSubtypeResolver();\n        resolver.registerSubtypes(SubW.class);\n        java.util.Collection<com.fasterxml.jackson.databind.jsontype.NamedType> result =\n                resolver.collectAndResolveSubtypesByClass(\n                        mapper.getSerializationConfig(),\n                        null,\n                        mapper.constructType(BaseW.class));\n        org.junit.Assert.assertNotNull(result);\n        org.junit.Assert.assertFalse(result.isEmpty());\n    }\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED with java.lang.NullPointerException at JacksonAnnotationIntrospector.findSubtypes -> StdSubtypeResolver.collectAndResolveSubtypesByClass:79 (the unguarded `ai.findSubtypes(null)` path when property==null)",
+      "explanation": "R1 requires that collectAndResolveSubtypesByClass(MapperConfig, null property, non-null JavaType baseType) no longer fails: with null property it must skip the property-annotation-derived subtype collection and still produce the result from registered/base-hierarchy types. The gold diff (hunks H0/H1) wraps that property-subtype block in `if (property != null)`, which is exactly what my witness exercises by passing a null AnnotatedMember and a non-null baseType (constructed from an abstract-ish BaseW) while registering SubW as a subtype. On gold the method returns a non-null non-empty collection; on buggy the unguarded `ai.findSubtypes(null)` dereferences the null member and crashes with an NPE at StdSubtypeResolver.java:79. This genuinely corresponds to R1 because it invokes the exact by-class overload named in the requirement (not the sibling ByTypeId overload, which is what the visible TestTypeNames.testBaseTypeId1616 covers), and no visible code anywhere calls collectAndResolveSubtypesByClass with a null property, so the assertion is not pinned down by already-visible material. Execution confirmed: PASSED against gold and FAILED (NPE) against buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue content couldn't be fetched automatically; the only authoritative visible description is the code comment in StdSubtypeResolver referencing [databind#1616] and the regression test testBaseTypeId1616 in src/test/java/com/fasterxml/jackson/databind/jsontype/TestTypeNames.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TestTypeNames.testBaseTypeId1616 calls collectAndResolveSubtypesByTypeId with a null AnnotatedMember, exercising the StdSubtypeResolver path; Base1616 is abstract without @JsonTypeName while subtype B1616 has @JsonTypeName(\"B\")."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The fix-relevant logic sits in StdSubtypeResolver._combineNamedAndUnnamed, which merges explicitly named (byName) and unnamed (typesHandled) types."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TestTypeNames.java also contains unrelated serialization/round-trip tests (Animal/Cat/Dog/MaineCoon/Persian) alongside testBaseTypeId1616."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The other public resolution methods taking an AnnotatedClass argument (collectAndResolveSubtypesByClass(config, type) and collectAndResolveSubtypesByTypeId(config, baseType)) never consult a property and are unaffected by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 and H1 are the opening and closing braces of one added `if (property != null)` block in collectAndResolveSubtypesByClass; H2 adds a structurally identical guard block in collectAndResolveSubtypesByTypeId."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The guard only covers the `ai.findSubtypes(property)` block; in collectAndResolveSubtypesByClass the null-property case still relies on a non-null baseType because rawBase resolves from property.getRawType() only when baseType is null, which remains an unpatched (still NPE-prone) path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The _combineNamedAndUnnamed logic with the [databind#1616] abstract-base-type exclusion was already present before this patch and is not part of the change."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 requires a test that passes collectAndResolveSubtypesByClass(MapperConfig, null AnnotatedMember, non-null JavaType baseType) and observes that no NPE occurs and subtype collection still succeeds. Investigation of the oracle shows that the only test which drives null-property resolution at all is TestTypeNames.testBaseTypeId1616 — and that method calls collectAndResolveSubtypesByTypeId (a distinct public method, guarded by a separate hunk H2), NOT collectAndResolveSubtypesByClass (the subject of R1, guarded in hunks H0/H1). So the single currently-failing oracle test does not genuinely assert R1's behavior; it tests a sibling method. Furthermore the entire TestTypeNames.java file content is [VISIBLE], so even the baseTypeId1616 assertion could not serve as a Witness under the [HIDDEN]-only rule. I also read the adjacent [HIDDEN] jsontype test files (TestSubtypes, TypeResolverTest, TestSubtypesExistingProperty, TestPropertyTypeInfo) and none invoke StdSubtypeResolver's null-property overloads — they are high-level ObjectMapper integration tests. Hence no [HIDDEN] oracle assertion exercises collectAndResolveSubtypesByClass with a null property, and no genuine Witness for R1 exists in the oracle."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (StdSubtypeResolver.collectAndResolveSubtypesByClass(MapperConfig, AnnotatedMember, JavaType)): collectAndResolveSubtypesByClass(MapperConfig, AnnotatedMember property, JavaType baseType) with a null `property` (and non-null baseType) does not fail: it skips collection of subtypes from the property's own declared subtype annotations and still produces the result based on registered types and base-type-hierarchy annotation-derived subtypes. (When a non-null baseType supplies the raw base class, a null property no longer triggers a NullPointerException at the property-subtypes step.) — not entailed by S_vis (The sole S_vis entry concerns collectAndResolveSubtypesByTypeId/_combineNamedAndUnnamed and abstract-base-class exclusion; nothing in S_vis mentions the collectAndResolveSubtypesByClass overload or its null-property behavior.); confirmed by a synthesized witness: R1 requires that collectAndResolveSubtypesByClass(MapperConfig, null property, non-null JavaType baseType) no longer fails: with null property it must skip the property-annotation-derived subtype collection and still produce the result from registered/base-hierarchy types. The gold diff (hunks H0/H1) wraps that property-subtype block in `if (property != null)`, which is exactly what my witness exercises by passing a null AnnotatedMember and a non-null baseType (constructed from an abstract-ish BaseW) while registering SubW as a subtype. On gold the method returns a non-null non-empty collection; on buggy the unguarded `ai.findSubtypes(null)` dereferences the null member and crashes with an NPE at StdSubtypeResolver.java:79. This genuinely corresponds to R1 because it invokes the exact by-class overload named in the requirement (not the sibling ByTypeId overload, which is what the visible TestTypeNames.testBaseTypeId1616 covers), and no visible code anywhere calls collectAndResolveSubtypesByClass with a null property, so the assertion is not pinned down by already-visible material. Execution confirmed: PASSED against gold and FAILED (NPE) against buggy.",
+    "confidence": "Medium"
+  }
+}

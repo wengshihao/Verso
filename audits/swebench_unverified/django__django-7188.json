@@ -1,0 +1,133 @@
+{
+  "task_id": "django__django-7188",
+  "status": "ok",
+  "duration_seconds": 408.90078904200345,
+  "llm_calls": 34,
+  "error": null,
+  "record": {
+    "task_id": "django__django-7188",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "The Django auth machinery, specifically django.contrib.auth.middleware.AuthenticationMiddleware and django.contrib.auth.context_processors.auth, can be used by a project without 'django.contrib.auth' present in that project's INSTALLED_APPS.",
+        "subject": "django.contrib.auth.middleware.AuthenticationMiddleware / django.contrib.auth.context_processors.auth (auth machinery usable without installed auth app)",
+        "hunk_ids": [],
+        "cited_from": "Issue title/body: \"Allow auth machinery to be used without installing auth app\" ... \"Django projects should be able to use the auth machinery (like django.contrib.auth.middleware.AuthenticationMiddleware and django.contrib.auth.context_processors.auth) without having django.contrib.auth in INSTALLED_APPS\" ... \"This ticket is for resolving the current issue in 1.9. I also want to write a test or two to prevent this issue from happening in the future.\""
+      },
+      {
+        "id": "R2",
+        "statement": "The auth() context processor still produces its required context (a 'user' object and a 'perms' PermWrapper) in a request that has no 'user' attribute by falling back to an AnonymousUser, and that fallback must not depend on the django.contrib.auth app being installed/loaded through the app registry.",
+        "subject": "django.contrib.auth.context_processors.auth",
+        "hunk_ids": [],
+        "cited_from": "django/contrib/auth/context_processors.py: \"if hasattr(request, 'user'): user = request.user else: from django.contrib.auth.models import AnonymousUser; user = AnonymousUser()\" combined with issue: the processor must be usable \"without having django.contrib.auth in INSTALLED_APPS\"."
+      },
+      {
+        "id": "R3",
+        "statement": "AuthenticationMiddleware.process_request must still be able to set request.user (which for an unauthenticated request resolves to an AnonymousUser via django.contrib.auth.get_user) even when django.contrib.auth is not installed.",
+        "subject": "django.contrib.auth.middleware.AuthenticationMiddleware.process_request",
+        "hunk_ids": [],
+        "cited_from": "django/contrib/auth/middleware.py: \"request.user = SimpleLazyObject(lambda: get_user(request))\" and django/contrib/auth/__init__.py get_user: \"from .models import AnonymousUser ... return user or AnonymousUser()\" combined with issue: AuthenticationMiddleware must be usable \"without having django.contrib.auth in INSTALLED_APPS\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the django.contrib.auth app is loaded with the default AuthConfig (i.e. auth is fully installed), system checks include both the user-model check (check_user_model, models tag) and the models-permissions check (check_models_permissions, models tag), and the post_migrate signal triggers permission creation (connected with dispatch_uid 'django.contrib.auth.management.create_permissions') — i.e. behavior is unchanged from the pre-patch AuthConfig.",
+        "subject": "django.contrib.auth.apps.AuthConfig.ready()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Loading django.contrib.auth with the newly introduced BaseAuthConfig runs the check_user_model system check (models tag) during system checks, but does not register the check_models_permissions system check and does not connect create_permissions to the post_migrate signal, so permission creation and the auth-model-based permission checks are inactive (a base config intended for use when the auth Permission model is not installed).",
+        "subject": "django.contrib.auth.apps.BaseAuthConfig.ready()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_impl R1 concerns AuthConfig.ready() registering check_user_model and check_models_permissions system checks and connecting create_permissions to post_migrate when auth is fully installed. S_vis only describes the middleware/context processor being usable without the auth app installed; none of its entries mention system-check registration, post_migrate signal connections, or AuthConfig.ready() internals."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_impl R2 describes the newly introduced BaseAuthConfig running check_user_model while omitting check_models_permissions and create_permissions/post_migrate. No S_vis entry or its cited evidence even mentions BaseAuthConfig's existence, let alone pins down which checks/signals its ready() does or does not register. The visible issue only addresses symptom-level middleware/context-processor usability, so nothing entails this specific internal config behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R1 targets the OPERATIONAL behavior of the full default auth config (django.contrib.auth.apps.AuthConfig) when auth is fully installed: system checks must include check_user_model (models tag) and check_models_permissions (models tag), and the post_migrate create_permissions receiver must stay connected under dispatch_uid 'django.contrib.auth.management.create_permissions'. R1 explicitly describes this as \"behavior unchanged from the pre-patch AuthConfig.\" The pre-patch (buggy) AuthConfig.ready() already registers both checks and connects that receiver; the gold snapshot merely splits AuthConfig to subclass a new BaseAuthConfig and delegates via super().ready() while keeping all three actions. Both code paths end in an identical final state (checks registry dedups, and the receiver connect via the same dispatch_uid is idempotent), so every assertion expressible for R1's scenario passes equal on buggy and gold.\n\nI empirically confirmed this by writing a Python test that instantiates AuthConfig, calls ready(), and asserts both check functions are present in checks.registry (models tag) and that the post_migrate receiver with the given dispatch_uid is live. It PASSED against BOTH the buggy and gold snapshots (both outcome: PASSED). A genuine Witness requires buggy-fail/gold-pass, which is unattainable for this requirement because the described behavior is definitionally identical on both snapshots (the buggy program already possessed it, and gold was required to preserve it). Disambiguators that do separate buggy vs gold (e.g., existence of the new BaseAuthConfig class on gold but not buggy) reflect a different requirement (the not-installed partial-config path), not R1's full-default-config behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The repository is the pre-fix (buggy) snapshot of Django ~1.9/1.10 for ticket django__django-7188; the issue asks that auth machinery work without installing the auth app, and the visible code still imports AnonymousUser from django.contrib.auth.models inside the affected paths."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Structural fact: AnonymousUser is defined in django/contrib/auth/models.py (a plain object class, loaded among the DB models), and is imported from that module by django/contrib/auth/__init__.py (get_user and logout) and by django/contrib/auth/context_processors.py auth(). models.py imports django.contrib.contenttypes.models and django.db.models at module import time."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django/contrib/auth/base_user.py opens with the docstring 'This module allows importing AbstractBaseUser even when django.contrib.auth is not in INSTALLED_APPS.' — showing the established pattern in this codebase for separating app-registry-independent auth code from the models module."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing auth tests that exercise the middleware/context-processor behavior (tests/auth_tests/test_middleware.py, tests/auth_tests/test_context_processors.py) run with django.contrib.auth installed and so do not by themselves force the not-installed scenario; the requirement must be met without breaking their current assertions (e.g. request.user set to a non-anonymous user for a logged-in session, and lazy user objects with properties like get_username/pk, has_module_perms/has_perm backed by ModelBackend)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django.contrib.auth.apps.AuthConfig.ready() only wires post_migrate permission creation and system checks, so those parts are irrelevant to the not-installed use case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "BaseAuthConfig and AuthConfig both retain name='django.contrib.auth' and the same verbose_name; AuthConfig subclasses BaseAuthConfig so that either class, when used as the app config, keeps the shared user-model check wiring."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "AuthConfig.ready() delegates to super().ready() then re-connects the post_migrate permission-creation receiver and re-registers check_models_permissions; this inheritance mechanism is internal and the only observable differences between the two classes are which system checks are active and whether create_permissions runs on post_migrate."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The check functions check_user_model and check_models_permissions are defined in the unchanged django/contrib/auth/checks.py; check_models_permissions must resolve the auth.Permission model (apps.get_model('auth','Permission')) and therefore cannot run when the auth models are absent, which motivates the split."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No default_app_config/INSTALLED_APPS default change is part of this patch; AuthConfig remains the default full config for a normally installed auth app."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns the operational behavior of the FULL, default-installed auth app config (django.contrib.auth.apps.AuthConfig): that with the default AuthConfig selected (auth fully installed), system checks include BOTH check_user_model and check_models_permissions (models tag) and the post_migrate create_permissions receiver stays connected with dispatch_uid='django.contrib.auth.management.create_permissions', i.e. behavior unchanged from the pre-patch single AuthConfig.\n\nNo oracle test qualifies as a Witness for this. Considerations:\n1. A Witness must fail against the buggy (pre-patch) program and pass against gold. The recorded set of tests currently failing against the buggy program is empty, and R1 explicitly describes behavior of the full (default) auth path as *unchanged from the pre-patch AuthConfig*. Because the pre-patch single AuthConfig.ready() already did exactly this (register both checks + connect create_permissions), any test exercising that full-config behavior would pass on BOTH snapshots and could never be a buggy-failure/gold-pass discriminator.\n2. I reviewed the oracle tests that come closest to this behavior. tests/auth_tests/test_checks.py (UserModelChecksTests, ModelsPermissionsChecksTests) only exercises the bare check functions check_user_model/check_models_permissions under @override_system_checks; it never asserts that the AuthConfig default config registers them, and it is labelled [VISIBLE] in any case (so cannot underpin a Witness). tests/auth_tests/test_management.py CreatePermissionsTests calls create_permissions() directly and is [VISIBLE]; it does not test that AuthConfig.ready() wired the post_migrate receiver via that dispatch_uid. tests/migrate_signals, tests/apps, tests/app_loading, tests/check_framework and the remaining auth_tests files I read exercise unrelated apps-registry/migrate-signal mechanics, not the presence of these two checks/receiver on the auth app's default config.\n3. There is no oracle test file that introspects AuthConfig/BaseAuthConfig.ready() to assert that the full default config actually exposes both models-tag checks and the connected create_permissions receiver.\n\nSince a potential witness would require a HIDDEN assertion that fails on the pre-patch program for behavior the pre-patch program already possessed, and none of the oracle's tests (all VISIBLE for the closely-related material) assert R1's full-config wiring, I conclude found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: R1 targets the OPERATIONAL behavior of the full default auth config (django.contrib.auth.apps.AuthConfig) when auth is fully installed: system checks must include check_user_model (models tag) and check_models_permissions (models tag), and the post_migrate create_permissions receiver must stay connected under dispatch_uid 'django.contrib.auth.management.create_permissions'. R1 explicitly describes this as \"behavior unchanged from the pre-patch AuthConfig.\" The pre-patch (buggy) AuthConfig.ready() already registers both checks and connects that receiver; the gold snapshot merely splits AuthConfig to subclass a new BaseAuthConfig and delegates via super().ready() while keeping all three actions. Both code paths end in an identical final state (checks registry dedups, and the receiver connect via the same dispatch_uid is idempotent), so every assertion expressible for R1's scenario passes equal on buggy and gold.\n\nI empirically confirmed this by writing a Python test that instantiates AuthConfig, calls ready(), and asserts both check functions are present in checks.registry (models tag) and that the post_migrate receiver with the given dispatch_uid is live. It PASSED against BOTH the buggy and gold snapshots (both outcome: PASSED). A genuine Witness requires buggy-fail/gold-pass, which is unattainable for this requirement because the described behavior is definitionally identical on both snapshots (the buggy program already possessed it, and gold was required to preserve it). Disambiguators that do separate buggy vs gold (e.g., existence of the new BaseAuthConfig class on gold but not buggy) reflect a different requirement (the not-installed partial-config path), not R1's full-default-config behavior."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (django.contrib.auth.apps.AuthConfig.ready()) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: R1 targets the OPERATIONAL behavior of the full default auth config (django.contrib.auth.apps.AuthConfig) when auth is fully installed: system checks must include check_user_model (models tag) and check_models_permissions (models tag), and the post_migrate create_permissions receiver must stay connected under dispatch_uid 'django.contrib.auth.management.create_permissions'. R1 explicitly describes this as \"behavior unchanged from the pre-patch AuthConfig.\" The pre-patch (buggy) AuthConfig.ready() already registers both checks and connects that receiver; the gold snapshot merely splits AuthConfig to subclass a new BaseAuthConfig and delegates via super().ready() while keeping all three actions. Both code paths end in an identical final state (checks registry dedups, and the receiver connect via the same dispatch_uid is idempotent), so every assertion expressible for R1's scenario passes equal on buggy and gold.\n\nI empirically confirmed this by writing a Python test that instantiates AuthConfig, calls ready(), and asserts both check functions are present in checks.registry (models tag) and that the post_migrate receiver with the given dispatch_uid is live. It PASSED against BOTH the buggy and gold snapshots (both outcome: PASSED). A genuine Witness requires buggy-fail/gold-pass, which is unattainable for this requirement because the described behavior is definitionally identical on both snapshots (the buggy program already possessed it, and gold was required to preserve it). Disambiguators that do separate buggy vs gold (e.g., existence of the new BaseAuthConfig class on gold but not buggy) reflect a different requirement (the not-installed partial-config path), not R1's full-default-config behavior.",
+    "confidence": "Medium"
+  }
+}

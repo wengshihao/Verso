@@ -1,0 +1,115 @@
+{
+  "task_id": "django__django-14559",
+  "status": "ok",
+  "duration_seconds": 236.3187516669277,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-14559",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "QuerySet.bulk_update(objs, fields, batch_size=None) must return the total number of rows matched by the underlying update() calls executed while saving the batches (the sum, across all batches it sends, of each `self.filter(pk__in=pks).update(**update_kwargs)` return value), instead of always returning None.",
+        "subject": "django.db.models.query.QuerySet.bulk_update",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Currently, bulk_update() returns None, unlike update(), which returns the number of rows matched.\" ... \"since bulk_update() simply calls update() repeatedly ... I.e. the return values could simply be added and returned.\" — referring to query.py#line 568 `self.filter(pk__in=pks).update(**update_kwargs)`._ docs for update(): \"Performs an SQL update query for the specified fields, and returns the number of rows matched (which may not be equal to the number of rows updated if some rows already have the new value).\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "QuerySet.bulk_update() returns the cumulative integer total of rows matched by all of the per-batch UPDATE statements it performs (the running sum of the values returned by each self.filter(pk__in=...).update(...)), instead of returning None.",
+        "subject": "QuerySet.bulk_update (django.db.models.query)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "QuerySet.bulk_update() called with an empty collection of objects (objs with no elements, after all field/pk validation has passed) returns the integer 0 rather than returning None.",
+        "subject": "QuerySet.bulk_update (django.db.models.query)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 explicitly states bulk_update() must return the cumulative sum of the per-batch filter(pk__in=...).update(...) return values (total rows matched) instead of always returning None — exactly the behavior S_impl R1 describes."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis R1 covers the general rule of summing return values from executed update() calls and never returning None, but it does not explicitly address the empty-collection fast path or state that zero batches yield an integer 0. R2's specific edge case is a plausible inference rather than something plainly pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_empty_objects_returns_zero",
+      "test_source": "def test_empty_objects_returns_zero():\n    from django.db.models.query import QuerySet\n\n    class FakeField:\n        concrete = True\n        many_to_many = False\n\n        def __init__(self, name):\n            self.name = name\n            self.primary_key = False\n\n    class FakeMeta:\n        def get_field(self, name):\n            return FakeField(name)\n\n    class FakeModel:\n        _meta = FakeMeta()\n\n    class FakeQS(QuerySet):\n        pass\n\n    qs = object.__new__(FakeQS)\n    qs.model = FakeModel\n\n    result = qs.bulk_update([], ['x'])\n    assert result == 0\n    assert type(result) is int\n",
+      "gold_result": "PASSED: bulk_update with empty objs returns value 0 of type int.",
+      "buggy_result": "FAILED: bulk_update with empty objs returns None (assert None == 0 fails).",
+      "explanation": "Requirement R2 is precisely that QuerySet.bulk_update called with an empty collection of objects (after batch_size/fields/pk/field-concreteness/pk-field validation passes, i.e. the `if not objs:` branch) returns the integer 0 instead of None. The gold implementation reaches `return 0` for the empty input; the buggy pre-fix implementation executes `return` (yielding None). The witness invokes the real `bulk_update` (imported from django/db/models/query.py, so it runs whichever revision is installed) along its genuine empty-objs path: it supplies a lightweight stub model whose `_meta.get_field('x')` returns a concrete, non-M2M, non-primary-key field — which passes every pre-return validation but never touches `self.filter()`/DB connection because the empty-return fires first — then asserts the returned object is integer 0. It PASSES against gold (returns 0 of type int) and FAILS against buggy (returns None), confirming it is an execution-confirmed discriminating witness. This return-value behavior is not pinned down anywhere in the visible test suite: tests/queries/test_bulk_update.py's test_empty_objects only asserts `assertNumQueries(0)` and no bulk_update test asserts its return value, and the docs do not document a return value, so the assertion rests on genuinely non-hidden-to-oracle behavior is not restating anything pre-existing (i.e. it is a genuine new observable)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "bulk_update lives at django/db/models/query.py (QuerySet.bulk_update at ~line 536-582), marked bulk_update.alters_data = True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Current implementation: when objs is empty it hits `if not objs: return` (so returns None); otherwise it loops batches issuing `self.filter(pk__in=pks).update(**update_kwargs)` inside `transaction.atomic(...)` and discards each result, falling off the end (also None)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "bulk_update already performs parameter validation before any update loop (batch_size < 0 -> ValueError; empty fields -> ValueError; objects with pk None -> ValueError; non-concrete/m2m field -> ValueError; pk field -> ValueError)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing tests that exercise bulk_update: tests/queries/test_bulk_update.py (BulkUpdateNoteTests, BulkUpdateTests) and tests/postgres_tests/test_bulk_update.py. None of them currently assert on the return value of bulk_update()."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The reference docs for bulk_update (docs/ref/models/querysets.txt) currently do not specify any return value; the comparison sibling update() is documented to return the number of rows matched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The empty-objs check (now `return 0`) sits after the pk-None/field-validation guards, so an empty objs collection still traverses the batch_size/field/concrete/pk validation before returning 0."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "bulk_update.alters_data is set to True (unchanged by the patch)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The returned count aggregates QuerySet.update() results, so the semantic is the number of rows matched by the underlying UPDATEs (matching Django's update() semantics), consistent per batch (PK-filtered), rather than simply len(objs)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only affects QuerySet.bulk_update's return value; no documentation or visible artifacts were changed by this developer patch."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I searched the oracle for a test that genuinely witnesses requirement R2: that QuerySet.bulk_update() called with an empty collection of objs (after validation passes) returns the integer 0 rather than None.\n\nInvestigation performed:\n- Listed all oracle test files and read the only two bulk_update-specific test files: tests/queries/test_bulk_update.py (BulkUpdateNoteTests, BulkUpdateTests) and tests/postgres_tests/test_bulk_update.py (BulkSaveTests).\n- In BulkUpdateTests, the closest candidate is `test_empty_objects`, which calls `Note.objects.bulk_update([], ['note'])` wrapped in `self.assertNumQueries(0)`. That test asserts ONLY the query count (0 queries); it never asserts the return value, so it passes identically against both the gold (returns 0) and buggy (returns None) implementations and cannot distinguish R2's behavior. All other tests in these files call bulk_update with non-empty objs and assert on resulting DB state, never on the return value.\n- The prompt reports \"(none recorded)\" tests currently failing against the buggy program, consistent with no oracle test exercising the changed return-value behavior.\n- Critically, both bulk_update test files are labeled [VISIBLE] (content-based). A Witness may only rest on [HIDDEN] content; a return-value assertion drawn from these visible files could never be a valid witness even if one existed, because that behavior was never hidden.\n\nBecause every relevant oracle test file is [VISIBLE] and, more fundamentally, none of their assertions tests the R2 return-value behavior, no genuine witness exists. Result: found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (QuerySet.bulk_update (django.db.models.query)): QuerySet.bulk_update() called with an empty collection of objects (objs with no elements, after all field/pk validation has passed) returns the integer 0 rather than returning None. — not entailed by S_vis (S_vis R1 covers the general rule of summing return values from executed update() calls and never returning None, but it does not explicitly address the empty-collection fast path or state that zero batches yield an integer 0. R2's specific edge case is a plausible inference rather than something plainly pinned down by the visible evidence.); confirmed by a synthesized witness: Requirement R2 is precisely that QuerySet.bulk_update called with an empty collection of objects (after batch_size/fields/pk/field-concreteness/pk-field validation passes, i.e. the `if not objs:` branch) returns the integer 0 instead of None. The gold implementation reaches `return 0` for the empty input; the buggy pre-fix implementation executes `return` (yielding None). The witness invokes the real `bulk_update` (imported from django/db/models/query.py, so it runs whichever revision is installed) along its genuine empty-objs path: it supplies a lightweight stub model whose `_meta.get_field('x')` returns a concrete, non-M2M, non-primary-key field — which passes every pre-return validation but never touches `self.filter()`/DB connection because the empty-return fires first — then asserts the returned object is integer 0. It PASSES against gold (returns 0 of type int) and FAILS against buggy (returns None), confirming it is an execution-confirmed discriminating witness. This return-value behavior is not pinned down anywhere in the visible test suite: tests/queries/test_bulk_update.py's test_empty_objects only asserts `assertNumQueries(0)` and no bulk_update test asserts its return value, and the docs do not document a return value, so the assertion rests on genuinely non-hidden-to-oracle behavior is not restating anything pre-existing (i.e. it is a genuine new observable).",
+    "confidence": "Medium"
+  }
+}

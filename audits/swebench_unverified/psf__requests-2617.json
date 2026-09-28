@@ -1,0 +1,125 @@
+{
+  "task_id": "psf__requests-2617",
+  "status": "ok",
+  "duration_seconds": 236.05426387500484,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-2617",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Under Python 2 with `from __future__ import unicode_literals`, preparing (via Request.prepare) and sending (via Session.send) a Request that uploads a binary file as a multipart entry (e.g. files={'hello': open('/path/to/binary','rb')}) must not raise the reported runtime exception but must transmit the request; i.e. the multipart/form-data body carrying the raw binary file bytes must be produced and sent without a UnicodeDecodeError caused by mixing unicode and non-ASCII-bytes content.",
+        "subject": "RequestEncodingMixin._encode_files / PreparedRequest.send (requests.models, requests.sessions)",
+        "hunk_ids": [],
+        "cited_from": "The user reproduction: `request = requests.Request(method='PUT', url='https://httpbin.org/put')\n    with open(sys.argv[1], 'rb') as fp:\n        request.files = {'hello': fp}\n        prepared = request.prepare()\n        requests.Session().send(prepared)`; plus \"The above program works perfectly in python3, and in python2 when `unicode_literals` is not imported.\" and the resulting traceback ending `msg += message_body\nUnicodeDecodeError: 'ascii' codec can't decode byte 0xff in position 109: ordinal not in range(128)`."
+      },
+      {
+        "id": "R2",
+        "statement": "The file data read from a file object in a multipart upload must be carried as raw (byte) content rather than being re-interpreted/encoded as text, so that binary file bytes are preserved intact in the multipart body.",
+        "subject": "RequestEncodingMixin._encode_files (requests.models)",
+        "hunk_ids": [],
+        "cited_from": "models.py `_encode_files`: `if isinstance(fp, (str, bytes, bytearray)):\n    fdata = fp\nelse:\n    fdata = fp.read()\n\nrf = RequestField(name=k, data=fdata, filename=fn, headers=fh)\nrf.make_multipart(content_type=ft)\nbody, content_type = encode_multipart_formdata(new_fields)`, combined with filepost.py `if isinstance(data, six.text_type):\n    writer(body).write(data)\nelse:\n    body.write(data)`."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "PreparedRequest.prepare_method raises ValueError('Request method cannot be \"None\"') when given a method of None, rather than silently storing self.method as None.",
+        "subject": "PreparedRequest.prepare_method (None argument behavior)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "The HTTP method stored on a PreparedRequest is the native-string (bytes on Python 2) uppercased form of the provided method; PrepareRequest.prepare_method performs this normalization (to_native_string then upper) for every entry path, since Session.request no longer pre-converts the method to a native string before constructing the Request.",
+        "subject": "PreparedRequest.prepare_method / Session.request method normalization",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis covers only multipart file-upload encoding behavior (_encode_files); it says nothing about PreparedRequest.prepare_method raising ValueError for a method of None."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis concerns binary file byte preservation in multipart bodies, not HTTP method native-string uppercasing/normalization in Session.request or prepare_method."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_prepare_method_none_raises",
+      "test_source": "def test_prepare_method_none_raises():\n    import pytest\n    from requests.models import PreparedRequest\n    p = PreparedRequest()\n    with pytest.raises(ValueError) as e:\n        p.prepare_method(None)\n    assert str(e.value) == 'Request method cannot be \"None\"'",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (DID NOT RAISE ValueError)",
+      "explanation": "R1 states PreparedRequest.prepare_method must raise ValueError('Request method cannot be \"None\"') when passed method=None, instead of silently storing self.method as None. The gold code sets self.method = method, then `if self.method is None: raise ValueError('Request method cannot be \"None\"')`. The buggy code `if self.method is not None:` uppercases/skips only when not None — so with method=None it silently stores None and returns normally.\n\nI verified by reading requests/models.py (both revisions) and the entire visible test_requests.py: no existing visible test calls prepare_method(None) or asserts about this None-method error message; the suite's ValueError tests concern unrelated behaviors (invalid files, conflicting post params, morsel expires, timeouts). A direct call to `p.prepare_method(None)` is therefore not an already-pin-down visible behavior.\n\nMy witness test calls p.prepare_method(None) inside pytest.raises(ValueError) and additionally asserts the exact message. Runner results: against the gold program it PASSED (ValueError raised with the required message); against the buggy program it FAILED with \"DID NOT RAISE <class 'ValueError'>\" because the buggy prepare_method silently stores method=None. This is a genuine, execution-confirmed discriminating witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible bug report describes a Python2-only failure: uploading a binary file inside a *prepared* Request when `unicode_literals` is imported; it states that python3 and python2-without-unicode_literals both work, and that the non-prepared path also works."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "test_requests.py imports only `from __future__ import division` (not unicode_literals), so it does not directly exercise the python2 unicode_literals reproduction; its multipart tests (e.g. test_unicode_multipart_post_fieldnames asserting `b'name=\"stuff\"' in prep.body`, test_can_send_bytes_bytearray_objects_with_files, test_unicode_multipart_post) are the closest existing body checks and mostly need a live httpbin server."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "compat.py maps, on py2: builtin_str=str, str=unicode, bytes=str, basestring=basestring — so under py2+'unicode_literals', string literals such as the files dict key become unicode while file-object data read with 'rb' stays native bytes."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The crash happens deep in stdlib httplib `_send_output` at `msg += message_body`, i.e. after the multipart body reached the connection layer with mixed str/unicode content containing a non-ASCII byte."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test suite lives in a single top-level test_requests.py; main source lives under requests/ (models.py builds multipart bodies via RequestEncodingMixin._encode_files using urllib3 RequestField/encode_multipart_formdata)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Gold models.py still imports to_native_string and Request still stores self.method raw in __init__; only PreparedRequest.prepare_method normalizes/validates the method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 removes the line `method = to_native_string(method)` that Session.request (buggy) applied to the method before building the Request; normalization is now done once in PreparedRequest.prepare_method."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Buggy prepare_method set self.method = method without raising for None and uppercased (without to_native_string) only when method was not None."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "sessions.py prepare_request continues to pass request.method.upper() into p.prepare, so that Request-driven path already yielded an uppercase str before reaching prepare_method's native conversion."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The oracle contains a single test file, test_requests.py, which is entirely labeled [VISIBLE] (content-based — the same material the repair system already saw). Per the rules, assertions drawn from [VISIBLE] content can never serve as a Witness, since they were never hidden.\n\nIndependently of that constraint, I examined every test in the file for any that exercises R1 (PreparedRequest.prepare_method raising ValueError('Request method cannot be \"None\"') when method is None). None qualifies:\n- Searched for any test passing method=None to a PreparedRequest/Request.prepare or prepare_method, or asserting on the 'Request method cannot be \"None\"' error message. There is none.\n- The methods that build PreparedRequests directly (test_data_argument_accepts_tuples, test_prepared_request_empty_copy/test_prepared_request_no_cookies_copy/test_prepared_request_complete_copy, test_prepare_unicode_url) always supply a non-None method ('GET' etc.) and assert about copy/body behavior, not about None-method validation.\n- The only ValueError-raising tests in the file concern unrelated behaviors (invalid 'files' data, conflicting post params, morsel_to_cookie expires, invalid timeouts) — not None method handling.\n\nSince there is no hidden test content at all and no test targets R1's None-method ValueError behavior, no witness exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (PreparedRequest.prepare_method (None argument behavior)): PreparedRequest.prepare_method raises ValueError('Request method cannot be \"None\"') when given a method of None, rather than silently storing self.method as None. — not entailed by S_vis (S_vis covers only multipart file-upload encoding behavior (_encode_files); it says nothing about PreparedRequest.prepare_method raising ValueError for a method of None.); confirmed by a synthesized witness: R1 states PreparedRequest.prepare_method must raise ValueError('Request method cannot be \"None\"') when passed method=None, instead of silently storing self.method as None. The gold code sets self.method = method, then `if self.method is None: raise ValueError('Request method cannot be \"None\"')`. The buggy code `if self.method is not None:` uppercases/skips only when not None — so with method=None it silently stores None and returns normally.\n\nI verified by reading requests/models.py (both revisions) and the entire visible test_requests.py: no existing visible test calls prepare_method(None) or asserts about this None-method error message; the suite's ValueError tests concern unrelated behaviors (invalid files, conflicting post params, morsel expires, timeouts). A direct call to `p.prepare_method(None)` is therefore not an already-pin-down visible behavior.\n\nMy witness test calls p.prepare_method(None) inside pytest.raises(ValueError) and additionally asserts the exact message. Runner results: against the gold program it PASSED (ValueError raised with the required message); against the buggy program it FAILED with \"DID NOT RAISE <class 'ValueError'>\" because the buggy prepare_method silently stores method=None. This is a genuine, execution-confirmed discriminating witness for R1.",
+    "confidence": "Medium"
+  }
+}

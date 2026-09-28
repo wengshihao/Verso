@@ -1,0 +1,148 @@
+{
+  "task_id": "django__django-16032",
+  "status": "ok",
+  "duration_seconds": 704.5518534580478,
+  "llm_calls": 40,
+  "error": null,
+  "record": {
+    "task_id": "django__django-16032",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a model QuerySet built as `Book.objects.filter(pages__gt=400).annotate(book_annotate=Value(1)).alias(book_alias=Value(1))` (i.e. an `alias()` call applied after an `annotate()` call) is used as the right-hand side of a scalar `book__in=<that qs>` filter on `Publisher`, evaluating the resulting Publisher query must not raise a database OperationalError of the form 'sub-select returns N columns - expected 1' (the RHS query's SELECT list must be reduced to the single comparison/pk column rather than retaining extra columns that the alias/annotation adds), and it must return exactly the Publishers whose linked Books have pages>400.",
+        "subject": "QuerySet.alias()+annotate() as __in RHS (Query.add_annotation / In.get_prep_lookup / sql.query.has_select_fields)",
+        "hunk_ids": [],
+        "cited_from": "def test_annotation_and_alias_filter_in_subquery(self):\n    long_books_qs = (\n        Book.objects.filter(\n            pages__gt=400,\n        )\n        .annotate(book_annotate=Value(1))\n        .alias(book_alias=Value(1))\n    )\n    publisher_books_qs = (\n        Publisher.objects.filter(\n            book__in=long_books_qs\n        )\n        .values(\"name\")\n    )\n    self.assertCountEqual(\n        publisher_books_qs,\n        [\n            {'name': 'Apress'},\n            {'name': 'Sams'},\n            {'name': 'Prentice Hall'},\n            {'name': 'Morgan Kaufmann'}\n        ]\n    )\nYou should get this error:\ndjango.db.utils.OperationalError: sub-select returns 10 columns - expected 1"
+      },
+      {
+        "id": "R2",
+        "statement": "An `alias()` applied on a QuerySet that already carries `annotate()`d columns must not make the resulting query report as having its own explicit/shaped select-fields (i.e. `has_select_fields` treating a purely-alias bookkeeping mask as a real SELECT shape) in a way that suppresses the standard scalar-subquery column reduction performed for `__in`/comparison lookups; alias-only additions are not user-selected output columns.",
+        "subject": "Query.add_annotation(select=False) / sql.query.has_select_fields / annotation_select_mask handling when alias() follows annotate()",
+        "hunk_ids": [],
+        "cited_from": "def add_annotation(self, annotation, alias, is_summary=False, select=True):\n    ...\n    if select:\n        self.append_annotation_mask([alias])\n    else:\n        self.set_annotation_mask(set(self.annotation_select).difference({alias}))\n    self.annotations[alias] = annotation\n\n@property\ndef has_select_fields(self):\n    return bool(\n        self.select or self.annotation_select_mask or self.extra_select_mask\n    )\n\nclass In(...):\n    def get_prep_lookup(self):\n        ...\n        if isinstance(self.rhs, Query):\n            self.rhs.clear_ordering(clear_default=True)\n            if not self.rhs.has_select_fields:\n                self.rhs.clear_select_clause()\n                self.rhs.add_fields([\"pk\"])"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "For a single-column related lookup (e.g. filtering by `<related-field>__in=<QuerySet>`) where (a) the RHS is a plain model QuerySet that has not been restricted to explicit `values()`-shaped fields, and (b) the relation's target field is not the target model's primary key, the ORM now rebuilds the RHS select-list via a full `values()`-style restriction producing output restricted to the single column holding the related (target) value, rather than clearing the whole select clause and re-adding just that field. Observable consequence: the `__in` filter compiles into a well-formed single-column membership subquery selecting the relation's target column.",
+        "subject": "django.db.models.fields.related_lookups.RelatedIn.get_prep_lookup (single-column relation __in with plain QuerySet RHS)",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "A model QuerySet that has been given annotations via annotate() and/or alias() (but has not been restricted by values()/values_list()) is still treated as a plain 'no explicit select fields' RHS of a single-column `<related-field>__in` filter, so the ORM applies the single-target-column value restriction to it instead of skipping it. Observable consequence: such an annotated/aliased RHS no longer escapes the single-column IN-subquery substitution, and the filter executes (returns rows whose related value is in that queryset's rows) instead of failing because the RHS retained an unsuited multi-column/annotation select clause.",
+        "subject": "QuerySet.filter with __in RHS that has been annotate()d/alias()ed",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2",
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Adopting annotation selectors (via annotate()/alias(), which yields a non-None annotation-select mask) and extra-select masks no longer makes a query count as having explicit select fields. A query reports `has_select_fields` True only once its output fields have actually been restricted through a `values()`/`values_list()` operation (the `set_values` path), and False otherwise (fresh querysets, and querysets that have merely been annotated or aliased). Observable behavior: ORM logic that branches on `has_select_fields` — the model-compatibility gate applied to `<QuerySet>` relation-filter RHS values, and the related-lookup single-column substitution — now keys only on whether the query field set was values-restricted.",
+        "subject": "Query.has_select_fields",
+        "hunk_ids": [
+          "H2",
+          "H3",
+          "H4"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 exercises a single-column related __in with a plain annotated+aliased RHS that compiles to a single-column subquery and returns correct results, but the relation there (Publisher.book → Book.pk) targets the target model's primary key, whereas S_impl R1 specifically conditions on the relation target NOT being the PK. No visible evidence pins the non-pk values-style-reconstruction mechanism R1 describes, so it is genuinely not established."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's test is precisely an annotate().alias() RHS queryset used as a single-column scalar book__in filter that executes correctly and returns the expected publishers, and S_vis R2 confirms the alias/annotation mask must not turn has_select_fields true so the single-target-column restriction applies instead of skipping. This pins R2's observable consequence directly."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R2 states plainly that has_select_fields must not treat alias-only/annotation masks as a genuine select shape (alias additions are not user-selected output columns), and that this gates the single-column __in substitution. This commits the core of R3: has_select_fields keys on actual field restriction rather than on annotation/alias bookkeeping."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug lives in Django's ORM query construction (django.db.models.query.QuerySet.alias/_annotate -> django.db.models.sql.query.Query.add_annotation)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reproduction appears to target NonAggregateAnnotationTestCase-type seed data under tests/annotations/ (Publisher names Apress/Sams/Prentice Hall/Morgan Kaufmann each own a Book with pages>400 while the two sub-400-page books belong to Apress and Prentice Hall)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The alias()-after-annotate() path sets annotation_select_mask from the current annotation_select minus the new alias; because selection was previously all-open (mask None), this promotes the inherited annotate name into a non-None annotation_select_mask, which makes has_select_fields True and blocks the classic __in pk-only column substitution normally done in In.get_prep_lookup."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible-code semantics relied upon: a plain model QuerySet used as RHS of __in normally has has_select_fields False, so it is clear_select_clause()+add_fields(['pk'])-ed; an alias that merely follows annotate breaks that assumption."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue text confirms the existing code already raises the error; test_annotation_and_alias_filter_in_subquery is not present in the checked-in tests/annotations/tests.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H3 removes the previous `has_select_fields` @property (defined as `bool(self.select or self.annotation_select_mask or self.extra_select_mask)`) and H2 adds a plain class attribute `has_select_fields = False`; H4 sets it True at the top of Query.set_values. So the flag is now decoupled from annotation/extra masks and driven solely by the values()-style `set_values` path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0/H1 in RelatedIn.get_prep_lookup replace the previous `self.rhs.clear_select_clause(); ...; self.rhs.add_fields([target_field], True)` sequence with `self.rhs.set_values([target_field])`, i.e. the RHS (a raw model Query) is run through the real values() machinery (which also handles GROUP BY/annotation-reference resolution), not a bare select rebuild."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "has_select_fields is consumed at exactly two sites: Query.check_related_objects (raises ValueError when a relation-filter RHS Query of a different model has no explicit select fields) and RelatedIn.get_prep_lookup (gates the single-column substitution compared here). Because being annotated no longer flips it True, both sites now treat merely-annotated querysets as plain querysets."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Because these changes are to internal Query construction state with user-visible outcomes expressed as generated subquery selection and membership-filter correctness, the above requirements are phrased at the observable ORM-behavioral level rather than as internal mechanism claims."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Searched the oracle test suite for a test that enforces R1 (RelatedIn.get_prep_lookup rebuilding a plain non-values() QuerySet RHS via set_values so a single-column related __in whose target field is not the target model's PK compiles as a well-formed single-column membership subquery). Checked all directly relevant test loci: tests/annotations (the exact NonAggregateAnnotationTestCase/AliasTests seed domain cited in the task notes), tests/queries, tests/lookup, tests/aggregation & test_filter_argument, tests/aggregation_regress, tests/many_to_one, tests/m2o_recursive, tests/expressions. Every test file with actual assertions in these areas is labeled [VISIBLE], so even if a test there matched R1 it could not be a Witness (a Witness must rest on [HIDDEN] assertions). Furthermore, the annotations data involves only FKs whose target fields are the PKs (Book.publisher/contact), and no annotation/subquery __in test targeting a non-PK relation column exists; the extractor's note confirms the upstream regression test (test_annotation_and_alias_filter_in_subquery) is not present in the checked-in annotations file. No test currently fails against the buggy program (none recorded), a necessary precondition for any witness. No qualifying [HIDDEN] test enforcement of R1 was found => found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: gave up after exhausting its exploration budget without concluding (24 tool calls made)."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (django.db.models.fields.related_lookups.RelatedIn.get_prep_lookup (single-column relation __in with plain QuerySet RHS)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Exploration budget exhausted: Agent exceeded max_turns=20 without calling `synthesized_witness`.",
+    "confidence": "Medium"
+  }
+}

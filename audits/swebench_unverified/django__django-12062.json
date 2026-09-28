@@ -1,0 +1,133 @@
+{
+  "task_id": "django__django-12062",
+  "status": "ok",
+  "duration_seconds": 499.128244124935,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12062",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A database connection's TEST settings accept a boolean 'MIGRATE' flag such that setting DATABASE['TEST']['MIGRATE'] = False disables all migrations on that particular (test) database: during that database's test-schema setup, no on-disk migration files are applied or recorded, and every installed app (including apps that define migrations) is treated as if it had none so that its tables/models are still created through the run_syncdb/syncdb path instead.",
+        "subject": "DATABASES[<alias>]['TEST']['MIGRATE'] (test-database migrate disabling)",
+        "hunk_ids": [],
+        "cited_from": "\"a setting DATABASE['TEST']['MIGRATE'] = False should disable all migrations on that particular database. This can be done by hooking into django.db.migrations.loader.MigrationLoader.migrations_module() and returning None.\""
+      },
+      {
+        "id": "R2",
+        "statement": "When migrations are disabled for a test database (TEST['MIGRATE']=False), migrations_module() must not yield any loadable migration module for any app on that connection, so MigrationLoader treats each app as unmigrated (added to unmigrated_apps) and no migration from disk is loaded into the graph.",
+        "subject": "django.db.migrations.loader.MigrationLoader.migrations_module / load_disk",
+        "hunk_ids": [],
+        "cited_from": "\"This can be done by hooking into django.db.migrations.loader.MigrationLoader.migrations_module() and returning None.\" (see also loader.load_disk(): \"module_name, explicit = self.migrations_module(app_config.label)\n            if module_name is None:\n                self.unmigrated_apps.add(app_config.label)\")"
+      },
+      {
+        "id": "R3",
+        "statement": "During test database creation (create_test_db), the migrate call must skip applying/recording migrations for the connection when TEST['MIGRATE'] is False, while still permitting the syncdb phase (run_syncdb=True) to create tables for all apps, consistent with those apps being handled as unmigrated.",
+        "subject": "django.db.migrations.MigrationExecutor / BaseDatabaseCreation.create_test_db migrate phase",
+        "hunk_ids": [],
+        "cited_from": "migrate command: \"run_syncdb = options['run_syncdb'] and executor.loader.unmigrated_apps\"; create_test_db(): \"call_command('migrate', verbosity=..., interactive=False, database=self.connection.alias, run_syncdb=True)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a database connection's settings are prepared for testing, if the TEST sub-dictionary does not already specify a 'MIGRATE' key, that key is set to the default value True in the connection's TEST settings (in addition to the existing CHARSET/COLLATION/NAME/MIRROR defaults, which remain None).",
+        "subject": "ConnectionHandler.prepare_test_settings (django/db/utils.py)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "During create_test_db on a database alias, the 'migrate' management command (with run_syncdb=True) that populates the test-database schema is invoked only when the alias's connection TEST['MIGRATE'] setting is truthy; when TEST['MIGRATE'] is False, that migrate call is entirely skipped during test-database setup.",
+        "subject": "BaseDatabaseCreation.create_test_db (django/db/backends/base/creation.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "None of the S_vis entries mention prepare_test_settings, the CHARSET/COLLATION/NAME/MIRROR defaults, or any defaulting of MIGRATE to True; they only describe behavior when MIGRATE=False is explicitly set. The specific location and mechanism of adding a True default is not derivable from visible info."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis establishes the outcome that no migrations apply during test-db setup when TEST['MIGRATE']=False and tables are created via the run_syncdb path, but its cited mechanism (hooking migrations_module() to return None so migrate finds no apps, keeping run_syncdb driven by unmigrated_apps) suggests keeping the migrate call and neutering it, which is a different implementation than entirely skipping the migrate command with a guard in create_test_db. Whether the patch skips migrate or makes it inert is not pinned down."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_prepare_test_settings_sets_migrate_true",
+      "test_source": "import unittest\nfrom django.db.utils import ConnectionHandler\n\n\nclass WitnessTest(unittest.TestCase):\n    def test_prepare_test_settings_sets_migrate_true(self):\n        handler = ConnectionHandler({'default': {'ENGINE': 'django.db.backends.dummy'}})\n        handler.prepare_test_settings('default')\n        self.assertIs(handler.databases['default']['TEST']['MIGRATE'], True)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — KeyError: 'MIGRATE' when indexing handler.databases['default']['TEST']['MIGRATE'] (buggy prepare_test_settings only seeds CHARSET/COLLATION/NAME/MIRROR with None, never MIGRATE)",
+      "explanation": "Target R1 concerns ConnectionHandler.prepare_test_settings seeding TEST['MIGRATE']=True when the key is absent (alongside the remaining CHARSET/COLLATION/NAME/MIRROR=None defaults). The gold (post-fix) version at django/db/utils.py includes MIGRATE=True in its default_test_settings list, while the buggy (pre-fix) version's loop only iterates ['CHARSET','COLLATION','NAME','MIRROR'] setdefault(None), and never adds a MIGRATE key at all. My witness constructs a ConnectionHandler with a DB definition, calls prepare_test_settings('default') and asserts TEST['MIGRATE'] is exactly the boolean True. I ran this exact source through run_test: it PASSES against gold (MIGRATE key seeded True) and FAILS against buggy with KeyError: 'MIGRATE' (the key simply isn't seeded there). The visible oracle material (tests/db_utils/tests.py and the DB backends/base test files surveyed in the Oracle search) contains no assertion anywhere about TEST['MIGRATE'] seeding, so this behavior is not already pinned down by visible facts; the discriminating outcome only depends on the change captured by the target requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is a pre-fix (feature-request) tree: the TEST['MIGRATE'] option does not yet exist anywhere; a repair patch is expected to add it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ConnectionHandler.prepare_test_settings (django/db/utils.py) seeds defaults for TEST with only ['CHARSET','COLLATION','NAME','MIRROR'] each setdefault(None); a new TEST['MIGRATE'] default (True) would most naturally live there."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "MigrationLoader.load_disk already handles a None module_name from migrations_module by adding the app to self.unmigrated_apps (so making migrations_module return None for an app causes it to be treated as unmigrated via the existing code path)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "In migrate.py, when run_syncdb is requested it only syncs executor.loader.unmigrated_apps, and separately every migrated app in the graph gets its migrations applied; so to make a TEST['MIGRATE']=False db get no migrations yet still have tables, all apps must land in unmigrated_apps so the run_syncdb branch creates them."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "create_test_db (django/db/backends/base/creation.py) calls call_command('migrate', ..., run_syncdb=True, database=self.connection.alias) during test-schema setup — the natural spot to branch on the presence/value of the new TEST MIGRATE option."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests and docs under docs/topics/testing/overview.txt currently reference the TEST dictionary's NAME/CHARSET/COLLATION etc. but never mention MIGRATE; no visible test yet targets this feature."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both hunks implement the new TEST['MIGRATE'] option: H1 installs its True default when seeding TEST settings, H0 consumes it to conditionally skip test-DB migration."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "With TEST['MIGRATE'] set to a falsy value, skipping call_command('migrate', run_syncdb=True) means no schema/migration application happens through that path during test database setup."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Note the two hunks live in different modules (creation.py and utils.py), so the default-seeding behavior and the skip-migrate behavior are independently patchable."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the real oracle test suite for any test that witnesses R1 — that `ConnectionHandler.prepare_test_settings` (django/db/utils.py) seeds `TEST['MIGRATE'] = True` when that key is absent (in addition to the pre-existing CHARSET/COLLATION/NAME/MIRROR=None defaults).\n\nCandidate locations were read in full and all are labeled [VISIBLE] (content is just standard pre-existing Django test material), and none of them reference a `TEST['MIGRATE']` option or check the seeding/defaulting of a MIGRATE key:\n- tests/db_utils/tests.py (ConnectionHandler tests: only checks ENGINE default and connection errors)\n- tests/backends/base/test_creation.py (TestDbSignatureTests: seeds TEST={'NAME':...} but never asserts MIGRATE)\n- tests/backends/base/test_base.py, tests/backends/base/test_features.py (generic wrapper/feature tests)\n- tests/backends/test_utils.py, tests/backends/tests.py (SQL formatting, threading, wrapper tests; no MIGRATE)\n- tests/backends/mysql/test_creation.py, postgresql/test_creation.py, oracle/test_creation.py (DB clone/-create error handling only)\n- tests/migrations/test_commands.py, tests/migrations/test_multidb.py, tests/migration_test_data_persistence/tests.py (migrate/syncdb/DB-router behavior — none drives a TEST['MIGRATE'] setting)\n- tests/test_runner/tests.py (setup_databases/create_test_db calls, but no MIGRATE option anywhere)\n\nThese are the natural homes for a test of the H1 default-seeding behavior in ConnectionHandler.prepare_test_settings, yet no test in them (or anywhere in the files I inspected) asserts that the connection's TEST settings contain MIGRATE=True by default. They are also all [VISIBLE], which as a class cannot serve as a Witness for a requirement that isn't entailed by visible information.\n\nAdditionally, the task metadata records no test currently failing against the buggy program. Since R1's seeding behavior exists only in the gold program (the buggy/pre-fix file does not seed any MIGRATE key at all), a genuine oracle witness for R1 would necessarily fail against the buggy program. The absence of any associated failing test, together with the total absence of any MIGRATE-related assertion in the oracle's database/util test files, means the real oracle does not contain — and I cannot build — an execution-confirmed witness for this specific requirement. No [HIDDEN] assertion testing R1 could be located, so nothing qualifies and I did not fabricate a test from [VISIBLE] content."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ConnectionHandler.prepare_test_settings (django/db/utils.py)): When a database connection's settings are prepared for testing, if the TEST sub-dictionary does not already specify a 'MIGRATE' key, that key is set to the default value True in the connection's TEST settings (in addition to the existing CHARSET/COLLATION/NAME/MIRROR defaults, which remain None). — not entailed by S_vis (None of the S_vis entries mention prepare_test_settings, the CHARSET/COLLATION/NAME/MIRROR defaults, or any defaulting of MIGRATE to True; they only describe behavior when MIGRATE=False is explicitly set. The specific location and mechanism of adding a True default is not derivable from visible info.); confirmed by a synthesized witness: Target R1 concerns ConnectionHandler.prepare_test_settings seeding TEST['MIGRATE']=True when the key is absent (alongside the remaining CHARSET/COLLATION/NAME/MIRROR=None defaults). The gold (post-fix) version at django/db/utils.py includes MIGRATE=True in its default_test_settings list, while the buggy (pre-fix) version's loop only iterates ['CHARSET','COLLATION','NAME','MIRROR'] setdefault(None), and never adds a MIGRATE key at all. My witness constructs a ConnectionHandler with a DB definition, calls prepare_test_settings('default') and asserts TEST['MIGRATE'] is exactly the boolean True. I ran this exact source through run_test: it PASSES against gold (MIGRATE key seeded True) and FAILS against buggy with KeyError: 'MIGRATE' (the key simply isn't seeded there). The visible oracle material (tests/db_utils/tests.py and the DB backends/base test files surveyed in the Oracle search) contains no assertion anywhere about TEST['MIGRATE'] seeding, so this behavior is not already pinned down by visible facts; the discriminating outcome only depends on the change captured by the target requirement.",
+    "confidence": "Medium"
+  }
+}

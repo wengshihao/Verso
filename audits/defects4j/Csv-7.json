@@ -1,0 +1,110 @@
+{
+  "task_id": "Csv-7",
+  "status": "ok",
+  "duration_seconds": 195.99550788199997,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "Csv-7",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the CSV header names are read automatically from the first line of the input and that line contains duplicate column-name tokens, construction/parsing must fail by throwing IllegalStateException instead of silently building an inconsistent header map that keys duplicate columns on the same name.",
+        "subject": "CSVParser/initializeHeader (auto-read header from the input's first line when format has an empty name header, e.g. withHeader(new String[]{}))",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"The HeaderMap returned by the parser misses an entry because of the Column name being used as a key, leading to wrong behavior when we rely on it. If this is not supposed to happen in the file regarding the CSV format, at least this should raise an error.\" plus visible test: \"@Test(expected = IllegalStateException.class) public void testDuplicateHeaderEntries() throws Exception { CSVParser.parse(\"a,b,a\\n1,2,3\\nx,y,z\", CSVFormat.DEFAULT.withHeader(new String[]{})); }\""
+      },
+      {
+        "id": "R2",
+        "statement": "For an auto-header with distinct column names, each record must map every column name to its correct column so that for the distinct header names a, b, c the lookups record.get(0)==record.get(\"a\"), record.get(1)==record.get(\"b\"), record.get(2)==record.get(\"c\") all hold on every parsed data record.",
+        "subject": "CSVParser header map / CSVRecord.get(name) vs get(index) for a header with distinct column names",
+        "hunk_ids": [],
+        "cited_from": "test testHeader: \"final CSVRecord record = records.next(); assertEquals(record.get(0), record.get(\"a\")); assertEquals(record.get(1), record.get(\"b\")); assertEquals(record.get(2), record.get(\"c\"));\""
+      },
+      {
+        "id": "R3",
+        "statement": "getHeaderMap() must return a copy of the name-to-0-based-index mapping whose keys iterate in column order, with headerMap.get(\"A\")==0, .get(\"B\")==1, .get(\"C\")==2 for headers A,B,C, and must not consume/skip any of the subsequent data records (no side effect on parsing).",
+        "subject": "CSVParser.getHeaderMap()",
+        "hunk_ids": [],
+        "cited_from": "test testGetHeaderMap: \"final Iterator<String> columnNames = headerMap.keySet().iterator(); // Headers are iterated in column order. Assert.assertEquals(\"A\", columnNames.next()); Assert.assertEquals(\"B\", columnNames.next()); Assert.assertEquals(\"C\", columnNames.next()); ... // Parse to make sure getHeaderMap did not have a side-effect.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When CSVParser initializes its header column-name-to-index map, if the header list contains a duplicate column name (a name appearing more than once, whether the header was configured on the CSVFormat or read from the first input record when the configured header is empty), CSVParser construction is aborted with an IllegalStateException instead of silently keeping only the last occurrence's index.",
+        "subject": "CSVParser.initializeHeader / CSVParser constructor (header name-to-index mapping)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 (and its cited test with withHeader(new String[]{})) definitively pins down the duplicate-in-auto-read-header branch → IllegalStateException, matching part of S_impl R1. But S_impl R1 also requires the same abort when the duplicate is configured directly on the CSVFormat header, which no S_vis entry addresses; R2/R3 cover only distinct-header behavior, so the full requirement is only partially covered."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target R1 concerns CSVParser construction aborting with IllegalStateException when the header name-to-index map would contain a duplicate name, whether the header was configured on the CSVFormat or read from the first input record when the configured header is empty.\n\nInvestigation and empirical results:\n1. I examined the gold and buggy versions of CSVParser.initializeHeader() (and verified the constructor path). The ONLY behavioral difference introduced by the fix is the duplicate-name check inside the header-map-building loop, which throws IllegalStateException when the resolved header array contains a duplicate.\n2. The resolved header array only ever contains duplicates from ONE route: the '@formatHeader.length == 0' branch where the header is read from the first input record. Non-empty format-configured headers that contain duplicates are already rejected earlier by CSVFormat.validate() inside the CSVParser constructor in BOTH gold and buggy — I confirmed empirically that CSVParser.parse(..., withHeader(\"X\",\"Y\",\"X\")) throws IllegalStateException (caught -> test passes) against BUGGY as well, so that route produces no buggy-vs-gold difference.\n3. I confirmed empirically that the empty-configured-header + first-record-supplies-header route DOES genuinely discriminate: a parse with header \"firstName,lastName,firstName\" and an empty configured header PASSED on gold (ISE caught as expected) and FAILED on buggy (no exception, silent overwrite).\n4. However, that sole discriminating scenario is exactly what the VISIBLE test testDuplicateHeaderEntries already encodes (parse \"a,b,a\\n...\" with DEFAULT.withHeader(new String[]{}), expecting IllegalStateException). My variant differs only by the literal header strings — equivalent to the \"reinventing a visible assertion in different words\" case the task flags as worthless, since the observable fact (fix-supplied exception on first-record-read duplicate headers) was never hidden.\n\nNo non-visible assertion, and no additional input scenario, triggers the duplicate check in a way that both discriminates gold-vs-buggy and was not already pinned by visible material. Hence I did not find a genuine witness and report found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two source/test files are visible: src/main/java/org/apache/commons/csv/CSVParser.java and src/test/java/org/apache/commons/csv/CSVParserTest.java. Supporting classes (CSVFormat, CSVRecord, Lexer, Lexer helpers) referenced by CSVParser and the tests are NOT visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CSVParser stores 'private final Map<String, Integer> headerMap' as a LinkedHashMap; initializeHeader() builds it from the format header, or reads the first record when the format header array is empty; values are 0-based column indices."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Current pre-fix code in initializeHeader() does 'hdrMap.put(header[i], Integer.valueOf(i))', so a duplicate name overwrites the earlier index with the later one (silent collision) - matches the reported buggy behavior that HeaderMap 'misses an entry' for duplicate column names."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CSVParserTest also contains many unrelated pre-existing tests (lexer/parsing/record-numbering) not specific to this bug; only testDuplicateHeaderEntries and the header-mapping tests are relevant here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue text leaves two design directions open (raise an error, or store/access headers more cleverly); the visible test testDuplicateHeaderEntries (expect=IllegalStateException) pins the error-resolution direction that the fix must satisfy."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 adds the `import java.util.Arrays;` statement; it is a supporting change (enables `Arrays.toString(header)` in the ISE message of H1) and contributes no independent observable behavior of its own."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The duplicate check in H1 is placed on the single resolved `header` array after both possible sources of the header (the CSVFormat-configured header array, or the array read from the first record when the configured header is empty) are unified into that variable, so it covers both sources."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The IllegalStateException is thrown from initializeHeader(), which is invoked from the CSVParser constructor, so the exception is observed as a failed CSVParser construction."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns CSVParser's duplicate-header detection (aborting construction with IllegalStateException) that the fix introduces in initializeHeader. I read every oracle test file (CSVParserTest, CSVFileParserTest, CSVFormatTest, CSVPrinterTest, CSVRecordTest) and examined which tests exercise the duplicate-header behavior.\n\nEmpirical findings:\n- The sole test that discriminates buggy-vs-gold for R1 is testDuplicateHeaderEntries (parse \"a,b,a\\n...\" with an EMPTY configured header so the first input record supplies the header). Running that exact behavior: against buggy the parse completes silently (no exception — buggy keeps only the last duplicate's index); against gold CSVParser.initializeHeader throws IllegalStateException \"The header contains duplicate names\". This is exactly R1's new observable behavior.\n- HOWEVER, testDuplicateHeaderEntries lives in CSVParserTest.java, which is labeled [VISIBLE], and it is the ONLY oracle test of this behavior. The rule forbids using [VISIBLE]-derived assertions as a witness.\n- The configured-CSVFormat duplicate scenario that R1 also mentions is already handled by the pre-existing CSVFormat.validate() path (invoked from the CSVParser constructor), which throws IllegalStateException for configured duplicates in BOTH buggy and gold — so that scenario produces no buggy-vs-gold difference and no oracle test distinguishes it.\n- CSVFormatTest.testDuplicateHeaderElements (in a [HIDDEN] file) targets CSVFormat.validate()/package-private duplicate checking (validate() is even not accessible from outside the package where my candidate compiles). That is co-located CSVFormat-level behavior, distinct from R1's CSVParser.initializeHeader construction abort; and since configured duplicates already throw in the buggy CSVFormat.validate, it passes on both buggy and gold and would not serve as a witness regardless.\n\nI checked every failing test (only testDuplicateHeaderEntries) and every file for other hidden duplicate-header/CSVParser-construction tests; none exists. Hence no [HIDDEN] oracle assertion genuinely witnesses R1."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: Target R1 concerns CSVParser construction aborting with IllegalStateException when the header name-to-index map would contain a duplicate name, whether the header was configured on the CSVFormat or read from the first input record when the configured header is empty.\n\nInvestigation and empirical results:\n1. I examined the gold and buggy versions of CSVParser.initializeHeader() (and verified the constructor path). The ONLY behavioral difference introduced by the fix is the duplicate-name check inside the header-map-building loop, which throws IllegalStateException when the resolved header array contains a duplicate.\n2. The resolved header array only ever contains duplicates from ONE route: the '@formatHeader.length == 0' branch where the header is read from the first input record. Non-empty format-configured headers that contain duplicates are already rejected earlier by CSVFormat.validate() inside the CSVParser constructor in BOTH gold and buggy — I confirmed empirically that CSVParser.parse(..., withHeader(\"X\",\"Y\",\"X\")) throws IllegalStateException (caught -> test passes) against BUGGY as well, so that route produces no buggy-vs-gold difference.\n3. I confirmed empirically that the empty-configured-header + first-record-supplies-header route DOES genuinely discriminate: a parse with header \"firstName,lastName,firstName\" and an empty configured header PASSED on gold (ISE caught as expected) and FAILED on buggy (no exception, silent overwrite).\n4. However, that sole discriminating scenario is exactly what the VISIBLE test testDuplicateHeaderEntries already encodes (parse \"a,b,a\\n...\" with DEFAULT.withHeader(new String[]{}), expecting IllegalStateException). My variant differs only by the literal header strings — equivalent to the \"reinventing a visible assertion in different words\" case the task flags as worthless, since the observable fact (fix-supplied exception on first-record-read duplicate headers) was never hidden.\n\nNo non-visible assertion, and no additional input scenario, triggers the duplicate check in a way that both discriminates gold-vs-buggy and was not already pinned by visible material. Hence I did not find a genuine witness and report found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[R1] (CSVParser.initializeHeader / CSVParser constructor (header name-to-index mapping)) was flagged as uncertain by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target R1 concerns CSVParser construction aborting with IllegalStateException when the header name-to-index map would contain a duplicate name, whether the header was configured on the CSVFormat or read from the first input record when the configured header is empty.\n\nInvestigation and empirical results:\n1. I examined the gold and buggy versions of CSVParser.initializeHeader() (and verified the constructor path). The ONLY behavioral difference introduced by the fix is the duplicate-name check inside the header-map-building loop, which throws IllegalStateException when the resolved header array contains a duplicate.\n2. The resolved header array only ever contains duplicates from ONE route: the '@formatHeader.length == 0' branch where the header is read from the first input record. Non-empty format-configured headers that contain duplicates are already rejected earlier by CSVFormat.validate() inside the CSVParser constructor in BOTH gold and buggy — I confirmed empirically that CSVParser.parse(..., withHeader(\"X\",\"Y\",\"X\")) throws IllegalStateException (caught -> test passes) against BUGGY as well, so that route produces no buggy-vs-gold difference.\n3. I confirmed empirically that the empty-configured-header + first-record-supplies-header route DOES genuinely discriminate: a parse with header \"firstName,lastName,firstName\" and an empty configured header PASSED on gold (ISE caught as expected) and FAILED on buggy (no exception, silent overwrite).\n4. However, that sole discriminating scenario is exactly what the VISIBLE test testDuplicateHeaderEntries already encodes (parse \"a,b,a\\n...\" with DEFAULT.withHeader(new String[]{}), expecting IllegalStateException). My variant differs only by the literal header strings — equivalent to the \"reinventing a visible assertion in different words\" case the task flags as worthless, since the observable fact (fix-supplied exception on first-record-read duplicate headers) was never hidden.\n\nNo non-visible assertion, and no additional input scenario, triggers the duplicate check in a way that both discriminates gold-vs-buggy and was not already pinned by visible material. Hence I did not find a genuine witness and report found=false.",
+    "confidence": "Medium"
+  }
+}

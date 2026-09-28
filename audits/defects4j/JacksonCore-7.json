@@ -1,0 +1,98 @@
+{
+  "task_id": "JacksonCore-7",
+  "status": "ok",
+  "duration_seconds": 94.7420355840004,
+  "llm_calls": 14,
+  "error": null,
+  "record": {
+    "task_id": "JacksonCore-7",
+    "s_vis": [
+      {
+        "id": "REQ-1",
+        "statement": "After a JsonGenerator has written a start-object token on an object whose next expected token is a field name (e.g., immediately after writeStartObject()), a call to writeString(\"a\") followed by flush() must throw a JsonProcessingException whose message contains \"can not write a String\", rather than emitting output; this holds for both byte-output generators (OutputStream/JsonEncoding.UTF8) and char-output generators (Writer).",
+        "subject": "JsonGenerator.writeString(String)",
+        "hunk_ids": [],
+        "cited_from": "GeneratorFailTest._testFailOnWritingStringNotFieldName: \"gen.writeStartObject(); try { gen.writeString(\"a\"); gen.flush(); ... fail(\"Should not have let \"+gen.getClass().getName()+\".writeString() be used in place of 'writeFieldName()': output = \"+json); } catch (JsonProcessingException e) { verifyException(e, \"can not write a String\"); }\"; testFailOnWritingStringNotFieldNameBytes = \"..._testFailOnWritingStringNotFieldName(F, false)\", testFailOnWritingStringNotFieldNameChars = \"..._testFailOnWritingStringNotFieldName(F, true)\"; issue: \"Add a check so JsonGenerator.writeString() won't work if writeFieldName() expected... it should not produce invalid output.\""
+      },
+      {
+        "id": "REQ-2",
+        "statement": "Calling writeString (or any value-emitting scalar write) is specifically not an alias for writeFieldName — invalid JSON output must never be produced when a field name is expected ([core#167] context that duplicates this topic: after writeFieldName(\"a\"), a subsequent writeFieldName(\"b\") must instead throw a JsonProcessingException whose message contains \"can not write a field name, expecting a value\").",
+        "subject": "JsonGenerator.writeFieldName(String)",
+        "hunk_ids": [],
+        "cited_from": "GeneratorFailTest._testDupFieldNameWrites: \"gen.writeFieldName(\"a\"); try { gen.writeFieldName(\"b\"); gen.flush(); ... fail(\"Should not have let two consecutive field name writes succeed...\") } catch (JsonProcessingException e) { verifyException(e, \"can not write a field name, expecting a value\"); }\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL-1",
+        "statement": "When writeValue() is invoked on an object-type context at a point where no field name is pending (a field name has not just been written that expects a value, e.g., right after the object started), writeValue() returns STATUS_EXPECT_NAME and does not advance the object's field state, instead of returning STATUS_OK_AFTER_COLON as before.",
+        "subject": "JsonWriteContext.writeValue()",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL-1",
+        "entailed": "false",
+        "checked_ids": [
+          "REQ-1",
+          "REQ-2"
+        ],
+        "rationale": "S_vis describes only the observable generator-level symptom (writeString called where a field name is expected throws a JsonProcessingException 'can not write a String'), verified via black-box exception tests. It says nothing about the internal JsonWriteContext.writeValue() method, its specific STATUS_EXPECT_NAME vs STATUS_OK_AFTER_COLON return constants, or field-state advancement, which is the exact low-level mechanism S_IMPL-1 commits to. The visible behavior is a downstream consequence but does not pin down this internal contract."
+      }
+    ],
+    "target_requirement_id": "S_IMPL-1",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "testFailOnWritingStringWhenFieldNameExpected",
+      "test_source": "@Test\npublic void testFailOnWritingStringWhenFieldNameExpected() throws Exception {\n    com.fasterxml.jackson.core.JsonFactory f = new com.fasterxml.jackson.core.JsonFactory();\n    java.io.ByteArrayOutputStream bout = new java.io.ByteArrayOutputStream();\n    com.fasterxml.jackson.core.JsonGenerator gen = f.createGenerator(bout, com.fasterxml.jackson.core.JsonEncoding.UTF8);\n    gen.writeStartObject();\n    boolean caught = false;\n    try {\n        gen.writeString(\"a\");\n        gen.flush();\n    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {\n        caught = true;\n        org.junit.Assert.assertTrue(\"unexpected msg: \" + e.getMessage(),\n                e.getMessage().toLowerCase().contains(\"can not write a string\"));\n    }\n    gen.close();\n    org.junit.Assert.assertTrue(\"writeValue prematurely accepted a scalar in object context without a pending field name (output: \" + bout.toString(\"UTF-8\") + \")\", caught);\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED - AssertionError: writeValue prematurely accepted a scalar in object context without a pending field name (output: {:\"a\"})",
+      "explanation": "Requirement S_IMPL-1 asserts that JsonWriteContext.writeValue() invoked on an object-type context with no pending field name (e.g. right after the object started, no writeFieldName just issued) must return STATUS_EXPECT_NAME and must not advance the object field state, rather than returning STATUS_OK_AFTER_COLON as before. The oracle test in GeneratorFailTest (testFailOnWritingStringNotFieldNameBytes/Chars, [HIDDEN]) exercises exactly this: create an object context (writeStartObject), then write a scalar String without a preceding field name. Under the fixed code the generator's writeValue() returns STATUS_EXPECT_NAME which the generator translates into a JsonProcessingException with a \"can not write a string...\" message, and no bogus JSON is emitted. Under the buggy code writeValue() returns STATUS_OK_AFTER_COLON and the scalar is silently accepted, yielding malformed output `{:\"a\"}`. My standalone JUnit 4 derivation of that helper's assertion PASSES against gold (exception thrown with matching message) and FAILS against buggy (no exception, malformed output written). Note the genuine underlying requirement S_IMPL-1 is what triggers the generator behavior; the observable assertion is exactly the same behavioral fix."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two source files are visible in this repo slice: src/main/java/com/fasterxml/jackson/core/json/JsonWriteContext.java and src/test/java/com/fasterxml/jackson/core/json/GeneratorFailTest.java. The generator implementation classes, JsonFactory, JsonGenerator and BaseTest/verifyException are NOT visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "JsonWriteContext.writeFieldName() tracks the \"field name expected\" state via the _gotName flag and returns STATUS_EXPECT_VALUE when a second field name would be written before a value; no analogous guard exists for the scalar-write direction, which is the locus of the bug."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "GeneratorFailTest F is a fresh JsonFactory(), and both byte and char generator tests are driven by the shared _testFailOnWritingStringNotFieldName(F, useReader) helper, only the generator flavor varying."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "REQ-2 is a weaker/adjacent observation about an existing passing scenario ([core#167]) that is present in the same visible test file; the issue's own subject is only writeString-when-field-name-expected (REQ-1)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "verifyException semantics (substring match on the exception message) are inferred from standard jackson-core BaseTest; that helper itself is not visible here."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only alters the _type == TYPE_OBJECT branch of JsonWriteContext.writeValue(), adding an early guard on the _gotName flag returning STATUS_EXPECT_NAME. The array and root branches are unchanged, and the object-branch behavior when a value legitimately follows a field name (_gotName true) is unchanged (still resets _gotName, increments _index, returns STATUS_OK_AFTER_COLON)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "STATUS_EXPECT_NAME == 5 is a predefined status constant in this class intended to signal callers (generator code) that a field name is expected rather than a scalar value."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The gold test file GeneratorFailTest visible here exercises this via generator writeString() misuse (issue core#177), where the generator is expected to translate the STATUS_EXPECT_NAME signal into a JsonProcessingException; the generator implementation itself is not part of the patch and is not visible in this repo slice."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL-1]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL-1] (JsonWriteContext.writeValue()): When writeValue() is invoked on an object-type context at a point where no field name is pending (a field name has not just been written that expects a value, e.g., right after the object started), writeValue() returns STATUS_EXPECT_NAME and does not advance the object's field state, instead of returning STATUS_OK_AFTER_COLON as before. — not entailed by S_vis (S_vis describes only the observable generator-level symptom (writeString called where a field name is expected throws a JsonProcessingException 'can not write a String'), verified via black-box exception tests. It says nothing about the internal JsonWriteContext.writeValue() method, its specific STATUS_EXPECT_NAME vs STATUS_OK_AFTER_COLON return constants, or field-state advancement, which is the exact low-level mechanism S_IMPL-1 commits to. The visible behavior is a downstream consequence but does not pin down this internal contract.); confirmed by a oracle witness: Requirement S_IMPL-1 asserts that JsonWriteContext.writeValue() invoked on an object-type context with no pending field name (e.g. right after the object started, no writeFieldName just issued) must return STATUS_EXPECT_NAME and must not advance the object field state, rather than returning STATUS_OK_AFTER_COLON as before. The oracle test in GeneratorFailTest (testFailOnWritingStringNotFieldNameBytes/Chars, [HIDDEN]) exercises exactly this: create an object context (writeStartObject), then write a scalar String without a preceding field name. Under the fixed code the generator's writeValue() returns STATUS_EXPECT_NAME which the generator translates into a JsonProcessingException with a \"can not write a string...\" message, and no bogus JSON is emitted. Under the buggy code writeValue() returns STATUS_OK_AFTER_COLON and the scalar is silently accepted, yielding malformed output `{:\"a\"}`. My standalone JUnit 4 derivation of that helper's assertion PASSES against gold (exception thrown with matching message) and FAILS against buggy (no exception, malformed output written). Note the genuine underlying requirement S_IMPL-1 is what triggers the generator behavior; the observable assertion is exactly the same behavioral fix.",
+    "confidence": "High"
+  }
+}

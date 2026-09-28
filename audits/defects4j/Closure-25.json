@@ -1,0 +1,111 @@
+{
+  "task_id": "Closure-25",
+  "status": "ok",
+  "duration_seconds": 243.60811673699936,
+  "llm_calls": 16,
+  "error": null,
+  "record": {
+    "task_id": "Closure-25",
+    "s_vis": [
+      {
+        "id": "1",
+        "statement": "TypeInference.backwardsInferenceFromCallSite must infer, on an ordinary function call passing an empty object literal to a parameter whose JSDoc type is {{foo: (number|undefined)}}, that the object-literal argument's variable ends the function with type \"{foo: (number|undefined)}\".",
+        "subject": "TypeInference.backwardsInferenceFromCallSite / inference of object-literal argument types",
+        "hunk_ids": [],
+        "cited_from": "testBackwardsInferenceCall: inFunction(\"/** @param {{foo: (number|undefined)}} x */\" + \"function f(x) {}\" + \"var y = {};\" + \"f(y);\"); ... assertEquals(\"{foo: (number|undefined)}\", getType(\"y\").toString());"
+      },
+      {
+        "id": "2",
+        "statement": "TypeInference must infer the same object-literal-property-matching result when the parameterized function is invoked with the `new` operator rather than a plain call: for a constructor with JSDoc `@param {{foo: (number|undefined)}} x` and body `var y = {}; new F(y);`, the variable y must be inferred as \"{foo: (number|undefined)}\".",
+        "subject": "TypeInference on `new`-expression argument backwards inference",
+        "hunk_ids": [],
+        "cited_from": "testBackwardsInferenceNew: inFunction(\"/**\\n * @constructor\\n * @param {{foo: (number|undefined)}} x\\n */\" + \"function F(x) {}\" + \"var y = {};\" + \"new F(y);\"); ... assertEquals(\"{foo: (number|undefined)}\", getType(\"y\").toString());"
+      },
+      {
+        "id": "3",
+        "statement": "When an object literal property is assigned a plain value and then read back, TypeInference must narrow the read's type accordingly: after `var x = {a:1}; ... var out = x.a;` reading x.a gives NUMBER_TYPE, and after subsequently executing `x.a = 'string';` a later read of x.a gives STRING_TYPE (i.e. the property read returns the previously inferred/assigned property type).",
+        "subject": "traverseObjectLiteral / traverseGetProp property type inference on object literals",
+        "hunk_ids": [],
+        "cited_from": "testObjectLit: inFunction(\"var x = {a:1}; var out = x.a;\"); verify(\"out\", NUMBER_TYPE); ... inFunction(\"var x = {a:1}; var out = x.a; x.a = 'string'; var out2 = x.a;\"); verify(\"out\", NUMBER_TYPE); verify(\"out2\", STRING_TYPE);"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "TypeInference now runs call-site backwards type inference on a 'new' expression whose constructor expression resolves to a recognized constructor function type (cf. ordinary function CALL expressions): constructor arguments are type-constrained against the constructor's declared parameter types, so that (a) a JSDoc-less anonymous function-literal argument sitting in a function-typed constructor parameter position is assigned that parameter's function type, (b) a function-literal argument whose declared 'this' is the constructor's template type has its 'this' bound to the actual type of the argument occupying the template-typed parameter, and (c) object-typed arguments/properties that must satisfy a parameter's record-object constraint are widened to match it.",
+        "subject": "TypeInference.traverseNew backwards type inference for constructor (NEW) call sites",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "rationale": "S_vis [2] pins down part of R1: backwards inference on a `new` expression widens an object/empty-object-literal argument against a record-object constructor parameter type (aspect c). However, R1 also claims aspects (a) function-literal args in function-typed constructor parameter positions get that function type and (b) template-'this' binding for function-literal args, neither of which appears in any S_vis entry; S_vis [1] covers only plain calls and [3] covers ordinary property reads, unrelated to the constructor/time-inference behaviors. Since only a narrow slice of R1 is evidenced, full entailment is uncertain."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "R1's observable behavior (traverseNew running call-site backwards inference so that constructor args inherit declared parameter types) exists only inside TypeInference's internals. The only way to observe it is through the direct DFA harness in TypeInferenceTest.java (TypedScopeCreator + ControlFlowAnalysis + SemanticReverseAbstractInterpreter + TypeInference.analyze(), then per-variable inferred-flow-scope checks). That whole file, including testBackwardsInferenceNew (which pins clause c for the {foo:(number|undefined)} record widening) and testBackwardsInferenceCall, is labeled [VISIBLE] — it is oracle-enforced, not a hidden fact, so any reinstantiation is worthless as a Witness (behaviourally identical, different wordings or record shapes still offer nothing a repair tool couldn't already read from the visible spec).\n\nCritically, when I tried to actually build an independent harness-driven test, run_test revealed that every needed class (TypeInference, TypedScopeCreator, ControlFlowAnalysis, ControlFlowGraph, DataFlowAnalysis.BranchedFlowState, Compiler.parseTestCode) is package-private and cannot be referenced from a standalone public-method witness (compiled into its own default-package source file). That means the discriminating scenario for R1 — and ONLY that internal scenario, per the Oracle stage and the empirical failing set (only the visible TypeInferenceTest.testBackwardsInferenceNew fails on buggy) — cannot be reproduced through any public API reachable by a run_test witness. The clauses (a)/(b)/(c) effects land on constructor-argument JSTypes and the inferred flow scope, which TypeCheck's forward-only diagnostics do not expose at new-call sites (its constructor tests testNew16, testRecordType*, etc. do not assert post-`new` argument types).\n\nGiven (1) R1's whole observable surface is pinned down by the VISIBLE test file and (2) that surface is unreachable from a standalone public test, I exhausted reasonable attempts and found no genuine hidden witness; found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The authoritative bug-report text was not available (the visible description is only a fallback citation note pointing at issue 729 and stating the fix touches com.google.javascript.jscomp.TypeInference). The full TypeInference.java and TypeInferenceTest.java are visible; I could not determine from the visible material alone which specific case is the failing regression for issue 729, so the extractable visible spec is bounded to the strongest, focused behavioral commitments in TypeInferenceTest tied to the area a fix in TypeInference (object-literal / backwards inference of property types) would settle."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "TypeInferenceTest drives TypeInference directly: it parses `(function(){...})`, runs TypedScopeCreator + ControlFlowAnalysis + SemanticReverseAbstractInterpreter, runs TypeInference.analyze(), and checks final per-variable inferred JSTypes via getType()/verify()/assertEquals."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The test file groups no tests by issue; method ordering is alphabetical (the last entries testObjectLit, testCast1, testCast2, testBackwardsInferenceCall, testBackwardsInferenceNew), so 'end of file' does not reliably mark a newly added regression test here."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The whole of TypeInferenceTest.java enumerates many more TypeInference behaviors (assert/narrowing, typeof/switch, throw/catch, instanceof, short-circuit &&/||, += / add typing, loop/join fixpoint); a repair system would have all of them to run, but I extracted only the object-literal/backwards-inference cluster most tightly coupled to the single stated touch point."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The substantive behavioral change is a single added statement backwardsInferenceFromCallSite(n, ct) inside traverseNew when ct != null && ct.isConstructor(); previously this helper was only invoked from traverseCall for CALL nodes."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H0 removes the buggy post-hoc argument loop (constructor traversed first, then args each separately after type computation) and replaces it with traverseChildren(n, scope), so the constructor and all arguments are fully traversed/typed before the instance type is computed and before backwards inference runs."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "backwardsInferenceFromCallSite also calls updateBind; for a NEW node describeFunctionBind returns null so bind handling contributes nothing observable at new call sites."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The inferred JSType attached to the NEW node itself (instance type of the constructor, or UNKNOWN, or null) is unchanged by this patch; only argument-side backwards typing is added."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: The behavior R1 describes (traverseNew running backwards call-site inference so that constructor arguments — anonymous function literals, this-typed function literals, and fresh object arguments — inherit the constructor's declared parameter types) is observable only in the direct TypeInference DFA harness that inspects per-variable inferred flow-scope types after a 'new'. The only such test is TypeInferenceTest.testBackwardsInferenceNew (and its sibling testBackwardsInferenceCall). That entire test file is labeled [VISIBLE], so its assertion cannot serve as a Witness regardless of how precisely it matches R1. The HIDDEN files that exercise TypeInference as a sub-pass (TypeCheckTest, LooseTypeCheckTest) drive the whole TypeCheck pipeline and observe only diagnostics produced by forward parameter/argument comparison or CALL-site record widening; none of their constructor tests (testNew16, testBackwardsConstructor1/2, testRecordType*, testObjectLiteralDeclaration3, etc.) asserts the post-'new' inferred type of a constructor argument — i.e. none distinguishes the buggy (no backwards inference in traverseNew) from the gold program. This is corroborated by the empirical failing set, which contains only TypeInferenceTest.testBackwardsInferenceNew (a VISIBLE-file test); a genuine hidden witness of R1 would itself fail against the buggy program and appear in that set. No hidden content that genuinely tests R1 exists, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: R1's observable behavior (traverseNew running call-site backwards inference so that constructor args inherit declared parameter types) exists only inside TypeInference's internals. The only way to observe it is through the direct DFA harness in TypeInferenceTest.java (TypedScopeCreator + ControlFlowAnalysis + SemanticReverseAbstractInterpreter + TypeInference.analyze(), then per-variable inferred-flow-scope checks). That whole file, including testBackwardsInferenceNew (which pins clause c for the {foo:(number|undefined)} record widening) and testBackwardsInferenceCall, is labeled [VISIBLE] — it is oracle-enforced, not a hidden fact, so any reinstantiation is worthless as a Witness (behaviourally identical, different wordings or record shapes still offer nothing a repair tool couldn't already read from the visible spec).\n\nCritically, when I tried to actually build an independent harness-driven test, run_test revealed that every needed class (TypeInference, TypedScopeCreator, ControlFlowAnalysis, ControlFlowGraph, DataFlowAnalysis.BranchedFlowState, Compiler.parseTestCode) is package-private and cannot be referenced from a standalone public-method witness (compiled into its own default-package source file). That means the discriminating scenario for R1 — and ONLY that internal scenario, per the Oracle stage and the empirical failing set (only the visible TypeInferenceTest.testBackwardsInferenceNew fails on buggy) — cannot be reproduced through any public API reachable by a run_test witness. The clauses (a)/(b)/(c) effects land on constructor-argument JSTypes and the inferred flow scope, which TypeCheck's forward-only diagnostics do not expose at new-call sites (its constructor tests testNew16, testRecordType*, etc. do not assert post-`new` argument types).\n\nGiven (1) R1's whole observable surface is pinned down by the VISIBLE test file and (2) that surface is unreachable from a standalone public test, I exhausted reasonable attempts and found no genuine hidden witness; found=false."
+      }
+    ],
+    "verdict": "INCONCLUSIVE",
+    "rationale": "[R1] (TypeInference.traverseNew backwards type inference for constructor (NEW) call sites) was flagged as uncertain by S_vis, Oracle Search found no match, and no synthesized candidate ever compiled successfully: R1's observable behavior (traverseNew running call-site backwards inference so that constructor args inherit declared parameter types) exists only inside TypeInference's internals. The only way to observe it is through the direct DFA harness in TypeInferenceTest.java (TypedScopeCreator + ControlFlowAnalysis + SemanticReverseAbstractInterpreter + TypeInference.analyze(), then per-variable inferred-flow-scope checks). That whole file, including testBackwardsInferenceNew (which pins clause c for the {foo:(number|undefined)} record widening) and testBackwardsInferenceCall, is labeled [VISIBLE] — it is oracle-enforced, not a hidden fact, so any reinstantiation is worthless as a Witness (behaviourally identical, different wordings or record shapes still offer nothing a repair tool couldn't already read from the visible spec).\n\nCritically, when I tried to actually build an independent harness-driven test, run_test revealed that every needed class (TypeInference, TypedScopeCreator, ControlFlowAnalysis, ControlFlowGraph, DataFlowAnalysis.BranchedFlowState, Compiler.parseTestCode) is package-private and cannot be referenced from a standalone public-method witness (compiled into its own default-package source file). That means the discriminating scenario for R1 — and ONLY that internal scenario, per the Oracle stage and the empirical failing set (only the visible TypeInferenceTest.testBackwardsInferenceNew fails on buggy) — cannot be reproduced through any public API reachable by a run_test witness. The clauses (a)/(b)/(c) effects land on constructor-argument JSTypes and the inferred flow scope, which TypeCheck's forward-only diagnostics do not expose at new-call sites (its constructor tests testNew16, testRecordType*, etc. do not assert post-`new` argument types).\n\nGiven (1) R1's whole observable surface is pinned down by the VISIBLE test file and (2) that surface is unreachable from a standalone public test, I exhausted reasonable attempts and found no genuine hidden witness; found=false.",
+    "confidence": "Low"
+  }
+}

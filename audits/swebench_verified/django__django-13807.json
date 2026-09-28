@@ -1,0 +1,124 @@
+{
+  "task_id": "django__django-13807",
+  "status": "ok",
+  "duration_seconds": 108.20357325009536,
+  "llm_calls": 15,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13807",
+    "s_vis": [
+      {
+        "id": "svis-1",
+        "statement": "On SQLite, calling check_constraints() (as loaddata does after finishing a fixture load, via `connection.check_constraints(table_names=[model._meta.db_table for model in self.models])`) must not raise a syntax error when a model's table name is a SQL keyword/reserved word such as 'order'; the per-table PRAGMA that is built from the table identifier must quote it as an identifier so that, e.g., it executes as something like `PRAGMA foreign_key_check(\"order\")` rather than `PRAGMA foreign_key_check(order)`.",
+        "subject": "django.db.backends.sqlite3.base.DatabaseWrapper.check_constraints",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"(0.000) PRAGMA foreign_key_check(order); args=None ... sqlite3.OperationalError: near \\\"order\\\": syntax error\"; \"Create a Model called Order. (order is a SQL reserved word) ... Notice that it fails ... This is because the table name order is not quoted properly\"; \"Details: due to missing back ticks around %s in the SQL statement PRAGMA foreign_key_check(%s)\"; and code path ``cursor.execute('PRAGMA foreign_key_check(%s)' % table_name)`` executed when ``table_names is not None`` in django/db/backends/sqlite3/base.py (check_constraints), which is reached from loaddata via ``connection.check_constraints(table_names=table_names)``. The backend's standard identifier quoter is ``DatabaseOperations.quote_name``, which returns '\"%s\"' % name."
+      },
+      {
+        "id": "svis-2",
+        "statement": "The identifier-quoting defect is not isolated to the foreign_key_check pragma: on SQLite, check_constraints() also embeds the unquoted table identifier in `PRAGMA foreign_key_list(%s)` and interpolates the table name plus key column identifiers unquoted into `SELECT %s, %s FROM %s WHERE rowid = ...`; so whenever a foreign-key violation row is actually reported for a table whose name (or referenced key column) is a SQL keyword/reserved word, these statements must also use properly quoted identifiers instead of failing or mis-parsing.",
+        "subject": "django.db.backends.sqlite3.base.DatabaseWrapper.check_constraints",
+        "hunk_ids": [],
+        "cited_from": "Code at django/db/backends/sqlite3/base.py check_constraints: ``foreign_key = cursor.execute('PRAGMA foreign_key_list(%s)' % table_name).fetchall()[foreign_key_index]`` and ``cursor.execute('SELECT %s, %s FROM %s WHERE rowid = %%s' % (primary_key_column_name, column_name, table_name), (rowid,)).fetchone()`` (both unquoted interpolations of the same table_name/column identifiers that line 327's ``'PRAGMA foreign_key_check(%s)' % table_name`` exhibits)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In the supports_pragma_foreign_key_check branch of DatabaseWrapper.check_constraints, when called with an explicit (non-None) list of table_names, the SQL it builds with each interpolated table name — the PRAGMA foreign_key_check(<table>), the PRAGMA foreign_key_list(<table>) resolving each violation, and the FROM clause of the SELECT that fetches the offending row — routes the table name through self.ops.quote_name, so that tables whose db_table names are SQL keywords (or otherwise would need quoting, e.g. 'references') are checked successfully and any foreign-key violation they contain is detected and reported via IntegrityError rather than causing an SQL error.",
+        "subject": "DatabaseWrapper.check_constraints (django/db/backends/sqlite3/base.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In the same pragma-based branch of DatabaseWrapper.check_constraints iterating over a supplied table list, the column names interpolated into the SELECT query that fetches the row's primary key column and foreign-key column (its result columns and rowid-lookup) are routed through self.ops.quote_name, so that foreign-key columns or primary-key columns whose names are SQL keywords are looked up correctly for violation detection rather than causing an SQL error.",
+        "subject": "DatabaseWrapper.check_constraints (django/db/backends/sqlite3/base.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "svis-1",
+          "svis-2"
+        ],
+        "rationale": "svis-1 pins down that the PRAGMA foreign_key_check(<table>) table identifier must be quoted via the standard quoter ops.quote_name in the table_names-is-not-None branch, and svis-2 confirms the same quoting fix extends to the table identifiers in PRAGMA foreign_key_list(%s) and the FROM clause of the SELECT that resolves each violation. Together these fully pin the behavior in R1."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "svis-1",
+          "svis-2"
+        ],
+        "rationale": "svis-2 explicitly cites the SELECT with unquoted primary_key_column_name/column_name and states that key column identifiers that are SQL keywords must be properly quoted in these statements, and svis-1 identifies quote_name as the backend's standard quoter that supplies the fix. This pins down the column-name quoting behavior described in R2."
+      }
+    ],
+    "target_requirement_id": "",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": ""
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code is DatabaseWrapper.check_constraints in django/db/backends/sqlite3/base.py; it is gated on self.features.supports_pragma_foreign_key_check (SQLite >= 3.20, see django/db/backends/sqlite3/features.py)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The null-table_names branch (`PRAGMA foreign_key_check` with no argument) is not affected; the bug is only in the else branch that iterates over the supplied table_names."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "loaddata (django/core/management/commands/loaddata.py) is the direct caller that hits this: after loading, it runs `table_names = [model._meta.db_table for model in self.models]` then `connection.check_constraints(table_names=table_names)` inside `with connection.constraint_checks_disabled()`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "check_constraints() with no arguments is also called from sqlite DatabaseSchemaEditor.__exit__ (django/db/backends/sqlite3/schema.py), which exercises the unaffected no-table-names branch."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The SQLite schema editor and DDL references throughout the codebase quote identifiers with connection.ops.quote_name (`'\"%s\"' % name, avoiding double quoting if already quoted), which is the natural quoting primitive for such a fix."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Note: the issue text refers to 'back ticks' but SQLite/this backend quote identifiers with double quotes; regardless, the required behavior is SQL-valid quoting of the keyword identifier."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Identifier quoting inside SQL constructed by string interpolation rather than passing the name as a bound parameter is intrinsic here: PRAGMA foreign_key_check(N) takes the table as a literal part of the statement, so the name must be quoted in the SQL text, not parameterized."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change controls only the else branch of check_constraints (supports_pragma_foreign_key_check true and table_names is not None); the no-arg PRAGMA foreign_key_check branch (table_names is None) and the non-pragma fallback path are untouched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "self.ops.quote_name(double-) quotes an identifier and returns it unchanged if already wrapped in double quotes (see django/db/backends/sqlite3/operations.py)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The violating table, PK column, and FK column names interpolated into these SQL statements originate from a PRAGMA foreign_key_check/foreign_key_list result and/or the caller's model metadata rather than being bound parameters, so correct identifier quoting is inherent to the fix."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No fix/requirement covers identifier quoting being needed in the unrelated no-arg branch or fallback path."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "Every S_impl requirement is entailed by S_vis; no requirement to investigate.",
+    "confidence": "High"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "task_id": "django__django-11543",
+  "status": "ok",
+  "duration_seconds": 311.0697983750142,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11543",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When the development WSGI server (runserver) runs without threading (e.g. invoked with --nothreading, where connections are served one at a time by a single accept loop), it must not, after finishing the current request, keep reading/blocking on that same still-open keep-alive socket waiting for another request on it; instead it must close (or otherwise release) that connection so that other, subsequent client connections waiting in the accept queue are accepted and served rather than hanging.",
+        "subject": "django.core.servers.basehttp / runserver non-threaded connection handling",
+        "hunk_ids": [],
+        "cited_from": "Title: \"runserver fails to close connection if --nothreading specified.\" ... \"When the first request is finished, wsgi server continue to read the socket first request used because the connection is keep-alive. So, the second connection is kept waiting without accepted by wsgi server, until the fist connection is closed. But the first connection will not be closed by browser for very long time.\""
+      },
+      {
+        "id": "R2",
+        "statement": "For a response that carries a Content-Length when the client sends `Connection: keep-alive`, the threaded built-in server must not close the connection or add a `Connection` header, so the connection stays open and can be reused for a subsequent pipelined request (keep-alive is intentionally supported when a content length is known).",
+        "subject": "django.core.servers.basehttp WSGIRequestHandler/ServerHandler keep-alive semantics (threaded server)",
+        "hunk_ids": [],
+        "cited_from": "test name in tests/servers/tests.py: \"test_keep_alive_on_connection_with_content_length\" with assertions: \"conn.request('GET', '/example_view/', headers={\"Connection\": \"keep-alive\"}) ... self.assertFalse(response.will_close) ... self.assertIsNone(response.getheader('Connection'))\" and docstring \"ensure that we do not close the connection if not needed, hence allowing us to take advantage of keep-alive.\""
+      },
+      {
+        "id": "R3",
+        "statement": "When the response has no detectable Content-Length, the built-in server must explicitly set the `Connection: close` header and mark the connection to be closed (so the HTTP/1.1 client is not left expecting a persistent connection).",
+        "subject": "django.core.servers.basehttp WSGIRequestHandler/ServerHandler connection-close semantics",
+        "hunk_ids": [],
+        "cited_from": "basehttp.py cleanup_headers: \"HTTP/1.1 requires support for persistent connections. Send 'close' if the content length is unknown to prevent clients from reusing the connection. ... if 'Content-Length' not in self.headers: self.headers['Connection'] = 'close'\" and tests/servers/tests.py test_closes_connection_without_content_length asserting \"self.assertEqual(response.getheader('Connection'), 'close')\" and \"self.assertTrue(response.will_close)\"."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When ServerHandler.cleanup_headers() runs for a response and the server that served it is not a socketserver.ThreadingMixIn instance (i.e. a non-threaded HTTP server), the 'Connection' header is set to 'close' even if the response does include a 'Content-Length' header, so the request handler's connection is marked for closing (close_connection becomes True) and a subsequent request is not kept alive on that connection.",
+        "subject": "ServerHandler.cleanup_headers / WSGIRequestHandler persistent-connection handling on non-threaded servers",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When the response includes a 'Content-Length' header and the serving server IS a socketserver.ThreadingMixIn (threaded server), cleanup_headers() does not force the connection closed on account of threading alone: keep-alive/persistent-connection behavior is preserved in that case (and pre-existing no-Content-Length handling still forces close).",
+        "subject": "ServerHandler.cleanup_headers / WSGIRequestHandler persistent-connection handling on threaded servers",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 pins the behavioral outcome that a non-threaded server must close/release the connection after a request so waiting clients get served, but it never states the specific mechanism S_impl R1 commits to (cleanup_headers forcing Connection: close even when Content-Length is present, via a non-ThreadingMixIn check). S_vis R2 (threaded+Content-Length keeps alive) and R3 (no-Content-Length closes) describe keep-alive logic by content length and give no hint that a non-threaded server overrides the Content-Length keep-alive path, so whether the visible info pins such an override is genuinely ambiguous."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R2's cited test (test_keep_alive_on_connection_with_content_length) directly asserts that on a threaded server a Content-Length response with keep-alive yields will_close=False and no Connection header, pinning the preserved-keep-alive behavior S_impl R2 requires; and S_vis R3 pins the pre-existing no-Content-Length handling forcing Connection: close, covering the rest of S_impl R2."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_non_threaded_server_closes_connection_with_content_length",
+      "test_source": "from io import BytesIO\n\nfrom django.core.servers.basehttp import WSGIRequestHandler\n\n\ndef test_non_threaded_server_closes_connection_with_content_length():\n    class Stub:\n        def __init__(self, **kwargs):\n            self.__dict__.update(kwargs)\n\n        def sendall(self, data):\n            self.makefile('wb').write(data)\n\n    def test_app(environ, start_response):\n        body = b'example view'\n        start_response('200 OK', [('Content-Length', str(len(body)))])\n        return [body]\n\n    rfile = BytesIO()\n    rfile.write(b\"GET / HTTP/1.1\\r\\n\")\n    rfile.write(b\"Host: localhost\\r\\n\")\n    rfile.write(b\"\\r\\n\")\n    rfile.seek(0)\n\n    class UnclosableBytesIO(BytesIO):\n        def close(self):\n            pass\n\n    wfile = UnclosableBytesIO()\n\n    def makefile(mode, *a, **kw):\n        if mode == 'rb':\n            return rfile\n        elif mode == 'wb':\n            return wfile\n\n    request = Stub(makefile=makefile)\n    server = Stub(base_environ={}, get_app=lambda: test_app)\n    assert not isinstance(server, __import__('socketserver').ThreadingMixIn)\n\n    WSGIRequestHandler(request, '127.0.0.1', server)\n\n    wfile.seek(0)\n    out = wfile.read().decode('latin1')\n    assert 'Connection: close' in out, 'Response headers were: %r' % out\n",
+      "gold_result": "PASSED — cleanup_headers added 'Connection: close' to the response despite Content-Length being present, because the serving server is not a socketserver.ThreadingMixIn.",
+      "buggy_result": "FAILED — AssertionError on buggy: the response head contains no 'Connection: close' header even though it carries Content-Length, so connection would be kept alive on the non-threaded path.",
+      "explanation": "R1 is exactly the non-threaded path of ServerHandler.cleanup_headers(): when the response has a Content-Length header but the server is NOT a socketserver.ThreadingMixIn, Django must still set 'Connection' to 'close' so the handler's close_connection becomes True and the connection is not kept alive. The gold source adds a new `elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn)` branch to force this; the buggy source only closes when Content-Length is missing, so on a present-Content-Length response over a non-threaded server it leaves the header unset (keep-alive).\n\nThe witness drives a real WSGIRequestHandler over a stub socket whose server object is assert-confirmed NOT an instance of socketserver.ThreadingMixIn, serving an app that emits Content-Length, then asserts the raw HTTP response head contains 'Connection: close'. Gold reports PASSED (the header is appended by the new elif); buggy reports FAILED (no such header, connection would be reused). This is a genuine discriminator.\n\nNote the reasoning of the earlier Oracle Search Agent (and the visible oracle cases) does NOT capture R1: the disclosed keep-alive tests in tests/servers/tests.py run against django.test's LiveServerTestCase, which builds a threaded server (ThreadedWSGIServer) and only assert keep-alive-on-Content-Length on that threaded path — behavior unchanged by this fix. No visible material exercises a non-threaded server with Content-Length present, so my chosen scenario is not pinned by anything visible and cannot be reinvented as an already-visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant runtime code is django/core/servers/basehttp.py (WSGIRequestHandler.handle(), ServerHandler.cleanup_headers()) and django/core/management/commands/runserver.py (the --nothreading option maps to use_threading=False and is passed to basehttp.run(..., threading=threading))."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The runserver command's --nothreading/-northreading sets dest='use_threading' to store_false."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing HTTP-level connection tests for the built-in server live in tests/servers/tests.py (LiveServerViews / LiveServerThreadedTests) and run against django.test's LiveServerThread, which uses ThreadedWSGIServer (threaded server) via testcases.py _create_server. The unit-level test file tests/servers/test_basehttp.py exercises WSGIRequestHandler/ServerHandler, and tests/builtin_server/tests.py exercises the ServerHandler used by the server."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "So all disclosed connection-behavior tests exercise the THREADED server path; no disclosed test covers the non-threaded (--nothreading) path, which is precisely the path R1 targets from the issue description."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "https issue: basehttp.WSGIServer.request_queue_size is 10 at module top; ThreadedWSGIServer adds socketserver.ThreadingMixIn with daemon_threads=True."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The changed code sits in django/core/servers/basehttp.py, class ServerHandler.cleanup_headers(); connection-reuse itself is performed by WSGIRequestHandler.handle() which loops while not self.close_connection."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ThreadedWSGIServer subclasses socketserver.ThreadingMixIn; the plain WSGIServer and runserver's --nothreading path (use_threading=False passed to run(..., threading=...)) use the non-threading server type."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The actual mutation is a single new elif branch; the close_connection=True propagation block and the no-Content-Length forcing branch pre-existed and are unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target requirement R1 concerns a purely non-threaded-server behavior: ServerHandler.cleanup_headers() must set 'Connection: close' (so close_connection=True → no keep-alive) even when the response DOES carry a Content-Length header, whenever the serving server is not a socketserver.ThreadingMixIn instance.\n\nI examined every relevant oracle test location for the built-in server connection behavior:\n- tests/servers/test_basehttp.py — [VISIBLE]: only tests log_message levels, HTTPS logging, and underscore-header stripping of WSGIRequestHandler; nothing about cleanup_headers/Connection/keep-alive.\n- tests/servers/tests.py — [VISIBLE]: contains the HTTP-level keep-alive tests (test_closes_connection_without_content_length, test_keep_alive_on_connection_with_content_length, test_keep_alive_connection_clears_previous_request_data). These run against django.test's LiveServerTestCase, whose _create_server_thread uses ThreadedWSGIServer (a threading mixin). They only assert behavior on the THREADED path (keep-alive when Content-Length present; close when Content-Length absent) — a path that is unchanged by this fix and behaves identically in gold and buggy. No test in this file starts a non-threaded (--nothreading / WSGIServer) server, so none discriminates R1.\n- tests/servers/test_liveserverthread.py — [VISIBLE]: database-connection cleanup only, threaded server.\n- tests/builtin_server/tests.py — [VISIBLE]: only VerDateHandler file_wrapper/sendfile and chunked-Write counters; no Connection/cleanup_headers/keep-alive assertion.\n- tests/servers/views.py and urls.py are labeled [HIDDEN], but these are just the disabled/URL helpers referenced by the VISIBLE tests; no assertion lives there, so they cannot supply a hidden witness.\n\nCrucially, every file that actually contains connection/cleanup_headers assertions is [VISIBLE], and none of them spawns the non-threaded server required by R1. R1's distinguishing scenario (non-threaded server + response WITH Content-Length must still close the connection) is not exercised by any test in the oracle — the disclosed keep-alive tests all target the threaded server path where Content-Length presence does (correctly) result in keep-alive. Also note no test is recorded as failing against the buggy program, consistent with there being no discriminating non-threaded test. Since no [HIDDEN[-based assertion tests the non-threaded Connection behavior R1 describes, there is no genuine oracle witness; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (ServerHandler.cleanup_headers / WSGIRequestHandler persistent-connection handling on non-threaded servers): When ServerHandler.cleanup_headers() runs for a response and the server that served it is not a socketserver.ThreadingMixIn instance (i.e. a non-threaded HTTP server), the 'Connection' header is set to 'close' even if the response does include a 'Content-Length' header, so the request handler's connection is marked for closing (close_connection becomes True) and a subsequent request is not kept alive on that connection. — not entailed by S_vis (S_vis R1 pins the behavioral outcome that a non-threaded server must close/release the connection after a request so waiting clients get served, but it never states the specific mechanism S_impl R1 commits to (cleanup_headers forcing Connection: close even when Content-Length is present, via a non-ThreadingMixIn check). S_vis R2 (threaded+Content-Length keeps alive) and R3 (no-Content-Length closes) describe keep-alive logic by content length and give no hint that a non-threaded server overrides the Content-Length keep-alive path, so whether the visible info pins such an override is genuinely ambiguous.); confirmed by a synthesized witness: R1 is exactly the non-threaded path of ServerHandler.cleanup_headers(): when the response has a Content-Length header but the server is NOT a socketserver.ThreadingMixIn, Django must still set 'Connection' to 'close' so the handler's close_connection becomes True and the connection is not kept alive. The gold source adds a new `elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn)` branch to force this; the buggy source only closes when Content-Length is missing, so on a present-Content-Length response over a non-threaded server it leaves the header unset (keep-alive).\n\nThe witness drives a real WSGIRequestHandler over a stub socket whose server object is assert-confirmed NOT an instance of socketserver.ThreadingMixIn, serving an app that emits Content-Length, then asserts the raw HTTP response head contains 'Connection: close'. Gold reports PASSED (the header is appended by the new elif); buggy reports FAILED (no such header, connection would be reused). This is a genuine discriminator.\n\nNote the reasoning of the earlier Oracle Search Agent (and the visible oracle cases) does NOT capture R1: the disclosed keep-alive tests in tests/servers/tests.py run against django.test's LiveServerTestCase, which builds a threaded server (ThreadedWSGIServer) and only assert keep-alive-on-Content-Length on that threaded path — behavior unchanged by this fix. No visible material exercises a non-threaded server with Content-Length present, so my chosen scenario is not pinned by anything visible and cannot be reinvented as an already-visible assertion.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,172 @@
+{
+  "task_id": "django__django-15766",
+  "status": "ok",
+  "duration_seconds": 297.2211641250178,
+  "llm_calls": 23,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15766",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "django.db.transaction.on_commit(func, ...) must accept a keyword argument 'robust' that defaults to False, so that using on_commit without specifying it keeps existing (backward-compatible) behavior while individual handlers can be tagged robust.",
+        "subject": "django.db.transaction.on_commit",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"I'm proposing to add a robust kwarg that defaults to False, for backward compatibility, but allows a user to tag specific handlers as such.\" and example usage \"transaction.on_commit(lambda: search.update(user), robust=True)\""
+      },
+      {
+        "id": "R2",
+        "statement": "An on_commit handler registered with robust=True that raises an exception must not prevent subsequently-registered on_commit handlers in the same transaction from executing; i.e. if the robust 'search' update fails it does not stop the later background task from being scheduled.",
+        "subject": "django.db.transaction.on_commit (robust=True handling)",
+        "hunk_ids": [],
+        "cited_from": "Issue text: \"Here if search fails to update it doesn't prevent the background task from being scheduled.\" and the motivating problem \"some on_commit handlers didn't execute because one of the previous handlers raised an exception.\""
+      },
+      {
+        "id": "R3",
+        "statement": "For the default (non-robust) on_commit handler, the existing behavior must be preserved: if such a handler raises an uncaught exception, no later registered handlers in that same transaction run (failure still crashes for those tagged to crash).",
+        "subject": "django.db.transaction.on_commit (default robust=False handling)",
+        "hunk_ids": [],
+        "cited_from": "Current documented behavior (must remain for handlers not marked robust; issue example 'transaction.on_commit(lambda: mytask.delay(user_id=user.id))' annotated \"if this task fails, we want to crash\") and docs/topics/db/transactions.txt: \"If one on-commit function within a given transaction raises an uncaught exception, no later registered functions in that same transaction will run.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "django.db.transaction.on_commit(func, using=None, robust=False) accepts a `robust` keyword argument (defaulting to False) and forwards that value, along with func and using, to the selected database connection's on_commit method.",
+        "subject": "django.db.transaction.on_commit",
+        "hunk_ids": [
+          "H5"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "BaseDatabaseWrapper.on_commit(func, robust=False) accepts a `robust` boolean keyword argument (defaulting to False); when the connection is inside an atomic block, the robustness flag supplied for a given function is stored with that hook so that the hook's later commit-time execution honors it (the call must not raise just because the hook is non-callable-when-robust; non-callable check unchanged).",
+        "subject": "django.db.backends.base.BaseDatabaseWrapper.on_commit",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "When BaseDatabaseWrapper.on_commit is invoked with robust=True while the connection is in autocommit with no atomic block in progress (so func runs immediately), an exception raised by func is caught and logged instead of being propagated out of the on_commit call, which returns normally; when robust=False (the default), an exception from func propagates out of that immediate on_commit call unchanged.",
+        "subject": "django.db.backends.base.BaseDatabaseWrapper.on_commit",
+        "hunk_ids": [
+          "H3",
+          "H4"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R4",
+        "statement": "During commit-time execution of registered on-commit hooks (run_and_clear_commit_hooks), a hook that was registered with robust=True and raises has its exception caught and logged and execution continues on to the remaining on-commit hooks registered for that transaction run; a hook registered with robust=False (the default) that raises retains the prior behavior of propagating the exception out of the hook-run (halting the execution of the remaining hooks in that run).",
+        "subject": "django.db.backends.base.BaseDatabaseWrapper.run_and_clear_commit_hooks",
+        "hunk_ids": [
+          "H4"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R1 explicitly commits that transaction.on_commit accepts a 'robust' kwarg defaulting to False with backward-compatible behavior, matching this method-level API claim; forwarding robust (with func/using) to the connection is the natural mechanism required to tag and honor per-handler robustness."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis describes only end-user behavior of robust handlers (failures not stopping subsequent handlers) and never specifies the BaseDatabaseWrapper.on_commit signature, the per-hook storage of the robustness flag, or the unchanged non-callable check. Some sharing of intent exists but these internals are not derivable from visible info."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R2/R3 only describe robust/non-robust handler failure within a transaction among subsequently-registered handlers; nothing in S_vis addresses the autocommit immediate-execution path, catching/logging an exception and returning normally, or propagation on that path. This scenario is entirely unpinned."
+      },
+      {
+        "requirement_id": "R4",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "rationale": "S_vis R2 pins that a robust handler's failure does not prevent later registered handlers from running (continue-on-error), and S_vis R3 pins that a default non-robust handler's uncaught exception halts later handlers in that transaction (propagate). These two behaviors are exactly what run_and_clear_commit_hooks must implement."
+      }
+    ],
+    "target_requirement_id": "R3",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_robust_flag_immediate_autocommit_execution",
+      "test_source": "import unittest\n\nfrom django.db.backends.base.base import BaseDatabaseWrapper\n\n\nclass _NoDBWrapper(BaseDatabaseWrapper):\n    def __init__(self):\n        self.connection = object()\n        self.autocommit = True\n        self.in_atomic_block = False\n        self.run_on_commit = []\n        self.savepoint_ids = []\n        self.atomic_blocks = []\n        self.needs_rollback = False\n\n\nclass ImmediateRobustTest(unittest.TestCase):\n    def test_robust_flag_immediate_autocommit_execution(self):\n        # R3: connection in autocommit with NO atomic block -> func for\n        # on_commit runs immediately.\n\n        # Case 1: robust=True -> an exception raised by func is caught and\n        # logged; on_commit returns normally (nothing propagates).\n        w = _NoDBWrapper()\n        def boom_robust():\n            raise ValueError(\"swallowed\")\n        w.on_commit(boom_robust, robust=True)\n\n        # Case 2: robust=False (the default) -> exception from func\n        # propagates out of the immediate on_commit unchanged.\n        w2 = _NoDBWrapper()\n        raised = None\n        def boom_non_robust():\n            raise ValueError(\"propagated\")\n        try:\n            w2.on_commit(boom_non_robust)\n        except ValueError as exc:\n            raised = exc\n        self.assertIsNotNone(raised, \"default on_commit should have propagated\")\n        self.assertEqual(raised.args[0], \"propagated\")\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED — TypeError: on_commit() got an unexpected keyword argument 'robust'",
+      "explanation": "R3 concerns the newly-introduced `robust` parameter on BaseDatabaseWrapper.on_commit for the immediate-execution path (connection in autocommit, no atomic block active): with robust=True, an exception raised by func is caught/logged so on_commit returns normally; with robust=False (default) the exception propagates unchanged. The oracle's entire transaction_hooks test suite is byte-identical to [VISIBLE] content and never passes `robust`, so no existing test covers it (the requirement lived only as the gold patch).\n\nThe witness constructs a minimal BaseDatabaseWrapper whose state models autocommit with no atomic block (flags set directly so the immediate \"execute now\" branch in on_commit is reached without needing a real database connection/connection setup). It then drives both behaviours of R3:\n - calls on_commit(func, robust=True) where func raises ValueError → asserts nothing propagates (returns normally, i.e. the caught-and-logged branch), and\n - calls on_commit(func) with the default robust=False where func raises ValueError → asserts the exact same exception value propagates out unchanged.\nVerified by run_test: gold PASSED (gold has the robust param and the try/except/logging immediate branch), buggy FAILED because the pre-fix on_commit signature `on_commit(self, func)` does not accept the keyword `robust` and has no exception-catching in the immediate path, so the test raises TypeError. This behaviour is not pinned by any visible content in the repo (no on_commit caller anywhere uses robust), so it is a genuine hidden-behaviour discriminator."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The on_commit runtime lives on BaseDatabaseWrapper: on_commit(func) appends (sids, func) tuples to self.run_on_commit, saved cleared at commit via run_and_clear_commit_hooks, which pops and calls each func in FIFO order."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "django.db.transaction.on_commit is the public wrapper that delegates to get_connection(using).on_commit(func)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live in tests/transaction_hooks/tests.py (TestConnectionOnCommit); models in tests/transaction_hooks/models.py."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing test test_error_in_hook_doesnt_prevent_clearing_hooks confirms current default behavior that a raising hook stops later hooks for that transaction but the queue is still cleared for the next transaction."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "This is a feature-request ticket (no failing code present); the requirements above are the inferred desired contract the visible proposal states."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch adds `import logging` and a module-level logger `logger = logging.getLogger('django.db.backends.base')` (H0/H1) used to report exceptions from robust on-commit callbacks via logger.error with exc_info=True; the logged message text differs between the immediate-execution path ('... in on_commit() (%s).') and the transaction commit-time path ('... in on_commit() during transaction (%s).')."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The on_commit storage structure run_on_commit changes from 2-tuples (sids, func) to 3-tuples (sids, func, robust); hunk H2 (savepoint_rollback's pruning list comprehension) is updated solely to unpack the third element and does not change observable behavior."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The __init__ docstring/comment describing run_on_commit still says 'Each entry is an (sids, func) tuple' and was not updated to mention the robust flag (cosmetic discrepancy)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Classes/methods involved: BaseDatabaseWrapper.run_on_commit is reset to [] in connect(), rollback(), and close(); a module logger is introduced at H1."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R3]: Requirement R3 concerns the newly-introduced `robust` parameter on BaseDatabaseWrapper.on_commit, specifically the immediate-execution path in autocommit (no atomic block): with robust=True an exception from func is caught and logged (on_commit returns normally); with robust=False (default) the exception propagates unchanged.\n\nI investigated the oracle's test suite for any test that actually exercises this behavior.\n\n1. The canonical home for on_commit behavior tests, tests/transaction_hooks/tests.py (class TestConnectionOnCommit), is entirely [VISIBLE] content. Its methods cover immediate execution when no transaction is active (test_executes_immediately_if_no_transaction), commit/rollback/savepoint semantics, and commit-time error behavior (test_error_in_hook_doesnt_prevent_clearing_hooks). Critically, NONE of these tests pass a `robust` argument to on_commit, and none exercise exception-catching/logging in the immediate autocommit execution path. The file is byte-identical to visible material, so even if one of its methods resembled the requirement it could not serve as a witness (it must rest on [HIDDEN] assertions, and all of it is [VISIBLE]).\n2. The surrounding transaction_hooks files are models.py and __init__.py — models.py is [HIDDEN] but is only a `Thing` model definition (no behavioral assertion), and __init__.py is empty; neither tests R3.\n3. I also read tests/backends/base/test_base.py, tests/transactions/tests.py, and tests/utils_tests/test_connection.py; all are [VISIBLE] and contain no on_commit/robust tests.\n4. I inspected django/db/backends/base/base.py (the buggy source): its on_commit signature is `on_commit(self, func)` — no `robust` parameter and no try/except around `func()` in the immediate path, confirming the buggy program cannot even accept robust=True (it would raise TypeError). The gold patch is the one introducing this behavior.\n\nConsistent with the recorded \"(none)\" of tests failing against the buggy program, none of the oracle's pre-existing tests depend on the robust flag; the feature's internal refactor (2-tuples → 3-tuples) is behavior-preserving for all existing visible tests. I reviewed every on_commit-relevant file the oracle contains and found no [HIDDEN] assertion that tests R3's robust behavior (either the robust=True caught/logged immediate path or the robust=False propagation), and there is no separate hidden test file exercising on_commit. Therefore no genuine oracle witness exists for this requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R3]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R3] (django.db.backends.base.BaseDatabaseWrapper.on_commit): When BaseDatabaseWrapper.on_commit is invoked with robust=True while the connection is in autocommit with no atomic block in progress (so func runs immediately), an exception raised by func is caught and logged instead of being propagated out of the on_commit call, which returns normally; when robust=False (the default), an exception from func propagates out of that immediate on_commit call unchanged. — not entailed by S_vis (S_vis R2/R3 only describe robust/non-robust handler failure within a transaction among subsequently-registered handlers; nothing in S_vis addresses the autocommit immediate-execution path, catching/logging an exception and returning normally, or propagation on that path. This scenario is entirely unpinned.); confirmed by a synthesized witness: R3 concerns the newly-introduced `robust` parameter on BaseDatabaseWrapper.on_commit for the immediate-execution path (connection in autocommit, no atomic block active): with robust=True, an exception raised by func is caught/logged so on_commit returns normally; with robust=False (default) the exception propagates unchanged. The oracle's entire transaction_hooks test suite is byte-identical to [VISIBLE] content and never passes `robust`, so no existing test covers it (the requirement lived only as the gold patch).\n\nThe witness constructs a minimal BaseDatabaseWrapper whose state models autocommit with no atomic block (flags set directly so the immediate \"execute now\" branch in on_commit is reached without needing a real database connection/connection setup). It then drives both behaviours of R3:\n - calls on_commit(func, robust=True) where func raises ValueError → asserts nothing propagates (returns normally, i.e. the caught-and-logged branch), and\n - calls on_commit(func) with the default robust=False where func raises ValueError → asserts the exact same exception value propagates out unchanged.\nVerified by run_test: gold PASSED (gold has the robust param and the try/except/logging immediate branch), buggy FAILED because the pre-fix on_commit signature `on_commit(self, func)` does not accept the keyword `robust` and has no exception-catching in the immediate path, so the test raises TypeError. This behaviour is not pinned by any visible content in the repo (no on_commit caller anywhere uses robust), so it is a genuine hidden-behaviour discriminator.",
+    "confidence": "Medium"
+  }
+}

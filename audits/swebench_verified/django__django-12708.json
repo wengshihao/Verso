@@ -1,0 +1,87 @@
+{
+  "task_id": "django__django-12708",
+  "status": "ok",
+  "duration_seconds": 999.9770478339633,
+  "llm_calls": 47,
+  "error": null,
+  "record": {
+    "task_id": "django__django-12708",
+    "s_vis": [
+      {
+        "id": "req-1",
+        "statement": "Deleting an index_together whose field set is also covered by a unique_together declared on the same model must not raise a ValueError from the wrong-number-of-constraints check in _delete_composed_index; the migration removing that index_together (while the unique_together stays) must complete successfully instead of finding '2' matching constraints (the '_uniq' and the '_idx').",
+        "subject": "django.db.backends.base.schema.BaseDatabaseSchemaEditor._delete_composed_index / alter_index_together",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Migration crashes deleting an index_together if there is a unique_together on the same fields ... It will fail at django/db/backends/base/schema.py, line 378, in _delete_composed_index(), ValueError: Found wrong number (2) of constraints for as this one will find two constraints, the _uniq and the _idx one. No way to get out of this...\" and reproduction step \"2) Delete index_together -> Fail\". Source confirmation in django/db/backends/base/schema.py: def _delete_composed_index ... constraint_names = self._constraint_names(model, columns, exclude=meta_constraint_names | meta_index_names, **constraint_kwargs); if len(constraint_names) != 1: raise ValueError(\"Found wrong number (%s) of constraints for %s(%s)\" % (len(constraint_names), model._meta.db_table, \", \".join(columns)))"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When alter_index_together removes an index_together grouping (an entry in the old set not present in the new), the schema editor locates for deletion only a constraint whose introspection reports index=True and unique=False for those columns, i.e. a plain (non-unique) index; a unique constraint spanning the very same columns is excluded from the deletion lookup so that it is not deleted and the removal does not fail with a \"Found wrong number...\" ValueError merely because that unique constraint exists.",
+        "subject": "BaseDatabaseSchemaEditor.alter_index_together",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When called from alter_index_together's deleted-indexes pass, _delete_composed_index receives constraint criteria that require unique=False in addition to index=True, restricting which matching constraints can be counted (must be exactly one) and dropped.",
+        "subject": "BaseDatabaseSchemaEditor._delete_composed_index",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "req-1"
+        ],
+        "rationale": "The visible issue documents the symptom (alter_index_together deleting an index_together over columns also in a unique_together finds 2 constraints and crashes) and the success criterion (removal completes while the unique constraint stays), which is the end-goal R1 pursues. But it never states that the deletion lookup must be restricted to index=True & unique=False constraints and thereby exclude the unique constraint — the specific mechanism the patch employs — so it is not strictly pinned down."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "req-1"
+        ],
+        "rationale": "R2 describes the internal mechanism that unique=False is added to the constraint criteria passed into _delete_composed_index from the deleted-indexes pass. The visible evidence (issue + _delete_composed_index signature) explains only that two constraints ('_uniq' and '_idx') get counted and trigger the ValueError; it gives no indication the intended disambiguation is via a unique=False criterion, so the visible behavior is not entailed."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_alter_index_together_removes_plain_index_keeps_unique",
+      "test_source": "def test_alter_index_together_removes_plain_index_keeps_unique():\n    from django.conf import settings\n    if not settings.configured:\n        settings.configure(\n            SECRET_KEY='x', DEBUG=False, INSTALLED_APPS=[],\n            DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': '/tmp/verso_wit_final.sqlite3'}},\n        )\n    import django, os\n    django.setup()\n    from django.db import connection, models\n\n    db_path = '/tmp/verso_wit_final.sqlite3'\n    try:\n        os.remove(db_path)\n    except OSError:\n        pass\n\n    class Row(models.Model):\n        a = models.CharField(max_length=50)\n        b = models.CharField(max_length=50)\n        class Meta:\n            app_label = 'verso'\n            db_table = 'verso_wit_row'\n\n    try:\n        with connection.schema_editor() as editor:\n            editor.create_model(Row)\n        with connection.schema_editor() as editor:\n            editor.alter_unique_together(Row, [], [('a', 'b')])\n        with connection.schema_editor() as editor:\n            editor.alter_index_together(Row, [], [('a', 'b')])\n        # Sanity: a unique constraint and a plain index now both span (a, b).\n        with connection.cursor() as cur:\n            cons = connection.introspection.get_constraints(cur, Row._meta.db_table)\n        assert any(v['unique'] and v['index'] for v in cons.values() if v['columns'] == ['a', 'b'])\n        assert any((not v['unique']) and v['index'] for v in cons.values() if v['columns'] == ['a', 'b'])\n        # Removing index_together must locate for deletion only the plain index,\n        # leaving the unique constraint intact (no \"Found wrong number\" error).\n        with connection.schema_editor() as editor:\n            editor.alter_index_together(Row, [('a', 'b')], [])\n        with connection.cursor() as cur:\n            cons_after = connection.introspection.get_constraints(cur, Row._meta.db_table)\n        uniq_left = [k for k, v in cons_after.items() if v['unique'] and v['columns'] == ['a', 'b']]\n        plain_left = [k for k, v in cons_after.items() if (not v['unique']) and v['index'] and v['columns'] == ['a', 'b']]\n        assert uniq_left, 'unique constraint over (a,b) should have survived index_together removal'\n        assert not plain_left, 'plain index over (a,b) should have been deleted'\n    finally:\n        try:\n            with connection.schema_editor() as editor:\n                editor.delete_model(Row)\n        except Exception:\n            pass",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED with ValueError: Found wrong number (2) of constraints for verso_wit_row(a, b) raised from BaseDatabaseSchemaEditor.alter_index_together/_delete_composed_index when removing the index_together grouping.",
+      "explanation": "R1 requires that when alter_index_together removes an index_together grouping whose column set ALSO carries a unique constraint over the very same columns, the deletion lookup must locate only the plain (index=True, unique=False) index; the unique constraint must be excluded so that exactly one match is found, the removal succeeds, and the unique constraint survives (no 'Found wrong number...' ValueError). The gold code passes {'index': True, 'unique': False} to _delete_composed_index while the buggy code passes only {'index': True}.\n\nThe witness sets up, on SQLite, a table whose columns (a,b) carry both a UNIQUE constraint (added via alter_unique_together, introspects as index=True/unique=True) and a plain index (added via alter_index_together, introspects as index=True/unique=False) -- precisely the R1 scenario. Introspection is verified before the assertion. Then it calls editor.alter_index_together(Row, [('a','b')], []), which must succeed, delete only the plain index, and leave the unique constraint intact.\n\nExecution confirmed: PASSED against gold; against buggy it FAILS with ValueError: Found wrong number (2) of constraints for verso_wit_row(a, b). This specific combination (unique + plain index over the same column set, then removing only the index_together) is not asserted by any visible schema/DB test (the Oracle already exhausted tests/schema, backends, migrations, indexes, model_indexes, constraints), so this is a genuinely novel and discriminating witness, not a reworded visible assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_impl Extractor",
+        "content": "The sibling method alter_unique_together still passes {'unique': True} on its delete pass (unchanged in this patch), so only the index_together delete path now additionally filters unique=True constraints out via unique=False."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_delete_composed_index counts remaining candidates via _constraint_names and raises ValueError unless exactly one matches, so the added filter is what lets a column set carrying both an index_together index and a unique constraint be safely handled."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched for an oracle test whose assertion tests requirement R1: that BaseDatabaseSchemaEditor.alter_index_together, when removing an index_together grouping whose columns also carry a unique constraint (index=True/unique=True over the same columns), locates for deletion only the plain (index=True, unique=False) index and does not raise a \"Found wrong number...\" ValueError.\n\nI examined every DB-schema-relevant test area of the oracle: tests/schema/tests.py (full), tests/schema/models.py, tests/schema/fields.py, tests/schema/__init__.py, tests/schema/test_logging.py, tests/migrations/test_operations.py and test_base.py, tests/backends/base/test_schema.py and test_operations.py, tests/backends/mysql/test_schema.py, tests/backends/sqlite/tests.py, tests/backends/postgresql/tests.py, tests/indexes/tests.py, tests/model_indexes/tests.py, tests/constraints/tests.py and models.py.\n\nFindings:\n- All test files (with assertions) in these areas are [VISIBLE]. Per the instruction, a visible assertion can never serve as a Witness regardless of how well it matches R1.\n- The only [HIDDEN] content found in these areas is non-test model/field definitions (tests/schema/models.py, tests/schema/__init__.py, tests/constraints/models.py) containing no test assertions about alter_index_together deletion semantics.\n- None of the visible schema tests (test_index_together, test_index_together_with_fk, test_create_index_together, test_remove_index_together_does_not_remove_meta_indexes, or the migration OperationTests.test_alter_index_together) exercises the exact scenario of R1: removing an index_together whose column set also has a unique constraint (unique_together/UniqueConstraint) present, expecting the removal to succeed and the unique constraint to survive. The migrations setup that combines both unique_together and index_together (set_up_test_model in test_rename_field) is never used to drive an index_together remvoval.\n- No tests were reported as currently failing against the buggy program.\n\nBecause the behavior described in R1 is not asserted by any [HIDDEN] oracle test (and the analogous schema-level regression tests for index/unique removal that do exist are all in [VISIBLE] files), there is no genuine hidden witness to submit. I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (BaseDatabaseSchemaEditor.alter_index_together): When alter_index_together removes an index_together grouping (an entry in the old set not present in the new), the schema editor locates for deletion only a constraint whose introspection reports index=True and unique=False for those columns, i.e. a plain (non-unique) index; a unique constraint spanning the very same columns is excluded from the deletion lookup so that it is not deleted and the removal does not fail with a \"Found wrong number...\" ValueError merely because that unique constraint exists. — not entailed by S_vis (The visible issue documents the symptom (alter_index_together deleting an index_together over columns also in a unique_together finds 2 constraints and crashes) and the success criterion (removal completes while the unique constraint stays), which is the end-goal R1 pursues. But it never states that the deletion lookup must be restricted to index=True & unique=False constraints and thereby exclude the unique constraint — the specific mechanism the patch employs — so it is not strictly pinned down.); confirmed by a synthesized witness: R1 requires that when alter_index_together removes an index_together grouping whose column set ALSO carries a unique constraint over the very same columns, the deletion lookup must locate only the plain (index=True, unique=False) index; the unique constraint must be excluded so that exactly one match is found, the removal succeeds, and the unique constraint survives (no 'Found wrong number...' ValueError). The gold code passes {'index': True, 'unique': False} to _delete_composed_index while the buggy code passes only {'index': True}.\n\nThe witness sets up, on SQLite, a table whose columns (a,b) carry both a UNIQUE constraint (added via alter_unique_together, introspects as index=True/unique=True) and a plain index (added via alter_index_together, introspects as index=True/unique=False) -- precisely the R1 scenario. Introspection is verified before the assertion. Then it calls editor.alter_index_together(Row, [('a','b')], []), which must succeed, delete only the plain index, and leave the unique constraint intact.\n\nExecution confirmed: PASSED against gold; against buggy it FAILS with ValueError: Found wrong number (2) of constraints for verso_wit_row(a, b). This specific combination (unique + plain index over the same column set, then removing only the index_together) is not asserted by any visible schema/DB test (the Oracle already exhausted tests/schema, backends, migrations, indexes, model_indexes, constraints), so this is a genuinely novel and discriminating witness, not a reworded visible assertion.",
+    "confidence": "Medium"
+  }
+}

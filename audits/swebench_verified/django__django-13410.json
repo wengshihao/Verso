@@ -1,0 +1,133 @@
+{
+  "task_id": "django__django-13410",
+  "status": "ok",
+  "duration_seconds": 374.9352584159933,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13410",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "On POSIX systems (where fcntl is importable), lock(f, flags) returns True when fcntl.flock(_fd(f), flags) completes without raising, and returns False (instead of propagating the exception) when fcntl.flock raises OSError — so that a failed non-blocking (LOCK_NB) lock attempt is reported to the caller as False rather than raising.",
+        "subject": "django.core.files.locks.lock (POSIX/fcntl branch)",
+        "hunk_ids": [],
+        "cited_from": "\"But instead it always returns False. The reason is that cpython fcntl module returns None if successful, and raises an OSError to indicate failure\" and \"def lock(f, flags):\\n\\t\\ttry:\\n\\t\\t\\tfcntl.flock(_fd(f), flags)\\n\\t\\t\\treturn True\\n\\t\\texcept OSError:\\n\\t\\t\\treturn False\""
+      },
+      {
+        "id": "R2",
+        "statement": "On POSIX systems (where fcntl is importable), unlock(f) returns True when fcntl.flock(_fd(f), fcntl.LOCK_UN) completes without raising, and returns False (instead of propagating the exception) when it raises OSError.",
+        "subject": "django.core.files.locks.unlock (POSIX/fcntl branch)",
+        "hunk_ids": [],
+        "cited_from": "\"def unlock(f):\\n\\t\\ttry:\\n\\t\\t\\tfcntl.flock(_fd(f), fcntl.LOCK_UN)\\n\\t\\t\\treturn True\\n\\t\\texcept OSError:\\n\\t\\t\\treturn False\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "On POSIX systems, locks.lock() returns True when the underlying flock operation succeeds (a lock is successfully established) rather than the previous always-False value.",
+        "subject": "django.core.files.locks.lock (POSIX fcntl branch)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "On POSIX systems, locks.lock() returns False (does not raise) when the flock call fails with BlockingIOError, i.e. when a non-blocking (LOCK_NB) lock attempt is denied due to contention; exceptions other than BlockingIOError propagate.",
+        "subject": "django.core.files.locks.lock (POSIX fcntl branch)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "On POSIX systems, locks.unlock() returns True after successfully performing the flock(LOCK_UN) unlock operation rather than the previous always-False value.",
+        "subject": "django.core.files.locks.unlock (POSIX fcntl branch)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly states lock(f, flags) returns True when fcntl.flock completes without raising, directly pinning the behavior of returning True on a successful lock."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1's evidence shows `except OSError: return False`, catching all OSErrors (including BlockingIOError) and suppressing them; it does not pin down S_impl's narrower behavior where only BlockingIOError returns False and other exceptions propagate — the visible code even conflicts with propagating non-BlockingIOError OSErrors."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "true",
+        "checked_ids": [
+          "R2"
+        ],
+        "rationale": "S_vis R2 explicitly states unlock() returns True when fcntl.flock(LOCK_UN) completes without raising, directly pinning the behavior of returning True after a successful unlock."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_nonblocking_lock_contention_returns_false_not_raises",
+      "test_source": "import os\nimport tempfile\nfrom django.core.files import locks\n\ndef test_nonblocking_lock_contention_returns_false_not_raises():\n    if os.name == 'nt':\n        return\n    path = tempfile.mktemp()\n    f1 = None\n    f2 = None\n    try:\n        f1 = open(path, 'wb')\n        # Acquire an exclusive lock on f1 (buggy returns False but the\n        # underlying flock still succeeds, holding the real OS lock).\n        locks.lock(f1, locks.LOCK_EX)\n        f2 = open(path, 'wb')\n        # f2's non-blocking exclusive attempt must be denied by contention;\n        # lock() must return False rather than raise BlockingIOError.\n        result = locks.lock(f2, locks.LOCK_EX | locks.LOCK_NB)\n        assert result is False\n    finally:\n        if f2 is not None:\n            try:\n                f2.close()\n            except Exception:\n                pass\n        if f1 is not None:\n            try:\n                f1.close()\n            except Exception:\n                pass\n        try:\n            os.unlink(path)\n        except OSError:\n            pass",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED: locks.lock(f2, LOCK_EX|LOCK_NB) raised BlockingIOError: [Errno 11] Resource temporarily unavailable (uncaught inside buggy lock) instead of returning False, at django/core/files/locks.py:110 inside the fcntl flock call.",
+      "explanation": "R2 requires that in the POSIX fcntl branch locks.lock() returns False rather than raising when the flock call fails with BlockingIOError due to non-blocking (LOCK_NB) contention, while other exceptions still propagate. This test builds a genuine contention scenario: it opens f1 on a temp file, acquires an exclusive lock (LOCK_EX) on f1, then opens a second independently-open file handle f2 on the same file and attempts LOCK_EX|LOCK_NB. Exclusive flock semantics apply per open-file-description, so f2's non-blocking request is denied with EWOULDBLOCK (mapped to BlockingIOError). The gold lock() catches BlockingIOError and returns False, so asserting `result is False` passes on gold (verified PASSED). The buggy lock() has no try/except at all - it merely calls fcntl.flock and compares the return to 0 - so the BlockingIOError raised by flock on contention escapes to the caller. Running the identical test against the buggy build fails because the contention-denied attempt on f2 raises BlockingIOError (verified FAILED, traceback shows flock inside django/core/files/locks.py:110 raising the uncaught error). No visible test anywhere exercises django.core.files.locks (the Oracle agent reviewed tests/files, file_storage, file_uploads, cache etc., none touch locks), so this is a new hidden behavior, not a rephrasing of an existing assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Buggy file: django/core/files/locks.py. Module-level constants LOCK_SH/LOCK_NB/LOCK_EX come from the fcntl module on POSIX (values 0/0/0 as fallbacks when fcntl is unavailable). _fd(f) returns f.fileno() when f has fileno, else f itself."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The module has three code paths: the Windows msvcrt/ctypes branch, the POSIX fcntl branch (the buggy one, which currently does `ret = fcntl.flock(...); return ret == 0` — always False because fcntl.flock returns None on success), and the no-file-locking branch with dummy lock/unlock returning False/True."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "No visible test suite exercises locks (tests/files/ contains only image/file tests with no lock tests present in this snapshot). The requirements are grounded in the buggy source plus the issue report's stated correct behavior."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The fcntl.flock call inside both lock() and unlock() of the POSIX branch is the single faulty computation; per the issue both must instead rely on try/except OSError to detect failure."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch touches only the POSIX fcntl branch of locks.py; the Windows msvcrt branch and the no-file-locking dummy branch (which always returns False from lock and True from unlock) are unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "BlockingIOError is a subclass of OSError; the gold code catches specifically BlockingIOError, so other OSError subclasses raised by flock (e.g. invalid fd) propagate to the caller rather than being converted to a False return."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "fcntl.flock returns None on success, which is why the old `ret == 0` comparison always evaluated False — _fd(f) resolves to f.fileno() for file-like objects or the raw integer fd otherwise."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: No oracle test witnesses R2. I searched the natural homes of any test exercising django.core.files.locks (the only code path that uses fcntl.flock/LOCK_NB in the files namespace). tests/files/tests.py, tests/file_storage/tests.py, tests/file_uploads/tests.py, and tests/cache/tests.py were all reviewed in full: none import django.core.files.locks, none call locks.lock()/unlock(), and none assert on flock returning False under BlockingIOError contention or on other-exception propagation. All of these files are [VISIBLE] anyway, so even a co-located lock assertion could not serve as a hidden witness. Consistent with this, the benchmark records NO test currently failing against the buggy program—meaning no oracle test drives the non-blocking flock-denial path where the buggy lock() would raise (BlockingIOError) rather than return False. Because a witness requires a [HIDDEN] oracle assertion that passes on gold and fails on buggy, and no such assertion exists for this requirement in this snapshot, found=false is the correct result."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (django.core.files.locks.lock (POSIX fcntl branch)): On POSIX systems, locks.lock() returns False (does not raise) when the flock call fails with BlockingIOError, i.e. when a non-blocking (LOCK_NB) lock attempt is denied due to contention; exceptions other than BlockingIOError propagate. — not entailed by S_vis (S_vis R1's evidence shows `except OSError: return False`, catching all OSErrors (including BlockingIOError) and suppressing them; it does not pin down S_impl's narrower behavior where only BlockingIOError returns False and other exceptions propagate — the visible code even conflicts with propagating non-BlockingIOError OSErrors.); confirmed by a synthesized witness: R2 requires that in the POSIX fcntl branch locks.lock() returns False rather than raising when the flock call fails with BlockingIOError due to non-blocking (LOCK_NB) contention, while other exceptions still propagate. This test builds a genuine contention scenario: it opens f1 on a temp file, acquires an exclusive lock (LOCK_EX) on f1, then opens a second independently-open file handle f2 on the same file and attempts LOCK_EX|LOCK_NB. Exclusive flock semantics apply per open-file-description, so f2's non-blocking request is denied with EWOULDBLOCK (mapped to BlockingIOError). The gold lock() catches BlockingIOError and returns False, so asserting `result is False` passes on gold (verified PASSED). The buggy lock() has no try/except at all - it merely calls fcntl.flock and compares the return to 0 - so the BlockingIOError raised by flock on contention escapes to the caller. Running the identical test against the buggy build fails because the contention-denied attempt on f2 raises BlockingIOError (verified FAILED, traceback shows flock inside django/core/files/locks.py:110 raising the uncaught error). No visible test anywhere exercises django.core.files.locks (the Oracle agent reviewed tests/files, file_storage, file_uploads, cache etc., none touch locks), so this is a new hidden behavior, not a rephrasing of an existing assertion.",
+    "confidence": "Medium"
+  }
+}

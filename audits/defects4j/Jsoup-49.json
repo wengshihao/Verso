@@ -1,0 +1,145 @@
+{
+  "task_id": "Jsoup-49",
+  "status": "ok",
+  "duration_seconds": 221.76496268499977,
+  "llm_calls": 21,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-49",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Node.clone() returns a deep, stand-alone copy whose clone has no parent (orphaned), has siblingIndex 0, and whose later mutations do not affect the original node or its document.",
+        "subject": "org.jsoup.nodes.Node#clone",
+        "hunk_ids": [],
+        "cited_from": "Node.java javadoc: \"Create a stand-alone, deep copy of this node... The cloned node will have no siblings or parent node.\"; ElementTest.testClone asserts: \"assertNull(clone.parent()); // should be orphaned\", \"assertEquals(0, clone.siblingIndex);\", \"assertEquals(1, p.siblingIndex);\", \"clone.append(\"<span>Three\");\" ... \"assertEquals(\"<div><p>One</p><p><span>Two</span></p></div>\", ...doc.body().html()); // not modified\""
+      },
+      {
+        "id": "R2",
+        "statement": "A node's outer HTML serialization must be preserved even after the node has been removed from the document (lost its parent), including standalone (non-pretty) serialization such as <img src=...>.",
+        "subject": "org.jsoup.nodes.Node#outerHtml",
+        "hunk_ids": [],
+        "cited_from": "ElementTest.parentlessToString: \"img.remove(); // lost its parent\", \"assertEquals(\"<img src=\\\"foo\\\">\", img.toString());\""
+      },
+      {
+        "id": "R3",
+        "statement": "After moving child nodes from one parent element to another (e.g. via insertChildren), each moved node's siblingIndex is reindexed to its new position and the moving element is correctly emptied, so that subsequent serialization reflects the new tree order.",
+        "subject": "org.jsoup.nodes.Node sibling/child bookkeeping",
+        "hunk_ids": [],
+        "cited_from": "ElementTest.testAddNewElement: \"// check sibling index (with short circuit on reindexChildren): Elements ps = doc.select(\"p\"); for (int i = 0; i < ps.size(); i++) { assertEquals(i, ps.get(i).siblingIndex); }\"; ElementTest.moveByAppend: \"assertEquals(0, div1.childNodeSize()); assertEquals(4, div2.childNodeSize());\" and \"div2.insertChildren(0, children); ... assertEquals(0, children.size());\""
+      },
+      {
+        "id": "R4",
+        "statement": "Appending or moving nodes from another parent must detach them from their prior parent and adopt them under the new parent, leaving sibling indices consistent regardless of whether inserted at a position that requires reindexing or appended which may short-circuit it.",
+        "subject": "org.jsoup.nodes.Node#addChildren(Node...)",
+        "hunk_ids": [],
+        "cited_from": "ElementTest.testAppendRowToTable / testAddNewElement repeated pattern: \"for (int i = 0; i < ps.size(); i++) assertEquals(i, ps.get(i).siblingIndex);\"; ElementTest.insertChildrenAtPosition movers: \"assertEquals(div2, el1.parent());\" and \"assertEquals(7, div2.childNodeSize()); assertEquals(3, el1.siblingIndex());\""
+      },
+      {
+        "id": "R5",
+        "statement": "A node's outerHtml / html serialization must render void elements (e.g. img) without a closing tag and boolean attributes in a compact form (e.g. <div true></div>), consistent whether the node is attached or detached.",
+        "subject": "org.jsoup.nodes.Node#outerHtml",
+        "hunk_ids": [],
+        "cited_from": "ElementTest.testAddBooleanAttribute: \"assertEquals(\"<div true></div>\", div.outerHtml());\"; ElementTest.testOuterHtml: \"...<img src=\\\"foo.png\\\">...\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_R1",
+        "statement": "When one or more child nodes are inserted at a given index into a parent node through the indexed insertion path (Node.addChildren(int, Node...), reachable from insertChildren before/after/case manipulation APIs), every child node that ends up at index i in that parent's child list reports siblingIndex() == i, including the newly inserted nodes and all nodes that were already or became children of that same parent.",
+        "subject": "Node.addChildren(int, Node...) sibling-index maintenance",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_R2",
+        "statement": "Inserting multiple child nodes at a single index into a parent, where one or more of the inserted nodes were already children of that same parent (so their re-parenting re-removes and re-adds them during the insertion), yields a final child list in which each node appears exactly once and all removed/re-added nodes are at their intended indexes, without dropping or duplicating any child.",
+        "subject": "Node.addChildren(int, Node...) re-parenting of existing same-parent children",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R3",
+          "R4"
+        ],
+        "rationale": "R3's testAddNewElement and R4's insertChildren tests assert that after insertion each child reports siblingIndex()==i, so the basic indexed-insertion invariant is visible. However R1 also scopes nodes that were already children of the same parent getting reindexed during insertion, a case the visible tests (which move children between different parents, e.g. div1→div2) do not fully pin down as a general contract."
+      },
+      {
+        "requirement_id": "S_IMPL_R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R3",
+          "R4"
+        ],
+        "rationale": "No S_vis entry describes inserting children that are already children of the SAME parent into an indexed position and verifying each appears exactly once at the correct index (deduplication/re-parenting within one parent). R3 and R4 only cover moving nodes between different parents (div1→div2) and adopting foreign children, so the same-parent re-insertion scenario in R2 is entirely absent from visible information."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_R2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "I built and execution-confirmed a test that does discriminate the R2 fix (body.insertChildren(0, [div3, div4]) where div3/div4 are already children of body): it PASSED against gold and FAILED against buggy (buggy dropped/duplicated children producing wrong order/duplication; ComparisonFailure div[3] vs div[2]). So operationally a discriminator exists.\n\nHowever, this was insufficient as a Witness under the intrinsic content rule. The exact behavior R2 describes — re-inserting already-present children at an index into their own parent so they appear exactly once at intended positions — is the very behavior already pinned word-for-word by the [VISIBLE] ElementTest test `appendMustCorrectlyMoveChildrenInsideOneParentElement`, which performs body.insertChildren(0, [div3, div4]) and asserts the identical final serialization `<div3>Check</div3><div4></div4><div1></div1><div2></div2>`. There is no second, distinct manifestation of R2; it is a single code path (only addChildren(int, Node...) triggers it, and Node.java's addChildren(Node...) append overload and all other co-located methods were untouched by the fix). My synthesized test merely re-expresses an already-visible fact in different variable names/assertion style and therefore adds no hidden-behavior knowledge a repair system reading the visible suite would not already have. Per the witness-content rule, no [HIDDEN]-derived genuine witness for R2 exists, so found=false."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Genuinely sparse provenance: the visible bug-report note states only that the bug's fix touches org.jsoup.nodes.Node and cites https://github.com/jhy/jsoup/issues/689; the tracker text 'could not be automatically fetched', so no failing-input reproducer, expected failure trace, or changed-behavior description is visible."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Only two files are visible: src/main/java/org/jsoup/nodes/Node.java (abstract Node base with addChildren/reparentChild/removeChild/replaceChild/clone/outerHtml, plus a nested bug in clone()'s doClone note) and src/test/java/org/jsoup/nodes/ElementTest.java."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible tests are the general existing Element DOM-behavior suite; none is labeled or identifiable from the visible material as the specific bug-49 regression test, so the exact buggy behavior cannot be pinned to a single method from sight alone."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ElementTest exercises Node-level invariants (siblingIndex under reindexChildren short-circuit/no-short-circuit paths, parent/orphan state on clone, parentless serialization) but through Element/Document-level API (insertChildren, append/prepend, remove)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Because the buggy Node.java is the state the fix must repair while keeping these visible behaviors intact, the extracted requirements describe Node ADT invariants the visible tests already guarantee and a correct fix must preserve."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only contact the protected indexed-insertion helper addChildren(int, Node...); the fix moves the reindexChildren(index) call from after the insertion loop into the body of the loop (once per inserted child). Matches jsoup issue #689."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "addChildren(int, Node...) is the only overload that inserts at an explicit index; addChildren(Node...) (append path) appends and sets each new child's siblingIndex individually, and was not touched."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "reparentChild(in) may remove a child that already belongs to a parent (calling removeChild, which itself reindexes), so the target node's sibling indices can be disturbed between insertions within the same multi-insert call."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only Node.java is modified by the patch; no test file is part of the diff."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_R2]: I searched the entire oracle test suite (all 23 test files) for a [HIDDEN] test that witnesses [S_IMPL_R2], the Node.addChildren(int, Node...) behavior of inserting multiple children at a single index into a parent where one or more of those children are ALREADY children of that same parent (so re-parentChild re-removes and re-adds them), yielding no dropped/duplicated children with correct final indices.\n\nThe only failing test currently active against the buggy program is `appendMustCorrectlyMoveChildrenInsideOneParentElement` (in ElementTest.java), and it does exactly exercise R2's scenario (body.insertChildren(0, [div3, div4]) where div3 and div4 are already direct children of body). HOWEVER, ElementTest.java is labeled [VISIBLE], so its assertions cannot serve as a witness regardless of how well they match r.\n\nI examined every other DOM/node-related test that could plausibly re-parent nodes:\n- NodeTest.java ([HIDDEN]): read fully — only covers clone/sibling/remove/replace/wrap/childNodesCopy/parent-child navigation; no indexed multi-insert re-parenting of an existing child within its own parent.\n- HtmlParserTest, XmlTreeBuilderTest, DocumentTest ([HIDDEN]): parse-tree/encoding/doctype/selector tests driven by the tokenizer; none perform same-parent re-parenting inserts via Node.addChildren(int,...).\n- ElementsTest, SelectorTest, CssTest ([HIDDEN]): addClass/before/after/wrap/remove/text and CSS-selection semantics; none touch Node.addChildren indexed re-parenting.\n- W3CDomTest ([HIDDEN], even empty test retained), CleanerTest, ParseTest, FormElementTest, TextNodeTest, DocumentTypeTest, AttributeTest, AttributesTest, EntitiesTest + the Connection/DataUtil/StringUtil helper tests: none reference or depend on moving an already-present element and re-inserting it into the same parent at an index.\n\nThe pre-existing DOM tests in the visible ElementTest file (moveByAppend, insertChildrenAtPosition, insertChildrenAsCopy, childNodesCopy) relocate children across parents or copy them; they exercise different (cross-parent/copy) paths of insertChildren, not R2's same-parent re-removal/re-add path, and besides, they are [VISIBLE].\n\nConclusion: the sole oracle regression for R2 lives in [VISIBLE] content, and no [HIDDEN] test covers R2. Per the witness-content rule, no [HIDDEN]-derived witness exists, so found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S_IMPL_R2]: I built and execution-confirmed a test that does discriminate the R2 fix (body.insertChildren(0, [div3, div4]) where div3/div4 are already children of body): it PASSED against gold and FAILED against buggy (buggy dropped/duplicated children producing wrong order/duplication; ComparisonFailure div[3] vs div[2]). So operationally a discriminator exists.\n\nHowever, this was insufficient as a Witness under the intrinsic content rule. The exact behavior R2 describes — re-inserting already-present children at an index into their own parent so they appear exactly once at intended positions — is the very behavior already pinned word-for-word by the [VISIBLE] ElementTest test `appendMustCorrectlyMoveChildrenInsideOneParentElement`, which performs body.insertChildren(0, [div3, div4]) and asserts the identical final serialization `<div3>Check</div3><div4></div4><div1></div1><div2></div2>`. There is no second, distinct manifestation of R2; it is a single code path (only addChildren(int, Node...) triggers it, and Node.java's addChildren(Node...) append overload and all other co-located methods were untouched by the fix). My synthesized test merely re-expresses an already-visible fact in different variable names/assertion style and therefore adds no hidden-behavior knowledge a repair system reading the visible suite would not already have. Per the witness-content rule, no [HIDDEN]-derived genuine witness for R2 exists, so found=false."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S_IMPL_R2] (Node.addChildren(int, Node...) re-parenting of existing same-parent children) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: I built and execution-confirmed a test that does discriminate the R2 fix (body.insertChildren(0, [div3, div4]) where div3/div4 are already children of body): it PASSED against gold and FAILED against buggy (buggy dropped/duplicated children producing wrong order/duplication; ComparisonFailure div[3] vs div[2]). So operationally a discriminator exists.\n\nHowever, this was insufficient as a Witness under the intrinsic content rule. The exact behavior R2 describes — re-inserting already-present children at an index into their own parent so they appear exactly once at intended positions — is the very behavior already pinned word-for-word by the [VISIBLE] ElementTest test `appendMustCorrectlyMoveChildrenInsideOneParentElement`, which performs body.insertChildren(0, [div3, div4]) and asserts the identical final serialization `<div3>Check</div3><div4></div4><div1></div1><div2></div2>`. There is no second, distinct manifestation of R2; it is a single code path (only addChildren(int, Node...) triggers it, and Node.java's addChildren(Node...) append overload and all other co-located methods were untouched by the fix). My synthesized test merely re-expresses an already-visible fact in different variable names/assertion style and therefore adds no hidden-behavior knowledge a repair system reading the visible suite would not already have. Per the witness-content rule, no [HIDDEN]-derived genuine witness for R2 exists, so found=false.",
+    "confidence": "Medium"
+  }
+}

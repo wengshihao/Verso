@@ -1,0 +1,111 @@
+{
+  "task_id": "django__django-13341",
+  "status": "ok",
+  "duration_seconds": 484.8778698750539,
+  "llm_calls": 38,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13341",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "TemplateView.get() must stop automatically forwarding the URL-captured keyword arguments into the context / into get_context_data()'s kwargs; the keyword arguments captured from the URL pattern must instead be referenced through the view object (view.kwargs) rather than appearing as top-level context keys.",
+        "subject": "django.views.generic.base.TemplateView.get",
+        "hunk_ids": [],
+        "cited_from": "Issue title: 'Stop TemplateView automatically passing kwargs into the context' with body 'Only TemplateView pushes self.kwargs to the context. ListView does not...'; code comment in django/views/generic/base.py '# RemovedInDjango40Warning: when the deprecation ends, replace with:\n#   context = self.get_context_data()'; docs/ref/class-based-views/base.txt: 'Starting in Django 4.0, the keyword arguments captured from the URL pattern won't be passed to the context. Reference them with ``view.kwargs`` instead.'; release note docs/releases/3.1.txt: 'The passing of URL kwargs directly to the context by TemplateView is deprecated. Reference them in the template with ``view.kwargs`` instead.'"
+      },
+      {
+        "id": "R2",
+        "statement": "Captured URL parameter values must not appear in get_context_data()'s kwargs (or in the context) as unevaluated SimpleLazyObject instances; a get_context_data override that reads such a parameter from kwargs and uses it in a queryset/filter (e.g. get_object_or_404) must not fail with an 'Error binding parameter 0 - probably unsupported type' — semantics the issue's working 3.0 example expects.",
+        "subject": "django.views.generic.base.TemplateView.get_context_data kwargs",
+        "hunk_ids": [],
+        "cited_from": "Issue body: \"def get_context_data(self, **kwargs):\n\toffer_slug = kwargs.get(\"offer_slug\", \"\")\n\toffer = get_object_or_404(Account, slug=offer_slug)\n\treturn {\"offer\": offer, \"offer_slug\": offer_slug}\"; 'In order to make this work in 3.1, you have to explicitly convert the result of kwargs.get() to a string to get the SimpleLazyObject to resolve'; 'found that offer_slug (coming in from kwargs.get) was of type 'SimpleLazyObject' in Django 3.1'; error 'Error binding parameter 0 - probably unsupported type'."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "T1",
+        "statement": "TemplateView.get passes the keyword arguments it receives from dispatch (URLconf-captured URL kwargs) directly into the template context, so each URL keyword argument name maps in the rendered context to its ordinary raw value, no longer wrapped in a lazy/deferred object.",
+        "subject": "django.views.generic.base.TemplateView.get context contents",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "T2",
+        "statement": "Accessing (or merely including) a URL keyword argument in a TemplateView context no longer emits the RemovedInDjango40Warning deprecation warning; the deprecated behavior of lazily warning when URL kwargs are passed to the context has been removed.",
+        "subject": "django.views.generic.base.TemplateView deprecation warning suppression",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "T1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "T1 asserts URL kwargs ARE passed directly into the template context as top-level keys (with plain raw values). This directly contradicts R1, whose citations (release note + code comment) state URL kwargs must NOT be forwarded into the context as top-level keys and must instead be referenced via view.kwargs; the pass-to-context behavior is what was deprecated and removed. R2 only concerns laziness in get_context_data kwargs, not top-level context entry of URL kwargs. So no S_vis entry pins down T1."
+      },
+      {
+        "requirement_id": "T2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's citation includes the code comment '# RemovedInDjango40Warning: when the deprecation ends, replace with: context = self.get_context_data()' and the release note describing the deprecated passing of URL kwargs to the context being removed, which establishes that the deprecation-lazy-warning machinery no longer fires when URL kwargs would appear in a TemplateView context. R2 adds nothing relevant to this."
+      }
+    ],
+    "target_requirement_id": "T1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_url_kwarg_reaches_context_as_raw_value",
+      "test_source": "from django.views.generic import TemplateView\n\n\nclass CaptureView(TemplateView):\n    def render_to_response(self, context, **response_kwargs):\n        return context\n\n\ndef test_url_kwarg_reaches_context_as_raw_value():\n    request = type('Req', (), {})()\n    view = CaptureView()\n    context = view.get(request, foo='bar')\n    assert type(context['foo']) is str\n    assert context['foo'] == 'bar'\n",
+      "gold_result": "PASSED (running against gold): context['foo'] is a plain str 'bar'",
+      "buggy_result": "FAILED (running against buggy): type(context['foo']) is django.utils.functional.lazy.__proxy__, not str",
+      "explanation": "Target T1 is precisely that TemplateView.get forwards the URL kwargs it receives (here kwarg 'foo' delivered by the dispatch path) DIRECTLY into get_context_data so the rendered context holds the ordinary raw value, no longer a lazy/deferred proxy. Gold base.TemplateView.get is `context = self.get_context_data(**kwargs)` (deprecation scaffolding removed), so the kwarg 'foo' lands in the context untouched and is a plain str 'bar'. Buggy base.TemplateView.get instead routes kwargs through `_wrap_url_kwargs_with_deprecation_warning`, which replaces each value with `lazy(access_value, type(value))()`; as run_test confirmed, `type(context['foo'])` is then `django.utils.functional.lazy.__proxy__` rather than str. Defaulting to plain equality (as the visible DeprecationTests do) would force the proxy to resolve and pass on both sides, so the discriminating assertion must test the raw/unwrapped type ('type(foo) is str'). No visible assertion checks this unwrapped/type property: the visible DeprecationTests assert either equality (non-discriminating) or the deprecation warning itself (which is the anti-witness passing on buggy, not gold), and filtering checks a separately added 'artist' key. The candidate here triggers the actual changed TemplateView.get code path and was execution-verified: PASSED against gold and FAILED against buggy, i.e. it discriminates T1 in the intended direction."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The current (buggy) django/views/generic/base.py already carries the deprecation scaffolding: TemplateView.get wraps URL kwargs via _wrap_url_kwargs_with_deprecation_warning into LazyObject (`lazy(access_value, type(value))()`), and the code comment states the eventual target is `context = self.get_context_data()` (no kwargs). That wrapper is the source of the SimpleLazyObject crash described in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ContextMixin.get_context_data(**kwargs) still adds `view` via kwargs.setdefault and merges extra_context; those behaviors sit on ContextMixin and are not directly implicated by this ticket."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The visible tests currently asserting the deprecated behavior live under tests/generic_views/test_base.py in the DeprecationTests class (test_template_params, test_extra_template_params, test_template_params_warning, test_template_params_filtering) using urls from tests/generic_views/urls.py (e.g. 'template/simple/<foo>/', 'template/custom/<foo1>/<foo2>/'); these tests would need adjusting because they assert URL kwargs are present in response.context."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The developer patch is a deprecation-removal ticket: it drops the RemovedInDjango40Warning scaffolding (imports of warnings/RemovedInDjango40Warning/lazy in H0/H1 and the _wrap_url_kwargs_with_deprecation_warning helper in H2) introduced for Django 3.x, so H0/H1/H2 all implement the same net behavior; only H2 contains the actual logic change to TemplateView.get."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "ContextMixin.get_context_data and TemplateView's data flow (get_context_data => render_to_response) are unchanged and still place URL kwargs into the context via simple dict update."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [T1]: T1 (TemplateView.get passes URL kwargs into context as raw non-lazy values) is a genuine, mechanically-observable behavior difference: a probe invoking TemplateView.get via as_view with a URL kwarg yields a raw `str` under gold but a lazy `django.utils.functional.__proxy__` under buggy (so `type(foo) is str` passes/fails respectively). However, no Witness in the real oracle qualifies because every assertion that exercises this behavior is [VISIBLE], and none of them asserts the raw/non-wrapped property that distinguishes T1:\n\n- tests/generic_views/test_base.py is the only file exercising TemplateView URL-kwarg context contents, and it is [VISIBLE] in full. Its DeprecationTests assert the DEPRECATED (buggy) semantics rather than T1:\n  - test_template_params_warning asserts accessing response.context['foo1'] raises RemovedInDjango40Warning (an anti-witness: it passes on buggy, not gold).\n  - test_template_params / test_extra_template_params assert context['foo'] == 'bar' via equality, which resolves the lazy proxy and thus passes under BOTH gold and buggy — not discriminating.\n  - test_template_params_filtering only checks presence of a separately-added 'artist' key, not the raw type of URL kwargs.\n- The [HIDDEN] files relevant here (generic_views/views.py, generic_views/urls.py, django/views/generic/base.py) define views, URLs, and the production TemplateView source but contain no test assertion for T1.\n- The other generic_views test files concern Detail/List/Date/Form views, not django.views.generic.base.TemplateView.get context contents.\n\nBecause a valid Witness may rest only on [HIDDEN] oracle content, and the only behavior-asserting tests are [VISIBLE] (and mostly encode the opposite/deprecated semantics), there is no genuine hidden oracle witness for T1. A self-written discriminating probe is not an oracle test and cannot substitute (it would need to be derived from a real [HIDDEN] assertion). Result: found=false. (For the record my probe confirmed gold PASSED with `type(foo) is str` and buggy FAILED because `view['foo']` was a lazy `__proxy__`, i.e. the buggy program still wraps the URL kwarg.)"
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [T1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[T1] (django.views.generic.base.TemplateView.get context contents): TemplateView.get passes the keyword arguments it receives from dispatch (URLconf-captured URL kwargs) directly into the template context, so each URL keyword argument name maps in the rendered context to its ordinary raw value, no longer wrapped in a lazy/deferred object. — not entailed by S_vis (T1 asserts URL kwargs ARE passed directly into the template context as top-level keys (with plain raw values). This directly contradicts R1, whose citations (release note + code comment) state URL kwargs must NOT be forwarded into the context as top-level keys and must instead be referenced via view.kwargs; the pass-to-context behavior is what was deprecated and removed. R2 only concerns laziness in get_context_data kwargs, not top-level context entry of URL kwargs. So no S_vis entry pins down T1.); confirmed by a synthesized witness: Target T1 is precisely that TemplateView.get forwards the URL kwargs it receives (here kwarg 'foo' delivered by the dispatch path) DIRECTLY into get_context_data so the rendered context holds the ordinary raw value, no longer a lazy/deferred proxy. Gold base.TemplateView.get is `context = self.get_context_data(**kwargs)` (deprecation scaffolding removed), so the kwarg 'foo' lands in the context untouched and is a plain str 'bar'. Buggy base.TemplateView.get instead routes kwargs through `_wrap_url_kwargs_with_deprecation_warning`, which replaces each value with `lazy(access_value, type(value))()`; as run_test confirmed, `type(context['foo'])` is then `django.utils.functional.lazy.__proxy__` rather than str. Defaulting to plain equality (as the visible DeprecationTests do) would force the proxy to resolve and pass on both sides, so the discriminating assertion must test the raw/unwrapped type ('type(foo) is str'). No visible assertion checks this unwrapped/type property: the visible DeprecationTests assert either equality (non-discriminating) or the deprecation warning itself (which is the anti-witness passing on buggy, not gold), and filtering checks a separately added 'artist' key. The candidate here triggers the actual changed TemplateView.get code path and was execution-verified: PASSED against gold and FAILED against buggy, i.e. it discriminates T1 in the intended direction.",
+    "confidence": "Medium"
+  }
+}

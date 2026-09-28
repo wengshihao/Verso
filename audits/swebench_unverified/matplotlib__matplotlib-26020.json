@@ -1,0 +1,116 @@
+{
+  "task_id": "matplotlib__matplotlib-26020",
+  "status": "ok",
+  "duration_seconds": 346.8059812079882,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-26020",
+    "s_vis": [
+      {
+        "id": "S1",
+        "statement": "Constructing mpl_toolkits.axes_grid1.AxesGrid with an axes_class tuple whose axes class (e.g. cartopy GeoAxes) does NOT override the `.axis` attribute with a subscriptable mapping (so `.axis` is the plain callable matplotlib.axes.Axes.axis method) must complete successfully — i.e. the set_label_mode machinery in Grid.__init__ must not index into `ax.axis[...]` and must not raise TypeError: 'method' object is not subscriptable.",
+        "subject": "mpl_toolkits.axes_grid1.axes_grid.Grid.set_label_mode / _tick_only",
+        "hunk_ids": [],
+        "cited_from": "Repro snippet:\n```python\nimport matplotlib.pyplot as plt\nfrom cartopy.crs import PlateCarree\nfrom cartopy.mpl.geoaxes import GeoAxes\nfrom mpl_toolkits.axes_grid1 import AxesGrid\n\nfig = plt.figure()\naxes_class = (GeoAxes, dict(map_projection=PlateCarree()))\ngr = AxesGrid(fig, 111, nrows_ncols=(1,1),\n              axes_class=axes_class)\n```\nBug summary: 'Creating AxesGrid using cartopy GeoAxes as axis_class raises TypeError: method object is not subscriptable. Seems to be due to different behaviour of axis attr. for mpl_toolkits.axes_grid1.mpl_axes.Axes and other axes instances (like GeoAxes) where axis is only a callable. The error is raised in method mpl_toolkits.axes_grid1.axes_grid._tick_only when trying to access keys from axis attr.'\nSource line in axes_grid.py: 'ax.axis[\"bottom\"].toggle(ticklabels=bottom_off, label=bottom_off)' producing traceback: \"TypeError: 'method' object is not subscriptable\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "impl-1",
+        "statement": "Grid.set_label_mode's tick-label handling (_tick_only) must not raise when called on axes whose `.axis` is the standard bound `Axes.axis` method (i.e. axes of classes that don't override `.axis` as a property, such as matplotlib.axes.Axes subclasses like cartopy's GeoAxes); for such axes it must determine the bottom/left tick-label and axis-label visibility from (bottom_on, left_on) in the same way, toggling them on/off accordingly rather than erroring.",
+        "subject": "mpl_toolkits.axes_grid1.axes_grid._tick_only",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "impl-2",
+        "statement": "When set_label_mode (via _tick_only) is applied during Grid/ImageGrid construction or an explicit set_label_mode call to axes belonging to an axes_class whose `.axis` is an mpl_axes.Axes.AxisDict (the default in-tree mpl_axes.Axes path), the behavior of toggling bottom/left tick labels and axis labels is preserved exactly as before the patch, i.e. the original `ax.axis[\"bottom\"]`/`ax.axis[\"left\"]` indexing path still runs.",
+        "subject": "mpl_toolkits.axes_grid1.axes_grid._tick_only",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "impl-1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "S1"
+        ],
+        "rationale": "S1 (with its underlying citation naming _tick_only, the GeoAxes plain-callable .axis case, and the subscripting TypeError) firmly pins down that set_label_mode must not raise for such non-subscriptable axes. However S1 does not reveal how/whether the fix toggles the bottom/left tick-label and axis-label visibility 'in the same way' from (bottom_on, left_on) — i.e., the specific resulting toggle behavior for that path is not documented, only the non-raising."
+      },
+      {
+        "requirement_id": "impl-2",
+        "entailed": "false",
+        "checked_ids": [
+          "S1"
+        ],
+        "rationale": "S1 concerns only the non-subscriptable (GeoAxes-callable .axis) case, stating that the machinery must not error. It says nothing about preserving the original ax.axis['bottom']/ax.axis['left'] indexing behavior for the mpl_axes.AxisDict path, so S_vis provides no basis that would lead to this specific preservation requirement."
+      }
+    ],
+    "target_requirement_id": "impl-2",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "Target [impl-2] requires that the default in-tree mpl_axes.Axes path (`.axis` being an AxisDict) continues to route _tick_only through the original `ax.axis[\"bottom\"]`/`ax.axis[\"left\"]` indexing and preserves the pre-fix toggling behavior.\n\nKey fact established from reading both gold and buggy versions of axes_grid.py: the ONLY behavioral difference the patch introduces inside `_tick_only` is the `isinstance(ax.axis, MethodType)` guard. When `ax.axis` is an AxisDict (the exact [impl-2] condition), gold executes the `else` branch which is byte-for-byte the same two indexing lines as the buggy (pre-fix) body: `ax.axis[\"bottom\"].toggle(...)` / `ax.axis[\"left\"].toggle(...)`. Hence buggy and gold are literally identical under the AxisDict scenario; no test on that scenario can PASS on gold while FAILING on buggy.\n\nI empirically confirmed this on the actual programs. (a) A Grid with default axes_class (AxisDict path) constructed successfully and gave identical results on gold (PASSED) and buggy (PASSED). (b) I also constructed a Grid with `axes_class=matplotlib.axes.Axes` (plain Axes, whose `.axis` is a bound MethodType): gold PASSED (new SimpleAxisArtist branch) while buggy FAILED with `TypeError: 'method' object is not subscriptable`. That distinguishing scenario, however, exercises exactly the complement of [impl-2] — an axis whose `.axis` is a callable method, NOT an AxisDict — so it corresponds to the external-axes crash the patch fixes, not to [impl-2]'s AxisDict-preservation claim.\n\nBecause [impl-2]'s premise is that the AxisDict path already preserved behavior before the patch, any test faithful to that condition is necessarily green on both pre-fix buggy and post-fix gold; no execution-confirmed discriminating (PASS-gold / FAIL-buggy) test exists for [impl-2]. found=false. (A genuine gold/buggy-split exists only on the non-AxisDict MethodType path, which is outside [impl-2].)"
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug location is `_tick_only` in lib/mpl_toolkits/axes_grid1/axes_grid.py: `ax.axis[\"bottom\"].toggle(...)` and `ax.axis[\"left\"].toggle(...)`. `_tick_only` is only called from `Grid.set_label_mode`, which is invoked at the end of `Grid.__init__` (so AxesGrid = ImageGrid construction always reaches it via the default label_mode='L')."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Root cause context: mpl_toolkits.axes_grid1.mpl_axes.Axes overrides `.axis` as a property returning an AxisDict (dict subclass supporting __getitem__ with 'bottom'/'left' keys returning SimpleAxisArtist objects exposing .toggle). Standard matplotlib.axes.Axes subclasses that don't do this (e.g. cartopy's GeoAxes, which subclasses matplotlib.axes.Axes directly) keep plain callable `Axes.axis`, so `axis[\"bottom\"]` triggers the TypeError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The default axes class for Grid/ImageGrid is mpl_toolkits.axes_grid1.mpl_axes.Axes (`Grid._defaultAxesClass`); when axes_class is a (cls, kwargs) tuple it is converted via functools.partial, and ImageGrid (aliased AxesGrid) passes label_mode into Grid.__init__."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Same `_tick_only`/set_label_mode machinery is reused by mpl_toolkits.axisartist.axes_grid (its Grid/ImageGrid subclass only set a different `_defaultAxesClass`)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "axes_grid1 CbarAxesBase.toggle_label also indexes `self.axis[self.orientation]`, but colorbar axes are always built from the (mpl_axes-based) `_defaultAxesClass` factory, so that path is not the reported failure."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A test file lib/mpl_toolkits/axes_grid1/tests/test_axes_grid1.py exists and has test_axes_class_tuple which only exercises the in-tree mpl_axes.Axes class; no disclosed in-repo test (cartopy is an external dependency) reproduces the GeoAxes crash, so S_vis derives from the bug report alone."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix targets _tick_only in lib/mpl_toolkits/axes_grid1/axes_grid.py, reached from Grid.set_label_mode (invoked at the end of Grid.__init__, so default label_mode 'L' exercises it)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fixed branch uses SimpleAxisArtist (imported from .mpl_axes, newly added to the import statement) wrapping ax.xaxis/ax.yaxis with spines bottom/left and calls the same .toggle(ticklabels=..., label=...) interface used by the AxisDict path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The MethodType check discriminates axes whose .axis is the plain callable matplotlib Axes.axis method versus the mpl_axes.Axes.AxisDict property; _tick_only is reused unmodified by the axisartist variants of Grid/ImageGrid."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [impl-2]: I investigated whether the oracle contains a [HIDDEN] test that (a) passes against gold and fails against buggy and (b) genuinely tests requirement [impl-2].\n\n[impl-2] restates a regression-preservation constraint: when _tick_only/set_label_mode is applied to axes whose `.axis` is an mpl_axes.Axes.AxisDict (the default in-tree mpl_axes.Axes path used by axes_grid1 Grid/ImageGrid), the original `ax.axis[\"bottom\"]/ax.axis[\"left\"]` indexing path must still run, preserving behavior exactly.\n\nKey analysis: The pre-fix (buggy) `_tick_only` already handled the mpl_axes AxisDict path through those exact `ax.axis[...]` indexing calls — that path worked before the patch. The bug that the patch fixes (based on the S_vis/S_impl notes) is only about plain-matplotlib callable-`.axis` axes (e.g. external cartopy GeoAxes), which is NOT what [impl-2] describes. Consequently, on the exact scenario [impl-2] covers (the default mpl_axes path), buggy and gold behave identically, so no oracle test can fail against buggy while passing on gold for this requirement. Consistent with this, the task states there are no tests currently failing against the buggy program for this target.\n\nI read the central file lib/mpl_toolkits/axes_grid1/tests/test_axes_grid1.py (the only oracle file exercising axes_grid1 Grid/AxesGrid/ImageGrid and their set_label_mode path). All its content is labeled [VISIBLE], so it cannot serve as a Witness under any circumstances — and in any event tests such as test_axes_class_tuple, test_axesgrid_colorbar_log_smoketest, test_image_grid, etc. only exercise the in-tree mpl_axes default path, which works both before and after the fix. I also read lib/mpl_toolkits/axisartist/tests/test_axislines.py ([HIDDEN] but unrelated to axisartist/axes_grid _tick_only), and confirmed no other oracle test file targets axes_grid1 Grid/ImageGrid `_tick_only`/`set_label_mode` behavior (the axisartist tests have no axes_grid test file in the listing).\n\nConclusion: nothing in the oracle constitutes a genuine Witness for the preservation-only requirement [impl-2]. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [impl-2]: Target [impl-2] requires that the default in-tree mpl_axes.Axes path (`.axis` being an AxisDict) continues to route _tick_only through the original `ax.axis[\"bottom\"]`/`ax.axis[\"left\"]` indexing and preserves the pre-fix toggling behavior.\n\nKey fact established from reading both gold and buggy versions of axes_grid.py: the ONLY behavioral difference the patch introduces inside `_tick_only` is the `isinstance(ax.axis, MethodType)` guard. When `ax.axis` is an AxisDict (the exact [impl-2] condition), gold executes the `else` branch which is byte-for-byte the same two indexing lines as the buggy (pre-fix) body: `ax.axis[\"bottom\"].toggle(...)` / `ax.axis[\"left\"].toggle(...)`. Hence buggy and gold are literally identical under the AxisDict scenario; no test on that scenario can PASS on gold while FAILING on buggy.\n\nI empirically confirmed this on the actual programs. (a) A Grid with default axes_class (AxisDict path) constructed successfully and gave identical results on gold (PASSED) and buggy (PASSED). (b) I also constructed a Grid with `axes_class=matplotlib.axes.Axes` (plain Axes, whose `.axis` is a bound MethodType): gold PASSED (new SimpleAxisArtist branch) while buggy FAILED with `TypeError: 'method' object is not subscriptable`. That distinguishing scenario, however, exercises exactly the complement of [impl-2] — an axis whose `.axis` is a callable method, NOT an AxisDict — so it corresponds to the external-axes crash the patch fixes, not to [impl-2]'s AxisDict-preservation claim.\n\nBecause [impl-2]'s premise is that the AxisDict path already preserved behavior before the patch, any test faithful to that condition is necessarily green on both pre-fix buggy and post-fix gold; no execution-confirmed discriminating (PASS-gold / FAIL-buggy) test exists for [impl-2]. found=false. (A genuine gold/buggy-split exists only on the non-AxisDict MethodType path, which is outside [impl-2].)"
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[impl-2] (mpl_toolkits.axes_grid1.axes_grid._tick_only) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: Target [impl-2] requires that the default in-tree mpl_axes.Axes path (`.axis` being an AxisDict) continues to route _tick_only through the original `ax.axis[\"bottom\"]`/`ax.axis[\"left\"]` indexing and preserves the pre-fix toggling behavior.\n\nKey fact established from reading both gold and buggy versions of axes_grid.py: the ONLY behavioral difference the patch introduces inside `_tick_only` is the `isinstance(ax.axis, MethodType)` guard. When `ax.axis` is an AxisDict (the exact [impl-2] condition), gold executes the `else` branch which is byte-for-byte the same two indexing lines as the buggy (pre-fix) body: `ax.axis[\"bottom\"].toggle(...)` / `ax.axis[\"left\"].toggle(...)`. Hence buggy and gold are literally identical under the AxisDict scenario; no test on that scenario can PASS on gold while FAILING on buggy.\n\nI empirically confirmed this on the actual programs. (a) A Grid with default axes_class (AxisDict path) constructed successfully and gave identical results on gold (PASSED) and buggy (PASSED). (b) I also constructed a Grid with `axes_class=matplotlib.axes.Axes` (plain Axes, whose `.axis` is a bound MethodType): gold PASSED (new SimpleAxisArtist branch) while buggy FAILED with `TypeError: 'method' object is not subscriptable`. That distinguishing scenario, however, exercises exactly the complement of [impl-2] — an axis whose `.axis` is a callable method, NOT an AxisDict — so it corresponds to the external-axes crash the patch fixes, not to [impl-2]'s AxisDict-preservation claim.\n\nBecause [impl-2]'s premise is that the AxisDict path already preserved behavior before the patch, any test faithful to that condition is necessarily green on both pre-fix buggy and post-fix gold; no execution-confirmed discriminating (PASS-gold / FAIL-buggy) test exists for [impl-2]. found=false. (A genuine gold/buggy-split exists only on the non-AxisDict MethodType path, which is outside [impl-2].)",
+    "confidence": "Medium"
+  }
+}

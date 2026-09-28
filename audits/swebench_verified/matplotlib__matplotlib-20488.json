@@ -1,0 +1,106 @@
+{
+  "task_id": "matplotlib__matplotlib-20488",
+  "status": "ok",
+  "duration_seconds": 455.14616404206026,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-20488",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Drawing/imshow-rendering an image whose data is numpy float64 values −1 everywhere except the top two rows set to 1E20, shown with norm=LogNorm(vmin=100, vmax=data.max()=1E20), interpolation='nearest', cmap='viridis' (the fig_test setup of test_huge_range_log), must not raise a ValueError; in particular the scale-based norm __call__ must not fall through to `raise ValueError(\"Invalid vmin or vmax\")` (the `if not np.isfinite([t_vmin, t_vmax]).all()` guard) while normalizing the resampled/masked data.",
+        "subject": "matplotlib.image.AxesImage.imshow + matplotlib.colors.LogNorm.__call__ draw path",
+        "hunk_ids": [],
+        "cited_from": "test_image.py test_huge_range_log: `data = np.full((5, 5), -1, dtype=np.float64)` / `data[0:2, :] = 1E20` / `ax = fig_test.subplots()` / `im = ax.imshow(data, norm=colors.LogNorm(vmin=100, vmax=data.max()), interpolation='nearest', cmap='viridis')`; issue traceback: `def __call__(self, value, clip=None): ... if not np.isfinite([t_vmin, t_vmax]).all():\n>           raise ValueError(\"Invalid vmin or vmax\")`"
+      },
+      {
+        "id": "R2",
+        "statement": "For the scenario in R1, the rendered (png) output of the LogNorm test image must be pixel-identical to the reference figure produced from the equivalent 5×5 data where the top two rows equal 1000, shown with norm=Normalize(vmin=100, vmax=1000), the same 'viridis' colormap copied with `cmap.set_under('w')`, and the same interpolation='nearest' — i.e. the -1 (below-vmin / non-positive) region must render as the white under color, not as black/blank or an exception.",
+        "subject": "matplotlib.image.AxesImage.imshow figure output equality (test_huge_range_log)",
+        "hunk_ids": [],
+        "cited_from": "test_image.py test_huge_range_log: `data = np.full((5, 5), -1, dtype=np.float64)` / `data[0:2, :] = 1000` / `cmap = copy(plt.get_cmap('viridis'))` / `cmap.set_under('w')` / `im = ax.imshow(data, norm=colors.Normalize(vmin=100, vmax=data.max()), interpolation='nearest', cmap=cmap)` (decorator `@check_figures_equal()` wrapping, comparing fig_test vs fig_ref)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In _ImageBase._make_image, when norming resampled 2D image data whose norm is a LogNorm, if the recomputed/un-scaled vmin (s_vmin) is less than or equal to 0, that vmin is set to np.finfo(scaled_dtype).eps (the smallest representable positive float of the scaled dtype) before the norm is invoked, so that the norm is never handed a vmin of 0 or negative. Consequently a render whose round-tripped vmin is exactly 0 succeeds (the previous code only corrected strictly negative vmin and would pass vmin==0 through, causing the log-norm application to fail on that boundary).",
+        "subject": "_ImageBase._make_image (LogNorm resampled-render vmin handling) — lib/matplotlib/image.py",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis establishes the observable outcome (the test_huge_range_log render must not raise the 'Invalid vmin or vmax' ValueError and must match the white-under reference) and confirms the failure occurs inside LogNorm normalization. However it says nothing about the specific implementation fix committing to _ImageBase._make_image clamping a recomputed s_vmin<=0 to np.finfo(scaled_dtype).eps, nor the vmin==0 boundary distinction; many alternative fix locations/mechanisms could also achieve the stated outcome."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_lognorm_vmin0_isolated_column",
+      "test_source": "import numpy as np\nimport matplotlib\nmatplotlib.use('Agg')\nfrom matplotlib import colors, pyplot as plt\n\ndef test_lognorm_vmin0_isolated_column():\n    # Build 2D float64 image whose dynamic range (tiny under-region ~ -1 and a\n    # single very large positive column) is so wide that, after the internal\n    # resample round-trip in _ImageBase._make_image, the recomputed LogNorm\n    # vmin collapses to exactly 0.0.  Pre-fix code only repaired s_vmin < 0,\n    # so s_vmin == 0 was handed to LogNorm and the norm raised.\n    data = np.full((6, 4), -1.0, dtype=np.float64)\n    data[:, 1] = 1e19  # single very large column vs -1 everywhere else.\n    fig = plt.figure(figsize=(2, 1), dpi=100)\n    ax = fig.subplots()\n    ax.imshow(data, norm=colors.LogNorm(vmin=55, vmax=data.max()),\n              interpolation='nearest', cmap='plasma')\n    # Under the buggy build this must reach the LogNorm mask with s_vmin==0\n    # and raise \"Invalid vmin or vmax\"; the fixed build clamps that vmin to\n    # np.finfo(float64).eps and renders cleanly.\n    fig.canvas.draw()\n    plt.close(fig)\n",
+      "gold_result": "PASSED (fig.canvas.draw() completes without exception)",
+      "buggy_result": "FAILED with ValueError: Invalid vmin or vmax raised in matplotlib.colors.LogNorm.__call__ at colors.py:1477, reached from image.py:542 (_make_image) because the recomputed LogNorm vmin==0 was handed to the norm (pre-fix guard only handled s_vmin<0).",
+      "explanation": "R1 concerns the _ImageBase._make_image boundary: when re-invoking a LogNorm on resampled 2D image data whose round-tripped vmin (s_vmin) lands on exactly 0, the gold fix clamps s_vmin to np.finfo(float64).eps (new `<= 0` branch) whereas buggy code's `max(s_vmin, eps)` only fires for strictly-negative s_vmin (old `< 0` test), so vmin==0 was passed to the LogNorm which then raised \"Invalid vmin or vmax\".\n\nThe benchmark's own regression for this path (test_huge_range_log: 5x5 of -1 with top rows 0:2 = 1e20, LogNorm vmin=100, viridis figure-comparison) is [VISIBLE], so it cannot serve as witness. I therefore searched for a genuinely different input triggering the boundary. I empirically confirmed that only an extremely wide demand on the float64 dynamic range trips it: my candidate geometry (uniform -1 region with an isolated large column) renders fine on the buggy build for magnitudes up to ~2e17, and only fails once the magnitude is sufficient to collapse the recomputed LogNorm vmin to exactly 0 (>= ~8e17 in this layout).\n\nFinal witness (execution-confirmed PASSED on gold / FAILED on buggy with exact byte-for-byte source): a 6x4 float64 array uniformly -1.0 with a single isolated column (index 1) of 1e19, LogNorm vmin=55 (non-round, differs from the visible test's vmin=100), vmax=data.max(), nearest interpolation, plasma colormap, 2x1 figure. This geometry and these constants appear nowhere in the visible material, and the outcome is only discoverable by exercising the fix, so it is a genuine hidden witness for R1."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The failing test lives in lib/matplotlib/tests/test_image.py: `@check_figures_equal() def test_huge_range_log(fig_test, fig_ref)` compares a LogNorm test plot against a Normalize reference plot over png output."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The norm __call__ that raises is the scale-based one constructed by colors._make_norm_from_scale functors; LogNorm is registered there as `@_make_norm_from_scale(functools.partial(scale.LogScale, nonpositive=\"mask\"))`, so it masks non-positive values and transforms vmin/vmax via self._trf; the failing guard is `if not np.isfinite([t_vmin, t_vmax]).all(): raise ValueError(\"Invalid vmin or vmax\")`."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "image._make_image already special-cases LogNorm while un-scaling resampled data: `if isinstance(self.norm, mcolors.LogNorm): if s_vmin < 0: s_vmin = max(s_vmin, np.finfo(scaled_dtype).eps)` before re-invoking `self.norm(resampled_masked)` within a `cbook._setattr_cm(norm, vmin=s_vmin, vmax=s_vmax)` context."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue reporter states the failure is intermittent across CI runs and suspects a numpy behavioral change; it cannot be reproduced locally, so the externally checkable contract is entirely the success of test_huge_range_log."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "dtype 'f8' is scaled in _make_image to float64 (itemsize>4), and values between the -1 under-region (below the vmin=100 with LogNorm masking) and the 1E20 region are the numerical concern, but visible material states nothing about the exact desired intermediate geometry."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The fix runs within the cbook._setattr_cm(self.norm, vmin=s_vmin, vmax=s_vmax) context that temporarily overrides the image norm's clims while calling self.norm(resampled_masked)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "For strictly negative s_vmin the old code already produced eps (max(s_vmin, eps) == eps), so the observable behavior change is strictly the new handling of the s_vmin == 0 boundary case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The nominal vmin used for data rendering is the round-tripped (resampled/un-scaled) value, explaining why a user-set vmin that is mathematically positive can momentarily land on exactly 0 after float rescale round-trip and previously trip the LogNorm guard."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "A comment added in the gold source explicitly documents the intent: 'Don't give 0 or negative values to LogNorm'."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: R1 concerns a specific boundary in `_ImageBase._make_image` (lib/matplotlib/image.py): when re-invoking a LogNorm on resampled 2D image data, if the recomputed/un-scaled vmin (s_vmin) becomes exactly <= 0, it must be clamped to np.finfo(scaled_dtype).eps so the LogNorm guard never receives vmin == 0 (the gold code changed the check from `s_vmin < 0` to `s_vmin <= 0`).\n\nThe benchmark's own regression test for this scenario is `test_huge_range_log` in lib/matplotlib/tests/test_image.py (it builds float64 data full of -1 with top rows at 1E20, images it with `norm=colors.LogNorm(vmin=100, vmax=...)` plus resampling/interpolation 'nearest', and compares the rendered result to a Normalize reference). I inspected test_image.py and it is [VISIBLE] content, so even though this test exercises exactly the `_make_image`+LogNorm+round-tripped-vmin path that R1 describes, a witness may NOT rest on [VISIBLE] assertions.\n\nI also examined the other domain-relevant oracle files that could plausibly host a hidden check of this behavior — lib/matplotlib/tests/test_colors.py and lib/matplotlib/tests/test_scale.py — and both are entirely [VISIBLE], and neither contains a test that drives the resampled-render LogNorm vmin==0 boundary through `_make_image` (their LogNorm/scale tests operate at the norm/scale Python level, not through image `_make_image` un-scaling).\n\nNo [HIDDEN] test covering R1 was found in the oracle. (Additionally, the failing-test roster for the buggy program is empty and the earlier extraction noted this failure is intermittent and not, in fact, reproduced as a firm pass-gold/fail-buggy in this environment.) Since a requirement may only be witnessed by a [HIDDEN] assertion and none exists that genuinely tests R1, the correct result is found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (_ImageBase._make_image (LogNorm resampled-render vmin handling) — lib/matplotlib/image.py): In _ImageBase._make_image, when norming resampled 2D image data whose norm is a LogNorm, if the recomputed/un-scaled vmin (s_vmin) is less than or equal to 0, that vmin is set to np.finfo(scaled_dtype).eps (the smallest representable positive float of the scaled dtype) before the norm is invoked, so that the norm is never handed a vmin of 0 or negative. Consequently a render whose round-tripped vmin is exactly 0 succeeds (the previous code only corrected strictly negative vmin and would pass vmin==0 through, causing the log-norm application to fail on that boundary). — not entailed by S_vis (S_vis establishes the observable outcome (the test_huge_range_log render must not raise the 'Invalid vmin or vmax' ValueError and must match the white-under reference) and confirms the failure occurs inside LogNorm normalization. However it says nothing about the specific implementation fix committing to _ImageBase._make_image clamping a recomputed s_vmin<=0 to np.finfo(scaled_dtype).eps, nor the vmin==0 boundary distinction; many alternative fix locations/mechanisms could also achieve the stated outcome.); confirmed by a synthesized witness: R1 concerns the _ImageBase._make_image boundary: when re-invoking a LogNorm on resampled 2D image data whose round-tripped vmin (s_vmin) lands on exactly 0, the gold fix clamps s_vmin to np.finfo(float64).eps (new `<= 0` branch) whereas buggy code's `max(s_vmin, eps)` only fires for strictly-negative s_vmin (old `< 0` test), so vmin==0 was passed to the LogNorm which then raised \"Invalid vmin or vmax\".\n\nThe benchmark's own regression for this path (test_huge_range_log: 5x5 of -1 with top rows 0:2 = 1e20, LogNorm vmin=100, viridis figure-comparison) is [VISIBLE], so it cannot serve as witness. I therefore searched for a genuinely different input triggering the boundary. I empirically confirmed that only an extremely wide demand on the float64 dynamic range trips it: my candidate geometry (uniform -1 region with an isolated large column) renders fine on the buggy build for magnitudes up to ~2e17, and only fails once the magnitude is sufficient to collapse the recomputed LogNorm vmin to exactly 0 (>= ~8e17 in this layout).\n\nFinal witness (execution-confirmed PASSED on gold / FAILED on buggy with exact byte-for-byte source): a 6x4 float64 array uniformly -1.0 with a single isolated column (index 1) of 1e19, LogNorm vmin=55 (non-round, differs from the visible test's vmin=100), vmax=data.max(), nearest interpolation, plasma colormap, 2x1 figure. This geometry and these constants appear nowhere in the visible material, and the outcome is only discoverable by exercising the fix, so it is a genuine hidden witness for R1.",
+    "confidence": "Medium"
+  }
+}

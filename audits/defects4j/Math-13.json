@@ -1,0 +1,128 @@
+{
+  "task_id": "Math-13",
+  "status": "ok",
+  "duration_seconds": 218.79406093299986,
+  "llm_calls": 18,
+  "error": null,
+  "record": {
+    "task_id": "Math-13",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Supplying weights as an n-element vector to the multivariate vector optimizers must not force the code path to allocate/multiply/eigendecompose full n×n dense matrices (whose number of stored elements grows as n²); a fit on tens of thousands of points (e.g. 40000+ observed points in a low-degree polynomial curve fit) must complete without exhausting memory instead of building a matrix with on the order of n² entries.",
+        "subject": "BaseAbstractMultivariateVectorOptimizer / AbstractLeastSquaresOptimizer weight handling (Weight → weightMatrix, getWeight(), squareRoot(getWeight()), computeWeightedJacobian, computeCost)",
+        "hunk_ids": [],
+        "cited_from": "issue: \"When using the Weigth class to pass a large number of weights to multivariate vector optimizers, an nxn full matrix is created (and copied) when a n elements vector is used. This exhausts memory when n is large.\" ... \"I encountered this with curve fitting on 41200 points, which created a matrix with 1.7 billion elements.\" Also AbstractLeastSquaresOptimizer.setUp(): \"weightMatrixSqrt = squareRoot(getWeight());\" with \"private RealMatrix squareRoot(RealMatrix m) { final EigenDecomposition dec = new EigenDecomposition(m); return dec.getSquareRoot(); }\" and BaseAbstractMultivariateVectorOptimizer.getWeight(): \"return weightMatrix.copy();\""
+      },
+      {
+        "id": "R2",
+        "statement": "Least-squares polynomial curve fitting with unit weights (1.0) on 40000 observed points from a random polynomial of each degree 0..9 (LevenbergMarquardtOptimizer) must recover the source polynomial so that the relative error |p(x)-fitted(x)|/(1+|p(x)|) is < 0.01 for all sampled x in [-1,1), while the maximum relative error over all degrees must be > 0.001 (i.e. a real fit actually happens rather than trivial failure).",
+        "subject": "PolynomialFitter.fit(double[]) via AbstractLeastSquaresOptimizer (LevenbergMarquardtOptimizer) over large point sets",
+        "hunk_ids": [],
+        "cited_from": "PolynomialFitterTest.testLargeSample: \"for (int degree = 0; degree < 10; ++degree) { PolynomialFunction p = buildRandomPolynomial(degree, randomizer); PolynomialFitter fitter = new PolynomialFitter(new LevenbergMarquardtOptimizer()); for (int i = 0; i < 40000; ++i) { double x = -1.0 + i / 20000.0; fitter.addObservedPoint(1.0, x, p.value(x) + 0.1 * randomizer.nextGaussian()); } ... for (double x = -1.0; x < 1.0; x += 0.01) { double error = FastMath.abs(p.value(x) - fitted.value(x)) / (1.0 + FastMath.abs(p.value(x))); maxError = FastMath.max(maxError, error); Assert.assertTrue(FastMath.abs(error) < 0.01); } } Assert.assertTrue(maxError > 0.001);\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When the least-squares problem's weight matrix is a DiagonalMatrix (the standard Weight-from-array case), the square-root-of-weight computation takes a diagonal path: the weight-matrix square root held by the optimizer is itself a DiagonalMatrix whose diagonal entries are FastMath.sqrt of the corresponding shared weight diagonal — so getWeightSquareRoot() returns a diagonal matrix of element-wise square roots, and the computation/storage stays linear in the number of targets instead of expanding into a dense matrix via a full eigendecomposition (so fitting a very large number of diagonal-weighted observations no longer exhausts memory/time).",
+        "subject": "AbstractLeastSquaresOptimizer weight square root (squareRoot/getWeightSquareRoot/setUp)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "Any weight RealMatrix that is not a DiagonalMatrix still has its square root computed via the pre-existing EigenDecomposition path, so the results for a general (non-diagonal) symmetric positive-definite weight matrix are unchanged from before the patch.",
+        "subject": "AbstractLeastSquaresOptimizer squareRoot (non-diagonal weight matrix)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins the core requirement that vector-supplied (diagonal) weights must not trigger a full n×n dense eigendecomposition and that 40000+-point fits must complete in linear fashion (corroborated by S_vis R2's unit-weight large-fit test). However, the exact structural commitment that the stored sqrt is a DiagonalMatrix of element-wise FastMath.sqrt and that getWeightSquareRoot() returns that diagonal matrix is not literally stated in the visible evidence, even though it is a natural way to satisfy the pinned acceptance."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis speaks only about weight arrays/vectors (the diagonal case) and about not eigendecomposing a full dense n×n matrix there; it contains no statement, test, or requirement asserting that general non-diagonal symmetric positive-definite weights keep the pre-existing EigenDecomposition path with unchanged results. The unchanged-behavior claim for the non-diagonal case is a plausible localized-fix inference but is not pinned by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "witnessDiagonalWeightSqrt",
+      "test_source": "    @Test\n    public void witnessDiagonalWeightSqrt() throws Exception {\n        org.apache.commons.math3.optimization.general.LevenbergMarquardtOptimizer optim = new org.apache.commons.math3.optimization.general.LevenbergMarquardtOptimizer();\n        org.apache.commons.math3.optimization.fitting.PolynomialFitter fitter = new org.apache.commons.math3.optimization.fitting.PolynomialFitter(optim);\n        fitter.addObservedPoint(1.0, 0.0, 1.0);\n        fitter.addObservedPoint(1.0, 1.0, 3.0);\n        fitter.addObservedPoint(1.0, 2.0, 5.0);\n        fitter.fit(new double[]{1.0, 0.0});\n        org.apache.commons.math3.linear.RealMatrix wsq = optim.getWeightSquareRoot();\n        org.junit.Assert.assertTrue(\"weight sqrt should be stored diagonal\", wsq instanceof org.apache.commons.math3.linear.DiagonalMatrix);\n    }",
+      "gold_result": "PASSED — the run takes the new diagonal fast path in private squareRoot() (weightMatrixSqrt = new DiagonalMatrix(dim)), so getWeightSquareRoot()==DiagonalMatrix.copy() returns a DiagonalMatrix and instanceof DiagonalMatrix is true.",
+      "buggy_result": "FAILED — java.lang.AssertionError(\"weight sqrt should be stored diagonal\"): the buggy code always runs EigenDecomposition.getSquareRoot() (dense), so weightMatrixSqrt and thus getWeightSquareRoot() is a dense matrix that is not a DiagonalMatrix instance.",
+      "explanation": "R1 is a behavioral requirement on AbstractLeastSquaresOptimizer.squareRoot's secret fast path: when the Weight (DiagonalMatrix) is used, the weight-matrix square root held by the optimizer should itself be a DiagonalMatrix whose entries are FastMath.sqrt of the diagonal (linear storage) rather than the byproduct of a full dense eigendecomposition. The fix lives entirely inside the private squareRoot method whose only public/protected surfacing point is getWeightSquareRoot(). Whereas earlier analysis dismissed this requirement as only distinguishable by memory blowup (both paths return numerically-equal diagonal values), the observable runtime *type* of getWeightSquareRoot() actually distinguishes them without any huge input: on gold the diagonal fast path stores weightMatrixSqrt as a DiagonalMatrix and DiagonalMatrix.copy() is again a DiagonalMatrix; on buggy the unconditional dense EigenDecomposition.getSquareRoot() yields a dense (non-DiagonalMatrix) matrix even after copy(). I built a small 3-observation, 2-parameter weighted LS fit via PolynomialFitter/LevenbergMarquardtOptimizer (each observed point weight 1.0 => DiagonalMatrix Weight, so the diagonal path is the whole point of R1) and asserted getWeightSquareRoot() instanceof DiagonalMatrix. This was execution-confirmed: PASSED against gold and FAILED against buggy. The assertion is not pinned by any visible test — the three visible PolynomialFitterTest methods only check fitted-coefficient accuracy and convergence behavior, never the runtime type of the weight-square-root matrix — so it is a fresh, discriminating witness of the R1 diagonal fast path, not a re-wording of an already-observable assertion."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three files are visible: AbstractLeastSquaresOptimizer.java (src/main), BaseAbstractMultivariateVectorOptimizer.java (src/main), and PolynomialFitterTest.java (src/test). The general/optimization/direct packages contain only these files."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The Weight, DiagonalMatrix, EigenDecomposition, MatrixUtils, PolynomialFitter, LevenbergMarquardtOptimizer, CurveFitter, Target, InitialGuess classes are referenced/imported but are NOT part of the visible file set."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Both visible classes are annotated @Deprecated (\"As of 3.1 (to be removed in 4.0)\")."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "AbstractLeastSquaresOptimizer.setUp() computes weightMatrixSqrt = squareRoot(getWeight()), where getWeight() (in BaseAbstractMultivariateVectorOptimizer) already returns weightMatrix.copy(), and squareRoot runs a full EigenDecomposition — several dense O(n²) copies/operations occur on what the issue says is only an n-element weight vector."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "BaseAbstractMultivariateVectorOptimizer.setUp() re-derives the diagonal weight[] array from weightMatrix.getEntry(i,i); checkParameters() compares target.length against weightMatrix.getColumnDimension() so weight matrix must stay square of size = number of targets."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "PolynomialFitterTest.testLargeSample uses 40000 points (weight 1.0 per point), of the same order of magnitude as the 41200-point / 1.7e9-element scenario in the issue report, and is the visible test exercising the large-sample case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "squareRoot(RealMatrix) is private; the only change is within AbstractLeastSquaresOptimizer. Its behavior is therefore observable only indirectly via weightMatrixSqrt-driven surfaces: getWeightSquareRoot(), computeWeightedJacobian() (protected), updateResidualsAndCost() (deprecated, protected) and the overall optimize() flow."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The DiagonalMatrix import and FastMath were already available to this file (FastMath used elsewhere in the class); the patch only adds the instanceof DiagonalMatrix dispatch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "No other method or file is touched by the patch; the entire fix is the single H0 hunk adding a diagonal fast path to squareRoot."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Details on the surrounding class confirmed from source: setUp() stores weightMatrixSqrt = squareRoot(getWeight()), getWeight() returns a copy of the weight matrix, and per earlier notes the Weight built from a double[] array is a DiagonalMatrix, which is what triggers the new path in typical usage."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Target R1 is a purely performance/memory requirement on AbstractLeastSquaresOptimizer.squareRoot: when the weight matrix is a DiagonalMatrix, it should take a diagonal (linear) fast path instead of running a full dense EigenDecomposition, so that fitting a very large number of diagonal-weighted observations (O(n) storage instead of O(n²) dense copies) no longer exhausts memory/time. The only observable difference between the buggy and gold programs is this scalability: for a DiagonalMatrix weight with positive entries, the dense eigendecomposition path and the diagonal path are functionally equivalent in the values they store in weightMatrixSqrt (the eigenvectors of a diagonal matrix are the identity, so the dense sqrt is still diagonal). Hence only a test that drives enough diagonal-weighted observations to blow up on the buggy dense path can distinguish them.\n\nI read every test file in the oracle (all 8). The only test that produces a genuinely large diagonal-weighted fit matching R1's profile is PolynomialFitterTest.testLargeSample (40000 points of weight 1.0, one diagonal weight per target). That is exactly the test reported as failing against the buggy program. However, PolynomialFitterTest.java is labeled [VISIBLE] — its content is Byte-for-byte part of what repair systems already saw — so per the witness rules its assertions can never serve as a Witness regardless of how well they match R1.\n\nAll other test files are [HIDDEN] but contain only small problems (CurveFitterTest and GaussianFitterTest use a handful of points; HarmonicFitterTest uses ≤ ~2000 points; MultivariateDifferentiableVectorMultiStartOptimizerTest uses n=1; LevenbergMarquardtOptimizerTest's largest problem is testBevington (~59 points) and GaussNewtonOptimizerTest/LevenbergMarquardt tests vary n up to only ~5; MinpackTest's largest is m=65). None of the hidden tests is large enough to trigger the O(n²) dense-eigendecomposition blowup, and correctly-shaped small diagonal-weight optimizations succeed identically on both the buggy and gold programs (they were not reported as failing against the buggy program, and functionally both square-root paths yield an equivalent weight sqrt for a diagonal weight). So no [HIDDEN] assertion in the oracle genuinely tests the diagonal-path scalability of R1.\n\nConclusion: found=false. The sole test that would serve as a witness for R1 (the large diagonal sample) already lives in a [VISIBLE] file, so it cannot be used, and no hidden test in the oracle implements the required large diagonal-weighted case to distinguish the fix."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (AbstractLeastSquaresOptimizer weight square root (squareRoot/getWeightSquareRoot/setUp)): When the least-squares problem's weight matrix is a DiagonalMatrix (the standard Weight-from-array case), the square-root-of-weight computation takes a diagonal path: the weight-matrix square root held by the optimizer is itself a DiagonalMatrix whose diagonal entries are FastMath.sqrt of the corresponding shared weight diagonal — so getWeightSquareRoot() returns a diagonal matrix of element-wise square roots, and the computation/storage stays linear in the number of targets instead of expanding into a dense matrix via a full eigendecomposition (so fitting a very large number of diagonal-weighted observations no longer exhausts memory/time). — not entailed by S_vis (S_vis R1 pins the core requirement that vector-supplied (diagonal) weights must not trigger a full n×n dense eigendecomposition and that 40000+-point fits must complete in linear fashion (corroborated by S_vis R2's unit-weight large-fit test). However, the exact structural commitment that the stored sqrt is a DiagonalMatrix of element-wise FastMath.sqrt and that getWeightSquareRoot() returns that diagonal matrix is not literally stated in the visible evidence, even though it is a natural way to satisfy the pinned acceptance.); confirmed by a synthesized witness: R1 is a behavioral requirement on AbstractLeastSquaresOptimizer.squareRoot's secret fast path: when the Weight (DiagonalMatrix) is used, the weight-matrix square root held by the optimizer should itself be a DiagonalMatrix whose entries are FastMath.sqrt of the diagonal (linear storage) rather than the byproduct of a full dense eigendecomposition. The fix lives entirely inside the private squareRoot method whose only public/protected surfacing point is getWeightSquareRoot(). Whereas earlier analysis dismissed this requirement as only distinguishable by memory blowup (both paths return numerically-equal diagonal values), the observable runtime *type* of getWeightSquareRoot() actually distinguishes them without any huge input: on gold the diagonal fast path stores weightMatrixSqrt as a DiagonalMatrix and DiagonalMatrix.copy() is again a DiagonalMatrix; on buggy the unconditional dense EigenDecomposition.getSquareRoot() yields a dense (non-DiagonalMatrix) matrix even after copy(). I built a small 3-observation, 2-parameter weighted LS fit via PolynomialFitter/LevenbergMarquardtOptimizer (each observed point weight 1.0 => DiagonalMatrix Weight, so the diagonal path is the whole point of R1) and asserted getWeightSquareRoot() instanceof DiagonalMatrix. This was execution-confirmed: PASSED against gold and FAILED against buggy. The assertion is not pinned by any visible test — the three visible PolynomialFitterTest methods only check fitted-coefficient accuracy and convergence behavior, never the runtime type of the weight-square-root matrix — so it is a fresh, discriminating witness of the R1 diagonal fast path, not a re-wording of an already-observable assertion.",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "task_id": "django__django-15135",
+  "status": "ok",
+  "duration_seconds": 482.47055937501136,
+  "llm_calls": 43,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15135",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a persisted model instance O has a nullable ForeignKey/OneToOneField f whose local id column (f.attname, e.g. child_id) is null, and O.f has been set (via the forward descriptor) to a then-unsaved related instance that is subsequently saved (acquiring its pk) so that O.f.attname remains stale/null, then QuerySet.bulk_update on [O] including f as an updated field must persist O's f.attname column equal to the related instance's actual database pk — i.e. after the bulk update the row must reference the child id rather than remain NULL.",
+        "subject": "django.db.models.QuerySet.bulk_update (ForeignRelated FK/OneToOne pk sync on save-after-assignment)",
+        "hunk_ids": [],
+        "cited_from": "Issue example: \"parent = Parent.objects.create(child=None)\", \"parent.child = Child()\", \"parent.child.save()\", \"Parent.objects.bulk_update([parent], fields=[\\\"child\\\"]); Expected behavior: parent model instance was updated with the ID to the child in the database.\", \"Actual behavior: Parent model is still referencing Null.\", \"There should probably be some check for ForeignKeys in the bulk_update logic, and if one is updated, the ID of the child model should be re-copied to the child_id field that is actually being written to the database.\"; corroborated in django/db/models/base.py: \"Use pk from related object if it has been saved after an assignment.\""
+      },
+      {
+        "id": "R2",
+        "statement": "bulk_update on a set of model instances where an updated field is a ForeignKey that already points to saved related objects (normal foreign-key assignment that keeps the object's <field>_id attribute in sync) must complete in a single UPDATE query — no per-object database lookups of the ForeignKeys — and must still write each related object's correct id to the database.",
+        "subject": "django.db.models.QuerySet.bulk_update (no per-object FK lookups on consistent relations)",
+        "hunk_ids": [],
+        "cited_from": "tests/queries/test_bulk_update.py test_foreign_keys_do_not_lookup: \"for note, tag in zip(self.notes, self.tags): note.tag = tag\", \"with self.assertNumQueries(1): Note.objects.bulk_update(self.notes, ['tag'])\", \"self.assertSequenceEqual(Note.objects.filter(tag__isnull=False), self.notes)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "QuerySet.bulk_update now performs FK/OneToOne save-preparation on each object before building the update: when a field in the `fields` argument is a relation and the object has that relation cached to a related object whose pk has been set/changed since assignment, bulk_update writes the related object's current pk (its `<field>_id`) into the database rather than a stale or empty id, matching what Model.save() would write.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When QuerySet.bulk_update is called updating a relation field, and some object in `objs` has that relation cached to an unsaved related object (pk is None), bulk_update raises ValueError with message 'bulk_update() prohibited to prevent data loss due to unsaved related object '<field>'.' instead of silently persisting a null/stale key for that field.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "This related-field preparation and its guard (R1/R2) are applied only to relation fields that appear in the `fields` argument of bulk_update; relation fields omitted from `fields` are not synchronized and do not cause bulk_update to raise, even when an object holds a cached unsaved related object on such an omitted relation field.",
+        "subject": "QuerySet.bulk_update",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 explicitly describes re-copying the related object's actual pk (child_id) into the column being written when the child was saved after assignment, with corroboration 'Use pk from related object if it has been saved after an assignment'. S_vis R2 also requires the correct id be written. This matches S_impl R1's write-current-pk behavior for relation fields included in fields."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis describes only the case where the cached child is saved (id re-copied) and the single-query case; neither entry mentions raising a ValueError or any guard/prohibition with the given message when a relation caches an unsaved (pk None) object."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "No S_vis entry states that the save-preparation/guard is scoped only to relation fields present in the `fields` argument, nor that omitted relation fields are neither synchronized nor cause a raise. The visible tests and issue do not pin down this scope-limiting negative behavior."
+      }
+    ],
+    "target_requirement_id": "R2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_bulk_update_unsaved_related_obj",
+      "test_source": "def test_bulk_update_unsaved_related_obj():\n    import os\n    import sys\n\n    tests_dir = \"/testbed/tests\" if os.path.isdir(\"/testbed/tests\") else os.path.abspath(\n        os.path.join(os.path.dirname(__file__), os.pardir))\n    if tests_dir not in sys.path:\n        sys.path.insert(0, tests_dir)\n\n    from django.conf import settings\n\n    if not settings.configured:\n        settings.configure(\n            SECRET_KEY=\"x\",\n            USE_TZ=False,\n            DEFAULT_AUTO_FIELD=\"django.db.models.AutoField\",\n            INSTALLED_APPS=[\"django.contrib.contenttypes\", \"queries\"],\n            DATABASES={\n                \"default\": {\n                    \"ENGINE\": \"django.db.backends.sqlite3\",\n                    \"NAME\": \"file:bulk_update_witness?mode=memory&cache=shared\",\n                }\n            },\n        )\n\n    import django\n    from django.apps import apps as django_apps\n\n    if not django_apps.ready:\n        django.setup()\n\n    from queries.models import Note, Tag\n\n    note = Note(note=\"hello\", misc=\"world\")\n    note.pk = 1\n    note.tag = Tag(name=\"never-saved\")\n    msg = \"bulk_update() prohibited to prevent data loss due to unsaved related object 'tag'.\"\n    try:\n        Note.objects.bulk_update([note], fields=[\"tag\"])\n    except ValueError as exc:\n        assert msg in str(exc), \"got %r\" % (str(exc),)\n    else:\n        raise AssertionError(\"expected ValueError was not raised\")",
+      "gold_result": "PASSED — gold's new guard raises ValueError(\"bulk_update() prohibited... unsaved related object 'tag'.\") before any DB query, which matches the expected message.",
+      "buggy_result": "FAILED — buggy has no guard, so bulk_update procedes and attempts the SQL UPDATE (setting tag_id to NULL) and never raises the expected ValueError (fails with an unrelated execution outcome / no such table OperationalError instead of the value error expected by the test).",
+      "explanation": "R2 requires that QuerySet.bulk_update, when updating a relation field where an obj in `objs` has that relation cached to an *unsaved* related object (pk is None), raises ValueError with message \"...prohibited to prevent data loss due to unsaved related object '<field>'.\" instead of silently writing a NULL/stale key.\n\nI built a Note (tests/queries.models), set its `tag` FK to an unsaved Tag (so ForeignKey descriptor caches it and sets tag_id from pk=None), then call bulk_update([note], fields=['tag']). \n\n- Gold (post-fix) adds `obj._prepare_related_fields_for_save(operation_name='bulk_update', fields=fields)` before building SQL, which detects the cached unsaved related object and raises the exact ValueError → test PASSES.\n- Buggy (pre-fix) lacks that call entirely, so bulk_update proceeds and (having no table / with tables) would execute UPDATE ... SET tag_id=NULL, silently nulling the field instead of raising → expected ValueError never raised → test FAILS.\n\nI reviewed the visible oracle test files (tests/queries/test_bulk_update.py and tests/postgres_tests/test_bulk_update.py): none test an unsaved cached related object for bulk_update — no visible assertion, or a hidden oracle derived from visible content, could enforce R2. This behavior (the exception on the unsaved-related bulk_update) is exactly the fix under test and not derivable from co-located visible tests. I confirmed by running the byte-identical source against both programs: PASSED on gold and FAILED on buggy."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The relevant code is QuerySet.bulk_update in django/db/models/query.py; per field it builds Case/When statements using attr = getattr(obj, field.attname), which reads e.g. parent.child_id, never syncing from a cached related object."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Model.save() and bulk_create()._prepare_for_bulk_create() both call Model._prepare_related_fields_for_save (django/db/models/base.py), which handles exactly this case (its comment: 'Use pk from related object if it has been saved after an assignment'); bulk_update does not call it."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "ForeignKey/OneToOneField set via the forward descriptor (ForwardManyToOneDescriptor.__set__, django/db/models/fields/related_descriptors.py) writes instance.<field>_id from the related object's pk at assignment time, so a child assigned before being saved leaves the parent's child_id stale."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "bulk_update validates fields via self.model._meta.get_field(name) and enforces: concrete, non-primary-key, non-m2m fields only; objects must have pk set."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing bulk_update FK tests live in tests/queries/test_bulk_update.py (BulkUpdateNoteTests / BulkUpdateTests); models under tests/queries/models.py (e.g. Note/Child FK examples). Postgres-specific bulk_update tests at tests/postgres_tests/test_bulk_update.py are array/hstore/ranges only, not FK-related."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Change applies an already-existing Model helper (used by save() and bulk_create()) to QuerySet.bulk_update for the first time, scoped to the fields being updated."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Model._prepare_related_fields_for_save gained a new optional `fields` parameter (defaults to None = all concrete fields); when non-empty it filters to only those concrete fields. This keeps save/bulk_create callers (which pass no fields) unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Model.save() calls _prepare_related_fields_for_save(operation_name='save'); the bulk_create path does so via _prepare_for_bulk_create; bulk_update had previously not called it at all."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 places the per-obj preparation loop after bulk_update's existing field validation (concrete, non-pk, non-m2m, objs have pk) and after the empty-objs early return 0."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R2]: I investigated requirement [R2]: QuerySet.bulk_update updating a relation field where an object in `objs` has that relation cached to an unsaved related object should raise ValueError with message \"...prohibited to prevent data loss due to unsaved related object ...\".\n\nThe only bulk_update test files in the oracle are tests/queries/test_bulk_update.py and tests/postgres_tests/test_bulk_update.py. I read both in full:\n- tests/queries/test_bulk_update.py contains the bulk_update FK tests (BulkUpdateNoteTests/BulkUpdateTests), but none involve an UNSAVED related object. test_foreign_keys_do_not_lookup uses saved tags; test_set_field_to_null/test_set_mixed_fields_to_null use saved tags or None; test_unsaved_models concerns objects in objs lacking a primary key, not a cached unsaved related object. There is no test asserting bulk_update raises the \"unsaved related object\" ValueError.\n- tests/postgres_tests/test_bulk_update.py covers array/hstore/ranges fields only, not FK/relation behavior.\n\nI also inspected tests/bulk_create/tests.py, whose test_unsaved_parent raises the analogous \"...unsaved related object 'auto_field'.\" message but ONLY for bulk_create(), not bulk_update — that does not test R2.\n\nMoreover, every one of these files (including both bulk_update files) is labeled [VISIBLE]. Per Verso rules, an assertion drawn from [VISIBLE] file content can never serve as a witness, since it was not hidden from the repair system. Since the only bulk_update tests in the oracle are [VISIBLE] and none of them actually test the unsaved-related-object scenario for bulk_update, no oracle test genuinely enforces R2. I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R2] (QuerySet.bulk_update): When QuerySet.bulk_update is called updating a relation field, and some object in `objs` has that relation cached to an unsaved related object (pk is None), bulk_update raises ValueError with message 'bulk_update() prohibited to prevent data loss due to unsaved related object '<field>'.' instead of silently persisting a null/stale key for that field. — not entailed by S_vis (S_vis describes only the case where the cached child is saved (id re-copied) and the single-query case; neither entry mentions raising a ValueError or any guard/prohibition with the given message when a relation caches an unsaved (pk None) object.); confirmed by a synthesized witness: R2 requires that QuerySet.bulk_update, when updating a relation field where an obj in `objs` has that relation cached to an *unsaved* related object (pk is None), raises ValueError with message \"...prohibited to prevent data loss due to unsaved related object '<field>'.\" instead of silently writing a NULL/stale key.\n\nI built a Note (tests/queries.models), set its `tag` FK to an unsaved Tag (so ForeignKey descriptor caches it and sets tag_id from pk=None), then call bulk_update([note], fields=['tag']). \n\n- Gold (post-fix) adds `obj._prepare_related_fields_for_save(operation_name='bulk_update', fields=fields)` before building SQL, which detects the cached unsaved related object and raises the exact ValueError → test PASSES.\n- Buggy (pre-fix) lacks that call entirely, so bulk_update proceeds and (having no table / with tables) would execute UPDATE ... SET tag_id=NULL, silently nulling the field instead of raising → expected ValueError never raised → test FAILS.\n\nI reviewed the visible oracle test files (tests/queries/test_bulk_update.py and tests/postgres_tests/test_bulk_update.py): none test an unsaved cached related object for bulk_update — no visible assertion, or a hidden oracle derived from visible content, could enforce R2. This behavior (the exception on the unsaved-related bulk_update) is exactly the fix under test and not derivable from co-located visible tests. I confirmed by running the byte-identical source against both programs: PASSED on gold and FAILED on buggy.",
+    "confidence": "Medium"
+  }
+}

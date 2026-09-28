@@ -1,0 +1,111 @@
+{
+  "task_id": "psf__requests-1142",
+  "status": "ok",
+  "duration_seconds": 203.7210357079748,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "psf__requests-1142",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "A GET request that carries no body (no `data`, no `files` — e.g. `requests.get(url)` called plainly) must not automatically include a `Content-Length` header equal to '0' in the prepared/sent request; i.e. the header auto-insertion in prepare_content_length must be suppressed when the request body is empty/None.",
+        "subject": "requests.models.PreparedRequest.prepare_content_length / prepare_body (request preparation for GET via requests.get / Session.send)",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"requests.get is ALWAYS sending content length ... It seems like that request.get always adds 'content-length' header to the request. I think that the right behavior is not to add this header automatically in GET requests or add the possibility to not send it.\" Code (requests/models.py): \"def prepare_content_length(self, body):\\n        self.headers['Content-Length'] = '0'\\n        if hasattr(body, 'seek') and hasattr(body, 'tell'):\\n            body.seek(0, 2)\\n            self.headers['Content-Length'] = str(body.tell())\\n            body.seek(0, 0)\\n        elif body is not None:\\n            self.headers['Content-Length'] = str(len(body))\" and \"else:\\n            # Multi-part file uploads.\\n            if files:\\n                (body, content_type) = self._encode_files(files, data)\\n            else:\\n                if data:\\n                    body = self._encode_params(data)\\n                    ...\\n\\n            self.prepare_content_length(body)\" (this else-branch runs for every request, including bodyless GET)."
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "s_impl_1",
+        "statement": "When prepare_content_length is called with body=None on a request whose method is 'GET' or 'HEAD', no 'Content-Length: 0' header is added to the prepared request's headers (previously one was unconditionally set).",
+        "subject": "PreparedRequest.prepare_content_length sets 'Content-Length' header based on body and method",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "s_impl_2",
+        "statement": "When prepare_content_length is called with body=None on a request whose method is neither 'GET' nor 'HEAD' (e.g. POST), the 'Content-Length' header is still set to '0'.",
+        "subject": "PreparedRequest.prepare_content_length sets 'Content-Length' header based on body and method",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "s_impl_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's issue explicitly states GET requests should not auto-add a 'Content-Length' header when bodyless, directly pinning the suppression behavior in prepare_content_length for the body=None/GET case central to this requirement."
+      },
+      {
+        "requirement_id": "s_impl_2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 addresses only bodyless GET requests and nothing about POST or other non-GET/HEAD methods, so the visible evidence gives no reason a repair system would commit to leaving 'Content-Length: 0' intact for POST."
+      }
+    ],
+    "target_requirement_id": "s_impl_2",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_no_auto_content_length_on_bodyless_get_but_kept_on_post",
+      "test_source": "def test_no_auto_content_length_on_bodyless_get_but_kept_on_post():\n    import requests\n    # A GET with no body must not get an automatic Content-Length header.\n    get_req = requests.Request('GET', 'http://example.com').prepare()\n    assert 'Content-Length' not in get_req.headers\n    # A bodyless POST must keep Content-Length: 0.\n    post_req = requests.Request('POST', 'http://example.com').prepare()\n    assert post_req.headers['Content-Length'] == '0'\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assert 'Content-Length' not in {'Content-Length': '0'} for the GET request; buggy unconditionally sets Content-Length='0' regardless of method)",
+      "explanation": "The target change in prepare_content_length replaces the buggy unconditional `self.headers['Content-Length'] = '0'` with a method-dependent branch (`elif self.method not in ('GET','HEAD'): ... = '0'`). This is confirmed: gold PASSED and buggy FAILED on the exact source above. The observable divergence introduced by the patch appears precisely on a bodyless non-GET/HEAD request being handled differently from GET/HEAD: with the fix, a bodyless GET no longer receives an automatic Content-Length header while a bodyless POST (method not in GET/HEAD) still does (Content-Length == '0'). The POST clause is exactly what requirement r asserts persists after the refactor; and it is only meaningful as a witness together with the GET/HEAD check it sits beside, because a POST-only assertion is satisfied by BOTH the buggy and gold implementations (the buggy always set '0'; gold still sets '0' only for POST). The combined assertion exercises the real fixed flow end-to-end through Request.prepare() -> prepare_body() -> prepare_content_length(None), so buggy (which emits Content-Length='0' on GET) fails while gold passes."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Requests 1.1.0 (__version__ in requests/__init__.py). Top-level convenience methods (requests.get etc.) in requests/api.py each build a Session via sessions.Session() and call session.request, so requests/models.py.request flow is the common path. Session default headers in utils.default_headers() are only {'User-Agent','Accept-Encoding','Accept'} — they contain no Content-Length, confirming the auto Content-Length comes exclusively from PreparedRequest.prepare_content_length called from prepare_body."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "A GET through api.get passes data=None down to Session.request (default None), req.data=None, then req.prepare() -> prepare_body(data=None, files=None): is_stream evaluates False; in the else branch neither files nor data is set, so body stays None and prepare_content_length(None) runs, leaving the unconditionally-set 'Content-Length': '0'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Test suite lives in test_requests.py (repo root) and exercises real httpbin endpoints; no test there asserts presence/absence of a Content-Length header on GET or bodyless requests, so behavioral constraints for this issue come from the issue report text and the code path."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue frames the desired fix either as 'not adding content-length automatically in GET requests' or 'add the possibility to not send it'; requirements are written to be satisfiable by either approach."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The method attribute is normalized to uppercase by prepare_method (called in prepare() before prepare_body/prepare_content_length), so the 'GET'/'HEAD' comparison in the new elif is reliable on normal flow."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "prepare_content_length is also invoked again from prepare_auth after authenticators run; the same None/GET-HEAD behavior applies on that second invocation path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The seek/tell-file branch and the non-None len(body) branch are byte-identically present in both the buggy and gold revisions and set the header unconditionally regardless of method; they are unaffected by this patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Prepare_content_length only writes a Content-Length header when it decides to; it never deletes a pre-existing Content-Length (e.g. one supplied by the user)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [s_impl_2]: Requirement r is about prepare_content_length setting 'Content-Length': '0' when body=None on a non-GET/HEAD method (e.g. POST). The only test file is test_requests.py, and its entire content is labeled [VISIBLE]. I read every test method in it: none asserts the presence or absence of a Content-Length header, and none distinguishes the GET/HEAD bodyless case from the POST bodyless case for Content-Length. The test the task lists as failing against the buggy program, test_no_content_length, is NOT present in the [VISIBLE] source I can access (which is the complete content of the only listed file), so it cannot be read/reproduced as a [HIDDEN] assertion. Since a Witness must be derived from [HIDDEN] content and no hidden assertion covering this behavior is available (and every present test is [VISIBLE] and does not actually test r), no genuine execution-confirmed witness exists. found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [s_impl_2]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[s_impl_2] (PreparedRequest.prepare_content_length sets 'Content-Length' header based on body and method): When prepare_content_length is called with body=None on a request whose method is neither 'GET' nor 'HEAD' (e.g. POST), the 'Content-Length' header is still set to '0'. — not entailed by S_vis (R1 addresses only bodyless GET requests and nothing about POST or other non-GET/HEAD methods, so the visible evidence gives no reason a repair system would commit to leaving 'Content-Length: 0' intact for POST.); confirmed by a synthesized witness: The target change in prepare_content_length replaces the buggy unconditional `self.headers['Content-Length'] = '0'` with a method-dependent branch (`elif self.method not in ('GET','HEAD'): ... = '0'`). This is confirmed: gold PASSED and buggy FAILED on the exact source above. The observable divergence introduced by the patch appears precisely on a bodyless non-GET/HEAD request being handled differently from GET/HEAD: with the fix, a bodyless GET no longer receives an automatic Content-Length header while a bodyless POST (method not in GET/HEAD) still does (Content-Length == '0'). The POST clause is exactly what requirement r asserts persists after the refactor; and it is only meaningful as a witness together with the GET/HEAD check it sits beside, because a POST-only assertion is satisfied by BOTH the buggy and gold implementations (the buggy always set '0'; gold still sets '0' only for POST). The combined assertion exercises the real fixed flow end-to-end through Request.prepare() -> prepare_body() -> prepare_content_length(None), so buggy (which emits Content-Length='0' on GET) fails while gold passes.",
+    "confidence": "Medium"
+  }
+}

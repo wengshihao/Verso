@@ -1,0 +1,128 @@
+{
+  "task_id": "django__django-15481",
+  "status": "ok",
+  "duration_seconds": 394.1026972079417,
+  "llm_calls": 22,
+  "error": null,
+  "record": {
+    "task_id": "django__django-15481",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "HttpResponseBase.set_cookie must accept a datetime.timedelta object as its max_age argument (in addition to the integer seconds it already accepts), interpreting it as its duration in seconds when setting the cookie's max-age/expires, rather than raising a TypeError.",
+        "subject": "django.http.HttpResponse.set_cookie",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"set_cookie and set_signed_cookie should accept timedelta object for max_age argument\"; issue example: \">>> response = HttpResponse()\n>>> response.set_cookie(\"mykey\", max_age=timedelta(days=3))\nTypeError: int() argument must be a string, a bytes-like object or a number, not 'datetime.timedelta'\"; current impl in django/http/response.py: \"self.cookies[key][\"max-age\"] = int(max_age)\" and \"self.cookies[key][\"expires\"] = http_date(time.time() + max_age)\""
+      },
+      {
+        "id": "R2",
+        "statement": "HttpResponseBase.set_signed_cookie must accept a datetime.timedelta object as its max_age argument without raising a TypeError, producing the same max-age/expires behavior as set_cookie from its forwarded max_age.",
+        "subject": "django.http.HttpResponse.set_signed_cookie",
+        "hunk_ids": [],
+        "cited_from": "Issue title: \"set_cookie and set_signed_cookie should accept timedelta object for max_age argument\"; django/http/response.py: \"def set_signed_cookie(self, key, value, salt='', **kwargs):\n    value = signing.get_cookie_signer(salt=key + salt).sign(value)\n    return self.set_cookie(key, value, **kwargs)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When HttpResponseBase.set_cookie is called with an 'expires' argument that is a datetime.datetime object (a naive datetime interpreted as UTC, or an aware datetime in any time zone) together with a non-None 'max_age' argument, it raises ValueError with message \"'expires' and 'max_age' can't be used together.\" rather than silently computing max_age from expires and discarding the caller-supplied max_age.",
+        "subject": "HttpResponseBase.set_cookie",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "When HttpResponseBase.set_cookie is called with a 'max_age' given as a datetime.timedelta object (with 'expires' given as a non-datetime value such as a string, or None), it sets the cookie's 'max-age' property to the integer of the timedelta's total seconds and, when it computes the 'expires' header from max_age (the case where no explicit expires is set), computes it from that total-seconds value — instead of failing with an error such as TypeError raised by int(timedelta).",
+        "subject": "HttpResponseBase.set_cookie",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis only says set_cookie should accept a timedelta max_age interpreted as seconds instead of raising TypeError; nothing in it pins down a new ValueError raised when a datetime 'expires' is supplied together with a non-None 'max_age'. That conflict-check is an orthogonal behavior change absent from the visible evidence."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis R1 pins down exactly this behavior: set_cookie accepts a timedelta max_age and interprets it as its duration in seconds (integer max-age, expires computed from that seconds value) instead of the TypeError from int(timedelta), matching the cited issue and impl. S_vis R2 confirms the forwarding path applies the same behavior."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r1_witness",
+      "test_source": "import datetime\nfrom django.conf import settings\n\nif not settings.configured:\n    settings.configure(DEBUG=True, DEFAULT_CHARSET=\"utf-8\")\n\nfrom django.http import HttpResponse\n\ndef test_r1_witness():\n    resp = HttpResponse()\n    expires = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(seconds=60)\n    try:\n        resp.set_cookie(\"key\", \"value\", max_age=100, expires=expires)\n        raise AssertionError(\"expected ValueError for datetime expires + max_age\")\n    except ValueError as exc:\n        assert str(exc) == \"'expires' and 'max_age' can't be used together.\", str(exc)\n",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (AssertionError: expected ValueError for datetime expires + max_age — buggy silently accepts datetime expires together with max_age and overwrites max_age instead of raising)",
+      "explanation": "R1 captures the gold-fix behavior inside HttpResponseBase.set_cookie whereby passing a datetime.datetime 'expires' (naive-as-UTC or aware) together with a non-None 'max_age' must raise ValueError(\"'expires' and 'max_age' can't be used together.\") instead of silently recomputing max_age from expires. Gold source (in the datetime branch) adds `if max_age is not None: raise ValueError(...)` before overwriting max_age; buggy source lacks that guard entirely, so with the same inputs it never raises. My witness calls set_cookie with an aware datetime (now+60s UTC) as expires together with max_age=100. On gold this raises ValueError with the exact message, which the test asserts (and it subsequently reaches the assert — PASSED). On buggy no exception is raised, so the try/except never triggers and the AssertionError is raised (FAILED). This passed against gold and failed against buggy as execution-confirmed. I checked the visible test files (tests/responses/test_cookie.py, tests/signed_cookies_tests/tests.py); none exercises datetime expires combined with a non-None max_age, so the discriminating R1 behavior is not already pinned down by visible content."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The bug lives in django/http/response.py HttpResponseBase.set_cookie, where a non-numeric max_age fails at 'self.cookies[key][\"max-age\"] = int(max_age)'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "HttpResponseBase.set_signed_cookie delegates to set_cookie passing max_age through **kwargs, so fixing set_cookie makes set_signed_cookie accept timedelta as well."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Precedent already exists in django/core/signing.py TimestampSigner.unsign (used by HttpRequest.get_signed_cookie), which normalizes a timedelta max_age via 'if isinstance(max_age, datetime.timedelta): max_age = max_age.total_seconds()'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for cookie behavior live in tests/responses/test_cookie.py (class SetCookieTests) and tests/signed_cookies_tests/tests.py (class SignedCookieTest). Neither currently passes a timedelta as max_age; test_max_age_int sets max_age=10.6 and expects cookie max-age 10."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs (docs/ref/request-response.txt) document set_cookie max_age as 'an integer number of seconds, or None'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "set_cookie also sets an 'expires' header from max_age when expires is None: 'self.cookies[key][\"expires\"] = http_date(time.time() + max_age)', so time arithmetic on max_age also must tolerate the timedelta input."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunk H0 is a purely documentary docstring change to HttpResponseBase.set_cookie that enumerates accepted 'max_age' forms (int/float seconds, datetime.timedelta); it introduces no independently checkable behavior by itself."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The 'max_age'/'expires' mutual-exclusion ValueError (R1) is only raised from inside the datetime-datetime 'expires' branch; when 'expires' is a non-datetime value (e.g. a pre-formatted string) and 'max_age' is also given, both are still honored by the code."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The timedelta handling (R2) also affects HttpResponseBase.set_signed_cookie, which forwards its 'max_age' kwarg to set_cookie unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Non-timedelta numeric max_age handling (int(10.6) -> cookie max-age 10) is pre-existing behavior that the patch leaves unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated all test files in the real oracle that could plausibly exercise set_cookie's datetime-expires + non-None-max_age mutual-exclusion ValueError (R1). These are tests/responses/test_cookie.py (SetCookieTests), tests/signed_cookies_tests/tests.py (SignedCookieTest), tests/responses/test_cookie.py DeleteCookieTests, tests/httpwrappers/tests.py (CookieTests/HttpResponseTests), tests/messages_tests/test_cookie.py (CookieStorage tests), and tests/signing/tests.py. Every one of these files was labeled [VISIBLE], and none contains any assertion that passes a datetime.datetime 'expires' together with a non-None 'max_age' and asserts a ValueError with message \"'expires' and 'max_age' can't be used together.\" The existing cookie tests only probe datetime 'expires' alone (computing max-age, e.g. test_near_expiration, test_aware_expiration, test_far_expiration) or numeric max_age alone (test_max_age_int, test_max_age_expiration), not their mutual exclusion. The \"tests currently failing against the buggy program\" list is empty, and no [HIDDEN] oracle content exists that adds this R1 behavior. Since a genuine witness must rest on [HIDDEN] oracle content and no such test exists in the oracle, nothing qualifies; found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (HttpResponseBase.set_cookie): When HttpResponseBase.set_cookie is called with an 'expires' argument that is a datetime.datetime object (a naive datetime interpreted as UTC, or an aware datetime in any time zone) together with a non-None 'max_age' argument, it raises ValueError with message \"'expires' and 'max_age' can't be used together.\" rather than silently computing max_age from expires and discarding the caller-supplied max_age. — not entailed by S_vis (S_vis only says set_cookie should accept a timedelta max_age interpreted as seconds instead of raising TypeError; nothing in it pins down a new ValueError raised when a datetime 'expires' is supplied together with a non-None 'max_age'. That conflict-check is an orthogonal behavior change absent from the visible evidence.); confirmed by a synthesized witness: R1 captures the gold-fix behavior inside HttpResponseBase.set_cookie whereby passing a datetime.datetime 'expires' (naive-as-UTC or aware) together with a non-None 'max_age' must raise ValueError(\"'expires' and 'max_age' can't be used together.\") instead of silently recomputing max_age from expires. Gold source (in the datetime branch) adds `if max_age is not None: raise ValueError(...)` before overwriting max_age; buggy source lacks that guard entirely, so with the same inputs it never raises. My witness calls set_cookie with an aware datetime (now+60s UTC) as expires together with max_age=100. On gold this raises ValueError with the exact message, which the test asserts (and it subsequently reaches the assert — PASSED). On buggy no exception is raised, so the try/except never triggers and the AssertionError is raised (FAILED). This passed against gold and failed against buggy as execution-confirmed. I checked the visible test files (tests/responses/test_cookie.py, tests/signed_cookies_tests/tests.py); none exercises datetime expires combined with a non-None max_age, so the discriminating R1 behavior is not already pinned down by visible content.",
+    "confidence": "Medium"
+  }
+}

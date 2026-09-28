@@ -1,0 +1,102 @@
+{
+  "task_id": "Jsoup-72",
+  "status": "ok",
+  "duration_seconds": 291.0950529649999,
+  "llm_calls": 30,
+  "error": null,
+  "record": {
+    "task_id": "Jsoup-72",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "Parsing the referenced HTTPS-hosted HTML document through Jsoup.parse with the second (buffer) argument 10_000 parses successfully without throwing StringIndexOutOfBoundsException.",
+        "subject": "org.jsoup.Jsoup / parser entrypoint (Jsoup.parse on a URL)",
+        "hunk_ids": [],
+        "cited_from": "Jsoup.parse(new URL(\"https://gist.githubusercontent.com/valodzka/91ed27043628e9023009e503d41f1aad/raw/a15f68671e6f0517e48fdac812983b85fea27c16/test.html\"), 10_000); ... StringIndexOutOfBoundsException as of jsoup 1.11.1"
+      },
+      {
+        "id": "R2",
+        "statement": "A CharacterReader built over a Reader whose content is too long to fit in the allocated charBuf must refill (via bufferUp across the bufferPos/readerPos boundary) and hand back the full content without indexing charBuf past what was actually read, i.e. without a StringIndexOutOfBoundsException occurring during consumption across refill boundaries.",
+        "subject": "org.jsoup.parser.CharacterReader(Reader,int)/bufferUp",
+        "hunk_ids": [],
+        "cited_from": "bufferUp(): ... readerPos += bufPos; reader.skip(bufPos); reader.mark(maxBufferLen); bufLength = reader.read(charBuf); reader.reset(); bufPos = 0; ... bufSplitPoint = bufLength > readAheadLimit ? readAheadLimit : bufLength;  (the buffer-refill path is what the 10_000-sized parse in the issue exercises, since the document is larger than that buffer)"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "When a consume operation in CharacterReader targets a span with fewer than one character remaining to return (an empty zero-length, or negative-length range at end-of-content), it returns the empty string \"\" instead of proceeding to construct a String from that (now empty/out-of-range) sub-span of the buffer, which would otherwise trigger a StringIndexOutOfBoundsException. Observable through the cacheString-backed consume methods (e.g. consumeTo(char), consumeToEnd): consuming at/near end-of-content yields \"\" without throwing.",
+        "subject": "CharacterReader.cacheString / consume methods (consumeTo, consumeToEnd, consumeToAny, etc.)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R2"
+        ],
+        "rationale": "S_vis pins the end-to-end observable that parsing a large doc with a fixed buffer yields no StringIndexOutOfBoundsException, and that bufferUp refills without indexing past what was read during boundary consumption — both live in the end-of-content scenario S_impl addresses. But neither statement specifies that cacheString/consume methods must return \"\" for a <1-character remaining span; that exact internal behavior is not pinned by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "t",
+      "test_source": "@Test public void t() throws Exception {\n    StringBuilder src = new StringBuilder();\n    for (int i = 0; i < 40; i++) src.append((char)('A' + i)); // 40 distinct chars\n    org.jsoup.parser.CharacterReader r = new org.jsoup.parser.CharacterReader(\n        new java.io.StringReader(src.toString()), 11);\n    StringBuilder got = new StringBuilder();\n    String chunk;\n    do {\n        chunk = r.consumeTo('~');\n        got.append(chunk);\n    } while (!chunk.isEmpty());\n    assertEquals(src.toString(), got.toString());\n    assertEquals(\"\", r.consumeTo('~'));\n    assertEquals(\"\", r.consumeTo('~'));\n}",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED with java.lang.StringIndexOutOfBoundsException: offset 0, count -1, length 11, thrown from CharacterReader.cacheString (via consumeToEnd, called from consumeTo).",
+      "explanation": "The witness targets R1: a cacheString-backed consume at/near end-of-content must yield the empty string \"\" rather than construct a String over an empty/negative out-of-range sub-span (which crashes with StringIndexOutOfBoundsException). The gold fix adds the `if (count < 1) return \"\";` guard in cacheString; the buggy version lacks it.\n\nTo avoid re-deriving the visible tests — which pin R1 only for tiny in-buffer \"<!\" strings (consumeToNonexistentEndWhenAtAnd, commentAtEnd in the [VISIBLE] test files) — this witness drives the genuine untested manifestation that the S_vis analysis flagged: the Reader-backed multi-refill bufferUp path. Content of 40 chars flows through a CharacterReader(Reader, int) with an 11-char buffer, so consumeToEnd/consume must bufferUp repeatedly, and only after bufLength becomes -1 (reader.read() at EOF) do we reach the degenerate negative-length range in cacheString. On the buggy build that final EOF-edge consume throws StringIndexOutOfBoundsException (offset 0, count -1) out of cacheString; on the gold build the added guard turns it into \"\" so the document content is fully drained and subsequent EOF consumes return \"\". No visible test exercises content exceeding the buffer on this code path, so this assertion is an independent, genuinely distinguishing oracle for R1. Confirmed by run_test: gold PASSED, buggy FAILED."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Only three repo files are visible to a repair system: src/main/java/org/jsoup/parser/CharacterReader.java, src/test/java/org/jsoup/parser/CharacterReaderTest.java, and src/test/java/org/jsoup/parser/HtmlParserTest.java. No Jsoup/Parser/DataUtil/HttpConnection sources or the referenced test.html resource are present."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CharacterReader sizes its internal charBuf to the constructor arg capped by maxBufferLen (1024*32); readAheadLimit = maxBufferLen*0.75 = 24576 is only reached at default size, so a 10_000-sized buffer is always smaller than readAheadLimit."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "All visible CharacterReaderTest and HtmlParserTest inputs are individual short strings / Documents that fit wholly within the buffer; none of the visible tests drive the bufferUp refill path where a Reader-backed source exceeds charBuf, which is the crash scenario in the issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The default path Jsoup.parse(URL,...) feeds HTML through a Reader, so CharacterReader(Reader,int) with sz=10_000 and its bufferUp/consume logic is the code region implicated by the issue report."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "CharacterReaderTest.consumeToNonexistentEndWhenAtAnd (input \"<!\", consuming past end to '>') shows EOF-at-end handling for small content, but not the multi-refill overflow case."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "cacheString is a private static helper (maxStringCacheLen = 12); all empty-span scenarios funnel their String construction into it, and the added guard sits after the maxStringCacheLen fast path and before the hashing loop."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The bufferUp() refill path (used when a Reader-backed source exceeds the buffer) is where busPos/count can outgrow charBuf bounds; the guard prevents the ill-formed new String(charBuf, start, count) for count < 1."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Only the added single guard line counts; it affects purely the degenerate-empty consumption case, since for count>=1 the previous and new code paths are identical."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: Investigated thoroughly. Requirement R1 concerns CharacterReader.cacheString/consume methods returning \"\" (instead of constructing a String over an out-of-range empty/negative sub-span that triggers StringIndexOutOfBoundsException) when consuming at/near end of content.\n\nThe two tests reported as failing against the buggy program map exactly to R1: CharacterReaderTest.consumeToNonexistentEndWhenAtAnd and HtmlParserTest.commentAtEnd. I confirmed the mechanism by running commentAtEnd against buggy (fails: java.lang.StringIndexOutOfBoundsException offset 0, count -1 thrown from CharacterReader.cacheString via consumeToEnd/consumeTo) and against gold (passes). However, both of these files are labeled [VISIBLE] — their content is byte-for-byte what the repair system already saw — so a Witness may NOT rest on them, no matter how exact the match.\n\nI then read every other test file in the oracle (all [HIDDEN]): TokeniserTest, XmlTreeBuilderTest, AttributeParseTest, DataUtilTest, helper StringUtilTest, integration ParseTest/ConnectTest, all parser/node/select/cleaner tests. None of those hidden tests assert R1's observable. They parse well-formed, in-buffer content with full-length consume spans (e.g. TokeniserTest's handleLarge* and bufferUpInAttributeVal build complete content well within bounds), and none forces the empty/negative-span consume-at-end path guarded in cacheString. No hidden test fails against the buggy program for R1, and no hidden assertion matches R1's semantic.\n\nSince every genuine oracle test for R1 lives in [VISIBLE] files and no [HIDDEN] test enforces the same behavior, no legitimate (hidden-content) witness exists. Submitting found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (CharacterReader.cacheString / consume methods (consumeTo, consumeToEnd, consumeToAny, etc.)): When a consume operation in CharacterReader targets a span with fewer than one character remaining to return (an empty zero-length, or negative-length range at end-of-content), it returns the empty string \"\" instead of proceeding to construct a String from that (now empty/out-of-range) sub-span of the buffer, which would otherwise trigger a StringIndexOutOfBoundsException. Observable through the cacheString-backed consume methods (e.g. consumeTo(char), consumeToEnd): consuming at/near end-of-content yields \"\" without throwing. — not entailed by S_vis (S_vis pins the end-to-end observable that parsing a large doc with a fixed buffer yields no StringIndexOutOfBoundsException, and that bufferUp refills without indexing past what was read during boundary consumption — both live in the end-of-content scenario S_impl addresses. But neither statement specifies that cacheString/consume methods must return \"\" for a <1-character remaining span; that exact internal behavior is not pinned by the visible evidence.); confirmed by a synthesized witness: The witness targets R1: a cacheString-backed consume at/near end-of-content must yield the empty string \"\" rather than construct a String over an empty/negative out-of-range sub-span (which crashes with StringIndexOutOfBoundsException). The gold fix adds the `if (count < 1) return \"\";` guard in cacheString; the buggy version lacks it.\n\nTo avoid re-deriving the visible tests — which pin R1 only for tiny in-buffer \"<!\" strings (consumeToNonexistentEndWhenAtAnd, commentAtEnd in the [VISIBLE] test files) — this witness drives the genuine untested manifestation that the S_vis analysis flagged: the Reader-backed multi-refill bufferUp path. Content of 40 chars flows through a CharacterReader(Reader, int) with an 11-char buffer, so consumeToEnd/consume must bufferUp repeatedly, and only after bufLength becomes -1 (reader.read() at EOF) do we reach the degenerate negative-length range in cacheString. On the buggy build that final EOF-edge consume throws StringIndexOutOfBoundsException (offset 0, count -1) out of cacheString; on the gold build the added guard turns it into \"\" so the document content is fully drained and subsequent EOF consumes return \"\". No visible test exercises content exceeding the buffer on this code path, so this assertion is an independent, genuinely distinguishing oracle for R1. Confirmed by run_test: gold PASSED, buggy FAILED.",
+    "confidence": "Medium"
+  }
+}

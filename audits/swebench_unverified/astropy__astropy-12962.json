@@ -1,0 +1,134 @@
+{
+  "task_id": "astropy__astropy-12962",
+  "status": "ok",
+  "duration_seconds": 378.45099058304913,
+  "llm_calls": 19,
+  "error": null,
+  "record": {
+    "task_id": "astropy__astropy-12962",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "CCDData.to_hdu() must accept an argument (proposed name `as_image_hdu=True`) causing it to return an HDUList whose first element is an ImageHDU carrying the CCDData data, instead of a PrimaryHDU.",
+        "subject": "CCDData.to_hdu",
+        "hunk_ids": [],
+        "cited_from": "Option A: add a new parameter to CCDData.to_hdu() for this functionality\n\n    hdus = ccd_image.to_hdu(as_image_hdu=True)  # This returns a HDUList where the first element is an ImageHDU instead of a PrimaryHDU"
+      },
+      {
+        "id": "R2",
+        "statement": "A direct way must exist to obtain a single astropy.io.fits ImageHDU object from a CCDData object (proposed convenience function `fits.ccddata_to_image_hdu(ccd_image)`) so the CCDData can be used as an extension to another FITS file.",
+        "subject": "astropy.io.fits convenience function for CCDData->ImageHDU",
+        "hunk_ids": [],
+        "cited_from": "Option B: create a new convenience function\n\n    hdu = fits.ccddata_to_image_hdu(ccd_image) # This returns a single ImageHDU"
+      },
+      {
+        "id": "R3",
+        "statement": "CCDData.write() must support appending the CCDData to an existing FITS file, storing the CCDData image as an extension ImageHDU rather than as the file's primary HDU ('append=True').",
+        "subject": "CCDData.write",
+        "hunk_ids": [],
+        "cited_from": "Option C: allowing the user to append the image to an existing FITS file\n\n    ccd_image.write('test.fits', append=True) # appends original ImageHDU to existing file"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S_IMPL_1",
+        "statement": "When called with as_image_hdu=True, CCDData.to_hdu returns an HDUList whose first element (index 0) is an astropy.io.fits.ImageHDU carrying the CCDData data array and the assembled header (rather than a PrimaryHDU), and any mask/uncertainty extensions still follow afterward in the same order; when as_image_hdu is False or omitted, the first element remains the PrimaryHDU as before.",
+        "subject": "CCDData.to_hdu",
+        "hunk_ids": [
+          "H0",
+          "H1",
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S_IMPL_2",
+        "statement": "When called with as_image_hdu=True, fits_ccddata_writer (reached via CCDData.write) writes the CCDData data into an ImageHDU extension while prepending an effectively data-free PrimaryHDU as element 0 of the written FITS file, so the file's first HDU is a PrimaryHDU and the data lives in the following ImageHDU; when as_image_hdu is False or omitted, the file is written as before with the data in the PrimaryHDU.",
+        "subject": "fits_ccddata_writer / CCDData.write",
+        "hunk_ids": [
+          "H3",
+          "H4",
+          "H5"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S_IMPL_1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 directly specifies that to_hdu gains an as_image_hdu=True param returning an HDUList whose first element is an ImageHDU carrying the data 'instead of a PrimaryHDU', which pins the primary behavior and implies the default returns a PrimaryHDU while only the first element type is swapped."
+      },
+      {
+        "requirement_id": "S_IMPL_2",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1",
+          "R3"
+        ],
+        "rationale": "No S_vis entry describes a writer-level as_image_hdu parameter or the specific behavior of prepending a data-free PrimaryHDU element 0 with data in a following ImageHDU. R3 only vaguely supports the general direction that write can place data in an extension ImageHDU (via append=True, a different trigger/mechanism), so the exact S_IMPL_2 behavior is not pinned down."
+      }
+    ],
+    "target_requirement_id": "S_IMPL_2",
+    "witness": {
+      "kind": "ORACLE",
+      "test_name": "test_ccddata_writer_as_imagehdu",
+      "test_source": "import numpy as np\nfrom astropy.nddata import CCDData\nfrom astropy import units as u\nfrom astropy.io import fits\nimport tempfile, os\n\ndef test_ccddata_writer_as_imagehdu():\n    ccd = CCDData(np.arange(9).reshape(3, 3).astype(float), unit=u.adu)\n    path = tempfile.mktemp(suffix='.fits')\n    try:\n        ccd.write(path, as_image_hdu=True)\n        with fits.open(path) as hdul:\n            assert isinstance(hdul[0], fits.PrimaryHDU), type(hdul[0])\n            assert isinstance(hdul[1], fits.ImageHDU), type(hdul[1])\n            np.testing.assert_array_equal(hdul[1].data, ccd.data)\n    finally:\n        if os.path.exists(path):\n            os.remove(path)\n",
+      "gold_result": "PASSED — ccd.write(path, as_image_hdu=True) succeeds; the written file's element 0 is a fits.PrimaryHDU and element 1 is a fits.ImageHDU whose data equals the CCDData data.",
+      "buggy_result": "FAILED — TypeError: writeto() got an unexpected keyword argument 'as_image_hdu' at astropy/nddata/ccddata.py:712 (fits_ccddata_writer forwards as_image_hdu into hdu.writeto instead of handling it), so the as_image_hdu feature is absent in the buggy program.",
+      "explanation": "Target r (S_IMPL_2) is the fits_ccddata_writer behavior reached via CCDData.write: when as_image_hdu=True the data must be written into an ImageHDU extension with a data-free PrimaryHDU prepended as element 0 of the file; when False/omitted the data stays in the PrimaryHDU as before. I checked the oracle's relevant files (astropy/nddata/tests/test_ccddata.py and astropy/io/fits/tests/test_convenience.py, the only plausible locations for the fits CCDData writer tests): both are [VISIBLE] and contain NO assertion anywhere on the new as_image_hdu parameter (they only exercise pre-existing read/write/to_hdu behavior). Therefore this new S_IMPL_2 contract is not established by any visible information — the hidden part of the oracle must cover it. The benchmark's own failing list names exactly the grading tests for it: test_ccddata_writer_as_imagehdu and test_to_hdu_as_imagehdu, which correspond to this precise feature. I reconstructed the writer-path assertion and mechanically confirmed it: ccd.write(..., as_image_hdu=True) against gold (fixed program) PASSED and produces a fits file whose element 0 is a fits.PrimaryHDU and element 1 is a fits.ImageHDU carrying the CCDData data; the identical test_source against the buggy (pre-fix) program FAILED with TypeError: writeto() got an unexpected keyword argument 'as_image_hdu' at astropy/nddata/ccddata.py:712 (the buggy fits_ccddata_writer forwards **kwd straight into hdu.writeto without consuming as_image_hdu, i.e. it does not support the new contract at all). This standalone test thus genuinely distinguishes the gold from the buggy program on this very requirement (run_test confirmed with the exact byte-for-byte source against both programs), so it is an execution-confirmed witness for r."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "This is a feature-request issue (astropy__astropy-12962) rather than a defect report with precise expected I/O. All three behaviors (R1/R2/R3) are presented by the reporter as alternative proposed interfaces; the issue does not itself dictate which single one must ship."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The issue's motivating premise (checkable current behavior, stated verbatim): `CCDData.read('test.fits', hdu=2)` can read an ImageHDU from a file into a CCDData, while `CCDData.to_hdu()` always puts CCDData.data in element 0 of the returned HDUList as a PrimaryHDU and `CCDData.write()` always writes the data to a PrimaryHDU. The requested change is the reverse direction (CCDData -> ImageHDU / extension append)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing visible tests (astropy/nddata/tests/test_ccddata.py, astropy/io/fits/tests/test_convenience.py at this revision) contain no regression test for any of these proposed interfaces; they exercise only existing read/write/to_hdu behavior (e.g. test_to_hdu asserts hdulist element 0 is data-carrying and header keys round-trip). Any benchmark grading tests for this feature are therefore not part of the visible material."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The closest executed analog in the code is astropy.io.fits.convenience.table_to_hdu, which returns a single BinTableHDU from an astropy.table.Table (referenced in the issue as the pattern to mirror); a CCDData-to-ImageHDU helper would presumably follow that convenience-function style."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Header content that CCDData.to_hdu() currently places in the PrimaryHDU (meta keys, a 'bunit' card from the unit, and extended WCS cards) is what the produced ImageHDU would be expected to carry, but the issue text below does not explicitly spell out that header round-trip requirement."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Docs and changelog for this feature are absent in the visible tree."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "fits_ccddata_writer delegates to ccd_data.to_hdu and only inserts a fits.PrimaryHDU() at index 0 when as_image_hdu=True, keeping the written FITS file valid (a FITS file must start with a PrimaryHDU); to_hdu itself, when as_image_hdu=True, returns an HDUList with an ImageHDU first and no PrimaryHDU present."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "fits_ccddata_writer is registered as the 'fits' writer for CCDData (registry.register_writer('fits', CCDData, ...)), so CCDData.write(..., as_image_hdu=True) flows into this code path."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "H1 and H4 only add docstring documentation for the new parameter; all behavior change lives in H0/H2 (to_hdu) and H3/H5 (writer)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Match/error handling for mask, uncertainty, flags and WCS header construction in to_hdu is unchanged by this patch; only the HDU class used for element 0 differs."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S_IMPL_2]: found a match"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[S_IMPL_2] (fits_ccddata_writer / CCDData.write): When called with as_image_hdu=True, fits_ccddata_writer (reached via CCDData.write) writes the CCDData data into an ImageHDU extension while prepending an effectively data-free PrimaryHDU as element 0 of the written FITS file, so the file's first HDU is a PrimaryHDU and the data lives in the following ImageHDU; when as_image_hdu is False or omitted, the file is written as before with the data in the PrimaryHDU. — not entailed by S_vis (No S_vis entry describes a writer-level as_image_hdu parameter or the specific behavior of prepending a data-free PrimaryHDU element 0 with data in a following ImageHDU. R3 only vaguely supports the general direction that write can place data in an extension ImageHDU (via append=True, a different trigger/mechanism), so the exact S_IMPL_2 behavior is not pinned down.); confirmed by a oracle witness: Target r (S_IMPL_2) is the fits_ccddata_writer behavior reached via CCDData.write: when as_image_hdu=True the data must be written into an ImageHDU extension with a data-free PrimaryHDU prepended as element 0 of the file; when False/omitted the data stays in the PrimaryHDU as before. I checked the oracle's relevant files (astropy/nddata/tests/test_ccddata.py and astropy/io/fits/tests/test_convenience.py, the only plausible locations for the fits CCDData writer tests): both are [VISIBLE] and contain NO assertion anywhere on the new as_image_hdu parameter (they only exercise pre-existing read/write/to_hdu behavior). Therefore this new S_IMPL_2 contract is not established by any visible information — the hidden part of the oracle must cover it. The benchmark's own failing list names exactly the grading tests for it: test_ccddata_writer_as_imagehdu and test_to_hdu_as_imagehdu, which correspond to this precise feature. I reconstructed the writer-path assertion and mechanically confirmed it: ccd.write(..., as_image_hdu=True) against gold (fixed program) PASSED and produces a fits file whose element 0 is a fits.PrimaryHDU and element 1 is a fits.ImageHDU carrying the CCDData data; the identical test_source against the buggy (pre-fix) program FAILED with TypeError: writeto() got an unexpected keyword argument 'as_image_hdu' at astropy/nddata/ccddata.py:712 (the buggy fits_ccddata_writer forwards **kwd straight into hdu.writeto without consuming as_image_hdu, i.e. it does not support the new contract at all). This standalone test thus genuinely distinguishes the gold from the buggy program on this very requirement (run_test confirmed with the exact byte-for-byte source against both programs), so it is an execution-confirmed witness for r.",
+    "confidence": "High"
+  }
+}

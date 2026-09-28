@@ -1,0 +1,137 @@
+{
+  "task_id": "django__django-11333",
+  "status": "ok",
+  "duration_seconds": 485.7644450420048,
+  "llm_calls": 31,
+  "error": null,
+  "record": {
+    "task_id": "django__django-11333",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "get_resolver must normalize a None/absent urlconf argument to settings.ROOT_URLCONF *before* performing its memoized (functools.lru_cache) lookup, so that get_resolver(None) (and get_resolver() with the thread's URLconf unset) and get_resolver(settings.ROOT_URLCONF) are served by the exact same cached URLResolver instance over the default root URLconf — i.e. the expensive URLResolver._populate() work is not duplicated by constructing two separate resolvers for the same ROOT_URLCONF when reverse/resolve runs both before a request (get_urlconf() returns None) and after request handling has called set_urlconf(settings.ROOT_URLCONF).",
+        "subject": "django.urls.resolvers.get_resolver",
+        "hunk_ids": [],
+        "cited_from": "Issue: \"Multiple URLResolvers may be unintentionally constructed by django.urls.resolvers.get_resolver if django.urls.base.set_urlconf has not yet been called, resulting in multiple expensive calls to URLResolver._populate.\" / \"Initially it will be called with None, and later if will be called with settings.ROOT_URLCONF, because request handling calls set_urlconf.\" / \"My proposed solution is just to modify `get_resolver` to look up settings.ROOT_URLCONF before the memoized function call.\" — Code (django/urls/resolvers.py): \"@functools.lru_cache(maxsize=None)\\ndef get_resolver(urlconf=None):\\n    if urlconf is None:\\n        urlconf = settings.ROOT_URLCONF\\n    return URLResolver(RegexPattern(r'^/'), urlconf)\" — django/urls/base.py reverse/resolve: \"if urlconf is None:\\n    urlconf = get_urlconf()\\n...\\nreturn get_resolver(urlconf)\" — django/core/handlers/base.py: \"set_urlconf(settings.ROOT_URLCONF)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "S1",
+        "statement": "django.urls.resolvers.get_resolver resolves a None/no-argument urlconf to settings.ROOT_URLCONF before the memoized lookup, so that calling get_resolver() (or get_resolver(None)) and calling get_resolver(settings.ROOT_URLCONF) return the same cached URLResolver object rather than building two distinct resolvers under the separate None and string cache keys.",
+        "subject": "django.urls.resolvers.get_resolver",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S2",
+        "statement": "django.urls.resolvers.get_resolver is memoized: repeated calls with the same (normalized, i.e. non-None) urlconf argument, made before any cache clearing, return the same URLResolver instance by identity.",
+        "subject": "django.urls.resolvers.get_resolver",
+        "hunk_ids": [
+          "H2"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "S3",
+        "statement": "django.urls.base.clear_url_caches clears the URL-resolver cache (now maintained on _get_cached_resolver, which is imported from django.urls.resolvers), so that a subsequent get_resolver(...) call constructs a fresh URLResolver instance distinct from the one cached before the clear.",
+        "subject": "django.urls.base.clear_url_caches",
+        "hunk_ids": [
+          "H0",
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "S1",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1's code and issue text directly show get_resolver normalizing None to settings.ROOT_URLCONF before the lru_cache lookup, and reverse/resolve passing get_urlconf() (None pre-request) so the None and ROOT_URLCONF keys collapse to one cached URLResolver. This pins down exactly S1's described behavior."
+      },
+      {
+        "requirement_id": "S2",
+        "entailed": "true",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 shows the @functools.lru_cache decorator on get_resolver, with normalization performed before cache lookup, which by identity returns the same cached URLResolver for repeated calls with the same non-None urlconf, matching S2."
+      },
+      {
+        "requirement_id": "S3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 and its citations only concern get_resolver's None-normalization-before-cache and reverse/resolve behavior; nothing in the visible information mentions clear_url_caches, the cache being maintained on _get_cached_resolver, or the cache-clearing mechanics that produce a fresh resolver after clearing. S3's specific mechanism is not pinned down by the visible evidence."
+      }
+    ],
+    "target_requirement_id": "S3",
+    "witness": {
+      "kind": "NONE",
+      "test_name": "",
+      "test_source": "",
+      "gold_result": "",
+      "buggy_result": "",
+      "explanation": "S3 is specified purely as behavioral: `clear_url_caches()` clears the URL-resolver cache (now held on `_get_cached_resolver`) so a subsequent `get_resolver(...)` constructs a fresh URLResolver distinct from the instance cached before the clear. I built and empirically ran (via run_test) an assertion that directly encodes this contract: cache `before = get_resolver(settings.ROOT_URLCONF)`, sanity-check a repeated call is identical, `clear_url_caches()`, then `after = get_resolver()` and assert `after is not before`. Result: PASSED on BOTH gold and buggy. That confirms the S3 clear-resets-and-rebuilds behavior is operationally identical before and after the refactor: the buggy code kept the memoization on the lru-cached `get_resolver` (with `cache_clear()`), while the gold code keeps it on `_get_cached_resolver` and clears that — in both a post-clear `get_resolver` call lands in an empty cache and yields a brand-new URLResolver. Because no genuine witness can FAIL on the buggy build while enforcing S3's clear semantics, no qualified witness exists.\n\nI also investigated every other observable effect of the change to see whether one maps onto S3. The lone behavioral discriminator I found is the None→ROOT cache-key unification: a test asserting `get_resolver()` is `get_resolver(settings.ROOT_URLCONF)` (i.e., the same shared, freshly-normalized cache entry) PASSES on gold but FAILS on buggy (buggy keeps the None key and the ROOT key as two separate URLResolver instances). However that assertion tests the get_resolver None-normalization change in django/urls/resolvers.py — a co-located consequence of the accompanying edit — not `clear_url_caches` clearing semantics that S3 prescribes; S3's only stated consequence (fresh+distinct after clear) is identical in both builds. So nothing qualified as a genuine witness for the S3 requirement."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "get_resolver, get_ns_resolver, and get_callable are each decorated with @functools.lru_cache(maxsize=None); django.urls.base.clear_url_caches() clears all three caches."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "The public cache entry key for get_resolver is whichever argument is passed; since resolve()/reverse() in django/urls/base.py pass the result of get_urlconf() (which defaults to None when set_urlconf has not been called for the thread), and BaseHandler.get_response calls set_urlconf(settings.ROOT_URLCONF), the same default URLconf can be reached under two distinct cache keys (None and '...ROOT_URLCONF...') unless normalization happens before the memoized lookup."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "URLResolver stores lazy population caches as instance vars keyed per language code (_reverse_dict, _namespace_dict, _app_dict, _callback_strs), filled by URLResolver._populate(); duplicating a constructed resolver means duplicating that population work."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "When a request has no .urlconf attribute, BaseHandler._get_response calls get_resolver() (no arg, key None) even after set_urlconf(settings.ROOT_URLCONF), whereas view/middleware-time reverse()/resolve() pass the now-set ROOT_URLCONF — so both cache keys are exercised within a single request cycle."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/urlpatterns_reverse/tests.py includes RequestURLconfTests.test_urlconf_is_reset_after_request asserting get_urlconf() is None before and after a request."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests for this repo live under tests/ (django's own test suite), e.g. tests/urlpatterns_reverse/tests.py and tests/urlpatterns/test_resolvers.py."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "In django/urls/resolvers.py, get_resolver is now an uncached wrapper that normalizes urlconf=None to settings.ROOT_URLCONF and delegates to the newly added @lru_cache _get_cached_resolver(urlconf=None)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "_get_cached_resolver still has a None default argument, so a direct call _get_cached_resolver() (bypassing get_resolver) would cache under key None; only get_resolver performs the None normalization."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "After the change get_resolver no longer exposes a .cache_clear() method; the resolver memoization cache lives on _get_cached_resolver, which django/urls/base.py imports (new import) so clear_url_caches can clear it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The patch only restructures the caching layer of resolver construction; URL resolution/reverse behavior and the URLResolver class itself are otherwise unchanged."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [S3]: Investigated the URL-related test bearing modules in the oracle. The principal candidate test files (tests/urlpatterns_reverse/tests.py, tests/urlpatterns/test_resolvers.py, tests/urlpatterns/tests.py, tests/urlpatterns_reverse/test_localeregexdescriptor.py, tests/check_framework/test_urls.py) are all labeled [VISIBLE], and none of them asserts the S3 semantics: that clear_url_caches() (caching moved to _get_cached_resolver) causes a subsequent get_resolver(...) to construct a URLResolver instance distinct from the one cached before the clear. No [HIDDEN] content implementing such a behavioral check was found in any of these modules (the [HIDDEN] files encountered, e.g. tests/urls.py, urlconf_outer.py, converter_urls.py, are URLconf/structure files, not tests of clear_url_caches).\n\nMoreover, the instructions record \"(none)\" tests currently failing against the buggy program, and a witness must fail on the buggy build. That is consistent with the fact that the S3 behavior is operationally identical before and after this refactoring: the old code kept the resolver memoization cache on the lru-cached get_resolver and clear_url_caches cleared it, while the new code keeps it on _get_cached_resolver and clear_url_caches clears that — in both implementations a subsequent get_resolver() call reconstructs a fresh, distinct URLResolver. No pre-existing oracle assertion targets only the newly-moved cache object, so nothing qualifies as a genuine hidden witness for S3; that is an expected (found=false) outcome for an internal refactoring requirement."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [S3]: S3 is specified purely as behavioral: `clear_url_caches()` clears the URL-resolver cache (now held on `_get_cached_resolver`) so a subsequent `get_resolver(...)` constructs a fresh URLResolver distinct from the instance cached before the clear. I built and empirically ran (via run_test) an assertion that directly encodes this contract: cache `before = get_resolver(settings.ROOT_URLCONF)`, sanity-check a repeated call is identical, `clear_url_caches()`, then `after = get_resolver()` and assert `after is not before`. Result: PASSED on BOTH gold and buggy. That confirms the S3 clear-resets-and-rebuilds behavior is operationally identical before and after the refactor: the buggy code kept the memoization on the lru-cached `get_resolver` (with `cache_clear()`), while the gold code keeps it on `_get_cached_resolver` and clears that — in both a post-clear `get_resolver` call lands in an empty cache and yields a brand-new URLResolver. Because no genuine witness can FAIL on the buggy build while enforcing S3's clear semantics, no qualified witness exists.\n\nI also investigated every other observable effect of the change to see whether one maps onto S3. The lone behavioral discriminator I found is the None→ROOT cache-key unification: a test asserting `get_resolver()` is `get_resolver(settings.ROOT_URLCONF)` (i.e., the same shared, freshly-normalized cache entry) PASSES on gold but FAILS on buggy (buggy keeps the None key and the ROOT key as two separate URLResolver instances). However that assertion tests the get_resolver None-normalization change in django/urls/resolvers.py — a co-located consequence of the accompanying edit — not `clear_url_caches` clearing semantics that S3 prescribes; S3's only stated consequence (fresh+distinct after clear) is identical in both builds. So nothing qualified as a genuine witness for the S3 requirement."
+      }
+    ],
+    "verdict": "NO EVIDENCE OF GAP",
+    "rationale": "[S3] (django.urls.base.clear_url_caches) was flagged as false by S_vis, but neither Oracle Search nor Witness Synthesis found a confirming witness: S3 is specified purely as behavioral: `clear_url_caches()` clears the URL-resolver cache (now held on `_get_cached_resolver`) so a subsequent `get_resolver(...)` constructs a fresh URLResolver distinct from the instance cached before the clear. I built and empirically ran (via run_test) an assertion that directly encodes this contract: cache `before = get_resolver(settings.ROOT_URLCONF)`, sanity-check a repeated call is identical, `clear_url_caches()`, then `after = get_resolver()` and assert `after is not before`. Result: PASSED on BOTH gold and buggy. That confirms the S3 clear-resets-and-rebuilds behavior is operationally identical before and after the refactor: the buggy code kept the memoization on the lru-cached `get_resolver` (with `cache_clear()`), while the gold code keeps it on `_get_cached_resolver` and clears that — in both a post-clear `get_resolver` call lands in an empty cache and yields a brand-new URLResolver. Because no genuine witness can FAIL on the buggy build while enforcing S3's clear semantics, no qualified witness exists.\n\nI also investigated every other observable effect of the change to see whether one maps onto S3. The lone behavioral discriminator I found is the None→ROOT cache-key unification: a test asserting `get_resolver()` is `get_resolver(settings.ROOT_URLCONF)` (i.e., the same shared, freshly-normalized cache entry) PASSES on gold but FAILS on buggy (buggy keeps the None key and the ROOT key as two separate URLResolver instances). However that assertion tests the get_resolver None-normalization change in django/urls/resolvers.py — a co-located consequence of the accompanying edit — not `clear_url_caches` clearing semantics that S3 prescribes; S3's only stated consequence (fresh+distinct after clear) is identical in both builds. So nothing qualified as a genuine witness for the S3 requirement.",
+    "confidence": "Medium"
+  }
+}

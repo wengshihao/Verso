@@ -1,0 +1,132 @@
+{
+  "task_id": "scikit-learn__scikit-learn-13143",
+  "status": "ok",
+  "duration_seconds": 297.58627166599035,
+  "llm_calls": 17,
+  "error": null,
+  "record": {
+    "task_id": "scikit-learn__scikit-learn-13143",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "For multilabel-indicator targets where y_pred equals y_true exactly, a class (column) that has no positive labels in either y_true nor y_pred (i.e., tp=fp=0 / pred_sum=0 for that column because every sample is a perfect match) must receive a precision of 1.0 rather than being set to 0.0 as an 'ill-defined' zero-division; i.e. for A = np.array([[0,0,1],[0,1,0],[0,0,1]]) and B = A, precision_score(A, B, average=None) must return array([1., 1., 1.]), not array([0., 1., 1.]).",
+        "subject": "sklearn.metrics.precision_recall_fscore_support / sklearn.metrics.precision_score (multilabel-indicator, average=None)",
+        "hunk_ids": [],
+        "cited_from": "Issue reproduction verbatim: \">>> A=np.array([[0,0,1],[0,1,0],[0,0,1]])\n>>> B=A\n>>> precision_score(A,B, average=None)\narray([ 0.,  1.,  1.])\n\n#### Expected Results\narray([ 1.,  1.,  1.])\n\n#### Actual Results\narray([ 0.,  1.,  1.])"
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "In precision_recall_fscore_support with average='binary' and a binary target whose only present label is the negative class (requested pos_label is absent, so the positive class has zero true positives and zero true/predicted samples), the function no longer short-circuits to a silent literal (0., 0., 0., 0) tuple; instead it proceeds through the normal support/divide computation with labels=[pos_label], so the ill-defined positive-class metrics are reported as 0.0 and an UndefinedMetricWarning is raised rather than the call returning a hard-coded all-zero tuple with no warning.",
+        "subject": "precision_recall_fscore_support (average='binary', single present non-pos label)",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R2",
+        "statement": "In precision_recall_fscore_support with average='binary' and a binary target, a ValueError ('pos_label=%r is not a valid label: %r') is raised for an absent pos_label only when at least two distinct labels are present in the data; when exactly one distinct label (the negative class) is present the call does not raise but instead evaluates the metrics over the absent pos_label.",
+        "subject": "precision_recall_fscore_support (binary pos_label validation)",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "R3",
+        "statement": "Because f1_score, fbeta_score, precision_score, and recall_score all delegate to precision_recall_fscore_support with their default average='binary', each of them, invoked on binary data containing only the negative class (pos_label=1 absent when negatives use a different label/value), returns a 0.0 score together with an UndefinedMetricWarning rather than silently returning a bare 0 with no warning.",
+        "subject": "f1_score/fbeta_score/precision_score/recall_score (binary single present non-pos label)",
+        "hunk_ids": [
+          "H3"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only pins down the multilabel average=None path where an empty column under exact match gets precision 1.0; it says nothing about the average='binary' branch, an absent pos_label in binary data, removal of an all-zero short-circuit, or the UndefinedMetricWarning/0.0 outcome for the ill-defined positive class."
+      },
+      {
+        "requirement_id": "R2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis (multilabel average=None exact-match column = 1.0) contains no statement about binary pos_label validation: when a ValueError is raised versus when exactly one distinct label present causes non-raising evaluation over the absent pos_label. None of this label-count-conditional validation is evidenced."
+      },
+      {
+        "requirement_id": "R3",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis never mentions f1_score/fbeta_score/recall_score or their delegation with average='binary' on single-negative-class data returning 0.0 plus a warning. S_vis only asserts a multilabel exact-match column should yield 1.0, which is even opposite in spirit to the binary 0.0+warning behavior claimed here."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_r1_warning_negative_only_binary",
+      "test_source": "def test_r1_warning_negative_only_binary():\n    import numpy as np\n    import warnings\n    from sklearn.metrics import precision_recall_fscore_support\n    from sklearn.exceptions import UndefinedMetricWarning\n\n    y_true = np.array([-1, -1, -1])\n    y_pred = np.array([-1, -1, -1])\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        p, r, f, s = precision_recall_fscore_support(y_true, y_pred,\n                                                     average='binary')\n    assert any(issubclass(ww.category, UndefinedMetricWarning) for ww in w)\n    assert p == 0.0\n    assert r == 0.0\n    assert f == 0.0",
+      "gold_result": "PASSED",
+      "buggy_result": "FAILED (assertion: no UndefinedMetricWarning was raised because buggy short-circuits to the literal (0.,0.,0.,0) tuple)",
+      "explanation": "The target R1 concerns precision_recall_fscore_support(average='binary') when the binary target's only present label is the negative class (pos_label is absent). In the buggy code, when average='binary' and pos_label is not in present_labels with len(present_labels)<2, it immediately returns the silent literal tuple (0.,0.,0.,0) (support int 0) with NO warning. In the gold code that early-return is deleted, so it sets labels=[pos_label] and flows through multilabel_confusion_matrix/_prf_divide; with no sample carrying the absent pos_label all of tp_sum/pred_sum/true_sum are 0, so the zero-denominator mask sets the ill-defined metrics to 0.0 AND raises an UndefinedMetricWarning.\n\nI exercised exactly that scenario: y_true=y_pred=[-1,-1,-1] (present_labels={-1}, default pos_label=1 absent), average='binary'. The witness asserts that (a) an UndefinedMetricWarning is raised and (b) precision/recall/f1 come back as 0.0. Confirmed by run_test: it PASSES on gold (warning now raised, metrics masked to 0.0) and FAILS on buggy (the function silently returns the hard-coded (0.,0.,0.,0) tuple without issuing any UndefinedMetricWarning, so the `any(... UndefinedMetricWarning ...)` assertion is False). This directly captures R1's behavioral delta (silent literal tuple + no warning => ill-defined 0.0 metrics + UndefinedMetricWarning)."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "The reproduction uses a (3,3) binary indicator matrix (multilabel-indicator target) that is symmetric (y_pred == y_true). Columns 1 and 2 contain positive samples that are all correctly predicted, giving precision 1; column 0 is all-zeros in both true and predicted (no samples with that label)."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "precision_score delegates to precision_recall_fscore_support, which for multilabel-indicator calls multilabel_confusion_matrix and then _prf_divide (sklearn/metrics/classification.py). The all-zero column yields tp_sum=0 and pred_sum=0, so _prf_divide masks the zero denominator and sets precision to 0.0 (an UndefinedMetricWarning case) — that masking is what produces the reported 0.0."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Tests live under sklearn/metrics/tests/test_classification.py; existing tests assert that fully empty targets/predictions (all-zero across all labels) produce precision 0 with a warning (test_precision_recall_f1_no_labels / test_precision_recall_f1_no_labels_average_none), i.e. a scenario adjacent to but distinguishable from the per-column all-zero case in this issue."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "multilabel_confusion_matrix is versionadded 0.21 (present in this code, which is newer than the 0.18.1 in the bug report's version block)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Hunks H0, H1, H2, H6, H7 add only documentation 'Notes' sections to f1_score, fbeta_score, precision_recall_fscore_support, precision_score, and recall_score docstrings describing zero-denominator semantics (metric set to 0.0 plus UndefinedMetricWarning); hunks H4 and H5 remove a single blank line each (whitespace-only). These produce no behavioral change."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The only functional delta is hunk H3 in precision_recall_fscore_support: deletion of the early 'Only negative labels' return (0.,0.,0.,0) and tightened ValueError condition (pos_label invalid only when >= 2 present labels)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "precision_score/recall_score/f1_score/fbeta_score and precision_recall_fscore_support all share the precision_recall_fscore_support implementation via delegation, so the average='binary' branch behavior is identical across them."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "On the single-negative-label binary path the new code flows into multilabel_confusion_matrix with labels=[pos_label]; since that label never appears, tp_sum/pred_sum/true_sum are 0, so _prf_divide masks the zero denominator and raises UndefinedMetricWarning."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "multilabel_confusion_matrix is versionadded 0.21 (newer than the 0.18.1 shown in some doc examples)."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I investigated the target requirement R1 (precision_recall_fscore_support with average='binary' whose only present label is the negative class no longer short-circuits to a silent (0.,0.,0.,0) tuple, but raises UndefinedMetricWarning and reports 0.0).\n\nThe four currently-failing tests (test_prf_warnings, test_recall_warnings, test_precision_warnings, test_fscore_warnings) plus test_precision_recall_f_binary_single_class all live in sklearn/metrics/tests/test_classification.py, which is the sole oracle file covering this classification-metric behavior. I read the entire file and confirmed its content is labeled [VISIBLE] by the content-based classification (byte-for-byte identical to what a repair system would already have seen). The `average='binary'` negative-label-only scenarios that would exercise R1 are precisely the assertions in test_prf_warnings (`[1,1]/[-1,-1]` and `[-1,-1]/[1,1]` with average='binary') and test_precision_recall_f_binary_single_class (`precision_score([-1,-1],[-1,-1])` etc.).\n\nI also checked the complete oracle file listing for any other file that could exercise this specific binary negative-class behavior (tests in sklearn/metrics/tests such as test_common.py, test_score_objects.py only test other aspects; the failing tests reference only test_classification.py). No other oracle location — and in particular no [HIDDEN] content anywhere in the oracle — tests this requirement.\n\nPer the rules, a Witness must be built exclusively from [HIDDEN] assertions, since an assertion drawn from [VISIBLE] content can never serve as a witness regardless of how well it matches r. Because the only assertions exercising R1 are all in the [VISIBLE] file and there is no [HIDDEN] test of this behavior in the oracle, no genuine witness exists; I therefore report found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (precision_recall_fscore_support (average='binary', single present non-pos label)): In precision_recall_fscore_support with average='binary' and a binary target whose only present label is the negative class (requested pos_label is absent, so the positive class has zero true positives and zero true/predicted samples), the function no longer short-circuits to a silent literal (0., 0., 0., 0) tuple; instead it proceeds through the normal support/divide computation with labels=[pos_label], so the ill-defined positive-class metrics are reported as 0.0 and an UndefinedMetricWarning is raised rather than the call returning a hard-coded all-zero tuple with no warning. — not entailed by S_vis (S_vis only pins down the multilabel average=None path where an empty column under exact match gets precision 1.0; it says nothing about the average='binary' branch, an absent pos_label in binary data, removal of an all-zero short-circuit, or the UndefinedMetricWarning/0.0 outcome for the ill-defined positive class.); confirmed by a synthesized witness: The target R1 concerns precision_recall_fscore_support(average='binary') when the binary target's only present label is the negative class (pos_label is absent). In the buggy code, when average='binary' and pos_label is not in present_labels with len(present_labels)<2, it immediately returns the silent literal tuple (0.,0.,0.,0) (support int 0) with NO warning. In the gold code that early-return is deleted, so it sets labels=[pos_label] and flows through multilabel_confusion_matrix/_prf_divide; with no sample carrying the absent pos_label all of tp_sum/pred_sum/true_sum are 0, so the zero-denominator mask sets the ill-defined metrics to 0.0 AND raises an UndefinedMetricWarning.\n\nI exercised exactly that scenario: y_true=y_pred=[-1,-1,-1] (present_labels={-1}, default pos_label=1 absent), average='binary'. The witness asserts that (a) an UndefinedMetricWarning is raised and (b) precision/recall/f1 come back as 0.0. Confirmed by run_test: it PASSES on gold (warning now raised, metrics masked to 0.0) and FAILS on buggy (the function silently returns the hard-coded (0.,0.,0.,0) tuple without issuing any UndefinedMetricWarning, so the `any(... UndefinedMetricWarning ...)` assertion is False). This directly captures R1's behavioral delta (silent literal tuple + no warning => ill-defined 0.0 metrics + UndefinedMetricWarning).",
+    "confidence": "Medium"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "task_id": "matplotlib__matplotlib-21617",
+  "status": "ok",
+  "duration_seconds": 384.1398073750315,
+  "llm_calls": 28,
+  "error": null,
+  "record": {
+    "task_id": "matplotlib__matplotlib-21617",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "When a matplotlib figure that contains an axes title (and other text artists) drawn within the saved region is saved to EPS via pyplot.savefig(..., bbox_inches='tight'), the saved EPS output must include/display that title text rather than omitting it — reproducing script: plt.title('>>> do you see me <<<'); ... plt.savefig(name, bbox_inches='tight').",
+        "subject": "Figure.savefig(EPS) / RendererPS.draw_text (text preservation)",
+        "hunk_ids": [],
+        "cited_from": "Report code: \"plt.title('>>> do you see me <<<')\\n    ax.set_extent((-180, 180, 15, 90), crs=ccrs.PlateCarree())\\n    gl = ax.gridlines(draw_labels=False)\\n    gl.xlocator = mticker.FixedLocator(range(-180, 180, spacing))\\n    plt.savefig(name, bbox_inches='tight')\"; Actual outcome: \"An eps file with no `>>> do you see me <<<` message. (matplotlib v3.4.3)\"; Expected outcome: \"An eps file with `>>> do you see me <<<` message. (matplotlib v3.3.4)\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "SIMP-1",
+        "statement": "In PS/EPS output, when a clip-path that has not been seen before is drawn, RendererPS defines a bound PostScript procedure whose name is 'c' followed by the clip path's zero-based sequence number formatted in decimal (so the clip procedures defined/used in the emitted .ps/.eps file are c0, c1, ..., c10, ... rather than c0,c1,...,ca,cb,... for counts >= 10), and that decimal name (not a hexadecimal rendering) is the value cached in _clip_paths and re-referenced whenever the same clip path recurs.",
+        "subject": "RendererPS._get_clip_cmd (lib/matplotlib/backends/backend_ps.py)",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      },
+      {
+        "id": "SIMP-2",
+        "statement": "In PS/EPS output generated for a path collection that uses the definition-per-path optimization, each Path object procedure defined in the emitted .ps/.eps file is named 'p<collection_id>_<index>' where both <collection_id> and the zero-based raw-path <index> are rendered in decimal (collecting the numbers as p0_0, p0_1, ..., p1_0, ... even when an id/index value is >= 10, where the previous hexadecimal rendering would have produced letters a-f).",
+        "subject": "RendererPS.draw_path_collection (lib/matplotlib/backends/backend_ps.py)",
+        "hunk_ids": [
+          "H1"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "SIMP-1",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 is about EPS saving preserving title text under tight bbox; it says nothing about how clip-path PostScript procedures are named/numbered in the emitted file. There is no path from R1's content to the decimal clip-procedure naming behavior."
+      },
+      {
+        "requirement_id": "SIMP-2",
+        "entailed": "false",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "R1 concerns text preservation in EPS output; SIMP-2 concerns decimal vs hexadecimal naming of path-collection procedures (p<id>_<index>) in generated PostScript. R1 says nothing that would pin down any internal procedure-naming convention."
+      }
+    ],
+    "target_requirement_id": "SIMP-1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_decimal_clip_path_names",
+      "test_source": "import io\nfrom matplotlib.backends.backend_ps import RendererPS\nfrom matplotlib.path import Path\nfrom matplotlib.transforms import Affine2D\n\ndef test_decimal_clip_path_names():\n    buf = io.StringIO()\n    r = RendererPS(1, 1, buf)\n    n = 11\n    for i in range(n):\n        verts = [(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)]\n        p = Path(verts)\n        t = Affine2D()\n        class FakeGC:\n            def __init__(self, pp, tt):\n                self._pp = pp\n                self._tt = tt\n            def get_clip_rectangle(self):\n                return None\n            def get_clip_path(self):\n                return self._pp, self._tt\n        r._get_clip_cmd(FakeGC(p, t))\n    out = buf.getvalue()\n    # With 11 distinct clip paths, the bound proc for index 10 must be the\n    # decimal name \"c10\", not the hex \"ca\".\n    assert \"/c10 {\" in out, \"missing decimal bound proc def: \" + repr(out)\n    assert \"/ca {\" not in out, \"found hex bound proc: \" + repr(out)",
+      "gold_result": "PASSED — gold emits \"/c10 { ... } bind def\" for the 11th distinct clip path (index 10) and no \"/ca {\".",
+      "buggy_result": "FAILED — buggy emits \"/ca { ... } bind def\" for clip path index 10 (hex %x) and no \"/c10 {\".",
+      "explanation": "Target SIMP-1 concerns RendererPS._get_clip_cmd in backend_ps.py: bound PostScript clip procedures for never-seen clip paths must be named 'c' followed by the zero-based decimal sequence number (c0,c1,...,c10) rather than hex (ca,cb,...). This only becomes observable once the clip counter reaches index >= 10 (>= 11 distinct clip paths), since indexes 0-9 render identically under %d and %x. Rather than construct a full figure with 11 clip-on artists (fragile), I drive _get_clip_cmd directly: I instantiate a RendererPS with a StringIO pswriter and feed it 11 fake graphics-contexts, each returning a fresh distinct Path+Affine2D as its clip path, so the internal counter in self._clip_paths advances 0..10. On the gold (fixed) program the emitted text binds \"/c10 {...} bind def\" and never \"/ca {\", so the test passes. On the buggy (pre-fix) program the same procedure is bound as \"/ca {...}\", so the assertion \"/c10 {\" is absent fails. I confirmed idempotently with run_test against both revisions (gold PASSED with the identical final source; buggy FAILED with the identical final source). The scenario requires >=11 distinct clip paths and asserts the emitted clip-proc identifiers, which no [VISIBLE] oracle test (test_backend_ps.py and related clip/PS tests) pins down — the extracts explicitly state no oracle test constructs that many clip paths or checks the proc names."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "Bug title: \"Text sometimes is missing when figure saved to EPS\"; reporter says v3.4.3 drops text, v3.3.4 does not; reproduction depends only on the gridline spacing argument (test(40,...) is reported good, test(30,...) is bad) on a cartopy NorthPolarStereo axis with bbox_inches='tight'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Reproduction requires cartopy (external dependency, not shipped in this repo), so a fully self-contained runnable check would need cartopy or an equivalent matplotlib-only figure mimicking the projection/grid density."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Issue author notes it 'Might be related to #20364'."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Relevant backend code paths visible in repo: lib/matplotlib/backends/backend_ps.py (FigureCanvasPS._print_figure/_print_figure_impl, RendererPS.draw_text writes glyph names via _text_helpers.layout, and ps fonts subset/embedded per-font by iterating ps_renderer._character_tracker.used in the Prolog); lib/matplotlib/backends/_backend_pdf_ps.py (CharacterTracker, RendererPDFPSBase); lib/matplotlib/_text_helpers.py (layout yields glyph_idx per char); lib/matplotlib/tight_bbox.py (adjust_bbox/process_figure_for_rasterizing) invoked when bbox_inches is not None."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "RendererPS.draw_text emits each character as '/<glyph_name> glyphshow' where glyph_name comes from the original (un-subset) font, while embedded subsets are constructed per tracked codepoint set; no in-repo test covers the reported scenario (test_backend_ps.py, test_bbox_tight.py, test_text.py contain adjacent but not identical coverage)."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Both developer-patch hunks are a purely mechanical change of format specifier from '%x' (lowercase hex) to '%d' (decimal) on numeric counters used to build PostScript object/procedure names in the emitted PS text."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The naming change has no functional effect on figures whose number of distinct clip paths or a path-collection id/raw-index stays below 10, since hex and decimal render the same single digit there."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Each naming scheme is internally self-consistent (the same formatted string is used for the procedure definition and its stored/re-used reference), so the change does not alter whether objects render, only the observable identifier strings in the output file."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Other numeric PostScript names in the same file (hatch patterns 'H%d' in create_hatch, psfrag markers 'psmarker%d', Type3 font names) were already decimal; the clip-path and path-collection names are the only ones affected by the patch."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "RendererPS lives in lib/matplotlib/backends/backend_ps.py; clip procedure generation is in _get_clip_cmd (per-cached-clip-path bind def), path-collection generation in draw_path_collection."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [SIMP-1]: I investigated whether the matplotlib oracle test suite contains a test that enforces decimal (rather than hex) numbering of bound PostScript clip-path procedures in emitted PS/EPS output (requirement SIMP-1, concerning _get_clip_cmd in backend_ps.py).\n\nI inspected the most directly relevant oracle files: lib/matplotlib/tests/test_backend_ps.py (the natural home for a PS-output regression test; it has clip/glyph-oriented tests such as test_text_clip, test_d_glyph, test_bbox, test_fonttype, but none asserts the clip-path procedure naming scheme), plus clip/EPS-heavy files test_artist.py (test_clipping, test_clipping_zoom), test_simplification.py (clipping tests), test_path.py (test_path_clipping, nan_path eps), test_patheffects.py, test_bbox_tight.py (bbox_inches='tight' scenarios), test_determinism.py (ps determinism), test_backend_pdf.py, and mpl_toolkits clip-related tests. Every one of these files was labeled [VISIBLE], and none checks that emitted clip procedure names would be c0,c1,...,c10 rather than ca,cb,... (i.e., none parses the PS/EPS text for the clip-proc names or otherwise forces the counter to reach >=10 distinct clip paths).\n\nThe requirement only becomes behaviorally observable in output containing >=11 distinct clip paths (indices 0-9 are identical under %x and %d; only index >=10 differs). No oracle test constructs a figure with that many distinct clip paths, and more fundamentally, no assertion anywhere references the clip-path procedure identifiers at all. Consistent with this, the harness recorded no tests currently failing against the buggy program, which a genuine witness would require.\n\nAll oracle content I could find touching these code paths is [VISIBLE] and none of it tests the specific naming change of _get_clip_cmd; there is no [HIDDEN] assertion that differentiates the decimal from the hexadecimal scheme. Accordingly I found no genuine witness and submit found=false."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [SIMP-1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[SIMP-1] (RendererPS._get_clip_cmd (lib/matplotlib/backends/backend_ps.py)): In PS/EPS output, when a clip-path that has not been seen before is drawn, RendererPS defines a bound PostScript procedure whose name is 'c' followed by the clip path's zero-based sequence number formatted in decimal (so the clip procedures defined/used in the emitted .ps/.eps file are c0, c1, ..., c10, ... rather than c0,c1,...,ca,cb,... for counts >= 10), and that decimal name (not a hexadecimal rendering) is the value cached in _clip_paths and re-referenced whenever the same clip path recurs. — not entailed by S_vis (R1 is about EPS saving preserving title text under tight bbox; it says nothing about how clip-path PostScript procedures are named/numbered in the emitted file. There is no path from R1's content to the decimal clip-procedure naming behavior.); confirmed by a synthesized witness: Target SIMP-1 concerns RendererPS._get_clip_cmd in backend_ps.py: bound PostScript clip procedures for never-seen clip paths must be named 'c' followed by the zero-based decimal sequence number (c0,c1,...,c10) rather than hex (ca,cb,...). This only becomes observable once the clip counter reaches index >= 10 (>= 11 distinct clip paths), since indexes 0-9 render identically under %d and %x. Rather than construct a full figure with 11 clip-on artists (fragile), I drive _get_clip_cmd directly: I instantiate a RendererPS with a StringIO pswriter and feed it 11 fake graphics-contexts, each returning a fresh distinct Path+Affine2D as its clip path, so the internal counter in self._clip_paths advances 0..10. On the gold (fixed) program the emitted text binds \"/c10 {...} bind def\" and never \"/ca {\", so the test passes. On the buggy (pre-fix) program the same procedure is bound as \"/ca {...}\", so the assertion \"/c10 {\" is absent fails. I confirmed idempotently with run_test against both revisions (gold PASSED with the identical final source; buggy FAILED with the identical final source). The scenario requires >=11 distinct clip paths and asserts the emitted clip-proc identifiers, which no [VISIBLE] oracle test (test_backend_ps.py and related clip/PS tests) pins down — the extracts explicitly state no oracle test constructs that many clip paths or checks the proc names.",
+    "confidence": "Medium"
+  }
+}

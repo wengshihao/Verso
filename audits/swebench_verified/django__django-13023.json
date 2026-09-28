@@ -1,0 +1,90 @@
+{
+  "task_id": "django__django-13023",
+  "status": "ok",
+  "duration_seconds": 440.6760605829768,
+  "llm_calls": 24,
+  "error": null,
+  "record": {
+    "task_id": "django__django-13023",
+    "s_vis": [
+      {
+        "id": "R1",
+        "statement": "DecimalField.to_python() must raise django.core.exceptions.ValidationError (rather than TypeError) when passed a dictionary (dict) as the value argument, instead of letting decimal.Decimal's TypeError propagate.",
+        "subject": "django.db.models.fields.DecimalField.to_python",
+        "hunk_ids": [],
+        "cited_from": "Issue description: \"A call to DecimalField.to_python() with a dictionary as the value parameter produces TypeError instead of ValidationError. This is a problem, for example, when you try to save a model object, and a decimal field got set to a dictionary by mistake. ... I am proposing a patch to fix it.\" Also the base Field.to_python docstring: \"Convert the input value into the expected Python data type, raising django.core.exceptions.ValidationError if the data can't be converted.\""
+      }
+    ],
+    "s_impl": [
+      {
+        "id": "R1",
+        "statement": "DecimalField.to_python, when the non-None, non-float value it is converting via decimal.Decimal(value) causes a TypeError or ValueError (in addition to the already-handled decimal.InvalidOperation) — e.g. a dict, list, or other unsupported input — raises a django.core.exceptions.ValidationError with the field's 'invalid' error message, code='invalid', and the offending value in params, rather than letting the raw TypeError/ValueError propagate.",
+        "subject": "DecimalField.to_python",
+        "hunk_ids": [
+          "H0"
+        ],
+        "cited_from": ""
+      }
+    ],
+    "entailments": [
+      {
+        "requirement_id": "R1",
+        "entailed": "uncertain",
+        "checked_ids": [
+          "R1"
+        ],
+        "rationale": "S_vis only establishes that passing a dict to DecimalField.to_python should yield ValidationError rather than letting Decimal's TypeError propagate (docstring also says the base contract is to raise ValidationError on unconvertible input). It does not pin down the specific behavior S_impl describes — catching both TypeError and ValueError generally (list, unsupported inputs), nor the structured error with the field's 'invalid' message, code='invalid', and offending value in params."
+      }
+    ],
+    "target_requirement_id": "R1",
+    "witness": {
+      "kind": "SYNTHESIZED",
+      "test_name": "test_unsupported_dict_value_yields_validation_error",
+      "test_source": "import unittest\nfrom django.conf import settings\nfrom django.core.exceptions import ValidationError\nfrom django.db import models\n\nclass DecimalFieldToPythonWitness(unittest.TestCase):\n    def test_unsupported_dict_value_yields_validation_error(self):\n        if not settings.configured:\n            settings.configure(USE_I18N=False)\n        f = models.DecimalField(max_digits=4, decimal_places=2)\n        bad = {'not': 'a number'}\n        with self.assertRaises(ValidationError) as cm:\n            f.to_python(bad)\n        e = cm.exception\n        self.assertEqual(e.code, 'invalid')\n        self.assertEqual(e.params, {'value': bad})\n        self.assertEqual(\n            str(e.messages[0]),\n            str(f.error_messages['invalid'] % {'value': bad}),\n        )\n",
+      "gold_result": "PASSED — DecimalField.to_python({'not': 'a number'}) raises a django.core.exceptions.ValidationError with code='invalid', params={'value': <dict>}, and the field's 'invalid' error message.",
+      "buggy_result": "FAILED — the raw TypeError (\"conversion from dict to Decimal is not supported\") propagates uncaught out of to_python because the buggy except clause only catches decimal.InvalidOperation.",
+      "explanation": "R1 states that DecimalField.to_python must catch TypeError/ValueError raised by decimal.Decimal(value) on non-None, non-float unsupported inputs (e.g. a dict) and convert them to a django.core.exceptions.ValidationError with the field's 'invalid' message, code='invalid', and value in params, rather than letting the raw TypeError/ValueError propagate. The gold implementation does exactly this by widening the except clause to (decimal.InvalidOperation, TypeError, ValueError); the buggy pre-fix code only catches decimal.InvalidOperation.\n\nThe witness constructs a bare DecimalField (no DB needed) and calls to_python with a dict, which reaches the shared try: `decimal.Decimal({...})` branch. On the buggy code the raw TypeError (\"conversion from dict to Decimal is not supported\") propagates out of the method, so the assertRaises(ValidationError) block fails (confirmed FAILED). On the gold code the same call is caught and re-raised as a ValidationError with code='invalid', params={'value': <dict>}, and the exact invalid error message (confirmed PASSED after configuring settings so the lazy-translation message can be stringified).\n\nThis input/scenario is not pinned down by any visible assertion: the visible tests/model_fields/test_decimalfield.py test_to_python only covers valid int/float/string conversions and the 'abc' (decimal.InvalidOperation) string case; the float/integer model-field tests use unrelated save-path TypeErrors for Float/Integer fields (not DecimalField.to_python). So the dict-input scalar path through DecimalField.to_python is a genuinely hidden discriminator for the fixed behavior."
+    },
+    "notebook": [
+      {
+        "author": "S_vis Extractor",
+        "content": "DecimalField.to_python (django/db/models/fields/__init__.py) converts via `decimal.Decimal(value)`, only catching decimal.InvalidOperation — so a dict raises a raw TypeError since `decimal.Decimal({})` raises TypeError rather than InvalidOperation. Compare FloatField.to_python and IntegerField.to_python in the same file, which both catch (TypeError, ValueError) and convert to ValidationError."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "DecimalField.get_prep_value() delegates to self.to_python(), and get_db_prep_save() calls to_python() as well, so a dict assigned to a DecimalField model attribute reaches to_python during save."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "Existing DecimalField tests live in tests/model_fields/test_decimalfield.py; its test_to_python checks integer/float/string/float-rounding cases and that an 'abc' string raises ValidationError, but has no dict-input case yet."
+      },
+      {
+        "author": "S_vis Extractor",
+        "content": "tests/model_fields/test_floatfield.py and tests/model_fields/test_integerfield.py have test_invalid_value() cases asserting TypeError for a {:} save on Float/Integer fields (their save path deliberately raises TypeError); the subject of this bug report is to_python specifically, not those save-path TypeErrors."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "The change is a single-line widening of the except clause in DecimalField.to_python from `decimal.InvalidOperation` to `(decimal.InvalidOperation, TypeError, ValueError)`; the validation branch/body (message, code='invalid', params={'value': value}) is unchanged."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "DecimalField.to_python is reached from get_prep_value()/get_db_prep_save() and is also used as the coerce function by the model field's formfield defaults, so the path for converting assigned/saved values goes through it."
+      },
+      {
+        "author": "S_impl Extractor",
+        "content": "Values that are None are short-circuited and returned as-is before this try/except; float values are routed to self.context.create_decimal_from_float before the try/except."
+      },
+      {
+        "author": "Oracle Search Agent",
+        "content": "Searched oracle for [R1]: I searched the oracle test suite for a test that enforces target requirement R1: DecimalField.to_python converting a non-None, non-float, unsupported value (dict/list/etc.) that makes decimal.Decimal(value) raise TypeError or ValueError into a django.core.exceptions.ValidationError (invalid message, code='invalid', value in params) rather than letting the raw TypeError/ValueError propagate.\n\nFiles checked and why each failed to qualify:\n- tests/model_fields/test_decimalfield.py — the canonical home for DecimalField.to_python tests. Its test_to_python checks int/float/string inputs and that the 'abc' string (which raises decimal.InvalidOperation) becomes a ValidationError, but contains NO dict/list/unsupported TypeError-or-ValueError input case. It is also labeled [VISIBLE], so even if it asserted R1 it could not serve as a witness.\n- tests/forms_tests/field_tests/test_decimalfield.py — tests the *form* DecimalField's validation ('Enter a number.' code invalid path) for strings/NaN/etc., not the model-field to_python conversion from raw dict/list TypeError/ValueError; and it is [VISIBLE].\n- tests/model_fields/test_floatfield.py and tests/model_fields/test_integerfield.py — their test_invalid_value() methods DO feed dict/lists to Float/Integer fields, but (a) they target Float/Integer fields, not DecimalField; (b) they assert a *TypeError with message \"Field 'x' expected a number but got %r.\"* raised on the model SAVE path (get_prep_value/prepare), which as the notes state is deliberately a TypeError and is a distinct behavior from DecimalField.to_python wrapping into a ValidationError; and (c) both files are [VISIBLE].\n- Other candidate files examined (tests/model_fields/models.py, tests/lookup/test_decimalfield.py, tests/datatypes/tests.py, tests/model_forms/tests.py, tests/field_subclassing/tests.py) contain only DecimalField model/fixtures or deal with unrelated behaviors; models.py is [HIDDEN] but is only model definitions with no asserting behavior.\n\nI also mechanically ran a strawman to_python-dict-input test: it confirms the premise (a TestCase needs DB settings in this harness and the harness cannot currently complete a DecimalField to_python dict test), but importantly there is no pre-existing [HIDDEN] assertion in the oracle that tests this R1 behavior from which a witness test_source could be derived. Every test that mentions unsupported numeric inputs either tests the float/integer save-path TypeError or is [VISIBLE], and none duplicates this fix's precise semantic (DecimalField.to_python → ValidationError with the field's 'invalid' message/code/params for TypeError/ValueError). Therefore no genuine oracle witness for R1 exists."
+      },
+      {
+        "author": "Witness Synthesis Agent",
+        "content": "Synthesized for [R1]: succeeded"
+      }
+    ],
+    "verdict": "SPECIFICATION GAP",
+    "rationale": "[R1] (DecimalField.to_python): DecimalField.to_python, when the non-None, non-float value it is converting via decimal.Decimal(value) causes a TypeError or ValueError (in addition to the already-handled decimal.InvalidOperation) — e.g. a dict, list, or other unsupported input — raises a django.core.exceptions.ValidationError with the field's 'invalid' error message, code='invalid', and the offending value in params, rather than letting the raw TypeError/ValueError propagate. — not entailed by S_vis (S_vis only establishes that passing a dict to DecimalField.to_python should yield ValidationError rather than letting Decimal's TypeError propagate (docstring also says the base contract is to raise ValidationError on unconvertible input). It does not pin down the specific behavior S_impl describes — catching both TypeError and ValueError generally (list, unsupported inputs), nor the structured error with the field's 'invalid' message, code='invalid', and offending value in params.); confirmed by a synthesized witness: R1 states that DecimalField.to_python must catch TypeError/ValueError raised by decimal.Decimal(value) on non-None, non-float unsupported inputs (e.g. a dict) and convert them to a django.core.exceptions.ValidationError with the field's 'invalid' message, code='invalid', and value in params, rather than letting the raw TypeError/ValueError propagate. The gold implementation does exactly this by widening the except clause to (decimal.InvalidOperation, TypeError, ValueError); the buggy pre-fix code only catches decimal.InvalidOperation.\n\nThe witness constructs a bare DecimalField (no DB needed) and calls to_python with a dict, which reaches the shared try: `decimal.Decimal({...})` branch. On the buggy code the raw TypeError (\"conversion from dict to Decimal is not supported\") propagates out of the method, so the assertRaises(ValidationError) block fails (confirmed FAILED). On the gold code the same call is caught and re-raised as a ValidationError with code='invalid', params={'value': <dict>}, and the exact invalid error message (confirmed PASSED after configuring settings so the lazy-translation message can be stringified).\n\nThis input/scenario is not pinned down by any visible assertion: the visible tests/model_fields/test_decimalfield.py test_to_python only covers valid int/float/string conversions and the 'abc' (decimal.InvalidOperation) string case; the float/integer model-field tests use unrelated save-path TypeErrors for Float/Integer fields (not DecimalField.to_python). So the dict-input scalar path through DecimalField.to_python is a genuinely hidden discriminator for the fixed behavior.",
+    "confidence": "Medium"
+  }
+}
